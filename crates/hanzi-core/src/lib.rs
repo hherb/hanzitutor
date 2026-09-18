@@ -33,10 +33,14 @@ pub mod curriculum;
 pub mod dataset;
 pub mod geom;
 pub mod grade;
+pub mod vocab;
 
 pub use curriculum::{build_lessons, lesson_at, Lesson};
-pub use dataset::{Character, Dataset};
+pub use dataset::{Character, CharacterHint, Dataset, TextLookup};
 pub use geom::Point;
 pub use grade::{
     grade, FitInfo, Grade, GradeOptions, GradeReport, StrokeVerdict, Verdict,
+};
+pub use vocab::{
+    Entry, ImportSummary, VocabError, VocabStore, VocabView,
 };

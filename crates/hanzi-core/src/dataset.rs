@@ -131,6 +131,90 @@ impl Dataset {
     pub fn is_empty(&self) -> bool {
         self.chars.is_empty()
     }
+
+    /// What the dataset can tell about a piece of study text before the user
+    /// edits it.
+    ///
+    /// Single characters and words are deliberately treated differently:
+    ///
+    /// * A **single character** is its own word — its reading and meaning *are*
+    ///   the answer, so both are filled in.
+    /// * A **word** gets a composed reading, because word pinyin is the
+    ///   characters' readings run together (学习 → `xuéxí`). Its meaning is
+    ///   **not** filled in: a word's meaning cannot be composed from its parts,
+    ///   and inventing one would be worse than leaving it blank. The per-character
+    ///   hints are returned so the learner has the material to write it.
+    ///
+    /// Tone changes are not applied (`你好` composes to `nǐhǎo`, not `níhǎo`), so
+    /// the result is a draft to be checked, not an authority.
+    pub fn lookup_text(&self, text: &str) -> TextLookup {
+        let characters: Vec<char> = text.trim().chars().collect();
+        let hints: Vec<CharacterHint> = characters
+            .iter()
+            .map(|ch| match self.get(*ch) {
+                Some(found) => CharacterHint {
+                    ch: *ch,
+                    pinyin: found.pinyin.clone(),
+                    meaning: found.definition.clone(),
+                },
+                None => CharacterHint {
+                    ch: *ch,
+                    pinyin: Vec::new(),
+                    meaning: String::new(),
+                },
+            })
+            .collect();
+
+        let complete = !hints.is_empty() && hints.iter().all(|h| !h.pinyin.is_empty());
+
+        let (pinyin, meaning) = if hints.len() == 1 {
+            let only = &hints[0];
+            (
+                only.pinyin.first().cloned().unwrap_or_default(),
+                only.meaning.clone(),
+            )
+        } else {
+            // Readings run together, which is how word pinyin is written.
+            let composed: String = hints
+                .iter()
+                .filter_map(|h| h.pinyin.first())
+                .cloned()
+                .collect();
+            (composed, String::new())
+        };
+
+        TextLookup {
+            pinyin,
+            meaning,
+            characters: hints,
+            complete,
+        }
+    }
+}
+
+/// A draft reading and meaning for some study text, plus what each character in
+/// it means on its own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextLookup {
+    /// Draft pinyin. Empty when nothing could be resolved.
+    pub pinyin: String,
+    /// The meaning, filled in only for a single character.
+    pub meaning: String,
+    /// One entry per character of the text, in order.
+    pub characters: Vec<CharacterHint>,
+    /// True when every character was found and has a reading.
+    pub complete: bool,
+}
+
+/// What one character of the text contributes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CharacterHint {
+    pub ch: char,
+    /// Every reading the dataset knows, most common first.
+    pub pinyin: Vec<String>,
+    pub meaning: String,
 }
 
 #[cfg(test)]
@@ -192,5 +276,93 @@ mod tests {
         assert_eq!(dataset.len(), 2);
         assert_eq!(dataset.get('的').unwrap().stroke_count, 8);
         assert_eq!(dataset.get('一').unwrap().medians.len(), 1);
+    }
+
+    // ---- looking up study text --------------------------------------------
+
+    /// A character with a chosen reading and meaning.
+    fn speaker(ch: char, pinyin: &[&str], definition: &str) -> Character {
+        Character {
+            pinyin: pinyin.iter().map(|s| s.to_string()).collect(),
+            definition: definition.to_string(),
+            ..character(ch, 1, 1)
+        }
+    }
+
+    #[test]
+    fn a_single_character_lookup_fills_reading_and_meaning() {
+        let dataset = Dataset::from_chars(vec![speaker('好', &["hǎo", "hào"], "good, well")]);
+        let lookup = dataset.lookup_text("好");
+
+        assert_eq!(lookup.pinyin, "hǎo", "the most common reading wins");
+        assert_eq!(lookup.meaning, "good, well");
+        assert!(lookup.complete);
+        assert_eq!(lookup.characters.len(), 1);
+        // Every reading is still reported, so the learner can pick another.
+        assert_eq!(lookup.characters[0].pinyin, vec!["hǎo", "hào"]);
+    }
+
+    #[test]
+    fn a_word_lookup_composes_the_reading_but_not_the_meaning() {
+        let dataset = Dataset::from_chars(vec![
+            speaker('学', &["xué"], "learning, knowledge; to study"),
+            speaker('习', &["xí"], "to practise; habit"),
+        ]);
+        let lookup = dataset.lookup_text("学习");
+
+        // Word pinyin is the readings run together, which is how it is written.
+        assert_eq!(lookup.pinyin, "xuéxí");
+        // A word's meaning cannot be composed from its characters, so it is left
+        // for the learner rather than invented.
+        assert_eq!(lookup.meaning, "");
+        assert!(lookup.complete);
+        assert_eq!(lookup.characters.len(), 2);
+        assert_eq!(lookup.characters[0].ch, '学');
+        assert_eq!(lookup.characters[1].meaning, "to practise; habit");
+    }
+
+    #[test]
+    fn a_word_with_an_unknown_character_is_incomplete() {
+        let dataset = Dataset::from_chars(vec![speaker('学', &["xué"], "to study")]);
+        let lookup = dataset.lookup_text("学X");
+
+        assert!(!lookup.complete, "X is not in the dataset");
+        assert_eq!(lookup.pinyin, "xué", "the known part still contributes");
+        assert_eq!(lookup.characters.len(), 2);
+        assert!(lookup.characters[1].pinyin.is_empty());
+        assert!(lookup.characters[1].meaning.is_empty());
+    }
+
+    #[test]
+    fn an_empty_lookup_is_empty_rather_than_falsely_incomplete() {
+        let dataset = Dataset::from_chars(vec![speaker('好', &["hǎo"], "good")]);
+        for text in ["", "   "] {
+            let lookup = dataset.lookup_text(text);
+            assert_eq!(lookup.pinyin, "");
+            assert_eq!(lookup.meaning, "");
+            assert!(lookup.characters.is_empty());
+            assert!(!lookup.complete);
+        }
+    }
+
+    #[test]
+    fn a_longer_word_composes_every_character() {
+        let dataset = Dataset::from_chars(vec![
+            speaker('中', &["zhōng"], "middle"),
+            speaker('国', &["guó"], "country"),
+            speaker('人', &["rén"], "person"),
+        ]);
+        let lookup = dataset.lookup_text("中国人");
+        assert_eq!(lookup.pinyin, "zhōngguórén");
+        assert_eq!(lookup.meaning, "");
+        assert_eq!(lookup.characters.len(), 3);
+    }
+
+    #[test]
+    fn lookup_ignores_surrounding_whitespace() {
+        let dataset = Dataset::from_chars(vec![speaker('好', &["hǎo"], "good")]);
+        let lookup = dataset.lookup_text("  好  ");
+        assert_eq!(lookup.pinyin, "hǎo");
+        assert_eq!(lookup.characters.len(), 1);
     }
 }

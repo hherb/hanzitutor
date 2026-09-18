@@ -7,14 +7,20 @@ mod commands;
 mod speech;
 mod state;
 
-pub use state::AppState;
+pub use commands::VocabOutcome;
+pub use state::{AppState, VocabState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             use tauri::Manager;
-            let state = AppState::load()?;
+            // The vocabulary list lives in the platform's application data
+            // directory; a failure to locate it is not fatal, the list simply
+            // stays in memory and says so.
+            let data_dir = crate::state::resolve_data_dir(app.handle()).ok();
+            let state = AppState::load(data_dir)?;
             app.manage(state);
             Ok(())
         })
@@ -26,6 +32,17 @@ pub fn run() {
             commands::speak,
             commands::stop_speaking,
             commands::speech_status,
+            commands::lookup_text,
+            commands::vocabulary,
+            commands::vocab_add,
+            commands::vocab_update,
+            commands::vocab_remove,
+            commands::vocab_add_group,
+            commands::vocab_rename_group,
+            commands::vocab_remove_group,
+            commands::vocab_record_attempt,
+            commands::vocab_export,
+            commands::vocab_import,
             commands::webview_log,
         ])
         .run(tauri::generate_context!())

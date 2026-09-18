@@ -16,6 +16,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Native open/save dialogs, for exporting and importing the vocabulary list.
+tauri-plugin-dialog = "2"
 serde.workspace = true
 serde_json.workspace = true
 hanzi-core = { path = "../crates/hanzi-core" }

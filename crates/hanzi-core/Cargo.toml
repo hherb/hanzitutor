@@ -7,17 +7,17 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 postcard.workspace = true
 flate2.workspace = true
 
 # Only needed by the `prepare-data` binary, which turns the upstream datasets
-# into the compact artifact that ships with the app. Keeping them optional
-# means the app itself does not build a JSON/CSV stack it never uses.
-serde_json = { workspace = true, optional = true }
+# into the compact artifact that ships with the app. Keeping it optional means
+# the app itself does not build a CSV stack it never uses.
 csv = { version = "1", optional = true }
 
 [features]
-prepare = ["dep:serde_json", "dep:csv"]
+prepare = ["dep:csv"]
 
 [[bin]]
 name = "prepare-data"

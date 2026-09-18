@@ -1,7 +1,17 @@
 /** Thin typed wrappers over the Tauri commands. */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Character, DatasetStats, GradeOptions, GradeReport, Lesson, Point } from "./types";
+import type {
+  Character,
+  DatasetStats,
+  GradeOptions,
+  GradeReport,
+  Lesson,
+  Point,
+  TextLookup,
+  VocabOutcome,
+  VocabView,
+} from "./types";
 
 export const datasetStats = () => invoke<DatasetStats>("dataset_stats");
 
@@ -37,3 +47,50 @@ export const speechStatus = () => invoke<string | null>("speech_status");
  * through here to make a blank or half-initialised window diagnosable.
  */
 export const log = (message: string) => invoke<void>("webview_log", { message });
+
+// ---- personal vocabulary list ---------------------------------------------
+
+/**
+ * Resolve a character or word for the vocabulary add form.
+ *
+ * A single character returns a reading and meaning; a word returns a composed
+ * reading and per-character hints, with the meaning left for the user.
+ */
+export const lookupText = (text: string) => invoke<TextLookup>("lookup_text", { text });
+
+export const vocabulary = () => invoke<VocabView>("vocabulary");
+
+/**
+ * Add an entry. `group` may be null for an unfiled entry; a new group name is
+ * created on demand.
+ */
+export const vocabAdd = (text: string, pinyin: string, meaning: string, group: string | null) =>
+  invoke<VocabView>("vocab_add", { text, pinyin, meaning, group });
+
+export const vocabUpdate = (
+  id: number,
+  pinyin: string,
+  meaning: string,
+  group: string | null,
+) => invoke<VocabView>("vocab_update", { id, pinyin, meaning, group });
+
+export const vocabRemove = (id: number) => invoke<VocabView>("vocab_remove", { id });
+
+export const vocabAddGroup = (name: string) => invoke<VocabView>("vocab_add_group", { name });
+
+export const vocabRenameGroup = (from: string, to: string) =>
+  invoke<VocabView>("vocab_rename_group", { from, to });
+
+/** `purge` false keeps the group's entries and leaves them unfiled. */
+export const vocabRemoveGroup = (name: string, purge: boolean) =>
+  invoke<VocabView>("vocab_remove_group", { name, purge });
+
+/** Record a practice attempt; `score` is the 0..=100 headline score. */
+export const vocabRecordAttempt = (id: number, score: number) =>
+  invoke<VocabView>("vocab_record_attempt", { id, score });
+
+export const vocabExport = (path: string, format: "json" | "csv") =>
+  invoke<string>("vocab_export", { path, format });
+
+export const vocabImport = (path: string, merge: boolean) =>
+  invoke<VocabOutcome>("vocab_import", { path, merge });

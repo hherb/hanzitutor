@@ -29,6 +29,12 @@ crates/hanzi-core/data/*.bin.gz
 # any build, so not tracked, matching the official Tauri template.
 src-tauri/gen/schemas/
 
+# --- Local study data ----------------------------------------------------
+# Suggested by HANDOVER.md for running the app where the real application data
+# directory is not writable (sandboxes, portable installs).
+.tmp-vocab/
+.study/
+
 # --- Editor / OS ---------------------------------------------------------
 #.idea/
 .DS_Store

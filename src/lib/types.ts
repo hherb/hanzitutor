@@ -93,3 +93,65 @@ export interface GradeOptions {
   minStrokeLen: number;
   globalFit: boolean;
 }
+
+// ---- personal vocabulary list ---------------------------------------------
+
+/** What one character of a piece of study text contributes. */
+export interface CharacterHint {
+  ch: string;
+  /** Every reading the dataset knows, most common first. */
+  pinyin: string[];
+  meaning: string;
+}
+
+/**
+ * A draft reading and meaning for some study text.
+ *
+ * A single character gets both. A word gets its readings composed — word pinyin
+ * is the characters' readings run together — but its meaning is left blank,
+ * because a word's meaning cannot be derived from its characters.
+ */
+export interface TextLookup {
+  pinyin: string;
+  meaning: string;
+  characters: CharacterHint[];
+  /** True when every character was found and has a reading. */
+  complete: boolean;
+}
+
+/**
+ * One item in the personal vocabulary list.
+ *
+ * `text` may be a single character or a word. Single characters get their pinyin
+ * and meaning filled from the dataset; words carry whatever the user typed,
+ * because the dataset has no word data.
+ */
+export interface VocabEntry {
+  id: number;
+  text: string;
+  pinyin: string;
+  meaning: string;
+  /** Group name, or null when the entry is not filed under a lesson. */
+  group: string | null;
+  /** ISO-8601 UTC timestamp, which also sorts chronologically as text. */
+  addedAt: string;
+  attempts: number;
+  bestScore: number | null;
+  lastPractised: string | null;
+}
+
+export interface VocabView {
+  entries: VocabEntry[];
+  groups: string[];
+  /**
+   * Set when a change was applied in memory but not saved, so the interface can
+   * say so instead of appearing to have lost data.
+   */
+  warning: string | null;
+}
+
+/** A vocabulary change plus a note about what happened. */
+export interface VocabOutcome {
+  view: VocabView;
+  message: string;
+}

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default permissions for the main window. Commands defined by this app are always callable; this covers the Tauri core plugins.",
+  "description": "Default permissions for the main window. Commands defined by this app are always callable; this covers the Tauri core plugins and the file dialogs used to export and import the vocabulary list.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:default"]
 }

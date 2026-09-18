@@ -4,11 +4,14 @@
 //! method on [`AppState`]. That keeps the whole surface the webview depends on
 //! testable without opening a window — see `tests/ipc_contract.rs`.
 
-use hanzi_core::{build_lessons, grade, Character, GradeOptions, GradeReport, Lesson, Point};
+use hanzi_core::{
+    build_lessons, grade, Character, GradeOptions, GradeReport, Lesson, Point, TextLookup,
+    VocabView,
+};
 use serde::Serialize;
 use tauri::State;
 
-use crate::state::AppState;
+use crate::state::{AppState, VocabState};
 
 /// How many characters make up one lesson.
 pub const LESSON_SIZE: usize = 10;
@@ -109,6 +112,203 @@ pub fn stop_speaking(state: State<'_, AppState>) {
 #[tauri::command]
 pub fn speech_status(state: State<'_, AppState>) -> Option<String> {
     state.speech.status()
+}
+
+// ---- Personal vocabulary list ---------------------------------------------
+
+/// Resolve a character or word for the add form.
+///
+/// A single character gets its reading *and* meaning. A word gets its readings
+/// composed into a draft pinyin, but **not** a meaning: a word's meaning cannot
+/// be derived from its characters, and a plausible-looking invention would be
+/// worse than a blank the learner fills in. The per-character hints come back
+/// either way so there is something to work from.
+#[tauri::command]
+pub fn lookup_text(state: State<'_, AppState>, text: String) -> TextLookup {
+    state.dataset.lookup_text(&text)
+}
+
+/// A change to the vocabulary list, with a note about what happened.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabOutcome {
+    pub view: VocabView,
+    /// Human-readable note for a status line.
+    pub message: String,
+}
+
+/// Persist a change and hand back the list as it now stands.
+///
+/// A save failure is reported through the view's `warning` rather than as a hard
+/// error, because the change *did* take effect in memory: the interface should
+/// show it while explaining that it was not written to disk.
+fn committed(vocab: &VocabState) -> VocabView {
+    let mut view = vocab.view();
+    if let Some(warning) = vocab.save() {
+        view.warning = Some(warning);
+    }
+    view
+}
+
+/// The whole list: every entry and every group.
+#[tauri::command]
+pub fn vocabulary(state: State<'_, AppState>) -> VocabView {
+    state.lock_vocab().view()
+}
+
+#[tauri::command]
+pub fn vocab_add(
+    state: State<'_, AppState>,
+    text: String,
+    pinyin: String,
+    meaning: String,
+    group: Option<String>,
+) -> Result<VocabView, String> {
+    let mut vocab = state.lock_vocab();
+    vocab
+        .store
+        .add_entry(&text, &pinyin, &meaning, group.as_deref())
+        .map_err(|e| e.to_string())?;
+    Ok(committed(&vocab))
+}
+
+#[tauri::command]
+pub fn vocab_update(
+    state: State<'_, AppState>,
+    id: u64,
+    pinyin: String,
+    meaning: String,
+    group: Option<String>,
+) -> Result<VocabView, String> {
+    let mut vocab = state.lock_vocab();
+    vocab
+        .store
+        .update_entry(id, &pinyin, &meaning, group.as_deref())
+        .map_err(|e| e.to_string())?;
+    Ok(committed(&vocab))
+}
+
+#[tauri::command]
+pub fn vocab_remove(state: State<'_, AppState>, id: u64) -> Result<VocabView, String> {
+    let mut vocab = state.lock_vocab();
+    vocab.store.remove_entry(id).map_err(|e| e.to_string())?;
+    Ok(committed(&vocab))
+}
+
+#[tauri::command]
+pub fn vocab_add_group(state: State<'_, AppState>, name: String) -> Result<VocabView, String> {
+    let mut vocab = state.lock_vocab();
+    vocab.store.add_group(&name).map_err(|e| e.to_string())?;
+    Ok(committed(&vocab))
+}
+
+#[tauri::command]
+pub fn vocab_rename_group(
+    state: State<'_, AppState>,
+    from: String,
+    to: String,
+) -> Result<VocabView, String> {
+    let mut vocab = state.lock_vocab();
+    vocab
+        .store
+        .rename_group(&from, &to)
+        .map_err(|e| e.to_string())?;
+    Ok(committed(&vocab))
+}
+
+/// Remove a group.
+///
+/// `purge` false keeps its entries and leaves them unfiled; true deletes them.
+/// The default in the interface is false, because deleting a label should not
+/// destroy work.
+#[tauri::command]
+pub fn vocab_remove_group(
+    state: State<'_, AppState>,
+    name: String,
+    purge: bool,
+) -> Result<VocabView, String> {
+    let mut vocab = state.lock_vocab();
+    vocab
+        .store
+        .remove_group(&name, purge)
+        .map_err(|e| e.to_string())?;
+    Ok(committed(&vocab))
+}
+
+/// Record a practice attempt against an entry. `score` is the 0..=100 headline
+/// score from the grading engine.
+#[tauri::command]
+pub fn vocab_record_attempt(
+    state: State<'_, AppState>,
+    id: u64,
+    score: f32,
+) -> Result<VocabView, String> {
+    let mut vocab = state.lock_vocab();
+    vocab
+        .store
+        .record_attempt(id, score)
+        .map_err(|e| e.to_string())?;
+    Ok(committed(&vocab))
+}
+
+/// Write the list to `path` as `format`, which is `"json"` (lossless) or
+/// `"csv"` (for spreadsheets). Returns a note for the interface.
+#[tauri::command]
+pub fn vocab_export(
+    state: State<'_, AppState>,
+    path: String,
+    format: String,
+) -> Result<String, String> {
+    let vocab = state.lock_vocab();
+    let count = vocab.store.entries().len();
+    let (contents, label) = match format.as_str() {
+        "json" => (
+            vocab.store.export_json().map_err(|e| e.to_string())?,
+            "JSON",
+        ),
+        "csv" => (vocab.store.export_csv(), "CSV"),
+        other => return Err(format!("unknown export format {other:?}")),
+    };
+    std::fs::write(&path, contents).map_err(|e| format!("could not write {path}: {e}"))?;
+    Ok(format!("Exported {count} entries as {label} to {path}"))
+}
+
+/// Read a previously exported document from `path`.
+///
+/// `merge` false replaces the current list; true adds to it, skipping entries
+/// whose text is already present in the same group.
+#[tauri::command]
+pub fn vocab_import(
+    state: State<'_, AppState>,
+    path: String,
+    merge: bool,
+) -> Result<VocabOutcome, String> {
+    let json =
+        std::fs::read_to_string(&path).map_err(|e| format!("could not read {path}: {e}"))?;
+
+    let mut vocab = state.lock_vocab();
+    let summary = vocab
+        .store
+        .import_json(&json, merge)
+        .map_err(|e| e.to_string())?;
+    let view = committed(&vocab);
+
+    let mut message = if summary.replaced {
+        format!("Replaced your list with {} entries", summary.added)
+    } else {
+        format!("Added {} entries", summary.added)
+    };
+    if summary.skipped_duplicates > 0 {
+        message.push_str(&format!(
+            ", skipped {} already in the list",
+            summary.skipped_duplicates
+        ));
+    }
+    if summary.groups_added > 0 {
+        message.push_str(&format!(", {} new groups", summary.groups_added));
+    }
+
+    Ok(VocabOutcome { view, message })
 }
 
 /// Echo a line from the webview to stderr.

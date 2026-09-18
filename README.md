@@ -13,9 +13,9 @@ and the Rust core is written to be reusable from a mobile shell later.
 ## Status
 
 Working end to end. The grading engine, the dataset pipeline, the Tauri command
-layer, the drawing UI and pronunciation are all implemented and tested; 50
-automated tests pass. What is not built yet is listed under
-[Next steps](#next-steps).
+layer, the drawing UI, pronunciation and the personal vocabulary list are all
+implemented and tested; 83 automated tests pass. What is not built yet is listed
+under [Next steps](#next-steps).
 
 ## What it does
 
@@ -34,6 +34,12 @@ automated tests pass. What is not built yet is listed under
   level and frequency rank, plus the etymology mnemonic where one exists.
 - **Pronunciation** — hear any character through the system's own speech
   synthesiser. Nothing is downloaded and nothing leaves the machine.
+- **Your own vocabulary list** — record the characters and words from your own
+  lessons, file them under your own group names, and drill exactly those. A
+  character fills in its pinyin and meaning automatically; a word gets its reading
+  composed from its characters, while its meaning is yours to write — so the list
+  can hold vocabulary the built-in course never covers. Export to JSON (lossless)
+  or CSV for a spreadsheet.
 
 ## Quick start
 
@@ -102,6 +108,25 @@ HANZI_TUTOR_VOICE="Meijia" pnpm run dev
 
 Enumerating voices takes about a second, so it runs on a background thread at
 startup rather than on the first click.
+
+### Your vocabulary list
+
+The list lives in the platform's application data directory —
+`~/Library/Application Support/com.hanzitutor.app/vocabulary.json` on macOS — as
+plain, human-readable JSON, written atomically so an interrupted write cannot
+leave it half-saved. Nothing is sent anywhere.
+
+Override the location with `HANZI_TUTOR_DATA_DIR`, which is useful for a portable
+install, for keeping study data outside the application support folder, or for
+running under a sandbox that cannot write there:
+
+```bash
+HANZI_TUTOR_DATA_DIR="$PWD/.study" pnpm run dev
+```
+
+If the file exists but cannot be parsed, the app says so and **refuses to save**
+rather than replacing your notes with an empty list. Fix or move the file, then
+restart.
 
 ## How grading works
 
@@ -243,29 +268,32 @@ preparation so the grader never has to think about the flip.
 ## Project layout
 
 ```
-crates/hanzi-core/          grading engine, no UI dependency
+crates/hanzi-core/          engine + data, no UI dependency
   src/geom.rs               resampling, normalisation, distance measures
   src/grade.rs              pairing, order analysis, verdicts, scoring
   src/dataset.rs            the character model and artifact loading
   src/curriculum.rs         frequency list → lessons
+  src/vocab.rs              the personal vocabulary list and its JSON file
   src/bin/prepare_data.rs   upstream data → compact artifact
   examples/selfcheck.rs     self-consistency and tolerance measurement
 src-tauri/                  Tauri shell
   src/commands.rs           the IPC surface
-  src/state.rs              embedded dataset, speech warm-up
+  src/state.rs              embedded dataset, speech warm-up, vocabulary store
   src/speech.rs             pronunciation via the system synthesiser
   tests/ipc_contract.rs     locks the JSON contract the UI reads
 src/lib/                    Svelte components
   PracticeCanvas.svelte     pointer capture, stroke recording
   render.ts                 canvas painting, verdict colours
+  VocabularyPanel.svelte    the vocabulary list: add, group, export, import
+  LessonSidebar.svelte      course and vocabulary navigation
 scripts/                    data fetching, cargo env, CLI selection
 ```
 
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 50 tests
-pnpm run test:core    # just the 29 engine unit tests
+pnpm test             # the whole Rust suite: 83 tests
+pnpm run test:core    # just the engine and store unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
 pnpm run check:rust   # clippy, warnings denied
@@ -304,25 +332,17 @@ The generated artifact is not committed; `./scripts/fetch-data.sh` followed by
 
 ## Next steps
 
-Not yet built, roughly in the order they would pay off:
+See **[ROADMAP.md](ROADMAP.md)** for what to build next, in priority order, with
+approach notes and acceptance criteria. The headline gaps:
 
-1. **Progress that persists.** Lesson completion, per-character history and a
-   spaced-repetition schedule. Nothing is stored between launches today.
-2. **Reading practice with words and sentences.** The app teaches single
-   characters; real reading needs vocabulary in context. This would also
-   disambiguate polyphonic characters, which today are always spoken with the
-   synthesiser's preferred reading.
-3. **A stricter legibility measure.** The current one is centreline geometry.
-   Rasterising the user's strokes and comparing coverage with the reference
-   outline (IoU) would catch errors centreline matching misses, such as a stroke
-   that is the right path but far too thin.
-4. **Stroke-order animation along the centreline** rather than a cumulative
-   reveal.
-5. **Pronunciation on Windows and Linux.** Only macOS is implemented; the other
-   platforms return a clear "not implemented" error rather than shelling out to
-   something unverified. `spd-say` and PowerShell's `System.Speech` are the
-   obvious backends.
-6. **A trackpad-friendly input mode.** Long strokes are awkward to draw while
-   holding a trackpad button down.
-7. **Mobile shells.** The Tauri config and the Rust core are already arranged for
-   it; the canvas needs touch and stylus handling verified.
+1. **Progress that persists beyond the vocabulary list, plus spaced repetition.**
+   Your saved words persist, but per-character practice history does not, so the
+   app cannot yet tell you what to review today.
+2. **Words and sentences**, so the app supports actual reading and can
+   disambiguate polyphonic characters.
+3. **A stricter legibility measure** (raster IoU), which catches errors the
+   centreline comparison cannot.
+
+If you are picking this project up to continue development, read
+**[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the
+invariants that must not be broken, and the traps that cost time.
