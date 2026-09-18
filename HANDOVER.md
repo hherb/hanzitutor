@@ -277,4 +277,13 @@ run.
 - **Shape tolerance is tuned on synthetic jitter**, not on real learners. It wants
   revisiting once there are real attempts to look at — ideally by logging
   attempts and re-running the distribution analysis in `selfcheck`.
-- **Vocabulary list scope** is being settled with the user; see `ROADMAP.md` M1.
+- **Vocabulary list scope** — settled: M1 shipped with auto-fill for single
+  characters, a composed reading for words, and hand-typed meanings. The
+  remaining intentional gaps (CSV import, word meanings, tone sandhi) are
+  recorded at the end of `ROADMAP.md` M1.
+- **An accepted dependency advisory.** Dependabot flags `glib` 0.18.5 (moderate,
+  fixed in 0.20.0). It is Linux-GTK-only and absent from the macOS build graph,
+  and it is not fixable from here because `gtk 0.18` pins `glib ^0.18` — cargo
+  rejects the upgrade. `ROADMAP.md` records the detail. **Do not spend time on
+  it**: if you want to confirm the scope, `cargo tree --target
+  aarch64-apple-darwin -e normal | grep glib` returns nothing.

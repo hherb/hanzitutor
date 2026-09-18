@@ -357,6 +357,17 @@ Recorded honestly, because they bound how much the current scores mean:
 - **The course is frequency-ordered only.** It starts at 的 (8 strokes), which is
   right for reading but a demanding first character to *write*. A hand-ordered or
   stroke-count-ascending mode may suit a beginner better.
+- **One dependency advisory is accepted, not fixed.** Dependabot reports a
+  moderate advisory against `glib` 0.18.5 — unsoundness in the `Iterator` and
+  `DoubleEndedIterator` impls for `glib::VariantStrIter` — fixed in `glib` 0.20.0.
+  It arrives through Tauri's Linux GTK stack (`tauri → muda`/`tao → gtk 0.18.2 →
+  glib`) and appears **nowhere** in the macOS dependency graph, so it is not
+  compiled into the app as built. It also cannot be resolved here: `gtk 0.18`
+  requires `glib ^0.18`, so cargo refuses 0.20.0 outright. Revisit when Tauri
+  moves to gtk-rs 0.20, or before shipping a Linux build — whichever comes first.
+  Do not re-investigate it from scratch; confirm the scope with
+  `cargo tree --target aarch64-apple-darwin -e normal | grep glib`, which returns
+  nothing.
 
 ## Explicitly out of scope
 
