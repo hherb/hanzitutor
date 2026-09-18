@@ -68,6 +68,44 @@
   /** How much of a lesson is due for review now. */
   const dueIn = (lesson: Lesson) =>
     lesson.characters.filter((ch) => cardFor.get(ch)?.dueNow).length;
+
+  /** The lesson list, so the active lesson can be brought into view. */
+  let list = $state<HTMLOListElement | null>(null);
+
+  /**
+   * Keep the active lesson on screen.
+   *
+   * The course reopens where it was left, which can be hundreds of rows down a
+   * 775-lesson list: restoring the position without showing it leaves the
+   * sidebar apparently stuck at the beginning, with the reader's place and
+   * anything due there hidden. Only this list's own scroll position is touched,
+   * and only when the row is genuinely out of view, so scrolling by hand is
+   * never fought.
+   */
+  $effect(() => {
+    // Read both, so the effect runs when either the lesson or the character
+    // within it changes.
+    const character = activeCharacter;
+    void activeLesson;
+    const root = list;
+    if (!root) return;
+    // Wait for the character grid to lay out: the active row is only its full
+    // height once the lesson is expanded.
+    const frame = requestAnimationFrame(() => {
+      const row =
+        (character ? root.querySelector<HTMLElement>(".char.current") : null) ??
+        root.querySelector<HTMLElement>("li.active > .lesson");
+      if (!row) return;
+      const box = row.getBoundingClientRect();
+      const view = root.getBoundingClientRect();
+      if (box.top < view.top) {
+        root.scrollTop += box.top - view.top - 6;
+      } else if (box.bottom > view.bottom) {
+        root.scrollTop += box.bottom - view.bottom + 6;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  });
 </script>
 
 <nav class="sidebar">
@@ -100,7 +138,7 @@
         <span class="count">{review.dueCount}</span>
       </button>
     </div>
-    <ol>
+    <ol bind:this={list}>
       {#each lessons as lesson (lesson.index)}
         <li class:active={lesson.index === activeLesson}>
           <button class="lesson" onclick={() => onSelectLesson(lesson.index)}>

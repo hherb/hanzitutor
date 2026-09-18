@@ -93,12 +93,32 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
   losing data — but for testing persistence you must set this.
 - **`npm` is broken** for this user (`~/.npm/_cacache/tmp` contains root-owned
   files). Use `pnpm`; it works, with a project-local store.
-- **You cannot screenshot the app.** `screencapture` fails with "could not create
-  image from display" because the session lacks Screen Recording permission, and
-  AppleScript window inspection is blocked too. Window geometry *is* readable:
-  `python3 -c "import Quartz; ..."` with `CGWindowListCopyWindowInfo`. For
-  anything visual, **ask the human to look at it** — that is how the canvas and
-  the vocabulary screen were confirmed.
+- **You can screenshot the app, but not drive it.** Screen Recording is granted
+  (it was not, once — if `screencapture` starts failing with "could not create
+  image from display", ask for the permission again). Capture the app's **own
+  window** rather than the desktop, so nothing else leaks into the shot:
+
+  ```bash
+  # The window id comes from Quartz, which needs no extra permission.
+  python3 -c "
+  import Quartz
+  for w in Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements, Quartz.kCGNullWindowID):
+      if 'hanzi' in str(w.get('kCGWindowOwnerName','')).lower():
+          print(w.get('kCGWindowNumber'))
+  " | head -1 | xargs -I{} screencapture -x -o -l {} /tmp/app.png
+  ```
+
+  `-l <id>` captures that window alone and `-o` drops its shadow; the result is a
+  2x Retina PNG that crops and zooms well. Anything that *acts* is still blocked —
+  AppleScript window inspection and `System Events` keystrokes both fail with
+  `A privilege violation occurred`, which needs Accessibility, a separate grant —
+  so drawing a stroke, clicking *Review due* or scrolling a list still needs the
+  human. Window geometry is readable too, via `CGWindowListCopyWindowInfo`.
+
+  This has already earned its place: the progress marks, the review badge and the
+  due dots were confirmed from captures, and the same captures showed that a
+  restored course position was not scrolled into view (now fixed in
+  `LessonSidebar.svelte`).
 - Running the binary directly produces harmless WebKit noise
   (`could not create directory ~/Library/WebKit/...`) because the sandbox blocks
   WebKit's cache directories. It is not an app fault.
@@ -335,11 +355,11 @@ downstream of them is covered by the IPC tests, which drive
 
 ## 6. Traps that cost time here
 
-- **You cannot drive the window.** `screencapture`, AppleScript window inspection
-  and `System Events` keystrokes are all blocked by the sandbox (`A privilege
-  violation occurred`). Window geometry is readable with
-  `CGWindowListCopyWindowInfo`, and that is the limit. Anything interactive —
-  drawing a stroke, clicking *Review due* — needs the human.
+- **Look, don't try to act.** `screencapture` now works (window-targeted; recipe
+  in §1), so verify visual work yourself instead of asking. Acting is still
+  blocked: AppleScript window inspection and `System Events` keystrokes both fail
+  with `A privilege violation occurred`, needing Accessibility rather than Screen
+  Recording. Anything that clicks, types or scrolls needs the human.
 - **A stroke has to end where the pointer was released.** `handleUp` in
   `PracticeCanvas.svelte` appends the `pointerup` position before committing the
   stroke. Without that, a quick flick whose only sample arrives with the release
