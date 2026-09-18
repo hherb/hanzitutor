@@ -233,6 +233,12 @@ pub fn shape_score(distance: f32) -> f32 {
 ///
 /// Combines centroid offset with bounding-box size mismatch, so both a stroke
 /// in the wrong place and one that is grossly the wrong length are caught.
+///
+/// The offset is measured between *length* centroids, not sample means. The
+/// bounding box needs no such care — its extremes are extremes however densely
+/// the stroke was sampled — but the sample mean moves with drawing speed, and
+/// grading how fast someone moved the pointer as if it were position is exactly
+/// the kind of verdict a learner cannot act on.
 fn position_score(points: &[Point], reference: &[Point]) -> f32 {
     let Some((min_u, max_u)) = geom::bbox(points) else {
         return 0.0;
@@ -240,7 +246,8 @@ fn position_score(points: &[Point], reference: &[Point]) -> f32 {
     let Some((min_r, max_r)) = geom::bbox(reference) else {
         return 0.0;
     };
-    let centroid_offset = geom::centroid(points).distance_to(geom::centroid(reference));
+    let centroid_offset =
+        geom::length_centroid(points).distance_to(geom::length_centroid(reference));
     let diag = |a: Point, b: Point| a.distance_to(b);
     let du = diag(min_u, max_u);
     let dr = diag(min_r, max_r);
@@ -486,6 +493,15 @@ fn score_and_assign(
     }
 }
 
+/// Points each matched stroke is resampled to before the global fit is derived
+/// from it.
+///
+/// The fit is a placement transform, so it must not depend on how fast the
+/// learner moved the pointer: resampling each stroke evenly along its length
+/// gives every matched stroke the same say, whatever the sample density it
+/// arrived with.
+const FIT_RESAMPLE_K: usize = 16;
+
 /// The similarity transform implied by the pairs that were actually matched,
 /// with the distance between the two centroids before it is applied.
 ///
@@ -502,14 +518,16 @@ fn fit_on_matched(
         let Some(j) = pairing.assignment.get(k.original_index).copied().flatten() else {
             continue;
         };
-        user_points.extend_from_slice(&k.points);
-        ref_points.extend_from_slice(&reference[j]);
+        // Even sampling on both sides, so neither the centre nor the scale of
+        // the fit is biased by pointer speed.
+        user_points.extend(geom::resample(&k.points, FIT_RESAMPLE_K));
+        ref_points.extend(geom::resample(&reference[j], FIT_RESAMPLE_K));
     }
     if user_points.is_empty() || ref_points.is_empty() {
         return None;
     }
     let fit = geom::fit_similarity(&user_points, &ref_points);
-    let offset = geom::centroid(&user_points).distance_to(geom::centroid(&ref_points));
+    let offset = geom::length_centroid(&user_points).distance_to(geom::length_centroid(&ref_points));
     Some((fit, offset))
 }
 
@@ -770,6 +788,98 @@ mod tests {
             line((120.0, 400.0), (900.0, 400.0), 5), // 横
             line((512.0, 120.0), (512.0, 900.0), 5), // 丨
         ]
+    }
+
+    /// The same straight segment with its samples bunched towards one end.
+    ///
+    /// `power` > 1 clusters them at the start (a slow beginning, a flicked
+    /// end); `power` < 1 does the opposite. The geometry is untouched: same
+    /// line, same endpoints, same ink.
+    fn uneven_line(a: (f32, f32), b: (f32, f32), n: usize, power: f32) -> Vec<Point> {
+        (0..n)
+            .map(|i| {
+                let t = (i as f32 / (n - 1) as f32).powf(power);
+                Point::new(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn placement_ignores_how_fast_the_pointer_moved() {
+        // Pointer samples arrive by time, not by distance, so the same stroke
+        // drawn slowly at one end and flicked at the other arrives with its
+        // samples bunched. Nothing a learner can act on has changed, so no
+        // verdict may change: grading speed as if it were position is how a
+        // perfect trace gets told it is "in the wrong place".
+        let reference = shi_reference();
+        let uneven = vec![
+            uneven_line((120.0, 400.0), (900.0, 400.0), 240, 3.0),
+            uneven_line((512.0, 120.0), (512.0, 900.0), 240, 0.33),
+        ];
+
+        for options in [
+            // Tracing: no guide-fitting, so placement is judged absolutely.
+            GradeOptions {
+                global_fit: false,
+                ..GradeOptions::default()
+            },
+            GradeOptions::default(),
+        ] {
+            let even_report = grade(&reference, &reference, &options);
+            let uneven_report = grade(&reference, &uneven, &options);
+
+            assert!(uneven_report.count_ok, "sampling must not change the count");
+            assert!(
+                uneven_report.strokes.iter().all(|s| s.verdict == Verdict::Correct),
+                "the same strokes, only sampled differently, were judged: {:#?}",
+                uneven_report.strokes
+            );
+            for (a, b) in even_report.strokes.iter().zip(&uneven_report.strokes) {
+                assert!(
+                    (a.position - b.position).abs() < 0.01,
+                    "stroke {} placed at {:.2} even but {:.2} uneven (global_fit={})",
+                    a.ref_index + 1,
+                    a.position,
+                    b.position,
+                    options.global_fit
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_global_fit_is_not_biased_by_pointer_speed() {
+        // The attempt is the reference shrunk to 80%, so the fit has to recover
+        // a scale of 1.25. Bunching the samples must not move it: the fit is a
+        // placement transform, and pointer speed is not placement.
+        let reference = shi_reference();
+        let shrink = |strokes: &[Vec<Point>]| -> Vec<Vec<Point>> {
+            strokes
+                .iter()
+                .map(|s| {
+                    s.iter()
+                        .map(|p| Point::new(p.x * 0.8, p.y * 0.8))
+                        .collect()
+                })
+                .collect()
+        };
+
+        let evenly = shrink(&reference);
+        let unevenly = vec![
+            uneven_line((96.0, 320.0), (720.0, 320.0), 240, 3.0),
+            uneven_line((409.6, 96.0), (409.6, 720.0), 240, 0.33),
+        ];
+
+        for attempt in [&evenly, &unevenly] {
+            let report = grade(&reference, attempt, &GradeOptions::default());
+            let fit = report.fit.expect("a full attempt should produce a fit");
+            assert!(
+                (fit.scale - 1.25).abs() < 0.02,
+                "fit scale {:.3} for an attempt drawn at 80%",
+                fit.scale
+            );
+            assert!(report.legible, "{report:#?}");
+        }
     }
 
     #[test]

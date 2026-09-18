@@ -180,7 +180,12 @@ Each of your strokes is scored against each reference stroke on two measures:
   scale- and translation-invariant: it captures whether a stroke is *that kind*
   of stroke, not where or how big it is.
 - **Placement** — centroid offset plus bounding-box size mismatch, measured
-  absolutely in the 1024×1024 character box.
+  absolutely in the 1024×1024 character box. The offset is measured between
+  *length* centroids — the centre of the stroke as a line — rather than the mean
+  of the recorded points, because points arrive with the pointer in real time:
+  the same stroke drawn slowly at one end and quickly at the other would
+  otherwise have its samples bunched at the slow end and be marked as misplaced
+  for it.
 
 Those costs form a matrix, and the globally cheapest one-to-one pairing is found
 with the **Hungarian algorithm** (Kuhn–Munkres, O(n³), written from scratch and
@@ -330,7 +335,7 @@ scripts/                    data fetching, cargo env, CLI selection
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 136 tests
+pnpm test             # the whole Rust suite: 139 tests
 pnpm run test:core    # just the engine and store unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
@@ -345,7 +350,11 @@ The tests that earned their place:
   reads, because a field-name mismatch fails *silently* — the UI would just show
   blanks;
 - `selfcheck` compares the engine against all 7,744 real characters, which is how
-  the 黧 stray-tap bug and the scoring bugs were found;
+  the 黧 stray-tap bug and the scoring bugs were found. It also resamples every
+  stroke with realistically uneven density and requires that no verdict changes,
+  because synthetic jitter preserves sampling density and so cannot see a
+  placement metric that depends on how fast the pointer moved — which is exactly
+  the bug that section now guards;
 - the speech tests use the **genuine** voice-list strings. A fixture with tidy
   names (`Tingting`) passed while the real list (`Tingting (Chinese (China
   mainland))`) never matched the preference, so the app silently used a

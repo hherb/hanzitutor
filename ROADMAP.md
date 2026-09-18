@@ -366,7 +366,12 @@ Recorded honestly, because they bound how much the current scores mean:
 - **Polymorphic characters are mispronounced** — 着 is read `zhe` whichever reading
   the synthesiser prefers, because there is no context (see M3).
 - **Shape tolerance is tuned on synthetic Gaussian jitter**, not real learners. It
-  is deliberately loose to suit a trackpad; that leniency may well be wrong.
+  is deliberately loose to suit a trackpad; that leniency may well be wrong. The
+  jitter is also blind to anything that depends on *how the pointer sampled* a
+  stroke rather than where it went, which is how a placement metric built on the
+  sample mean survived tuning while marking 18,763 strokes wrong under realistic
+  input. `selfcheck` now carries a density-perturbed pass as well as a noisy one;
+  the remaining gap is real handwriting rather than either synthetic case.
 - **No CI**, so nothing enforces the test suite on push.
 - **Pronunciation is macOS-only.**
 - **The course is frequency-ordered only.** It starts at 的 (8 strokes), which is

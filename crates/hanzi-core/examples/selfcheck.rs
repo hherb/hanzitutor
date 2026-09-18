@@ -15,7 +15,7 @@
 //! cargo run --release -p hanzi-core --example selfcheck [-- <artifact>]
 //! ```
 
-use hanzi_core::geom::{path_length, shape_distance};
+use hanzi_core::geom::{path_length, resample, shape_distance};
 use hanzi_core::{grade, Dataset, GradeOptions, Point};
 
 /// Deterministic noise, so runs are comparable.
@@ -52,6 +52,26 @@ fn percentile(sorted: &[f32], p: f64) -> f32 {
     }
     let idx = ((sorted.len() - 1) as f64 * p).round() as usize;
     sorted[idx]
+}
+
+/// The same stroke with its samples bunched towards one end.
+///
+/// Every point still lies on the original polyline, so the endpoints and the
+/// ink are untouched — only the density differs, exactly as when a pointer sets
+/// off slowly and is flicked at the end (or the reverse). `power` above 1
+/// bunches at the start, below 1 at the end.
+fn uneven_sampling(stroke: &[Point], power: f32, n: usize) -> Vec<Point> {
+    let dense = resample(stroke, 512);
+    let m = dense.len();
+    if m < 2 {
+        return dense;
+    }
+    (0..n)
+        .map(|i| {
+            let t = (i as f32 / (n - 1) as f32).powf(power);
+            dense[((t * (m - 1) as f32).round() as usize).min(m - 1)]
+        })
+        .collect()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -216,6 +236,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  correct strokes beyond the 5th percentile of wrong ones: {:.1}%  \
          (lower is better separation)",
         100.0 * overlap as f32 / correct_d.len() as f32
+    );
+
+    // --- 4. robustness to how the pointer sampled the stroke ---------------
+    //
+    // The jitter above CANNOT find a bug in this area: adding noise to the
+    // reference preserves its sample density, so an attempt derived that way
+    // never exercises the difference between "where the ink is" and "where the
+    // samples happen to be". Pointer samples arrive by time, not by distance, so
+    // a stroke drawn slowly at one end and flicked at the other arrives bunched
+    // — same geometry, different sampling. Grading may not notice.
+    //
+    // This is here because a placement term built on the sample mean did exactly
+    // that, and turned perfect traces of long strokes into "wrong place" while
+    // every number above stayed healthy.
+    println!("\nsampling robustness: strokes resampled with hand-like density, geometry untouched");
+    let mut worst_drop = 0.0f32;
+    let mut worst_at = ('?', 0usize);
+    let mut verdict_changes = 0usize;
+    let mut worst_overall_drop = 0.0f32;
+    for character in dataset.chars() {
+        let attempt: Vec<Vec<Point>> = character
+            .medians
+            .iter()
+            .enumerate()
+            // Alternate which end is dense, so both directions are covered.
+            .map(|(i, m)| uneven_sampling(m, if i % 2 == 0 { 2.5 } else { 0.4 }, 96))
+            .collect();
+        let even = grade(character.reference_medians(), &character.medians, &options);
+        let bunched = grade(character.reference_medians(), &attempt, &options);
+
+        // The comparison, not the absolute score: sampling with fewer points
+        // along a curve cuts corners, which costs a little on its own. What
+        // must not happen is a *verdict* moving, or a stroke's placement
+        // collapsing, when the geometry has not changed.
+        worst_overall_drop = worst_overall_drop.max(even.overall - bunched.overall);
+        for (a, b) in even.strokes.iter().zip(&bunched.strokes) {
+            let drop = a.position - b.position;
+            if drop > worst_drop {
+                worst_drop = drop;
+                worst_at = (character.ch, a.ref_index + 1);
+            }
+            if a.verdict != b.verdict {
+                verdict_changes += 1;
+            }
+        }
+    }
+    println!(
+        "  worst overall drop {worst_overall_drop:.2}  \
+         worst stroke placement drop {:.3} ({} stroke {})",
+        worst_drop, worst_at.0, worst_at.1
+    );
+    println!(
+        "  strokes whose verdict changed with the sampling: {verdict_changes}  \
+         <- must be 0: the geometry is identical"
     );
 
     Ok(())

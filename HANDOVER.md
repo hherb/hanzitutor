@@ -264,12 +264,25 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
     obvious next step and should not require touching the store, the commands or
     the interface. The tests exercise a second implementation to keep that honest.
 
+15. **Placement is measured along the stroke, never from the sample mean.**
+    Pointer samples arrive by *time*, not distance, so a stroke drawn slowly at
+    one end and flicked at the other reaches the grader with its samples bunched:
+    identical geometry, identical ink, identical endpoints. Anything that judges
+    where a stroke sits must use `geom::length_centroid` (the centre of the
+    polyline as a wire of uniform density), not `geom::centroid` (the mean of the
+    samples). Getting this wrong cost up to a fifth of a long stroke's length and
+    turned perfect traces into "wrong place" — with the *shape* score still
+    reading 95%, because shape is compared after even resampling and so never saw
+    it. `position_score` and the global fit both go through the length centroid;
+    `fit_on_matched` resamples each matched stroke evenly before deriving the fit
+    for the same reason. There are tests for all three.
+
 ## 5. The verification loop
 
 Run before every commit:
 
 ```bash
-pnpm test           # 136 tests: engine + store units, IPC contract, speech
+pnpm test           # 139 tests: engine + store units, IPC contract, speech
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
@@ -281,14 +294,31 @@ pnpm run selfcheck
 ```
 
 It reports self-consistency (must be a perfect 100 for *every* teachable
-character), tolerance under jitter, and shape-metric discrimination. It has found
-three real bugs already: the stray-tap cutoff, the blank-canvas scoring, and the
-order metric. Treat a regression in its output as a failing test.
+character), tolerance under jitter, shape-metric discrimination, and robustness
+to how the pointer sampled the stroke. It has found four real bugs already: the
+stray-tap cutoff, the blank-canvas scoring, the order metric, and the
+sample-mean placement metric. Treat a regression in its output as a failing test.
+
+The two checks to read first, and what "healthy" looks like:
+
+```
+  0 of 7744 teachable characters are not perfect
+  worst overall drop 1.77  worst stroke placement drop 0.137 (覷 stroke 4)
+  strokes whose verdict changed with the sampling: 0  <- must be 0
+```
+
+That last line is a hard invariant, not a statistic. If sampling alone changes a
+verdict, placement is being measured from the sample mean again and the number
+explodes into the thousands.
 
 `selfcheck` is also the tripwire for milestone M2: it must be **byte-identical**
 before and after a scheduling change, because scheduling interprets the score and
 must never alter it. Extracting the grade bands into `Grade::from_score` was
-checked that way.
+checked that way. (The placement fix above *did* move the tolerance table
+slightly — `normal sigma=15` position mean 0.93 → 0.91 — because the global fit
+now weights each stroke equally instead of by sample count. Legibility at 1.5%
+and 3% jitter is unchanged at 100% and 99.1%, which is the property that
+matters.)
 
 **If you touched the scheduler**, the numbers to hold still are in
 `progress.rs`'s tests, which pin every interval and due date outright: a failure
@@ -317,6 +347,17 @@ downstream of them is covered by the IPC tests, which drive
   tap — so the learner watches a stroke disappear and gets a puzzling "1 mark was
   too small to be a stroke" note instead of a grade. `push` ignores a sample that
   merely repeats the previous one, so appending it is free.
+- **Pointer samples arrive by time, not by distance.** This is the trap that hid
+  the placement bug for a long time, and it has two halves. First, never measure
+  position with a sample mean (invariant 15): sample density is a record of
+  drawing *speed*, so the mean moves when the learner speeds up, and the resulting
+  verdict — "wrong place" on a stroke they traced, with the shape score reading
+  95% — is impossible to act on. Second, **synthetic jitter cannot find this class
+  of bug**, because jittering a reference preserves its sample density: the whole
+  tolerance table stayed healthy while 18,763 strokes changed verdict under
+  realistic sampling. Anything that consumes pointer geometry needs a
+  density-perturbed case as well as a noisy one; `selfcheck`'s fourth section is
+  that case, and it is the only reason this is now visible.
 - **The stray-tap filter is not a scoring rule.** Marks below
   `min(min_stroke_len, shortest_reference * 0.5)` are removed *before* strokes are
   paired, so they cannot influence any verdict or score (there is a test proving

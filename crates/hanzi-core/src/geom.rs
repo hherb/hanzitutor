@@ -134,6 +134,34 @@ pub fn centroid(points: &[Point]) -> Point {
     Point::new(sx / n, sy / n)
 }
 
+/// The centre of the polyline treated as a wire of uniform linear density.
+///
+/// This is what [`centroid`] would give if the polyline were sampled evenly
+/// along its length, and it is the correct measure of "where does this stroke
+/// sit" for a hand-drawn stroke. [`centroid`] is the mean of the *samples*, and
+/// pointer samples arrive by time, not by distance: drawing one end of a stroke
+/// slowly and flicking the other leaves the geometry identical while moving the
+/// sample mean — by up to a fifth of the stroke's length, which is enough to
+/// turn a perfect trace into "wrong place". Anything that judges placement of
+/// pointer input must use this, not [`centroid`].
+pub fn length_centroid(points: &[Point]) -> Point {
+    let mut total = 0.0f32;
+    let mut sx = 0.0f32;
+    let mut sy = 0.0f32;
+    for w in points.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let len = a.distance_to(b);
+        total += len;
+        sx += 0.5 * (a.x + b.x) * len;
+        sy += 0.5 * (a.y + b.y) * len;
+    }
+    if total <= f32::EPSILON {
+        // A single point, or several at the same place: fall back to the mean.
+        return centroid(points);
+    }
+    Point::new(sx / total, sy / total)
+}
+
 /// Root-mean-square distance of a point set from its own centroid.
 ///
 /// Used as a cheap, rotation-free measure of "how big is this shape", which is
@@ -308,8 +336,41 @@ mod tests {
     }
 
     #[test]
-    fn resample_walks_a_corner() {
-        let corner = vec![
+    fn length_centroid_ignores_sample_density() {
+        // The same segment, sampled evenly and then with the samples clustered
+        // near the start — which is what a pointer produces when it sets off
+        // slowly and is flicked at the end.
+        let even: Vec<Point> = (0..=100)
+            .map(|i| Point::new(i as f32, 0.0))
+            .collect();
+        let clustered: Vec<Point> = (0..=100)
+            .map(|i| Point::new(100.0 * (i as f32 / 100.0).powi(3), 0.0))
+            .collect();
+
+        assert!(approx(length_centroid(&even).x, 50.0, 1e-2));
+        assert!(
+            approx(length_centroid(&clustered).x, 50.0, 1e-2),
+            "density moved the centre to {:?}",
+            length_centroid(&clustered)
+        );
+        // The sample mean does move, which is why this exists at all.
+        assert!(centroid(&clustered).x < 30.0, "{:?}", centroid(&clustered));
+
+        // A vertical segment is centred halfway along it, in y.
+        let vertical: Vec<Point> = (0..=4).map(|i| Point::new(0.0, i as f32 * 25.0)).collect();
+        assert!(approx(length_centroid(&vertical).y, 50.0, 1e-3));
+
+        // Degenerate input still answers something sane.
+        assert_eq!(length_centroid(&[]), Point::new(0.0, 0.0));
+        assert_eq!(length_centroid(&[Point::new(3.0, 4.0)]), Point::new(3.0, 4.0));
+        assert_eq!(
+            length_centroid(&[Point::new(3.0, 4.0), Point::new(3.0, 4.0)]),
+            Point::new(3.0, 4.0)
+        );
+    }
+
+    #[test]
+    fn resample_walks_a_corner() {        let corner = vec![
             Point::new(0.0, 0.0),
             Point::new(10.0, 0.0),
             Point::new(10.0, 10.0),
