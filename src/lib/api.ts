@@ -3,11 +3,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Character,
+  CursorView,
   DatasetStats,
   GradeOptions,
   GradeReport,
   Lesson,
   Point,
+  ProgressView,
+  ReviewView,
   TextLookup,
   VocabOutcome,
   VocabView,
@@ -94,3 +97,24 @@ export const vocabExport = (path: string, format: "json" | "csv") =>
 
 export const vocabImport = (path: string, merge: boolean) =>
   invoke<VocabOutcome>("vocab_import", { path, merge });
+
+// ---- practice progress and review -----------------------------------------
+
+/** Every practised character: attempts, history, best score and due date. */
+export const progress = () => invoke<ProgressView>("progress");
+
+/**
+ * Record one graded character; `score` is the 0..=100 headline score. The
+ * backend derives the review rating and schedules the next appearance.
+ */
+export const recordProgress = (ch: string, score: number) =>
+  invoke<ProgressView>("record_progress", { ch, score });
+
+/** What is due for review now, most overdue first, from both sources. */
+export const reviewQueue = () => invoke<ReviewView>("review_queue");
+
+export const courseCursor = () => invoke<CursorView>("course_cursor");
+
+/** Move the course cursor. The backend clamps the index to the course. */
+export const setCourseCursor = (index: number) =>
+  invoke<CursorView>("set_course_cursor", { index });

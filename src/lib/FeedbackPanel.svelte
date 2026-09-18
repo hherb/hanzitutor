@@ -43,8 +43,18 @@
       );
     }
     if (report.strayStrokes > 0) {
+      // This is the accidental-touch filter, and it is deliberately reported
+      // *after* the stroke verdicts and with no causal wording: a mark below the
+      // tap threshold is removed before strokes are paired, so it cannot have
+      // caused any of the verdicts above. Reading it as "my stroke 8 was thrown
+      // away, so stroke 8 was marked wrong" is the natural mistake, and it is
+      // worth a sentence to prevent.
+      const one = report.strayStrokes === 1;
       notes.push(
-        `${report.strayStrokes} ${report.strayStrokes === 1 ? "mark was" : "marks were"} too short to be a stroke and ${report.strayStrokes === 1 ? "was" : "were"} ignored.`,
+        `${report.strayStrokes} ${one ? "mark was" : "marks were"} too small to be a ` +
+          `stroke and ${one ? "was" : "were"} ignored as accidental ` +
+          `${one ? "touch" : "touches"}. That happens before the strokes are compared, ` +
+          `so it is not why anything above was marked wrong.`,
       );
     }
 

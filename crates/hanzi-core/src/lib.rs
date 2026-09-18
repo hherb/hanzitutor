@@ -33,6 +33,8 @@ pub mod curriculum;
 pub mod dataset;
 pub mod geom;
 pub mod grade;
+pub mod progress;
+pub mod time;
 pub mod vocab;
 
 pub use curriculum::{build_lessons, lesson_at, Lesson};
@@ -41,6 +43,12 @@ pub use geom::Point;
 pub use grade::{
     grade, FitInfo, Grade, GradeOptions, GradeReport, StrokeVerdict, Verdict,
 };
+pub use progress::{
+    build_queue, Attempt, CardState, CardView, CursorStore, CursorView, ProgressError,
+    ProgressStore, ProgressView, Rating, ReviewItem, ReviewSource, ReviewView, Scheduler,
+    Sm2,
+};
+pub use time::{iso8601_from_unix, now_iso8601, parse_iso8601};
 pub use vocab::{
     Entry, ImportSummary, VocabError, VocabStore, VocabView,
 };

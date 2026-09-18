@@ -167,6 +167,12 @@
     if (canvas?.hasPointerCapture(event.pointerId)) {
       canvas.releasePointerCapture(event.pointerId);
     }
+    // The release position is real input, and for a quick flick it can be the
+    // only sample after the press: a stroke that is never extended collapses to
+    // a single point and is then discarded as an accidental tap, which looks
+    // exactly like the app throwing the stroke away. `push` drops it when it
+    // merely repeats the last sample, so this costs nothing normally.
+    push(toDisplay(event));
     const finished = current;
     current = null;
     if (finished.length > 0) onStroke(finished);

@@ -8,7 +8,7 @@ mod speech;
 mod state;
 
 pub use commands::VocabOutcome;
-pub use state::{AppState, VocabState};
+pub use state::{AppState, CursorState, Persisted, ProgressState, VocabState, REVIEW_LIMIT};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -43,6 +43,11 @@ pub fn run() {
             commands::vocab_record_attempt,
             commands::vocab_export,
             commands::vocab_import,
+            commands::progress,
+            commands::record_progress,
+            commands::review_queue,
+            commands::course_cursor,
+            commands::set_course_cursor,
             commands::webview_log,
         ])
         .run(tauri::generate_context!())

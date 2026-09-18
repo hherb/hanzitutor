@@ -16,6 +16,9 @@
     GradeReport,
     Lesson,
     Point,
+    PracticeItem,
+    ProgressView,
+    ReviewView,
     VocabEntry,
     VocabView,
   } from "./lib/types";
@@ -24,7 +27,7 @@
   /** Which of the two top-level screens is showing. */
   type View = "course" | "vocabulary";
   /** Where the current practice session draws its characters from. */
-  type Source = "course" | "vocabulary";
+  type Source = "course" | "vocabulary" | "review";
 
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -50,22 +53,40 @@
   let vocab = $state<VocabView>({ entries: [], groups: [], warning: null });
   /** `null` shows everything, `""` the unfiled entries, otherwise a group. */
   let vocabSelection = $state<string | null>(null);
-  let vocabMessage = $state<string | null>(null);
+  let statusMessage = $state<string | null>(null);
   let vocabBusy = $state(false);
+
+  // ---- progress and review -------------------------------------------------
+  /** Per-character history and due dates, as the backend has them. */
+  let progress = $state<ProgressView>({ cards: [], warning: null });
+  /** What is due for review now. `items` is one session; `dueCount` is all. */
+  let review = $state<ReviewView>({ items: [], dueCount: 0, warning: null });
+  /** Set when the saved course cursor could not be read. */
+  let cursorWarning = $state<string | null>(null);
+  /** False until the saved cursor has been restored, so the first render does
+   * not write back the position it is about to adopt. */
+  let cursorRestored = $state(false);
+  /** The position last handed to the backend, so a redraw is not a save. */
+  let cursorSaved = -1;
+  let cursorTimer: ReturnType<typeof setTimeout> | undefined;
 
   // ---- practising the list -------------------------------------------------
   /**
    * Which sequence the board is working through. The course is one character
-   * per step; a vocabulary entry may be several characters, written in turn.
+   * per step; a vocabulary entry or a review item may be several characters,
+   * written in turn.
    */
   let source = $state<Source>("course");
-  /** Snapshot of the entries being drilled, taken when practice starts. */
-  let queue = $state<VocabEntry[]>([]);
+  /** Snapshot of what is being drilled, taken when practice starts. */
+  let queue = $state<PracticeItem[]>([]);
   let queueCursor = $state(0);
   /** Which character of the current entry is being written. */
   let charCursor = $state(0);
   /** Scores for the characters of the current entry, averaged when it is done. */
   let wordScores = $state<number[]>([]);
+  /** True once the last item of a list or review session has been finished, so
+   * the last entry cannot be recorded twice. */
+  let sessionDone = $state(false);
 
   /** Position in the flattened course; lessons are just a view onto it. */
   let index = $state(0);
@@ -77,18 +98,24 @@
 
   const allCharacters = $derived(lessons.flatMap((lesson) => lesson.characters));
   const courseChar = $derived(allCharacters[index] ?? null);
-  const currentEntry = $derived(
-    source === "vocabulary" ? (queue[queueCursor] ?? null) : null,
+  const currentItem = $derived(
+    source === "course" ? null : (queue[queueCursor] ?? null),
   );
   /** Code-point split, matching Rust's `chars()`. */
-  const entryCharacters = $derived(currentEntry ? [...currentEntry.text] : []);
+  const entryCharacters = $derived(currentItem ? [...currentItem.text] : []);
   /**
    * The character the board is asking for. Everything downstream — loading,
-   * grading, the ghost, the hint — keys off this, so the two sources share one
-   * practice path.
+   * grading, the ghost and the hint — keys off this, so all three sources share
+   * one practice path.
    */
   const targetChar = $derived(
-    source === "vocabulary" ? (entryCharacters[charCursor] ?? null) : courseChar,
+    source === "course" ? courseChar : (entryCharacters[charCursor] ?? null),
+  );
+  /** What has been recorded about the character on the board, if anything. */
+  const activeCard = $derived(
+    targetChar
+      ? (progress.cards.find((card) => card.ch === targetChar) ?? null)
+      : null,
   );
   const strokeTotal = $derived(character?.outlines.length ?? 0);
 
@@ -130,6 +157,24 @@
       : "loading…",
   );
 
+  /**
+   * A short, human label for a due date: "today", "tomorrow", "in 5 days".
+   *
+   * The backend compares due timestamps as text; here the label only has to be
+   * readable, so it is measured from the clock in whole days.
+   */
+  function dueLabel(due: string): string {
+    const remaining = Date.parse(due) - Date.now();
+    if (Number.isNaN(remaining)) return due;
+    if (remaining <= 0) return "now";
+    if (remaining < 86_400_000) return "today";
+    const days = Math.round(remaining / 86_400_000);
+    if (days <= 1) return "tomorrow";
+    if (days < 30) return `in ${days} days`;
+    const months = Math.round(days / 30);
+    return months <= 1 ? "next month" : `in ${months} months`;
+  }
+
   onMount(() => {
     void (async () => {
       try {
@@ -142,6 +187,9 @@
         void api.log(
           `course loaded: ${loadedStats.teachable} characters in ${loadedStats.lessons} lessons`,
         );
+        // Only now is the course length known, which is what a saved position
+        // has to be checked against.
+        await restoreCursor();
       } catch (cause) {
         error = `Could not load the course: ${cause}`;
       } finally {
@@ -150,6 +198,8 @@
     })();
 
     void refreshVocabulary();
+    void refreshProgress();
+    void refreshReview();
 
     // Resolving the voice runs the system voice list, which takes about a
     // second, so it is deliberately not part of the course load above.
@@ -164,6 +214,13 @@
       .catch(() => {
         voice = null;
       });
+
+    // A character answered badly comes back within the minute, so "due" is not
+    // a one-off computed at startup: give the badge a slow heartbeat.
+    const reviewTimer = setInterval(() => {
+      void refreshProgress();
+      void refreshReview();
+    }, 60_000);
 
     const onKey = (event: KeyboardEvent) => {
       // The vocabulary screen has text fields; never steal their keystrokes.
@@ -189,16 +246,66 @@
       }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      clearInterval(reviewTimer);
+      clearTimeout(cursorTimer);
+    };
   });
 
-  // Follow the cursor: load whichever character it now points at. Both sources
-  // funnel through here, so the course and the vocabulary list share one path.
+  // Follow the cursor: load whichever character it now points at. All sources
+  // funnel through here, so the course, the vocabulary list and a review
+  // session share one path.
   $effect(() => {
     const next = targetChar;
     if (!next || character?.ch === next) return;
     void loadCharacter(next);
   });
+
+  /**
+   * Remember where in the course the reader is.
+   *
+   * Debounced, so holding an arrow key writes once at the end rather than on
+   * every step. The write is deliberately not fed back into `index`: the
+   * position is the interface's, the file only remembers it.
+   */
+  $effect(() => {
+    const position = index;
+    if (!cursorRestored || position === cursorSaved) return;
+    clearTimeout(cursorTimer);
+    cursorTimer = setTimeout(() => {
+      cursorSaved = position;
+      void api
+        .setCourseCursor(position)
+        .then((saved) => {
+          cursorWarning = saved.warning;
+        })
+        .catch((cause) => {
+          cursorWarning = `Could not remember your place in the course: ${cause}`;
+        });
+    }, 400);
+    return () => clearTimeout(cursorTimer);
+  });
+
+  /** Open where the reader left off, or at the beginning on a first run. */
+  async function restoreCursor() {
+    try {
+      const saved = await api.courseCursor();
+      cursorWarning = saved.warning;
+      const last = Math.max(0, allCharacters.length - 1);
+      const position = Math.min(Math.max(0, saved.index), last);
+      index = position;
+      cursorSaved = position;
+      if (position > 0) {
+        void api.log(`course cursor: resuming at character ${position + 1}`);
+      }
+    } catch (cause) {
+      // Not fatal: starting at the beginning is a perfectly good fallback.
+      cursorWarning = `Could not restore your place in the course: ${cause}`;
+    } finally {
+      cursorRestored = true;
+    }
+  }
 
   async function loadCharacter(ch: string) {
     try {
@@ -236,7 +343,7 @@
    */
   async function hear() {
     if (voice === null) return;
-    const spoken = currentEntry?.text ?? character?.ch;
+    const spoken = currentItem?.text ?? character?.ch;
     if (!spoken) return;
     try {
       await api.speak(spoken);
@@ -281,10 +388,67 @@
         `graded ${character.ch}: ${Math.round(graded.overall)}/100, ` +
           `legible=${graded.legible}, order=${graded.orderCorrect}`,
       );
+      await recordProgress(character.ch, graded.overall);
     } catch (cause) {
       error = `Grading failed: ${cause}`;
     } finally {
       grading = false;
+    }
+  }
+
+  // ---- progress and review -------------------------------------------------
+
+  function applyProgress(next: ProgressView) {
+    progress = next;
+    if (next.warning) void api.log(`progress warning: ${next.warning}`);
+  }
+
+  async function refreshProgress() {
+    try {
+      const loaded = await api.progress();
+      applyProgress(loaded);
+      void api.log(
+        `progress: ${loaded.cards.length} practised, ` +
+          `${loaded.cards.filter((card) => card.dueNow).length} due`,
+      );
+    } catch (cause) {
+      error = `Could not load your practice progress: ${cause}`;
+    }
+  }
+
+  async function refreshReview() {
+    try {
+      review = await api.reviewQueue();
+      if (review.warning) void api.log(`review warning: ${review.warning}`);
+      void api.log(
+        `review queue: ${review.dueCount} due, ${review.items.length} in this session`,
+      );
+    } catch (cause) {
+      error = `Could not work out what is due for review: ${cause}`;
+    }
+  }
+
+  /**
+   * Record a graded character in the practice schedule.
+   *
+   * All three sources funnel through here: a character met in a lesson and the
+   * same character met inside a word are the same thing to learn, so they share
+   * one card and one due date.
+   */
+  async function recordProgress(ch: string, score: number) {
+    try {
+      const next = await api.recordProgress(ch, score);
+      applyProgress(next);
+      const card = next.cards.find((candidate) => candidate.ch === ch);
+      void api.log(
+        `progress ${ch}: ${Math.round(score)}/100, ${card ? `due ${card.due}` : "unscheduled"}`,
+      );
+      // Answering something changes what is due, so the queue is refreshed
+      // rather than left stale until the next launch.
+      await refreshReview();
+    } catch (cause) {
+      // Grading itself already succeeded; say only why the history did not.
+      error = `Could not record your progress for ${ch}: ${cause}`;
     }
   }
 
@@ -343,7 +507,7 @@
     try {
       const next = await action();
       applyVocab(next);
-      if (note) vocabMessage = note;
+      if (note) statusMessage = note;
       after?.(next);
     } catch (cause) {
       error = String(cause);
@@ -423,8 +587,8 @@
       });
       if (!path) return;
       vocabBusy = true;
-      vocabMessage = await api.vocabExport(path, format);
-      void api.log(vocabMessage);
+      statusMessage = await api.vocabExport(path, format);
+      void api.log(statusMessage);
     } catch (cause) {
       error = `Export failed: ${cause}`;
     } finally {
@@ -444,7 +608,7 @@
       vocabBusy = true;
       const outcome = await api.vocabImport(path, merge);
       applyVocab(outcome.view);
-      vocabMessage = outcome.message;
+      statusMessage = outcome.message;
       void api.log(`vocabulary import: ${outcome.message}`);
     } catch (cause) {
       error = `Import failed: ${cause}`;
@@ -455,20 +619,65 @@
 
   // ---- practising the list ------------------------------------------------
 
-  /** Start drilling a snapshot of the given entries. */
-  function practiseQueue(entries: VocabEntry[]) {
-    if (entries.length === 0) return;
-    queue = entries;
+  /**
+   * Start a session from any source.
+   *
+   * Everything that decides what the board asks for lives in `targetChar`, so a
+   * review session and the vocabulary list differ only in where the queue came
+   * from. A review list is for recall: tracing a character you have already
+   * been shown teaches nothing.
+   */
+  function startPractice(items: PracticeItem[], from: Source) {
+    queue = items;
     queueCursor = 0;
     charCursor = 0;
     wordScores = [];
-    source = "vocabulary";
-    // A review list is for recall; tracing a character you already know teaches
-    // nothing.
+    sessionDone = false;
+    source = from;
     mode = "recall";
     reset();
-    vocabMessage = null;
+    statusMessage = null;
+  }
+
+  /** Start drilling a snapshot of the given entries. */
+  function practiseQueue(entries: VocabEntry[]) {
+    if (entries.length === 0) return;
+    startPractice(
+      entries.map((entry) => ({
+        text: entry.text,
+        entryId: entry.id,
+        pinyin: entry.pinyin,
+        meaning: entry.meaning,
+      })),
+      "vocabulary",
+    );
     void api.log(`practising ${entries.length} vocabulary entries`);
+  }
+
+  /** Start drilling what is due for review, most overdue first. */
+  function startReview() {
+    if (review.items.length === 0) return;
+    const items: PracticeItem[] = review.items.map((item) => {
+      // A due character of a word is practised as that word: the entry carries
+      // the reading and the meaning, and a word is written whole.
+      const entry =
+        item.entryId === null
+          ? undefined
+          : vocab.entries.find((candidate) => candidate.id === item.entryId);
+      return entry
+        ? {
+            text: entry.text,
+            entryId: entry.id,
+            pinyin: entry.pinyin,
+            meaning: entry.meaning,
+          }
+        : { text: item.text, entryId: null, pinyin: "", meaning: "" };
+    });
+    startPractice(items, "review");
+    void api.log(
+      `reviewing ${items.length} of ${review.dueCount} due ` +
+        `${review.dueCount === 1 ? "item" : "items"}`,
+    );
   }
 
   /** Return to the course sequence. */
@@ -478,6 +687,7 @@
     queueCursor = 0;
     charCursor = 0;
     wordScores = [];
+    sessionDone = false;
     reset();
   }
 
@@ -488,6 +698,7 @@
     queueCursor = next;
     charCursor = 0;
     wordScores = [];
+    sessionDone = false;
     reset();
   }
 
@@ -495,10 +706,14 @@
    * Record the graded character and move on.
    *
    * A word is written one character at a time and scored by the mean of its
-   * characters, so a long word cannot be credited on one good stroke.
+   * characters, so a long word cannot be credited on one good stroke. Each
+   * character already has its own card by the time this runs; the mean is what
+   * the vocabulary entry itself remembers.
    */
   async function finishCharacter() {
-    if (!currentEntry || !report) return;
+    // Once the queue is exhausted the last entry must not be finished again: a
+    // second press would credit it with an attempt nobody made.
+    if (sessionDone || !currentItem || !report) return;
     const scores = [...wordScores, report.overall];
 
     if (charCursor + 1 < entryCharacters.length) {
@@ -509,22 +724,35 @@
     }
 
     const mean = scores.reduce((total, value) => total + value, 0) / scores.length;
-    const finished = currentEntry;
+    const finished = currentItem;
+    const entryId = finished.entryId;
     wordScores = [];
-    charCursor = 0;
 
-    if (queueCursor + 1 < queue.length) {
+    const isLast = queueCursor + 1 >= queue.length;
+    if (isLast) {
+      charCursor = 0;
+      sessionDone = true;
+    } else {
       queueCursor += 1;
       reset();
-    } else {
-      vocabMessage = `${finished.text} was the last entry in this list.`;
     }
 
-    await withVocab(
-      () => api.vocabRecordAttempt(finished.id, mean),
-      `${finished.text}: ${Math.round(mean)}/100 recorded ` +
-        `(${scores.length} ${scores.length === 1 ? "character" : "characters"})`,
-    );
+    const characters = `${scores.length} ${scores.length === 1 ? "character" : "characters"}`;
+    const note =
+      `${finished.text}: ${Math.round(mean)}/100 recorded (${characters})` +
+      (isLast
+        ? source === "review"
+          ? " — that was everything due"
+          : " — that was the last entry in this list"
+        : "");
+
+    if (entryId !== null) {
+      await withVocab(() => api.vocabRecordAttempt(entryId, mean), note);
+    } else {
+      statusMessage = note;
+    }
+    // Answering may have cleared the queue, so the badge is brought up to date.
+    await refreshReview();
   }
 
   // ---- moving around ------------------------------------------------------
@@ -532,22 +760,22 @@
   function switchView(next: View) {
     if (next === view) return;
     view = next;
-    vocabMessage = null;
-    // Leaving the vocabulary screen abandons a list session; the course is
-    // always there to come back to.
-    if (next === "course" && source === "vocabulary") leavePractice();
+    statusMessage = null;
+    // Leaving the vocabulary screen abandons a list or review session; the
+    // course is always there to come back to.
+    if (next === "course" && source !== "course") leavePractice();
   }
 
   /** Arrow keys follow whichever sequence is active. */
   function navigate(delta: number) {
-    if (source === "vocabulary") moveQueue(delta);
-    else move(delta);
+    if (source === "course") move(delta);
+    else moveQueue(delta);
   }
 
   /** Move on after a graded attempt. */
   function advance() {
-    if (source === "vocabulary") void finishCharacter();
-    else move(1);
+    if (source === "course") move(1);
+    else void finishCharacter();
   }
 
   function move(delta: number) {
@@ -570,7 +798,13 @@
   function stopPractising() {
     leavePractice();
     view = "vocabulary";
-    vocabMessage = null;
+    statusMessage = null;
+  }
+
+  /** Stop reviewing and show what is left of the queue. */
+  function stopReview() {
+    leavePractice();
+    void refreshReview();
   }
 </script>
 
@@ -584,6 +818,10 @@
     {summary}
     onSelectLesson={goToLesson}
     onSelectCharacter={goToCharacter}
+    progressCards={progress.cards}
+    {review}
+    reviewing={source === "review"}
+    onStartReview={startReview}
     vocabGroups={vocab.groups}
     vocabEntries={vocab.entries}
     vocabSelection={vocabSelection}
@@ -595,13 +833,26 @@
       <p class="error">{error}</p>
     {/if}
 
+    {#if cursorWarning}
+      <p class="warning">
+        {cursorWarning} Meanwhile the course starts from the beginning.
+      </p>
+    {/if}
+
+    {#if progress.warning}
+      <p class="warning">
+        {progress.warning} Practice still works; your history is just not being
+        written to disk.
+      </p>
+    {/if}
+
     {#if loading}
       <p class="status">Loading the character set…</p>
     {:else if view === "vocabulary" && source !== "vocabulary"}
       <VocabularyPanel
         view={vocab}
         selection={vocabSelection}
-        message={vocabMessage}
+        message={statusMessage}
         busy={vocabBusy}
         lookup={lookupText}
         onAdd={addToVocabulary}
@@ -625,29 +876,36 @@
       <p class="status">No character selected.</p>
     {:else}
       <header class="meta">
-        {#if currentEntry}
+        {#if currentItem}
           <div class="glyph" lang="zh-Hans" class:masked={!answerVisible}>
             {answerVisible ? (entryCharacters[charCursor] ?? "?") : "?"}
           </div>
           <div class="detail">
-            <p class="pinyin">{currentEntry.pinyin || "—"}</p>
-            <p class="meaning">{currentEntry.meaning || "—"}</p>
+            <p class="pinyin">{currentItem.pinyin || character.pinyin.join("  ·  ") || "—"}</p>
+            <p class="meaning">{currentItem.meaning || character.definition || "—"}</p>
             <ul class="facts">
               {#if entryCharacters.length > 1}
                 <li>character {charCursor + 1} of {entryCharacters.length}</li>
               {/if}
-              <li>entry {queueCursor + 1} of {queue.length}</li>
+              <li>
+                {source === "review" ? "review" : "entry"} {queueCursor + 1} of {queue.length}
+              </li>
               <li>{strokeTotal} {strokeTotal === 1 ? "stroke" : "strokes"}</li>
-              {#if currentEntry.attempts > 0}
+              {#if activeCard}
                 <li>
-                  practised {currentEntry.attempts}× · best {Math.round(
-                    currentEntry.bestScore ?? 0,
+                  practised {activeCard.attempts}× · best {Math.round(
+                    activeCard.bestScore ?? 0,
                   )}
                 </li>
+                <li class:due={activeCard.dueNow}>
+                  {activeCard.dueNow ? "due for review" : `next review ${dueLabel(activeCard.due)}`}
+                </li>
+              {:else}
+                <li>new character</li>
               {/if}
             </ul>
             {#if answerVisible}
-              <p class="etymology" lang="zh-Hans">{currentEntry.text}</p>
+              <p class="etymology" lang="zh-Hans">{currentItem.text}</p>
             {/if}
           </div>
           <div class="nav">
@@ -672,6 +930,18 @@
               {/if}
               {#if character.hsk > 0}<li>HSK {character.hsk}</li>{/if}
               {#if character.rank > 0}<li>frequency #{character.rank}</li>{/if}
+              {#if activeCard}
+                <li>
+                  practised {activeCard.attempts}× · best {Math.round(
+                    activeCard.bestScore ?? 0,
+                  )}
+                </li>
+                <li class:due={activeCard.dueNow}>
+                  {activeCard.dueNow ? "due for review" : `next review ${dueLabel(activeCard.due)}`}
+                </li>
+              {:else}
+                <li>not practised yet</li>
+              {/if}
             </ul>
             {#if answerVisible && character.etymology}
               <p class="etymology">{character.etymology}</p>
@@ -736,8 +1006,10 @@
               >
                 + Add to my list
               </button>
-            {:else}
+            {:else if source === "vocabulary"}
               <button onclick={stopPractising}>Back to list</button>
+            {:else}
+              <button onclick={stopReview}>Stop reviewing</button>
             {/if}
 
             <span class="spacer"></span>
@@ -746,17 +1018,21 @@
               <input type="checkbox" bind:checked={showCorrections} />
               corrections
             </label>
-            <span class="count">{strokes.length} / {strokeTotal}</span>
+            <span class="count" title={report
+              ? `${report.givenStrokes} of ${report.expectedStrokes} strokes were graded; ignored stray marks are not counted`
+              : `${strokes.length} marks drawn, ${strokeTotal} strokes expected`}>
+              {report ? report.givenStrokes : strokes.length} / {strokeTotal}
+            </span>
 
-            {#if report}
+            {#if report && !sessionDone}
               <button class="primary" onclick={advance}>
-                {source === "vocabulary"
-                  ? charCursor + 1 < entryCharacters.length
+                {source === "course"
+                  ? "Next →"
+                  : charCursor + 1 < entryCharacters.length
                     ? "Next character →"
-                    : "Finish entry →"
-                  : "Next →"}
+                    : "Finish entry →"}
               </button>
-            {:else}
+            {:else if !sessionDone}
               <button
                 class="primary"
                 onclick={check}
@@ -767,8 +1043,8 @@
             {/if}
           </div>
 
-          {#if vocabMessage}
-            <p class="note">{vocabMessage}</p>
+          {#if statusMessage}
+            <p class="note">{statusMessage}</p>
           {/if}
 
           <p class="hint">
@@ -776,9 +1052,12 @@
               No Chinese voice is installed, so the pronunciation button is
               disabled. Add one in System Settings → Accessibility → Spoken
               Content → System Voice → Manage Voices.
-            {:else if source === "vocabulary" && entryCharacters.length > 1}
+            {:else if source !== "course" && entryCharacters.length > 1}
               Write the word one character at a time. Its score is the average
               across its characters, so each one has to be right.
+            {:else if source === "review"}
+              This came due for review. Write it from memory, then press Check —
+              how well you do sets when you see it again.
             {:else if mode === "trace"}
               A faint copy of the character is on the board: trace over it in the
               correct stroke order.
@@ -884,6 +1163,11 @@
     list-style: none;
     font-size: 0.76rem;
     color: var(--muted);
+  }
+  /* Due for review now: the one fact worth catching the eye. */
+  .facts li.due {
+    color: var(--accent-ink);
+    font-weight: 650;
   }
   .etymology {
     margin: 6px 0 0;
@@ -1067,5 +1351,17 @@
     background: #fef2f2;
     color: #991b1b;
     font-size: 0.84rem;
+  }
+
+  /* Something is wrong with a study file, but practice still works. */
+  .warning {
+    margin: 0;
+    padding: 9px 12px;
+    border: 1px solid #fcd34d;
+    border-radius: 9px;
+    background: #fffbeb;
+    color: #92400e;
+    font-size: 0.8rem;
+    line-height: 1.45;
   }
 </style>

@@ -130,6 +130,22 @@ pub enum Grade {
     Poor,
 }
 
+impl Grade {
+    /// The band a 0..=100 headline score falls in.
+    ///
+    /// This is the one place the thresholds live, so the feedback panel and the
+    /// review scheduler ([`crate::progress::Rating`]) can never disagree about
+    /// what counts as a good attempt.
+    pub fn from_score(score: f32) -> Self {
+        match score {
+            s if s >= 92.0 => Grade::Excellent,
+            s if s >= 75.0 => Grade::Good,
+            s if s >= 55.0 => Grade::Fair,
+            _ => Grade::Poor,
+        }
+    }
+}
+
 /// How the attempt sat in the character box, before any fitting was applied.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -382,12 +398,7 @@ pub fn grade(
     let order_score = coverage * ordered_score;
     let content = 0.6 * shape_score + 0.4 * position_score;
     let overall = (100.0 * (0.70 * content + 0.30 * order_score)).clamp(0.0, 100.0);
-    let grade = match overall {
-        s if s >= 92.0 => Grade::Excellent,
-        s if s >= 75.0 => Grade::Good,
-        s if s >= 55.0 => Grade::Fair,
-        _ => Grade::Poor,
-    };
+    let grade = Grade::from_score(overall);
 
     GradeReport {
         expected_strokes: expected,

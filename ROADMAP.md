@@ -14,7 +14,7 @@ See [`HANDOVER.md`](HANDOVER.md) for how to build, test and verify; see
 | # | Milestone | Why it matters | Size | Status |
 | --- | --- | --- | --- | --- |
 | M1 | Personal vocabulary list | Track and drill your own lesson material | M | **done** |
-| M2 | Per-character progress + spaced repetition | Practice history still does not persist | M | not started |
+| M2 | Per-character progress + spaced repetition | Practice history still does not persist | M | **done** |
 | M3 | Words and sentences | Single characters are not reading | L | not started |
 | M4 | Raster legibility (IoU) | Catches errors centrelines cannot | M | not started |
 | M5 | Distribution readiness | Licence notices and signed bundles | M | not started |
@@ -68,41 +68,58 @@ Deliberately left out, and why:
 
 ## M2 — Per-character progress and spaced repetition
 
-**Why.** Your saved words persist, but course practice does not: which characters
-you have seen, how you scored, and what is due for review are all forgotten when
-the app closes. For studying, this is now the single biggest gap.
+**Status: done.**
 
-**Approach.** The persistence pattern already exists — `hanzi_core::vocab` writes
-a versioned, atomically-saved JSON document and refuses to overwrite a file it
-could not read. Follow it rather than inventing a second mechanism, and keep the
-new store in `hanzi-core` so it stays testable without a window.
+Practice history now persists, and what is due comes back on its own.
+`crates/hanzi-core/src/progress.rs` holds the schedule (no Tauri dependency, so it
+stays testable without a window), `src-tauri/src/commands.rs` exposes it, and the
+sidebar and board surface it.
 
-- Persist per-character history: attempts, best score, last practised, and a
-  scheduling state.
-- Scheduling: **SM-2** is simple and well understood; **FSRS** is better but wants
-  more data. Start with SM-2-style intervals (again / hard / good / easy derived
-  from the attempt score) and keep the algorithm behind a small trait so it can be
-  swapped. Timestamps are already ISO-8601 UTC strings, which sort
-  chronologically as plain text — compare them as strings.
-- A review queue: "due now", ordered by urgency, drawn from both the course and
-  the M1 vocabulary list.
-- Surface per-lesson completion in the sidebar, and persist the cursor for
-  "continue where I left off" — which also fixes how easy it is to end up far from
-  where you were while exploring.
-- Keep the schedule and the cursor in separate files or keys, so a corrupt
-  schedule cannot lose your place.
+What shipped:
 
-**Acceptance criteria.**
+- **One card per character**, keyed by the character itself, holding attempts,
+  lapses, best and last score, the last attempt time, a bounded recent history
+  (the newest 20), the interval, the ease factor and the due date. Both sources
+  write to the same card: a character met in a lesson and the same character met
+  inside a word are the same thing to learn.
+- **SM-2 behind a `Scheduler` trait.** An attempt's 0..=100 score becomes one of
+  *again / hard / good / easy* using the same bands the feedback panel already
+  shows (`Grade::from_score`), and the rating sets the next interval: a failure
+  returns within the minute, a pass starts at twelve hours, a day or two days
+  (so a good attempt is always scheduled further out than a poor one), then 1 day,
+  6 days, and the previous interval times the ease factor, capped at a year.
+  A second `Scheduler` implementation is exercised in the tests to prove the
+  policy is genuinely swappable.
+- **A review queue** drawn from both the course and the vocabulary list, most
+  overdue first. A character that belongs to a word is offered as that word, once,
+  however many of its characters are due; a character in neither source is skipped.
+  The interface takes the most overdue 20 as one session and reports the true
+  total beside it.
+- **Per-lesson completion in the sidebar** — practised/total per lesson, a mark on
+  each practised character, a dot on anything due — and the **course cursor** is
+  persisted so the app opens where you left off, which also fixes how easy it was
+  to end up far from where you were while exploring.
+- **Three separate files**, deliberately: `vocabulary.json`, `progress.json` and
+  `course-cursor.json`. A corrupt schedule cannot lose your place, and a corrupt
+  cursor cannot take your history with it. All three follow the M1 rule — a file
+  that cannot be parsed is reported, never overwritten — now enforced in one place
+  (`Persisted<S>` in `src-tauri/src/state.rs`) instead of three.
+- Timestamps are ISO-8601 UTC **strings**, so "is this due?" and "which is most
+  overdue?" are string comparisons; `crates/hanzi-core/src/time.rs` owns the
+  formatting, parsing and whole-second arithmetic, including the range guard that
+  stops a runaway interval from formatting a year the parser could not read back.
 
-- Practising then relaunching shows the attempt in history and does not re-show a
-  character as "new".
-- A character answered well is scheduled further out than one answered badly.
-- The review queue is empty immediately after a good session and non-empty once
-  items come due.
-- Grading output is unchanged (this milestone changes *scheduling*, not
-  *grading*); `selfcheck` output is identical.
-- A corrupt or missing state file degrades safely — the app tells you and refuses
-  to overwrite it, exactly as the vocabulary store does.
+Deliberately left out, and why:
+
+- **FSRS** — it wants a review history far longer than one learner produces
+  quickly. SM-2 is behind a trait precisely so this can be revisited with data.
+- **Export/import of the schedule** — the vocabulary list has it; the schedule is
+  derived from practice, so rebuilding it is cheap and a merge format would be
+  guesswork. The files are plain JSON if a backup is wanted.
+- **Per-character notes or a browsable history screen** — the board shows attempts,
+  best score and the next review, and the sidebar shows what is due. A history
+  browser would want the attempt log that M4's tuning also wants; defer to the
+  cross-cutting "attempt logging" item.
 
 ---
 
@@ -346,8 +363,6 @@ Small, independently shippable, roughly in value order:
 Recorded honestly, because they bound how much the current scores mean:
 
 - **Legibility is centreline-only** (see M4). Thin or overshooting strokes pass.
-- **Course practice does not persist.** Your vocabulary list does; your place in
-  the course and your per-character history do not (see M2).
 - **Polymorphic characters are mispronounced** — 着 is read `zhe` whichever reading
   the synthesiser prefers, because there is no context (see M3).
 - **Shape tolerance is tuned on synthetic Gaussian jitter**, not real learners. It

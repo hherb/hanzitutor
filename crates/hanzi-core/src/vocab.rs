@@ -18,9 +18,13 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+
+// Timestamps are shared with the practice schedule (see `crate::time`), which
+// needs to add intervals to them as well as format them. Re-exported here so the
+// vocabulary module's public surface is unchanged.
+pub use crate::time::{iso8601_from_unix, now_iso8601};
 
 /// Format version written into the document. Bump when the shape changes and
 /// add a migration; a document from the future is refused rather than guessed at.
@@ -595,52 +599,10 @@ fn csv_field(value: &str) -> String {
     }
 }
 
-/// The current time as an ISO-8601 UTC string, e.g. `2026-09-19T00:12:34Z`.
-///
-/// Implemented directly rather than pulling in a date library: only formatting
-/// is ever needed, and UTC timestamps in this format sort chronologically as
-/// plain strings, which is what the review scheduling will rely on.
-pub fn now_iso8601() -> String {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    iso8601_from_unix(seconds)
-}
-
-/// Format a Unix timestamp as ISO-8601 UTC.
-pub fn iso8601_from_unix(seconds: i64) -> String {
-    let days = seconds.div_euclid(86_400);
-    let secs_of_day = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let (hour, minute, second) = (
-        secs_of_day / 3600,
-        (secs_of_day % 3600) / 60,
-        secs_of_day % 60,
-    );
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
-}
-
-/// Convert a count of days since the Unix epoch to a civil date.
-///
-/// Howard Hinnant's `civil_from_days`, which is exact for the whole range of
-/// `i64` days.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let year = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    (if month <= 2 { year + 1 } else { year }, month, day)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -648,39 +610,6 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("hanzi-vocab-{name}-{unique}.json"))
-    }
-
-    // ---- timestamps -------------------------------------------------------
-
-    #[test]
-    fn formats_known_timestamps() {
-        assert_eq!(iso8601_from_unix(0), "1970-01-01T00:00:00Z");
-        assert_eq!(iso8601_from_unix(946_684_800), "2000-01-01T00:00:00Z");
-        assert_eq!(iso8601_from_unix(1_234_567_890), "2009-02-13T23:31:30Z");
-        // 2000 was a leap year, so this date exists.
-        assert_eq!(iso8601_from_unix(951_782_400), "2000-02-29T00:00:00Z");
-        // And a time of day, to check the division.
-        assert_eq!(iso8601_from_unix(86_399), "1970-01-01T23:59:59Z");
-    }
-
-    #[test]
-    fn timestamps_sort_chronologically_as_strings() {
-        let earlier = iso8601_from_unix(1_000_000_000);
-        let later = iso8601_from_unix(1_700_000_000);
-        assert!(earlier < later, "{earlier} should sort before {later}");
-
-        // Across a year boundary, where a naive format would break.
-        let new_year = iso8601_from_unix(1_704_067_200); // 2024-01-01
-        let old_year = iso8601_from_unix(1_701_000_000); // 2023-11-24
-        assert!(old_year < new_year);
-    }
-
-    #[test]
-    fn now_is_plausible() {
-        let now = now_iso8601();
-        assert_eq!(now.len(), 20, "unexpected format: {now}");
-        assert!(now.starts_with("20"), "unexpected year: {now}");
-        assert!(now.ends_with('Z'));
     }
 
     // ---- adding and updating ---------------------------------------------

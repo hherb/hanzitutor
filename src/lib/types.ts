@@ -155,3 +155,95 @@ export interface VocabOutcome {
   view: VocabView;
   message: string;
 }
+
+// ---- practice progress and review -----------------------------------------
+
+/**
+ * How well an attempt went, in the four grades a review offers. Derived by the
+ * backend from the attempt score, using the same bands as `Grade`.
+ */
+export type Rating = "again" | "hard" | "good" | "easy";
+
+/** One recorded attempt. */
+export interface Attempt {
+  /** ISO-8601 UTC timestamp. */
+  at: string;
+  score: number;
+  rating: Rating;
+}
+
+/** Everything remembered about one character. */
+export interface ProgressCard {
+  ch: string;
+  attempts: number;
+  lapses: number;
+  bestScore: number | null;
+  lastScore: number | null;
+  /** ISO-8601 UTC timestamp. */
+  lastPractised: string | null;
+  /** When it should next be reviewed, ISO-8601 UTC. Sorts as text. */
+  due: string;
+  intervalDays: number;
+  ease: number;
+  repetitions: number;
+  /** Recent attempts, oldest first. */
+  history: Attempt[];
+  /** Whether the due date has already passed. */
+  dueNow: boolean;
+}
+
+export interface ProgressView {
+  /** Every practised character, most overdue first. A character absent from
+   * this list has never been attempted. */
+  cards: ProgressCard[];
+  /** Set when a change was kept in memory but not saved. */
+  warning: string | null;
+}
+
+/** Which of the two sources a due character came from. */
+export type ReviewSource = "course" | "vocabulary";
+
+/**
+ * One thing to review.
+ *
+ * For a word this describes the entry, not just the character that came due: a
+ * word is practised whole, so it appears once however many of its characters
+ * are due.
+ */
+export interface ReviewItem {
+  /** The character whose card came due. */
+  ch: string;
+  due: string;
+  source: ReviewSource;
+  /** The vocabulary entry, when the character belongs to one. */
+  entryId: number | null;
+  /** The text to write: an entry's word, or the character itself. */
+  text: string;
+}
+
+export interface ReviewView {
+  items: ReviewItem[];
+  /** How many items are due in total; `items` is capped to one session. */
+  dueCount: number;
+  warning: string | null;
+}
+
+/** Where the reader was in the course. */
+export interface CursorView {
+  index: number;
+  updatedAt: string | null;
+  warning: string | null;
+}
+
+/**
+ * One thing the board is asking for: a single character, or a word written one
+ * character at a time. Both the vocabulary list and a review session hand the
+ * board a queue of these, so practice has one path.
+ */
+export interface PracticeItem {
+  text: string;
+  /** The vocabulary entry this came from, or null for a course character. */
+  entryId: number | null;
+  pinyin: string;
+  meaning: string;
+}

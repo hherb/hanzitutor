@@ -5,13 +5,13 @@
 //! testable without opening a window — see `tests/ipc_contract.rs`.
 
 use hanzi_core::{
-    build_lessons, grade, Character, GradeOptions, GradeReport, Lesson, Point, TextLookup,
-    VocabView,
+    build_lessons, grade, Character, CursorView, GradeOptions, GradeReport, Lesson, Point,
+    ProgressView, ReviewView, TextLookup, VocabView,
 };
 use serde::Serialize;
 use tauri::State;
 
-use crate::state::{AppState, VocabState};
+use crate::state::{AppState, ProgressState, VocabState};
 
 /// How many characters make up one lesson.
 pub const LESSON_SIZE: usize = 10;
@@ -309,6 +309,68 @@ pub fn vocab_import(
     }
 
     Ok(VocabOutcome { view, message })
+}
+
+// ---- practice progress and review ------------------------------------------
+
+/// Persist a change to the schedule and hand back the schedule as it now stands.
+///
+/// As with the vocabulary list, a save failure is reported through the view's
+/// `warning` rather than as a hard error: the attempt *was* recorded in memory,
+/// and appearing to lose it would be worse than saying it was not written.
+fn committed_progress(progress: &ProgressState) -> ProgressView {
+    let mut view = progress.view();
+    if let Some(warning) = progress.save() {
+        view.warning = Some(warning);
+    }
+    view
+}
+
+/// Every practised character: attempts, best score, history and due date.
+#[tauri::command]
+pub fn progress(state: State<'_, AppState>) -> ProgressView {
+    state.lock_progress().view()
+}
+
+/// Record one graded character.
+///
+/// `score` is the 0..=100 headline score from the grading engine; the store
+/// derives the review rating from it and schedules the next one. A character
+/// with no card is one that has never been attempted.
+#[tauri::command]
+pub fn record_progress(
+    state: State<'_, AppState>,
+    ch: char,
+    score: f32,
+) -> Result<ProgressView, String> {
+    let mut progress = state.lock_progress();
+    progress
+        .store
+        .record(ch, score)
+        .map_err(|e| e.to_string())?;
+    Ok(committed_progress(&progress))
+}
+
+/// What is due for review now, most overdue first, from the course and the
+/// vocabulary list. `dueCount` is the full total; `items` is the capped session.
+#[tauri::command]
+pub fn review_queue(state: State<'_, AppState>) -> ReviewView {
+    state.review_queue()
+}
+
+/// Where the reader was in the course, so the app can open there next time.
+#[tauri::command]
+pub fn course_cursor(state: State<'_, AppState>) -> CursorView {
+    state.lock_cursor().view()
+}
+
+/// Move the course cursor.
+///
+/// The index is clamped inside [`AppState::set_cursor`], so a stale or
+/// hand-edited value cannot point past the end of the course.
+#[tauri::command]
+pub fn set_course_cursor(state: State<'_, AppState>, index: usize) -> CursorView {
+    state.set_cursor(index)
 }
 
 /// Echo a line from the webview to stderr.

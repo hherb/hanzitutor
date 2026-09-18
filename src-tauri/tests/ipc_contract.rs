@@ -9,14 +9,23 @@
 //! names are asserted explicitly rather than by round-tripping through a struct.
 
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 
-use hanzi_core::{GradeOptions, Point, VocabStore};
-use hanzi_tutor_lib::AppState;
+use hanzi_core::{GradeOptions, Point, ProgressStore, ReviewSource, VocabStore};
+use hanzi_tutor_lib::{AppState, REVIEW_LIMIT};
 
 fn state() -> AppState {
-    // `None` keeps the vocabulary list in memory, so tests never touch the
-    // user's real data file.
+    // `None` keeps the study documents in memory, so tests never touch the
+    // user's real data files.
     AppState::load(None).expect("the embedded dataset should decode")
+}
+
+/// A private directory for one test, so tests never collide.
+fn data_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("hanzi-{name}-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
 }
 
 /// Top-level keys of a serialised value.
@@ -428,5 +437,332 @@ fn a_corrupt_saved_list_is_reported_rather_than_silently_replaced() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
 
     drop(vocab);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- practice progress and review -----------------------------------------
+
+/// Write a `progress.json` holding one due card per character.
+fn write_schedule(dir: &Path, chars: &[char]) {
+    let mut cards = serde_json::Map::new();
+    for ch in chars {
+        cards.insert(
+            ch.to_string(),
+            serde_json::json!({
+                "attempts": 1,
+                "lapses": 1,
+                "bestScore": 20.0,
+                "lastScore": 20.0,
+                "lastPractised": "2020-01-01T00:00:00Z",
+                "due": "2020-01-01T00:01:00Z",
+                "intervalDays": 0.0,
+                "ease": 1.96,
+                "repetitions": 0,
+                "history": [
+                    { "at": "2020-01-01T00:00:00Z", "score": 20.0, "rating": "again" }
+                ],
+            }),
+        );
+    }
+    let document = serde_json::json!({ "version": 1, "cards": serde_json::Value::Object(cards) });
+    std::fs::write(dir.join("progress.json"), document.to_string()).unwrap();
+}
+
+#[test]
+fn progress_serialises_with_camel_case_fields() {
+    let mut store = ProgressStore::in_memory();
+    store
+        .record_at('好', 88.0, "2026-09-19T09:00:00Z")
+        .expect("recording should work");
+    let json = serde_json::to_value(store.view_at("2026-09-19T09:30:00Z")).unwrap();
+
+    expect_keys(&json, &["cards", "warning"]);
+    assert_eq!(json["warning"], serde_json::Value::Null);
+    expect_keys(
+        &json["cards"][0],
+        &[
+            "ch",
+            "attempts",
+            "lapses",
+            "bestScore",
+            "lastScore",
+            "lastPractised",
+            "due",
+            "intervalDays",
+            "ease",
+            "repetitions",
+            "history",
+            "dueNow",
+        ],
+    );
+    // A card is addressed by its character, which crosses the IPC boundary as a
+    // one-character JSON string.
+    assert_eq!(json["cards"][0]["ch"], serde_json::json!("好"));
+    assert_eq!(json["cards"][0]["dueNow"], serde_json::json!(false));
+
+    expect_keys(&json["cards"][0]["history"][0], &["at", "score", "rating"]);
+    // Ratings are snake_case so they can be literal unions in TypeScript.
+    assert_eq!(json["cards"][0]["history"][0]["rating"], serde_json::json!("good"));
+}
+
+#[test]
+fn review_queue_serialises_with_camel_case_fields() {
+    let dir = data_dir("ipc-queue-shape");
+    let state = state();
+    let ch = state.lessons()[0].characters[0];
+    write_schedule(&dir, &[ch]);
+
+    let loaded = AppState::load(Some(dir.clone())).unwrap();
+    let json = serde_json::to_value(loaded.review_queue()).unwrap();
+    expect_keys(&json, &["items", "dueCount", "warning"]);
+    expect_keys(
+        &json["items"][0],
+        &["ch", "due", "source", "entryId", "text"],
+    );
+    // Sources are snake_case, like verdicts and grades.
+    assert_eq!(json["items"][0]["source"], serde_json::json!("course"));
+    assert_eq!(json["items"][0]["entryId"], serde_json::Value::Null);
+    assert_eq!(json["items"][0]["ch"], serde_json::json!(ch.to_string()));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn cursor_serialises_with_camel_case_fields() {
+    let mut store = hanzi_core::CursorStore::in_memory();
+    store.set_index(7);
+    let json = serde_json::to_value(store.view()).unwrap();
+    expect_keys(&json, &["index", "updatedAt", "warning"]);
+    assert_eq!(json["index"], serde_json::json!(7));
+    assert!(json["updatedAt"].is_string(), "a move is timestamped");
+}
+
+#[test]
+fn the_default_state_keeps_progress_and_the_cursor_in_memory() {
+    let state = state();
+    let progress = state.lock_progress();
+    assert!(progress.store.cards().is_empty());
+    assert!(progress.load_error.is_none());
+    assert!(progress.view().warning.is_none());
+    assert!(progress.save().is_none());
+
+    let cursor = state.lock_cursor();
+    assert_eq!(cursor.view().index, 0);
+    assert!(cursor.load_error.is_none());
+    assert!(cursor.save().is_none());
+}
+
+#[test]
+fn a_due_course_character_reaches_the_review_queue() {
+    // The whole chain the unit tests do not cover: the real course, a saved
+    // schedule on disk, the queue builder, and the state layer.
+    let dir = data_dir("ipc-queue-course");
+    let state = state();
+    let ch = state.lessons()[1].characters[3];
+    write_schedule(&dir, &[ch]);
+
+    let loaded = AppState::load(Some(dir.clone())).unwrap();
+    let queue = loaded.review_queue();
+    assert_eq!(queue.due_count, 1);
+    assert_eq!(queue.items.len(), 1);
+    let item = &queue.items[0];
+    assert_eq!(item.ch, ch);
+    assert_eq!(item.text, ch.to_string());
+    assert_eq!(item.source, ReviewSource::Course);
+    assert_eq!(item.entry_id, None);
+    assert!(queue.warning.is_none());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_due_character_of_a_saved_word_is_reviewed_as_the_word() {
+    let dir = data_dir("ipc-queue-word");
+    // A real two-character word, and both of its characters due.
+    let characters: Vec<char> = "学习".chars().collect();
+    let vocabulary = serde_json::json!({
+        "version": 1,
+        "nextId": 2,
+        "groups": ["Lesson 3"],
+        "entries": [{
+            "id": 1,
+            "text": "学习",
+            "pinyin": "xuéxí",
+            "meaning": "to study",
+            "group": "Lesson 3",
+            "addedAt": "2026-01-01T00:00:00Z",
+            "attempts": 0,
+            "bestScore": null,
+            "lastPractised": null,
+        }],
+    });
+    std::fs::write(dir.join("vocabulary.json"), vocabulary.to_string()).unwrap();
+    write_schedule(&dir, &characters);
+
+    let loaded = AppState::load(Some(dir.clone())).unwrap();
+    let queue = loaded.review_queue();
+    assert_eq!(queue.due_count, 1, "one word, not two characters");
+    let item = &queue.items[0];
+    assert_eq!(item.text, "学习");
+    assert_eq!(item.source, ReviewSource::Vocabulary);
+    assert_eq!(item.entry_id, Some(1));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_review_session_is_capped_but_the_total_is_honest() {
+    let dir = data_dir("ipc-queue-cap");
+    let state = state();
+    let characters: Vec<char> = state
+        .lessons()
+        .iter()
+        .flat_map(|lesson| lesson.characters.clone())
+        .take(REVIEW_LIMIT + 5)
+        .collect();
+    assert_eq!(characters.len(), REVIEW_LIMIT + 5);
+    write_schedule(&dir, &characters);
+
+    let loaded = AppState::load(Some(dir.clone())).unwrap();
+    let queue = loaded.review_queue();
+    assert_eq!(queue.items.len(), REVIEW_LIMIT, "a session is capped");
+    assert_eq!(
+        queue.due_count,
+        REVIEW_LIMIT + 5,
+        "but the total says how many are left"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn practice_survives_a_restart_through_the_state_layer() {
+    // The acceptance criterion, end to end: practise, relaunch, and the attempt
+    // is still there — the character is no longer new.
+    let dir = data_dir("ipc-progress-persist");
+
+    let ch = {
+        let state = AppState::load(Some(dir.clone())).unwrap();
+        let ch = state.lessons()[0].characters[0];
+
+        let mut progress = state.lock_progress();
+        let card = progress
+            .store
+            .record(ch, 83.0)
+            .expect("recording should succeed");
+        assert_eq!(card.attempts, 1);
+        assert!(progress.save().is_none(), "saving fresh progress should work");
+        ch
+    };
+
+    let path = dir.join("progress.json");
+    assert!(path.exists(), "expected a file at {}", path.display());
+
+    // A second session, as if the app had been restarted.
+    let state = AppState::load(Some(dir.clone())).unwrap();
+    let progress = state.lock_progress();
+    assert!(progress.load_error.is_none(), "{:?}", progress.load_error);
+    assert!(!progress.store.is_new(ch), "a practised character is not new");
+    let card = progress.store.card(ch).expect("the card should be there");
+    assert_eq!(card.attempts, 1);
+    assert_eq!(card.best_score, Some(83.0));
+    assert_eq!(card.history.len(), 1, "the attempt is in the history");
+    assert!(card.due.as_str() > "2026-01-01T00:00:00Z", "and it was scheduled");
+
+    drop(progress);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_corrupt_schedule_is_reported_rather_than_silently_replaced() {
+    let dir = data_dir("ipc-progress-corrupt");
+    let path = dir.join("progress.json");
+    std::fs::write(&path, "{ not json").unwrap();
+
+    let state = AppState::load(Some(dir.clone())).unwrap();
+    let progress = state.lock_progress();
+
+    let warning = progress
+        .view()
+        .warning
+        .clone()
+        .expect("a corrupt schedule must produce a warning");
+    assert!(warning.contains("could not be read"), "{warning}");
+    // Refusing to save is the point: the file is left exactly as it was.
+    assert!(progress.save().is_some(), "saving must be refused");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+
+    drop(progress);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_corrupt_cursor_is_reported_without_losing_the_schedule() {
+    // The reason the two are separate files: one bad file must not take the
+    // other down.
+    let dir = data_dir("ipc-cursor-corrupt");
+    let ch = state().lessons()[0].characters[0];
+    write_schedule(&dir, &[ch]);
+    std::fs::write(dir.join("course-cursor.json"), "{ not json").unwrap();
+
+    let state = AppState::load(Some(dir.clone())).unwrap();
+
+    // The schedule loaded, history and all.
+    let progress = state.lock_progress();
+    assert!(progress.load_error.is_none(), "{:?}", progress.load_error);
+    assert_eq!(progress.store.card(ch).unwrap().attempts, 1);
+    assert!(!progress.store.is_new(ch));
+    drop(progress);
+
+    // The cursor reports its own problem and refuses to overwrite the file.
+    let cursor = state.lock_cursor();
+    let warning = cursor.view().warning.clone().expect("a warning");
+    assert!(warning.contains("could not be read"), "{warning}");
+    assert!(cursor.save().is_some(), "saving must be refused");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("course-cursor.json")).unwrap(),
+        "{ not json"
+    );
+
+    drop(cursor);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_course_cursor_persists_and_is_clamped_to_the_course() {
+    let dir = data_dir("ipc-cursor-persist");
+    let last = {
+        let state = AppState::load(Some(dir.clone())).unwrap();
+        let last = state.course_len() - 1;
+        assert_eq!(
+            state.lock_cursor().view().index,
+            0,
+            "a fresh install starts at the beginning"
+        );
+
+        // A position far past the end is clamped rather than trusted.
+        let view = state.set_cursor(usize::MAX);
+        assert_eq!(view.index, last);
+        assert!(view.warning.is_none());
+        last
+    };
+
+    let state = AppState::load(Some(dir.clone())).unwrap();
+    assert_eq!(
+        state.lock_cursor().view().index,
+        last,
+        "the place survived the restart"
+    );
+    // Moving backwards works too, and the file follows.
+    assert_eq!(state.set_cursor(3).index, 3);
+    assert_eq!(
+        AppState::load(Some(dir.clone()))
+            .unwrap()
+            .lock_cursor()
+            .view()
+            .index,
+        3
+    );
+
     std::fs::remove_dir_all(&dir).ok();
 }

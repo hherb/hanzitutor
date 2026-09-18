@@ -31,8 +31,10 @@ src-tauri/gen/schemas/
 
 # --- Local study data ----------------------------------------------------
 # Suggested by HANDOVER.md for running the app where the real application data
-# directory is not writable (sandboxes, portable installs).
+# directory is not writable (sandboxes, portable installs). A directory like
+# this can hold vocabulary.json, progress.json and course-cursor.json.
 .tmp-vocab/
+.tmp-data/
 .study/
 
 # --- Editor / OS ---------------------------------------------------------

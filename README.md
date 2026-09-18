@@ -13,9 +13,9 @@ and the Rust core is written to be reusable from a mobile shell later.
 ## Status
 
 Working end to end. The grading engine, the dataset pipeline, the Tauri command
-layer, the drawing UI, pronunciation and the personal vocabulary list are all
-implemented and tested; 83 automated tests pass. What is not built yet is listed
-under [Next steps](#next-steps).
+layer, the drawing UI, pronunciation, the personal vocabulary list and per-character
+progress with spaced repetition are all implemented and tested; 136 automated tests
+pass. What is not built yet is listed under [Next steps](#next-steps).
 
 ## What it does
 
@@ -40,6 +40,12 @@ under [Next steps](#next-steps).
   composed from its characters, while its meaning is yours to write — so the list
   can hold vocabulary the built-in course never covers. Export to JSON (lossless)
   or CSV for a spreadsheet.
+- **Progress that persists, and a review queue.** Every graded character is
+  remembered — attempts, best score, a short history and a due date — whether it
+  came from the course or from a word in your list. Answer well and it comes back
+  later; answer badly and it comes back within the minute. The course opens where
+  you left off, each lesson shows how much of it you have practised, and
+  *Review due* drills what has come back, most overdue first.
 
 ## Quick start
 
@@ -127,6 +133,31 @@ HANZI_TUTOR_DATA_DIR="$PWD/.study" pnpm run dev
 If the file exists but cannot be parsed, the app says so and **refuses to save**
 rather than replacing your notes with an empty list. Fix or move the file, then
 restart.
+
+### Your progress and what to review
+
+Two more files live beside the vocabulary list, and they are kept separate on
+purpose so that one bad file cannot take the others down:
+
+| File | Holds |
+| --- | --- |
+| `vocabulary.json` | your list: entries, groups, per-entry attempts |
+| `progress.json` | one card per practised character: attempts, best and last score, a short history, and when it is next due |
+| `course-cursor.json` | where you were in the course, so the app opens there |
+
+All three are plain, human-readable JSON written atomically, and all three follow
+the same safety rule: a file that cannot be parsed is reported and **never
+overwritten**. A missing file is simply a fresh start. Delete any of them to reset
+that part of your study data.
+
+Scheduling is **SM-2**: an attempt's 0..=100 score becomes one of four ratings
+(*again* / *hard* / *good* / *easy*, using the same grade bands the feedback panel
+shows), and the rating sets the next interval. A failure returns within the minute;
+a pass starts at twelve hours, a day or two days depending on the rating, then
+stretches — one day, six days, and then by the ease factor, up to a year. The
+algorithm sits behind a small `Scheduler` trait so it can be replaced (FSRS wants
+far more data than one learner produces quickly) without touching the store or the
+interface.
 
 ## How grading works
 
@@ -234,14 +265,19 @@ stroke as well as absolute.
 │    display space 0..1024     │───────▶│    ├── dataset_stats          │
 │  render.ts        Path2D,    │        │    ├── lessons                │
 │     font↔display transforms  │◀───────│    ├── character              │
-│  FeedbackPanel    verdicts   │  JSON  │    └── grade_attempt          │
-│  LessonSidebar    course     │        │         │                     │
-└──────────────────────────────┘        │         ▼                     │
+│  FeedbackPanel    verdicts   │  JSON  │    ├── grade_attempt          │
+│  LessonSidebar    course,    │        │    ├── vocab_*                │
+│     progress marks, review   │        │    └── progress, review_queue │
+└──────────────────────────────┘        │         │                     │
+                                        │         ▼                     │
                                         │  hanzi-core                   │
                                         │    geom   resample, distance  │
                                         │    grade  Hungarian + Kendall │
                                         │    dataset  13 MB artifact    │
                                         │    curriculum  frequency      │
+                                        │    vocab    the list          │
+                                        │    progress SM-2, due dates   │
+                                        │    time     ISO-8601 text     │
                                         └──────────────────────────────┘
 ```
 
@@ -274,25 +310,27 @@ crates/hanzi-core/          engine + data, no UI dependency
   src/dataset.rs            the character model and artifact loading
   src/curriculum.rs         frequency list → lessons
   src/vocab.rs              the personal vocabulary list and its JSON file
+  src/progress.rs           per-character history, SM-2 scheduling, review queue
+  src/time.rs               ISO-8601 timestamps and date arithmetic
   src/bin/prepare_data.rs   upstream data → compact artifact
   examples/selfcheck.rs     self-consistency and tolerance measurement
 src-tauri/                  Tauri shell
   src/commands.rs           the IPC surface
-  src/state.rs              embedded dataset, speech warm-up, vocabulary store
+  src/state.rs              embedded dataset, speech warm-up, the three stores
   src/speech.rs             pronunciation via the system synthesiser
   tests/ipc_contract.rs     locks the JSON contract the UI reads
 src/lib/                    Svelte components
   PracticeCanvas.svelte     pointer capture, stroke recording
   render.ts                 canvas painting, verdict colours
   VocabularyPanel.svelte    the vocabulary list: add, group, export, import
-  LessonSidebar.svelte      course and vocabulary navigation
+  LessonSidebar.svelte      course and vocabulary navigation, progress marks
 scripts/                    data fetching, cargo env, CLI selection
 ```
 
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 83 tests
+pnpm test             # the whole Rust suite: 136 tests
 pnpm run test:core    # just the engine and store unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
@@ -311,7 +349,12 @@ The tests that earned their place:
 - the speech tests use the **genuine** voice-list strings. A fixture with tidy
   names (`Tingting`) passed while the real list (`Tingting (Chinese (China
   mainland))`) never matched the preference, so the app silently used a
-  different voice.
+  different voice;
+- the scheduler tests pin every interval and due date, and a second `Scheduler`
+  implementation is exercised to prove the policy really is swappable;
+- persistence is tested through the **state layer** and the real file names as
+  well as the store, including the case that matters most: a corrupt schedule is
+  reported and the file on disk is left byte-for-byte unchanged.
 
 ## Data and licences
 
@@ -335,13 +378,12 @@ The generated artifact is not committed; `./scripts/fetch-data.sh` followed by
 See **[ROADMAP.md](ROADMAP.md)** for what to build next, in priority order, with
 approach notes and acceptance criteria. The headline gaps:
 
-1. **Progress that persists beyond the vocabulary list, plus spaced repetition.**
-   Your saved words persist, but per-character practice history does not, so the
-   app cannot yet tell you what to review today.
-2. **Words and sentences**, so the app supports actual reading and can
+1. **Words and sentences**, so the app supports actual reading and can
    disambiguate polyphonic characters.
-3. **A stricter legibility measure** (raster IoU), which catches errors the
+2. **A stricter legibility measure** (raster IoU), which catches errors the
    centreline comparison cannot.
+3. **Distribution readiness** — licence notices inside the bundle, and CI, before
+   the app can leave this machine.
 
 If you are picking this project up to continue development, read
 **[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the

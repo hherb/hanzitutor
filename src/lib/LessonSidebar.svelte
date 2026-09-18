@@ -2,10 +2,11 @@
   /**
    * Navigation for the two screens.
    *
-   * Course: the built-in frequency-ordered lessons, one lesson open at a time.
+   * Course: the built-in frequency-ordered lessons, one lesson open at a time,
+   * with how much of each has been practised and what is due for review.
    * Vocabulary: the user's own groups, acting as the filter for the list panel.
    */
-  import type { Lesson, VocabEntry } from "./types";
+  import type { Lesson, ProgressCard, ReviewView, VocabEntry } from "./types";
 
   interface Props {
     view: "course" | "vocabulary";
@@ -16,6 +17,12 @@
     summary: string;
     onSelectLesson: (index: number) => void;
     onSelectCharacter: (ch: string) => void;
+    /** Every practised character, so a lesson can show how far it got. */
+    progressCards: ProgressCard[];
+    review: ReviewView;
+    /** True while a review session is on the board. */
+    reviewing: boolean;
+    onStartReview: () => void;
     vocabGroups: string[];
     vocabEntries: VocabEntry[];
     /** `null` is everything, `""` the unfiled entries, otherwise a group. */
@@ -32,6 +39,10 @@
     summary,
     onSelectLesson,
     onSelectCharacter,
+    progressCards,
+    review,
+    reviewing,
+    onStartReview,
     vocabGroups,
     vocabEntries,
     vocabSelection,
@@ -44,6 +55,19 @@
 
   const countIn = (group: string) =>
     vocabEntries.filter((entry) => entry.group === group).length;
+
+  /** Progress by character, for the marks and the per-lesson counts. */
+  const cardFor = $derived(
+    new Map(progressCards.map((card) => [card.ch, card])),
+  );
+
+  /** How much of a lesson has been attempted at least once. */
+  const practisedIn = (lesson: Lesson) =>
+    lesson.characters.filter((ch) => cardFor.has(ch)).length;
+
+  /** How much of a lesson is due for review now. */
+  const dueIn = (lesson: Lesson) =>
+    lesson.characters.filter((ch) => cardFor.get(ch)?.dueNow).length;
 </script>
 
 <nav class="sidebar">
@@ -62,12 +86,31 @@
   </div>
 
   {#if view === "course"}
+    <div class="review">
+      <button
+        class="reviewButton"
+        class:ready={review.dueCount > 0}
+        disabled={review.dueCount === 0}
+        onclick={onStartReview}
+        title={review.dueCount === 0
+          ? "Nothing is due yet — practice in the course and characters come back here"
+          : "Practise what is due, most overdue first"}
+      >
+        <span class="title">{reviewing ? "Reviewing…" : "Review due"}</span>
+        <span class="count">{review.dueCount}</span>
+      </button>
+    </div>
     <ol>
       {#each lessons as lesson (lesson.index)}
         <li class:active={lesson.index === activeLesson}>
           <button class="lesson" onclick={() => onSelectLesson(lesson.index)}>
             <span class="title">{lesson.title}</span>
-            <span class="count">{lesson.characters.length}</span>
+            <span class="count" class:done={practisedIn(lesson) === lesson.characters.length}>
+              {#if dueIn(lesson) > 0}
+                <span class="dot" title="{dueIn(lesson)} due for review"></span>
+              {/if}
+              {practisedIn(lesson)}/{lesson.characters.length}
+            </span>
           </button>
           {#if lesson.index === activeLesson}
             <div class="chars">
@@ -75,7 +118,12 @@
                 <button
                   class="char"
                   class:current={ch === activeCharacter}
+                  class:practised={cardFor.has(ch)}
+                  class:due={cardFor.get(ch)?.dueNow ?? false}
                   onclick={() => onSelectCharacter(ch)}
+                  title={cardFor.has(ch)
+                    ? `practised ${cardFor.get(ch)?.attempts}×`
+                    : "not practised yet"}
                   lang="zh-Hans">{ch}</button
                 >
               {/each}
@@ -210,6 +258,56 @@
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
+  .count.done {
+    color: #15803d;
+    font-weight: 600;
+  }
+  /* A lesson with something due for review. */
+  .dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 4px;
+    border-radius: 50%;
+    background: var(--accent);
+    vertical-align: middle;
+  }
+
+  /* The review entry point, above the lesson list. */
+  .review {
+    padding: 0 6px 6px;
+  }
+  .reviewButton {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px dashed var(--line);
+    border-radius: 7px;
+    background: transparent;
+    font: inherit;
+    font-size: 0.82rem;
+    color: var(--muted-strong);
+    text-align: left;
+    cursor: pointer;
+  }
+  .reviewButton:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .reviewButton.ready {
+    border-style: solid;
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-weight: 600;
+  }
+  .reviewButton.ready:hover {
+    background: var(--accent);
+    color: #fff;
+  }
 
   .chars {
     display: grid;
@@ -218,6 +316,7 @@
     padding: 6px 4px 10px;
   }
   .char {
+    position: relative;
     aspect-ratio: 1;
     border: 1px solid var(--line);
     border-radius: 7px;
@@ -238,6 +337,29 @@
     background: var(--accent);
     color: #fff;
     font-weight: 600;
+  }
+  /* Practised at least once: a quiet mark, not a badge. */
+  .char.practised {
+    border-color: #86efac;
+    background: #f0fdf4;
+  }
+  .char.current.practised {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  /* Due for review, whichever else is true of it. */
+  .char.due::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .char.current.due::after {
+    background: #fff;
   }
 
   .footnote {
