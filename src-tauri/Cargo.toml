@@ -1,0 +1,21 @@
+[package]
+name = "hanzi-tutor"
+description = "Learn to read and write simplified Chinese characters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# A library target keeps the door open for mobile bundles later; the desktop
+# binary is a thin wrapper around it.
+[lib]
+name = "hanzi_tutor_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+hanzi-core = { path = "../crates/hanzi-core" }

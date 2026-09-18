@@ -1,0 +1,33 @@
+{
+  "name": "hanzi-tutor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Learn to read and write simplified Chinese characters",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "dev": "./scripts/with-cargo-env.sh ./scripts/tauri-cli.sh dev",
+    "build": "./scripts/with-cargo-env.sh ./scripts/tauri-cli.sh build",
+    "install:cli": "./scripts/with-cargo-env.sh cargo install tauri-cli --version '^2' --root .cargo-tools --locked",
+    "vite:dev": "vite",
+    "vite:build": "vite build",
+    "fetch-data": "./scripts/fetch-data.sh",
+    "prepare-data": "./scripts/with-cargo-env.sh cargo run --release -p hanzi-core --features prepare --bin prepare-data",
+    "test": "./scripts/with-cargo-env.sh cargo test --workspace",
+    "test:core": "./scripts/with-cargo-env.sh cargo test -p hanzi-core",
+    "selfcheck": "./scripts/with-cargo-env.sh cargo run --release -p hanzi-core --example selfcheck",
+    "check:rust": "./scripts/with-cargo-env.sh cargo clippy --workspace --all-targets -- -D warnings",
+    "check:web": "svelte-check --tsconfig ./tsconfig.json"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.0",
+    "@tauri-apps/cli": "^2.11.4",
+    "svelte": "^5.57.0",
+    "svelte-check": "^4.7.6",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.0"
+  }
+}

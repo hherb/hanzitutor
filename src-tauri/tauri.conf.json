@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Hanzi Tutor",
+  "version": "0.1.0",
+  "identifier": "com.hanzitutor.app",
+  "build": {
+    "beforeDevCommand": "pnpm run vite:dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm run vite:build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Hanzi Tutor",
+        "width": 1180,
+        "height": 840,
+        "minWidth": 940,
+        "minHeight": 700
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"]
+  }
+}

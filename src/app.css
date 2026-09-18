@@ -1,0 +1,47 @@
+:root {
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --line: #e3e8ef;
+  --hover: #f1f5f9;
+  --muted: #64748b;
+  --muted-strong: #334155;
+  --accent: #2563eb;
+  --accent-ink: #1d4ed8;
+  --accent-soft: #eff6ff;
+  /* The canvas draws real glyph outlines, but lists and headings still need a
+     CJK face for the characters they render as text. */
+  --hanzi-font: "PingFang SC", "Hiragino Sans GB", "Heiti SC", "Noto Sans CJK SC",
+    "Microsoft YaHei", sans-serif;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--muted-strong);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui,
+    sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  /* This is an application window, not a scrollable document. */
+  overscroll-behavior: none;
+}
+
+button {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

@@ -1,0 +1,25 @@
+[package]
+name = "hanzi-core"
+description = "Offline stroke-order and legibility grading for handwritten Chinese characters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+postcard.workspace = true
+flate2.workspace = true
+
+# Only needed by the `prepare-data` binary, which turns the upstream datasets
+# into the compact artifact that ships with the app. Keeping them optional
+# means the app itself does not build a JSON/CSV stack it never uses.
+serde_json = { workspace = true, optional = true }
+csv = { version = "1", optional = true }
+
+[features]
+prepare = ["dep:serde_json", "dep:csv"]
+
+[[bin]]
+name = "prepare-data"
+path = "src/bin/prepare_data.rs"
+required-features = ["prepare"]
