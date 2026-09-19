@@ -356,7 +356,9 @@ meant to be cross-platform.
 spots*): if `/usr/bin/say` is refused from a sandboxed build, the macOS backend
 needs `AVSpeechSynthesizer` in-process, and that is the same shape the iOS
 backend needs in M9. Discovering it after writing three platform backends would
-mean writing four.
+mean writing four. The alternative that avoids the whole question is the
+pre-rendered audio pack in the speech research document, which takes synthesis
+off the runtime path for everything the app itself teaches.
 
 **Approach.**
 
@@ -625,7 +627,14 @@ Recorded honestly, because they bound how much the current scores mean:
   the sandbox is certainly enforced: put an App Store build on TestFlight and try
   *hear it* in the sandboxed build. If `say` is refused, the macOS backend needs an
   in-process synthesiser (`AVSpeechSynthesizer`) — the same conclusion M9 reaches
-  for iOS, so the two should then be designed together rather than twice.
+  for iOS, so the two should then be designed together rather than twice. There is
+  also a third answer that removes the question: the **pre-rendered audio pack**
+  proposed in [`docs/research/ASR_TTS_CLAUDE_RESEARCH.md`](docs/research/ASR_TTS_CLAUDE_RESEARCH.md)
+  §4.4 takes the external process off the runtime path entirely for the bundled
+  curriculum, which is the only one of the three that is *known* to be
+  sandbox-safe. That research document is worth reading before M6 in any case —
+  its §8 concludes the pack plus system TTS for user-entered text beats embedding
+  a model, on every axis but one.
 - **The course is frequency-ordered only.** It starts at 的 (8 strokes), which is
   right for reading but a demanding first character to *write*. A hand-ordered or
   stroke-count-ascending mode may suit a beginner better.

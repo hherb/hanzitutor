@@ -228,6 +228,7 @@ src/
   lib/api.ts                typed invoke wrappers
   assets/fonts/             Noto Sans SC, the bundled interface face (OFL)
 licences/                   every notice text that ships, plus README.md
+docs/research/              independent research notes behind open decisions
 scripts/                    fetch-data, with-cargo-env, tauri-cli, build-release,
                             probe-app-sandbox
 .github/workflows/ci.yml    test + clippy + svelte-check on push
@@ -731,7 +732,11 @@ downstream of them is covered by the IPC tests, which drive
   reports "inconclusive" rather than a false answer. Run it from a normal login
   session, or put a build on TestFlight and try *hear it* there. If `say` is
   refused, the macOS backend needs `AVSpeechSynthesizer` in-process — the same
-  shape M9 needs for iOS, so settle it before writing M6's three backends.
+  shape M9 needs for iOS, so settle it before writing M6's three backends. A third
+  option removes the question: the pre-rendered audio pack in
+  `docs/research/ASR_TTS_CLAUDE_RESEARCH.md` §4.4 takes synthesis off the runtime
+  path for the bundled curriculum and is the only one of the three that is
+  *known* to be sandbox-safe.
 - **An accepted dependency advisory.** Dependabot flags `glib` 0.18.5 (moderate,
   fixed in 0.20.0). It is Linux-GTK-only and absent from the macOS build graph,
   and it is not fixable from here because `gtk 0.18` pins `glib ^0.18` — cargo
