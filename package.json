@@ -7,7 +7,8 @@
   "license": "AGPL-3.0-only",
   "scripts": {
     "dev": "./scripts/with-cargo-env.sh ./scripts/tauri-cli.sh dev",
-    "build": "./scripts/with-cargo-env.sh ./scripts/tauri-cli.sh build",
+    "build": "./scripts/build-release.sh",
+    "build:unsigned": "./scripts/with-cargo-env.sh ./scripts/tauri-cli.sh build",
     "install:cli": "./scripts/with-cargo-env.sh cargo install tauri-cli --version '^2' --root .cargo-tools --locked",
     "vite:dev": "vite",
     "vite:build": "vite build",
