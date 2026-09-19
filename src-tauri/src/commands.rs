@@ -233,7 +233,7 @@ pub struct VocabOutcome {
 /// A save failure is reported through the view's `warning` rather than as a hard
 /// error, because the change *did* take effect in memory: the interface should
 /// show it while explaining that it was not written to disk.
-fn committed(vocab: &VocabState) -> VocabView {
+fn committed(vocab: &mut VocabState) -> VocabView {
     let mut view = vocab.view();
     if let Some(warning) = vocab.save() {
         view.warning = Some(warning);
@@ -260,7 +260,7 @@ pub fn vocab_add(
         .store
         .add_entry(&text, &pinyin, &meaning, group.as_deref())
         .map_err(|e| e.to_string())?;
-    Ok(committed(&vocab))
+    Ok(committed(&mut vocab))
 }
 
 #[tauri::command]
@@ -276,21 +276,21 @@ pub fn vocab_update(
         .store
         .update_entry(id, &pinyin, &meaning, group.as_deref())
         .map_err(|e| e.to_string())?;
-    Ok(committed(&vocab))
+    Ok(committed(&mut vocab))
 }
 
 #[tauri::command]
 pub fn vocab_remove(state: State<'_, AppState>, id: u64) -> Result<VocabView, String> {
     let mut vocab = state.lock_vocab();
     vocab.store.remove_entry(id).map_err(|e| e.to_string())?;
-    Ok(committed(&vocab))
+    Ok(committed(&mut vocab))
 }
 
 #[tauri::command]
 pub fn vocab_add_group(state: State<'_, AppState>, name: String) -> Result<VocabView, String> {
     let mut vocab = state.lock_vocab();
     vocab.store.add_group(&name).map_err(|e| e.to_string())?;
-    Ok(committed(&vocab))
+    Ok(committed(&mut vocab))
 }
 
 #[tauri::command]
@@ -304,7 +304,7 @@ pub fn vocab_rename_group(
         .store
         .rename_group(&from, &to)
         .map_err(|e| e.to_string())?;
-    Ok(committed(&vocab))
+    Ok(committed(&mut vocab))
 }
 
 /// Remove a group.
@@ -323,7 +323,7 @@ pub fn vocab_remove_group(
         .store
         .remove_group(&name, purge)
         .map_err(|e| e.to_string())?;
-    Ok(committed(&vocab))
+    Ok(committed(&mut vocab))
 }
 
 /// Record a practice attempt against an entry. `score` is the 0..=100 headline
@@ -339,7 +339,7 @@ pub fn vocab_record_attempt(
         .store
         .record_attempt(id, score)
         .map_err(|e| e.to_string())?;
-    Ok(committed(&vocab))
+    Ok(committed(&mut vocab))
 }
 
 /// Write the list to `path` as `format`, which is `"json"` (lossless) or
@@ -382,7 +382,7 @@ pub fn vocab_import(
         .store
         .import_json(&json, merge)
         .map_err(|e| e.to_string())?;
-    let view = committed(&vocab);
+    let view = committed(&mut vocab);
 
     let mut message = if summary.replaced {
         format!("Replaced your list with {} entries", summary.added)
@@ -409,7 +409,7 @@ pub fn vocab_import(
 /// As with the vocabulary list, a save failure is reported through the view's
 /// `warning` rather than as a hard error: the attempt *was* recorded in memory,
 /// and appearing to lose it would be worse than saying it was not written.
-fn committed_progress(progress: &ProgressState) -> ProgressView {
+fn committed_progress(progress: &mut ProgressState) -> ProgressView {
     let mut view = progress.view();
     if let Some(warning) = progress.save() {
         view.warning = Some(warning);
@@ -439,7 +439,7 @@ pub fn record_progress(
         .store
         .record(ch, score)
         .map_err(|e| e.to_string())?;
-    Ok(committed_progress(&progress))
+    Ok(committed_progress(&mut progress))
 }
 
 /// What is due for review now, most overdue first, from the course and the

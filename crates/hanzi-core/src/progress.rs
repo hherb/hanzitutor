@@ -22,7 +22,7 @@
 //! Grading is not part of this module and must not become part of it: it turns a
 //! 0..=100 score into a due date, and nothing else.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -334,14 +334,18 @@ pub struct ProgressView {
 }
 
 /// The persisted progress document.
+///
+/// Public because a backing store other than the JSON file — a database, in
+/// practice — has to build one. The shape is the store's, not the database's:
+/// a sink translates.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Document {
-    version: u32,
+pub struct Document {
+    pub version: u32,
     /// Keyed by the character itself. A `BTreeMap` keeps the file in a stable
     /// order, so it diffs cleanly and two runs write identical bytes.
     #[serde(default)]
-    cards: BTreeMap<String, CardState>,
+    pub cards: BTreeMap<String, CardState>,
 }
 
 impl Default for Document {
@@ -351,6 +355,46 @@ impl Default for Document {
             cards: BTreeMap::new(),
         }
     }
+}
+
+/// One attempt on its way to wherever attempts are kept.
+///
+/// The schedule needs only the newest few to show a learner; a database that
+/// keeps an unbounded log wants every one, which is why the store hands them
+/// over explicitly rather than leaving a sink to guess from the bounded
+/// [`CardState::history`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttemptRecord {
+    /// The character this attempt was on.
+    pub ch: String,
+    pub attempt: Attempt,
+}
+
+/// Where a schedule is kept.
+///
+/// The JSON file at [`ProgressStore::path`] is the built-in backing and needs no
+/// sink. This trait is the seam for a different one — the SQLite store lives in
+/// its own crate precisely so that this one keeps no native dependency — and it
+/// is *incremental* on purpose: a whole-document file can be rewritten on every
+/// attempt, but the attempt log cannot, which is the ceiling the database
+/// exists to lift.
+pub trait ProgressSink: std::fmt::Debug + Send {
+    /// Read the whole schedule, once, when the store is opened.
+    ///
+    /// A schedule that has never been written is an empty one, not an error.
+    fn load(&self) -> Result<Document, ProgressError>;
+
+    /// Persist `changed` cards and every attempt recorded since the last save.
+    ///
+    /// `changed` names the characters whose card differs from what is already
+    /// stored. Returning an error leaves the store holding the change, so the
+    /// next save tries again rather than dropping it.
+    fn save(
+        &mut self,
+        document: &Document,
+        changed: &BTreeSet<String>,
+        attempts: &[AttemptRecord],
+    ) -> Result<(), ProgressError>;
 }
 
 /// Where a due character should be practised from.
@@ -393,11 +437,18 @@ pub struct ReviewView {
     pub warning: Option<String>,
 }
 
-/// The practice schedule, backed by a JSON file.
+/// The practice schedule, backed by a JSON file or by a [`ProgressSink`].
 #[derive(Debug)]
 pub struct ProgressStore {
     path: PathBuf,
     document: Document,
+    /// Set when the schedule is kept somewhere other than the JSON file at
+    /// `path`. `None` is the JSON file, which is what every test uses.
+    sink: Option<Box<dyn ProgressSink>>,
+    /// Characters whose card has changed since the last save.
+    dirty: BTreeSet<String>,
+    /// Attempts recorded since the last save, oldest first.
+    pending: Vec<AttemptRecord>,
 }
 
 impl ProgressStore {
@@ -408,17 +459,34 @@ impl ProgressStore {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, ProgressError> {
         let path = path.into();
         let document = read_document(&path)?;
-        Ok(Self { path, document })
+        Ok(Self::from_parts(path, document, None))
+    }
+
+    /// Open a schedule kept by `sink` rather than by a JSON file.
+    ///
+    /// Everything above this line is the same either way: the store holds the
+    /// schedule in memory and the sink only decides where it lives.
+    pub fn open_with(sink: Box<dyn ProgressSink>) -> Result<Self, ProgressError> {
+        let document = sink.load()?;
+        Ok(Self::from_parts(PathBuf::new(), document, Some(sink)))
+    }
+
+    fn from_parts(path: PathBuf, document: Document, sink: Option<Box<dyn ProgressSink>>) -> Self {
+        Self {
+            path,
+            document,
+            sink,
+            dirty: BTreeSet::new(),
+            pending: Vec::new(),
+        }
     }
 
     /// An in-memory schedule with no file behind it. Used by tests.
     pub fn in_memory() -> Self {
-        Self {
-            path: PathBuf::new(),
-            document: Document::default(),
-        }
+        Self::from_parts(PathBuf::new(), Document::default(), None)
     }
 
+    /// The file this schedule is kept in, or an empty path when a sink holds it.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -478,12 +546,23 @@ impl ProgressStore {
         }
     }
 
-    /// Write the document to disk, atomically.
+    /// Persist the schedule.
     ///
-    /// Writes to a temporary file and renames, so an interrupted write cannot
-    /// leave a half-written schedule behind.
-    pub fn save(&self) -> Result<(), ProgressError> {
-        save_document(&self.path, &self.document)
+    /// Through a sink only what changed is written; without one the JSON file is
+    /// rewritten whole, atomically — temporary file first, then rename, so an
+    /// interrupted write cannot leave a half-written schedule behind.
+    pub fn save(&mut self) -> Result<(), ProgressError> {
+        match self.sink.as_mut() {
+            Some(sink) => {
+                sink.save(&self.document, &self.dirty, &self.pending)?;
+                // Only now is the change safely stored; an error above leaves it
+                // pending so the next save retries rather than dropping it.
+                self.dirty.clear();
+                self.pending.clear();
+                Ok(())
+            }
+            None => save_document(&self.path, &self.document),
+        }
     }
 
     /// Record an attempt made now.
@@ -531,11 +610,12 @@ impl ProgressStore {
             None => score,
         });
         card.last_practised = Some(at.to_string());
-        card.history.push(Attempt {
+        let recorded = Attempt {
             at: at.to_string(),
             score,
             rating,
-        });
+        };
+        card.history.push(recorded.clone());
         if card.history.len() > MAX_HISTORY {
             let excess = card.history.len() - MAX_HISTORY;
             card.history.drain(..excess);
@@ -543,11 +623,20 @@ impl ProgressStore {
 
         scheduler.review(card, rating, at);
 
+        // What a sink has to write: the card, and the attempt itself, which is
+        // the one thing the bounded in-memory history cannot be trusted to keep.
+        let key = ch.to_string();
+        self.dirty.insert(key.clone());
+        self.pending.push(AttemptRecord {
+            ch: key.clone(),
+            attempt: recorded,
+        });
+
         // Re-borrow immutably: the card is certainly there, it was just inserted.
         let card = self
             .document
             .cards
-            .get(&ch.to_string())
+            .get(&key)
             .expect("the card was just inserted");
         Ok(card.view(ch, at))
     }
@@ -625,23 +714,26 @@ pub fn build_queue(
 pub struct CursorStore {
     path: PathBuf,
     document: CursorDocument,
+    /// Set when the cursor is kept somewhere other than the JSON file at `path`.
+    sink: Option<Box<dyn CursorSink>>,
 }
 
-/// The persisted cursor document.
+/// The persisted cursor document. Public for the same reason as
+/// [`Document`]: a sink has to build one.
 ///
 /// Every field but the version is optional, so a document written by a newer
 /// build fails the version check rather than the schema check — the message the
 /// reader actually needs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CursorDocument {
-    version: u32,
+pub struct CursorDocument {
+    pub version: u32,
     /// Position in the flattened course, as a count of characters.
     #[serde(default)]
-    index: usize,
+    pub index: usize,
     /// When it was last moved, for a "continue where I left off" line.
     #[serde(default)]
-    updated_at: Option<String>,
+    pub updated_at: Option<String>,
 }
 
 impl Default for CursorDocument {
@@ -652,6 +744,13 @@ impl Default for CursorDocument {
             updated_at: None,
         }
     }
+}
+
+/// Where the course cursor is kept. See [`ProgressSink`]; one row is all there
+/// is to write, so this needs no notion of a change set.
+pub trait CursorSink: std::fmt::Debug + Send {
+    fn load(&self) -> Result<CursorDocument, ProgressError>;
+    fn save(&mut self, document: &CursorDocument) -> Result<(), ProgressError>;
 }
 
 impl CursorStore {
@@ -670,7 +769,21 @@ impl CursorStore {
             Err(e) if e.kind() == io::ErrorKind::NotFound => CursorDocument::default(),
             Err(e) => return Err(ProgressError::Io(format!("{}: {e}", path.display()))),
         };
-        Ok(Self { path, document })
+        Ok(Self {
+            path,
+            document,
+            sink: None,
+        })
+    }
+
+    /// Open a cursor kept by `sink` rather than by a JSON file.
+    pub fn open_with(sink: Box<dyn CursorSink>) -> Result<Self, ProgressError> {
+        let document = sink.load()?;
+        Ok(Self {
+            path: PathBuf::new(),
+            document,
+            sink: Some(sink),
+        })
     }
 
     /// An in-memory cursor with no file behind it. Used by tests.
@@ -678,9 +791,11 @@ impl CursorStore {
         Self {
             path: PathBuf::new(),
             document: CursorDocument::default(),
+            sink: None,
         }
     }
 
+    /// The file this cursor is kept in, or an empty path when a sink holds it.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -713,9 +828,12 @@ impl CursorStore {
         }
     }
 
-    /// Write the cursor to disk, atomically.
-    pub fn save(&self) -> Result<(), ProgressError> {
-        save_document(&self.path, &self.document)
+    /// Persist the cursor; through a sink, or atomically to the JSON file.
+    pub fn save(&mut self) -> Result<(), ProgressError> {
+        match self.sink.as_mut() {
+            Some(sink) => sink.save(&self.document),
+            None => save_document(&self.path, &self.document),
+        }
     }
 }
 

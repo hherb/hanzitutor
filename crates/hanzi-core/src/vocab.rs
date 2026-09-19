@@ -139,17 +139,18 @@ pub struct VocabView {
     pub warning: Option<String>,
 }
 
-/// The persisted document.
+/// The persisted document. Public because a backing store other than the JSON
+/// file has to build one; the shape is the list's, not the database's.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Document {
-    version: u32,
+pub struct Document {
+    pub version: u32,
     /// Ids are allocated from here, so they are never reused after a deletion.
-    next_id: u64,
+    pub next_id: u64,
     #[serde(default)]
-    groups: Vec<String>,
+    pub groups: Vec<String>,
     #[serde(default)]
-    entries: Vec<Entry>,
+    pub entries: Vec<Entry>,
 }
 
 impl Default for Document {
@@ -174,11 +175,24 @@ pub struct ImportSummary {
     pub replaced: bool,
 }
 
-/// The vocabulary list, backed by a JSON file.
+/// Where a vocabulary list is kept.
+///
+/// The JSON file at [`VocabStore::path`] is the built-in backing and needs no
+/// sink; this is the seam for a database, which lives in its own crate so that
+/// this one keeps no native dependency. A list is small and edited by hand, so
+/// unlike the attempt log it is handed over whole.
+pub trait VocabSink: std::fmt::Debug + Send {
+    fn load(&self) -> Result<Document, VocabError>;
+    fn save(&mut self, document: &Document) -> Result<(), VocabError>;
+}
+
+/// The vocabulary list, backed by a JSON file or by a [`VocabSink`].
 #[derive(Debug)]
 pub struct VocabStore {
     path: PathBuf,
     document: Document,
+    /// Set when the list is kept somewhere other than the JSON file at `path`.
+    sink: Option<Box<dyn VocabSink>>,
 }
 
 impl VocabStore {
@@ -200,7 +214,23 @@ impl VocabStore {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Document::default(),
             Err(e) => return Err(VocabError::Io(format!("{}: {e}", path.display()))),
         };
-        let mut store = Self { path, document };
+        let mut store = Self {
+            path,
+            document,
+            sink: None,
+        };
+        store.sort();
+        Ok(store)
+    }
+
+    /// Open a list kept by `sink` rather than by a JSON file.
+    pub fn open_with(sink: Box<dyn VocabSink>) -> Result<Self, VocabError> {
+        let document = sink.load()?;
+        let mut store = Self {
+            path: PathBuf::new(),
+            document,
+            sink: Some(sink),
+        };
         store.sort();
         Ok(store)
     }
@@ -210,9 +240,11 @@ impl VocabStore {
         Self {
             path: PathBuf::new(),
             document: Document::default(),
+            sink: None,
         }
     }
 
+    /// The file this list is kept in, or an empty path when a sink holds it.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -257,11 +289,14 @@ impl VocabStore {
         }
     }
 
-    /// Write the document to disk, atomically.
+    /// Persist the list; through a sink, or atomically to the JSON file.
     ///
     /// Writes to a temporary file and renames, so an interrupted write cannot
     /// leave a half-written list behind.
-    pub fn save(&self) -> Result<(), VocabError> {
+    pub fn save(&mut self) -> Result<(), VocabError> {
+        if let Some(sink) = self.sink.as_mut() {
+            return sink.save(&self.document);
+        }
         if self.path.as_os_str().is_empty() {
             return Ok(()); // in-memory store
         }

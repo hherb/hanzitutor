@@ -578,7 +578,7 @@ fn vocab_outcome_serialises_for_the_status_line() {
 #[test]
 fn the_default_state_keeps_the_vocabulary_list_in_memory() {
     let state = state();
-    let vocab = state.lock_vocab();
+    let mut vocab = state.lock_vocab();
     assert!(vocab.store.entries().is_empty());
     // Nothing to persist, and no reason to complain about that.
     assert!(vocab.load_error.is_none());
@@ -637,7 +637,7 @@ fn a_corrupt_saved_list_is_reported_rather_than_silently_replaced() {
     std::fs::write(&path, "{ not json").unwrap();
 
     let state = AppState::load(Some(dir.clone())).unwrap();
-    let vocab = state.lock_vocab();
+    let mut vocab = state.lock_vocab();
 
     let warning = vocab
         .view()
@@ -753,13 +753,13 @@ fn cursor_serialises_with_camel_case_fields() {
 #[test]
 fn the_default_state_keeps_progress_and_the_cursor_in_memory() {
     let state = state();
-    let progress = state.lock_progress();
+    let mut progress = state.lock_progress();
     assert!(progress.store.cards().is_empty());
     assert!(progress.load_error.is_none());
     assert!(progress.view().warning.is_none());
     assert!(progress.save().is_none());
 
-    let cursor = state.lock_cursor();
+    let mut cursor = state.lock_cursor();
     assert_eq!(cursor.view().index, 0);
     assert!(cursor.load_error.is_none());
     assert!(cursor.save().is_none());
@@ -893,7 +893,7 @@ fn a_corrupt_schedule_is_reported_rather_than_silently_replaced() {
     std::fs::write(&path, "{ not json").unwrap();
 
     let state = AppState::load(Some(dir.clone())).unwrap();
-    let progress = state.lock_progress();
+    let mut progress = state.lock_progress();
 
     let warning = progress
         .view()
@@ -928,7 +928,7 @@ fn a_corrupt_cursor_is_reported_without_losing_the_schedule() {
     drop(progress);
 
     // The cursor reports its own problem and refuses to overwrite the file.
-    let cursor = state.lock_cursor();
+    let mut cursor = state.lock_cursor();
     let warning = cursor.view().warning.clone().expect("a warning");
     assert!(warning.contains("could not be read"), "{warning}");
     assert!(cursor.save().is_some(), "saving must be refused");

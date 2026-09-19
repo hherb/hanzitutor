@@ -111,13 +111,13 @@ impl<S> Persisted<S> {
     /// A failure is reported rather than returned: the change *did* take effect
     /// in memory, so the interface should show it while saying it was not written.
     pub fn save_with<E: std::fmt::Display>(
-        &self,
-        save: impl FnOnce(&S) -> Result<(), E>,
+        &mut self,
+        save: impl FnOnce(&mut S) -> Result<(), E>,
     ) -> Option<String> {
         if let Some(reason) = &self.load_error {
             return Some(reason.clone());
         }
-        save(&self.store)
+        save(&mut self.store)
             .err()
             .map(|e| format!("could not save your {}: {e}", self.noun))
     }
@@ -147,7 +147,7 @@ impl Persisted<VocabStore> {
     }
 
     /// Persist the list, returning a warning if that was skipped or failed.
-    pub fn save(&self) -> Option<String> {
+    pub fn save(&mut self) -> Option<String> {
         self.save_with(VocabStore::save)
     }
 }
@@ -175,7 +175,7 @@ impl Persisted<ProgressStore> {
     }
 
     /// Persist the schedule, returning a warning if that was skipped or failed.
-    pub fn save(&self) -> Option<String> {
+    pub fn save(&mut self) -> Option<String> {
         self.save_with(ProgressStore::save)
     }
 }
@@ -203,7 +203,7 @@ impl Persisted<CursorStore> {
     }
 
     /// Persist the cursor, returning a warning if that was skipped or failed.
-    pub fn save(&self) -> Option<String> {
+    pub fn save(&mut self) -> Option<String> {
         self.save_with(CursorStore::save)
     }
 }

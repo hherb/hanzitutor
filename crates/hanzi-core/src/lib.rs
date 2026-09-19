@@ -47,11 +47,9 @@ pub use grade::{
 };
 pub use raster::INK_WIDTH;
 pub use progress::{
-    build_queue, Attempt, CardState, CardView, CursorStore, CursorView, ProgressError,
-    ProgressStore, ProgressView, Rating, ReviewItem, ReviewSource, ReviewView, Scheduler,
-    Sm2,
+    build_queue, Attempt, AttemptRecord, CardState, CardView, CursorDocument, CursorSink,
+    CursorStore, CursorView, ProgressError, ProgressSink, ProgressStore, ProgressView, Rating,
+    ReviewItem, ReviewSource, ReviewView, Scheduler, Sm2,
 };
 pub use time::{iso8601_from_unix, now_iso8601, parse_iso8601};
-pub use vocab::{
-    Entry, ImportSummary, VocabError, VocabStore, VocabView,
-};
+pub use vocab::{Entry, ImportSummary, VocabError, VocabSink, VocabStore, VocabView};
