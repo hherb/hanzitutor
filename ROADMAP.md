@@ -675,7 +675,8 @@ Small, independently shippable, roughly in value order:
 - **Import / export the vocabulary list** — CSV and JSON, so the list is not
   trapped in one machine's app data.
 - **Keyboard shortcut help** — a `?` overlay; the shortcuts exist but are only
-  documented in an empty-state panel.
+  documented inside the "How this works" disclosure (which is collapsed by
+  default as of the iOS work, so on a phone they are two taps away).
 - **Dark mode** — the canvas is deliberately paper-white, so this needs thought
   rather than a colour swap.
 - **UI scale / accessibility** — larger text and a bigger board; the board already

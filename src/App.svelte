@@ -74,6 +74,16 @@
   let settings = $state<SettingsView>({ clickToDraw: null, warning: null });
 
   /**
+   * True while the "How this works" explanation is expanded.
+   *
+   * Collapsed by default: on a phone the paragraph is taller than the board's
+   * controls, and what a learner needs in front of them is the board, not an
+   * essay about the grading. The heading is the disclosure, so the explanation
+   * is one tap away and costs one row when it is not wanted.
+   */
+  let showHelp = $state(false);
+
+  /**
    * True while the navigation sheet is open.
    *
    * Only meaningful at phone widths, where the sidebar is a fixed sheet over the
@@ -1628,21 +1638,35 @@
             <FeedbackPanel {report} />
           {:else}
             <div class="empty">
-              <h2>How this works</h2>
-              <p>
-                Your strokes are compared with the reference on four measures:
-                shape, placement, ink and order — whether each stroke is the right
-                kind of stroke in the right place, whether as much ink went down as
-                the character needs (a stroke traced correctly but drawn far too
-                thin is not legible), and whether they were written in sequence.
-                Writing a legible character in the wrong order is reported as
-                exactly that.
-              </p>
-              <p class="keys">
-                <kbd>Enter</kbd> check · <kbd>S</kbd> stroke order ·
-                <kbd>H</kbd> hear it · <kbd>⌫</kbd> undo ·
-                <kbd>←</kbd> <kbd>→</kbd> move
-              </p>
+              <button
+                class="help-toggle"
+                type="button"
+                aria-expanded={showHelp}
+                aria-controls="how-it-works"
+                onclick={() => (showHelp = !showHelp)}
+              >
+                <span class="info" aria-hidden="true">ⓘ</span>
+                How this works
+                <span class="chevron" class:open={showHelp} aria-hidden="true">›</span>
+              </button>
+              {#if showHelp}
+                <div id="how-it-works" class="help-body">
+                  <p>
+                    Your strokes are compared with the reference on four measures:
+                    shape, placement, ink and order — whether each stroke is the
+                    right kind of stroke in the right place, whether as much ink
+                    went down as the character needs (a stroke traced correctly but
+                    drawn far too thin is not legible), and whether they were
+                    written in sequence. Writing a legible character in the wrong
+                    order is reported as exactly that.
+                  </p>
+                  <p class="keys">
+                    <kbd>Enter</kbd> check · <kbd>S</kbd> stroke order ·
+                    <kbd>H</kbd> hear it · <kbd>⌫</kbd> undo ·
+                    <kbd>←</kbd> <kbd>→</kbd> move
+                  </p>
+                </div>
+              {/if}
             </div>
           {/if}
         </aside>
@@ -1928,10 +1952,40 @@
     border-radius: 12px;
     background: var(--surface);
   }
-  .empty h2 {
-    margin: 0 0 8px;
+  /* The explanation is a disclosure rather than a wall of text: the heading is
+     the button, and the panel is one quiet row until it is asked for. */
+  .help-toggle {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
     font-size: 0.9rem;
     font-weight: 650;
+    color: var(--muted-strong);
+    text-align: left;
+    cursor: pointer;
+  }
+  .help-toggle:hover {
+    color: var(--accent-ink);
+  }
+  .help-toggle .info {
+    font-size: 0.95rem;
+    color: var(--accent);
+  }
+  .help-toggle .chevron {
+    margin-left: auto;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+  }
+  .help-toggle .chevron.open {
+    transform: rotate(90deg);
+  }
+  .help-body {
+    margin-top: 10px;
   }
   .empty p {
     margin: 0 0 10px;
@@ -2161,6 +2215,14 @@
     /* A phone has no Enter, S, H or arrow keys to document. */
     .keys {
       display: none;
+    }
+    /* The disclosure is a comfortable target, and the panel loses some of its
+       padding so the collapsed row does not read as a stray box. */
+    .help-toggle {
+      min-height: 44px;
+    }
+    .empty {
+      padding: 10px 14px;
     }
 
     /* The character and its reading, compact enough to leave the board room. */

@@ -58,6 +58,9 @@ automated tests pass. What is not built yet is listed under
   the HSK dictionary, and a word the dictionary does not know still gets its
   reading composed from its characters. It can hold vocabulary the built-in course
   never covers. Export to JSON (lossless) or CSV for a spreadsheet.
+- **An explanation you can ignore.** What the four grading measures mean is one
+  quiet row — "ⓘ How this works" — that expands when asked and stays out of the
+  way otherwise, which matters most on a phone, where the board is the point.
 - **Progress that persists, and a review queue.** Every graded character is
   remembered — attempts, best score, a short history and a due date — whether it
   came from the course or from a word in your list. Answer well and it comes back
