@@ -9,7 +9,7 @@ mod capture;
 mod speech;
 mod state;
 
-pub use commands::{LevelCount, VocabOutcome, WordSearchView};
+pub use commands::{LevelCount, VocabOutcome, VoiceOption, VoicesView, WordSearchView};
 pub use licences::{AppInfo, LicenceNotice};
 pub use capture::{MicrophoneStatus, Recorder, Recording};
 pub use state::{
@@ -64,6 +64,7 @@ pub fn run() {
             commands::speak,
             commands::stop_speaking,
             commands::speech_status,
+            commands::voices,
             commands::tone_target,
             commands::microphone_status,
             commands::listen_start,
@@ -86,6 +87,7 @@ pub fn run() {
             commands::set_course_cursor,
             commands::settings,
             commands::update_settings,
+            commands::clear_click_to_draw,
             commands::app_info,
             commands::licence_notices,
             commands::webview_log,

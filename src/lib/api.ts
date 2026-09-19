@@ -14,12 +14,14 @@ import type {
   MicrophoneStatus,
   ProgressView,
   ReviewView,
+  SettingsPatch,
   SettingsView,
   ToneResult,
   ToneTarget,
   TextLookup,
   VocabOutcome,
   VocabView,
+  VoicesView,
   WordSearchView,
 } from "./types";
 
@@ -154,14 +156,35 @@ export const setCourseCursor = (index: number) =>
 export const settings = () => invoke<SettingsView>("settings");
 
 /**
- * Change how a stroke is drawn.
+ * Change one or more preferences.
  *
- * `null` goes back to the device's own default, which is what a "follow my
- * device" option in a future settings dialog will send; the switch in the
- * controls writes `true` or `false`.
+ * Only what changed has to be sent: an absent field means "leave this one
+ * alone", so a voice change does not reset the board size. The value returned is
+ * what to render, warning included — the backend has already written it.
+ *
+ * A voice of `""` goes back to the automatic voice. Going back to the *device's*
+ * answer for click-to-draw is `clearClickToDraw` instead, because a missing
+ * argument and a `null` one are indistinguishable once they are on the wire.
  */
-export const updateSettings = (clickToDraw: boolean | null) =>
-  invoke<SettingsView>("update_settings", { clickToDraw });
+export const updateSettings = (patch: SettingsPatch) =>
+  invoke<SettingsView>("update_settings", patch);
+
+/**
+ * Forget the click-to-draw choice and follow the device again.
+ *
+ * The one preference with a third state, and the only reason the interface can
+ * say "a mouse wants click-to-draw, a stylus wants to drag" rather than picking
+ * one for everybody.
+ */
+export const clearClickToDraw = () => invoke<SettingsView>("clear_click_to_draw");
+
+/**
+ * The voices a Chinese character can be spoken with, and the one in use.
+ *
+ * Served from a list the backend cached at startup — enumerating the system's
+ * voices takes about a second — so opening the settings screen is cheap.
+ */
+export const voices = () => invoke<VoicesView>("voices");
 
 // ---- what the app is, and what it ships under ------------------------------
 

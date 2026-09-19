@@ -11,6 +11,7 @@
   import LessonSidebar from "./lib/LessonSidebar.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
+  import SettingsPanel from "./lib/SettingsPanel.svelte";
   import TonePanel from "./lib/TonePanel.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import WordsPanel from "./lib/WordsPanel.svelte";
@@ -27,19 +28,21 @@
     PracticeItem,
     ProgressView,
     ReviewView,
+    SettingsPatch,
     SettingsView,
     MicrophoneStatus,
     ToneResult,
     ToneTarget,
     VocabEntry,
     VocabView,
+    VoicesView,
     Word,
     WordSearchView,
   } from "./lib/types";
 
   type Mode = "trace" | "recall";
-  /** Which of the four top-level screens is showing. */
-  type View = "course" | "vocabulary" | "words" | "about";
+  /** Which of the five top-level screens is showing. */
+  type View = "course" | "vocabulary" | "words" | "settings" | "about";
   /** Where the current practice session draws its characters from. */
   type Source = "course" | "vocabulary" | "review" | "words";
 
@@ -73,9 +76,29 @@
    * The learner's own settings, as the backend has them.
    *
    * `clickToDraw` is `null` until they choose; see [`clickToDraw`] for how an
-   * unchosen value is resolved.
+   * unchosen value is resolved. The pace and the board size are always a value:
+   * there is no device signal to read one from, so "nobody chose" and "chose the
+   * default" are the same thing and the stored absence means the default.
    */
-  let settings = $state<SettingsView>({ clickToDraw: null, warning: null });
+  let settings = $state<SettingsView>({
+    clickToDraw: null,
+    voice: null,
+    animationPace: "normal",
+    boardSize: "normal",
+    warning: null,
+  });
+
+  /**
+   * The voices this machine offers, and the one in use.
+   *
+   * Read when the settings screen is opened rather than at startup: it is a
+   * cached list on the backend, but nothing else in the app needs it, and the
+   * practice screen only needs to know *whether* there is a voice at all
+   * ([`voice`]).
+   */
+  let voices = $state<VoicesView>({ available: [], active: null });
+  /** True while the voice list is still being read. */
+  let voicesLoading = $state(true);
 
   /**
    * True while the "How this works" explanation is expanded.
@@ -132,6 +155,36 @@
    * from a deliberate "off".
    */
   const clickToDraw = $derived(settings.clickToDraw ?? deviceWantsClickToDraw);
+
+  /**
+   * How much of the room available the board takes, from the board-size
+   * preference.
+   *
+   * A share of the container rather than a pixel side: the board fits whatever
+   * window it is in, and the preference says how much of that fit to use, so a
+   * large board stays large on a big screen and a compact one stays usable on a
+   * small one.
+   *
+   * **This is the only place a board size becomes a number.** `BoardSize` in
+   * `hanzi-core` carries the name, not the fraction, precisely so that the value
+   * cannot exist in two places and drift; the same goes for the pace below.
+   */
+  const boardFraction = $derived(
+    settings.boardSize === "compact" ? 0.72 : 1,
+  );
+
+  /**
+   * The scale applied to the whole stroke-order timeline, from the pace
+   * preference.
+   *
+   * Scaling the timeline rather than the bounds is the point: the animation caps
+   * a single stroke and the total (`MAX_STROKE_MS`, `MAX_TOTAL_MS`), and leaving
+   * those fixed would mean `Slow` changed nothing for a character at the cap.
+   */
+  const paceScale = $derived(
+    settings.animationPace === "slow" ? 2 : settings.animationPace === "fast" ? 0.5 : 1,
+  );
+
   /**
    * The TTS voice, once known: a name when pronunciation is available, `null`
    * when the system has no Chinese voice, `undefined` while still resolving.
@@ -411,6 +464,7 @@
     void refreshProgress();
     void refreshReview();
 
+
     // What the app is and what it ships under. Small, and wanted the instant the
     // About screen is opened, so it is fetched with the rest of the startup
     // rather than on demand.
@@ -446,7 +500,9 @@
       });
 
     // Resolving the voice runs the system voice list, which takes about a
-    // second, so it is deliberately not part of the course load above.
+    // second, so it is deliberately not part of the course load above. This also
+    // fills in the settings screen's list of voices, from the same cached
+    // enumeration.
     void api
       .speechStatus()
       .then((status) => {
@@ -458,6 +514,7 @@
       .catch(() => {
         voice = null;
       });
+    void refreshVoices();
 
     // Tone practice needs a microphone, and asking is cheap. It is resolved
     // once: whether the machine has one does not change while the app runs.
@@ -659,7 +716,9 @@
       if (loaded.warning) void api.log(`settings warning: ${loaded.warning}`);
       void api.log(
         `settings: click to draw ${clickToDraw ? "on" : "off"} ` +
-          `(${loaded.clickToDraw === null ? "this device's default" : "chosen"})`,
+          `(${loaded.clickToDraw === null ? "this device's default" : "chosen"}), ` +
+          `pace ${loaded.animationPace}, board ${loaded.boardSize}, ` +
+          `voice ${loaded.voice ?? "automatic"}`,
       );
     } catch (cause) {
       error = `Could not load your settings: ${cause}`;
@@ -667,20 +726,68 @@
   }
 
   /**
+   * Read the voices this machine offers, for the settings screen.
+   *
+   * Loading it at startup as well as on demand is deliberate: the resolved voice
+   * is what `voice` (the practice screen's state) needs, and the settings screen
+   * should not open on a spinner.
+   */
+  async function refreshVoices() {
+    try {
+      voices = await api.voices();
+      // `active` is what the backend actually resolves a choice to, which is how
+      // a preference naming a missing voice is told apart from one in use.
+      voice = voices.active;
+    } catch (cause) {
+      void api.log(`could not list the voices: ${cause}`);
+      // Leave `voice` as the speech status said; the list is only for the
+      // settings screen.
+    } finally {
+      voicesLoading = false;
+    }
+  }
+
+  /**
+   * Change preferences, and remember them.
+   *
+   * The controls move immediately and the backend is told after, because a
+   * preference that waits for a round trip feels broken; if the save fails the
+   * warning comes back and the settings screen shows it, which is the same
+   * bargain the study stores make. Only what changed is sent, so the backend
+   * leaves the other preferences alone.
+   */
+  async function updateSettings(patch: SettingsPatch) {
+    const previous = settings;
+    settings = { ...settings, ...patch, warning: null };
+    try {
+      const saved = await api.updateSettings(patch);
+      settings = saved;
+      if (saved.warning) void api.log(`settings warning: ${saved.warning}`);
+      // A voice change is the one preference the rest of the app can see: the
+      // button's tooltip names the voice and `voice === null` disables it.
+      if (patch.voice !== undefined) void refreshVoices();
+    } catch (cause) {
+      settings = previous;
+      error = `Could not save your setting: ${cause}`;
+    }
+  }
+
+  /**
    * Choose how a stroke is drawn, and remember it.
    *
-   * The switch moves immediately and the backend is told after, because a
-   * preference that waits for a round trip feels broken; if the save fails the
-   * switch goes back and the reason is shown, which is the same bargain the
-   * study stores make.
+   * The board's quick switch and the settings screen share this, so both paths
+   * write the same value and neither can drift from the other.
    */
   async function setClickToDraw(value: boolean) {
+    await updateSettings({ clickToDraw: value });
+  }
+
+  /** Forget the click-to-draw choice, so the device decides again. */
+  async function clearClickToDraw() {
     const previous = settings;
-    settings = { clickToDraw: value, warning: null };
+    settings = { ...settings, clickToDraw: null, warning: null };
     try {
-      const saved = await api.updateSettings(value);
-      settings = saved;
-      if (saved.warning) error = saved.warning;
+      settings = await api.clearClickToDraw();
     } catch (cause) {
       settings = previous;
       error = `Could not save your setting: ${cause}`;
@@ -948,23 +1055,31 @@
    * strokes) for far longer than anyone will watch. Everything is scaled by the
    * same factor once the natural total is known, so the character keeps its
    * rhythm — the long strokes still take longer than the short ones.
+   *
+   * The settings screen's pace is applied to the *bounds* rather than to the
+   * result, so `Slow` really is half speed even for a character whose every
+   * stroke is already at `MAX_STROKE_MS`: scaling afterwards would be capped
+   * away by that same bound and change nothing for exactly the characters a
+   * learner most wants slowed down.
    */
   function strokeTimeline(
     medians: Point[][],
     total: number,
   ): { duration: number; pause: number }[] {
+    const scale = paceScale;
     const steps = Array.from({ length: total }, (_, i) => ({
       duration: Math.min(
-        MAX_STROKE_MS,
-        Math.max(MIN_STROKE_MS, polylineLength(medians[i] ?? []) * MS_PER_UNIT),
+        MAX_STROKE_MS * scale,
+        Math.max(MIN_STROKE_MS * scale, polylineLength(medians[i] ?? []) * MS_PER_UNIT * scale),
       ),
-      pause: BETWEEN_STROKES_MS,
+      pause: BETWEEN_STROKES_MS * scale,
     }));
     const natural = steps.reduce((sum, step) => sum + step.duration + step.pause, 0);
-    const scale = natural > MAX_TOTAL_MS ? MAX_TOTAL_MS / natural : 1;
+    const cap = MAX_TOTAL_MS * scale;
+    const squeeze = natural > cap ? cap / natural : 1;
     return steps.map((step) => ({
-      duration: step.duration * scale,
-      pause: step.pause * scale,
+      duration: step.duration * squeeze,
+      pause: step.pause * squeeze,
     }));
   }
 
@@ -1440,6 +1555,7 @@
       wordsTotal={stats?.words ?? 0}
       {wordLevel}
       onSelectWordLevel={navigating((level: number | null) => (wordLevel = level))}
+      onShowSettings={navigating(() => switchView("settings"))}
       onShowLicences={navigating(() => switchView("about"))}
     />
   </div>
@@ -1513,6 +1629,15 @@
         busy={vocabBusy}
         onPractise={practiseWords}
         onAddToList={addWordToList}
+      />
+    {:else if view === "settings"}
+      <SettingsPanel
+        {settings}
+        {deviceWantsClickToDraw}
+        {voices}
+        {voicesLoading}
+        onChange={(patch) => void updateSettings(patch)}
+        onClearClickToDraw={() => void clearClickToDraw()}
       />
     {:else if view === "about"}
       <LicencesPanel info={appInfo} notices={licenceList} error={licenceError} />
@@ -1616,6 +1741,7 @@
             {showCorrections}
             {sweep}
             {clickToDraw}
+            {boardFraction}
             onStroke={addStroke}
           />
 

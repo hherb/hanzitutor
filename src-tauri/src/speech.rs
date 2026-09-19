@@ -86,15 +86,68 @@ pub struct Speaker {
     /// of talking over it.
     #[cfg(not(target_os = "ios"))]
     current: Mutex<Option<Utterance>>,
-    /// Resolved on first use: enumerating voices takes about a second, which is
-    /// too slow to pay at startup. `AppState` warms it on a background thread.
-    voice: OnceLock<Option<Voice>>,
+    /// The voice the learner has asked for, by name, or `None` for the
+    /// automatic choice. Set from the settings screen at startup and on every
+    /// change; a name this machine does not have falls back to the automatic
+    /// choice rather than being an error, so a preference carried from another
+    /// machine cannot break pronunciation here.
+    preferred: Mutex<Option<String>>,
+    /// Every voice the system offers, resolved once. Enumerating them takes
+    /// about a second, which is why this is warmed in the background (see
+    /// `warm_voice`) and why the settings screen, which asks for the list again
+    /// every time it is opened, is served from here rather than listing them
+    /// afresh. It never changes while the app runs, so a `OnceLock` is the right
+    /// shape for it — unlike the *choice*, which is resolved on every call from
+    /// this list and the preference together.
+    voices: OnceLock<Vec<Voice>>,
 }
 
 impl Speaker {
-    /// The voice that will be used, resolving and caching it on first call.
+    /// The voice that will be used.
+    ///
+    /// Resolved on every call from the installed voices, the override and the
+    /// preference together, which is what makes a change take effect
+    /// immediately: the *list* is the part that costs a second and it is cached,
+    /// so this is now a scan of a short vector.
     pub fn voice(&self) -> Option<Voice> {
-        self.voice.get_or_init(resolve_voice).clone()
+        let preferred = self
+            .preferred
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let overridden = override_voice();
+        resolve_voice(
+            self.voices(),
+            preferred.as_deref(),
+            overridden.as_ref().map(|voice| voice.name.as_str()),
+        )
+    }
+
+    /// Every voice the system offers.
+    fn voices(&self) -> &[Voice] {
+        self.voices
+            .get_or_init(|| list_voices().unwrap_or_default())
+    }
+
+    /// The voices a Chinese character can be spoken with.
+    ///
+    /// Filtered to the Chinese locales, sorted by name so that the settings
+    /// screen's list does not reorder itself between one launch and the next
+    /// (the order the system reports is not a promise), and carrying each
+    /// voice's locale, which is the only thing that tells 美佳's `zh_TW` apart
+    /// from a mainland voice of a similar name.
+    pub fn chinese_voices(&self) -> Vec<Voice> {
+        chinese_voices(self.voices())
+    }
+
+    /// Choose a voice by name, or `None` for the automatic choice.
+    ///
+    /// Returns what will actually be spoken with, so the settings screen can say
+    /// plainly when a name this machine does not have is not the one in use.
+    pub fn set_voice(&self, name: Option<&str>) -> Option<Voice> {
+        let name = name.map(str::trim).filter(|name| !name.is_empty());
+        *self.preferred.lock().unwrap_or_else(|e| e.into_inner()) = name.map(str::to_string);
+        self.voice()
     }
 
     /// A human-readable description of the active voice.
@@ -469,19 +522,79 @@ fn no_voice_message() -> String {
     )
 }
 
-/// Pick the voice to use, honouring [`VOICE_OVERRIDE`] first.
-fn resolve_voice() -> Option<Voice> {
-    if let Ok(name) = std::env::var(VOICE_OVERRIDE) {
-        let name = name.trim();
-        if !name.is_empty() {
-            return Some(Voice {
-                name: name.to_string(),
-                locale: "override".to_string(),
-            });
-        }
+/// The voice named by [`VOICE_OVERRIDE`], if it is set to anything usable.
+///
+/// The override outranks the stored preference, because that is what an
+/// environment variable is for: it is the escape hatch for a run that has to be
+/// reproducible, and a settings row silently outranking it would make
+/// `HANZI_TUTOR_VOICE=… pnpm run dev` a lie.
+fn override_voice() -> Option<Voice> {
+    let name = std::env::var(VOICE_OVERRIDE).ok()?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
     }
-    let voices = list_voices().unwrap_or_default();
-    pick_voice(&voices)
+    Some(Voice {
+        name: name.to_string(),
+        locale: "override".to_string(),
+    })
+}
+
+/// The voice that will be used: the override, then the learner's choice, then
+/// the automatic pick.
+///
+/// A function of the installed voices, the preference and the override, so every
+/// ordering rule here is testable without a synthesiser and without an
+/// environment variable in the way — the caller reads [`VOICE_OVERRIDE`] and
+/// passes the result in. The three inputs are also the three things that can
+/// change, and keeping the decision in one function is what makes "does my
+/// choice actually take effect?" answerable by reading this.
+fn resolve_voice(
+    installed: &[Voice],
+    preferred: Option<&str>,
+    overridden: Option<&str>,
+) -> Option<Voice> {
+    // An override is not "a preference that wins": it does not even have to name
+    // an installed voice, because it exists to hand the synthesiser a name the
+    // list does not know about.
+    if let Some(name) = overridden {
+        return Some(Voice {
+            name: name.to_string(),
+            locale: "override".to_string(),
+        });
+    }
+    if let Some(wanted) = preferred {
+        if let Some(voice) = find_voice(installed, wanted) {
+            return Some(voice);
+        }
+        // The preference names a voice this machine does not have. Say so where
+        // somebody will see it — the settings screen shows which voice is really
+        // in use — and carry on with the automatic choice, because refusing to
+        // pronounce anything would be a far worse answer than a different voice.
+        eprintln!(
+            "[speech] the chosen voice {wanted:?} is not installed here; \
+             falling back to the automatic choice"
+        );
+    }
+    pick_voice(installed)
+}
+
+/// Find an installed voice by name, ignoring the locale qualifier macOS appends.
+///
+/// The exact name wins over the base name, so a machine that has both
+/// `Meijia` and `Meijia (Chinese (China mainland))` uses the one that was named
+/// exactly, and a preference written on one of those machines still finds a
+/// voice on the other.
+fn find_voice(voices: &[Voice], wanted: &str) -> Option<Voice> {
+    voices
+        .iter()
+        .find(|v| v.name.eq_ignore_ascii_case(wanted))
+        .or_else(|| {
+            voices
+                .iter()
+                .find(|v| base_name(&v.name).eq_ignore_ascii_case(wanted))
+        })
+        .cloned()
 }
 
 /// Enumerate installed voices.
@@ -560,6 +673,43 @@ fn parse_voices(output: &str) -> Vec<Voice> {
             })
         })
         .collect()
+}
+
+/// The voices a Chinese character can be spoken with, sorted by name.
+///
+/// Filtered to the Chinese locales, sorted so that the settings screen's list
+/// does not reorder itself between one launch and the next — the order the
+/// system reports is not a promise — and keeping each voice's locale, which is
+/// the only thing that tells 美佳's `zh_TW` apart from a mainland voice of a
+/// similar name. A function of the list so it can be tested without a
+/// synthesiser, which is what keeps the *shape* of the offered list honest.
+///
+/// **Deduplicated**, because `say -v '?'` lists every voice twice — a known
+/// quirk, see HANDOVER §6 — and a list with a repeated name is not merely
+/// untidy: the settings screen keys its options by name, so a duplicate is a
+/// rendering error that takes the screen down. The first entry for a name wins;
+/// the duplicates are the same voice.
+fn chinese_voices(all: &[Voice]) -> Vec<Voice> {
+    let mut voices: Vec<Voice> = Vec::new();
+    for voice in all {
+        if !voice
+            .locale
+            .replace('-', "_")
+            .to_ascii_lowercase()
+            .starts_with("zh")
+        {
+            continue;
+        }
+        if voices
+            .iter()
+            .any(|seen: &Voice| seen.name.eq_ignore_ascii_case(&voice.name))
+        {
+            continue;
+        }
+        voices.push(voice.clone());
+    }
+    voices.sort_by(|a, b| a.name.cmp(&b.name));
+    voices
 }
 
 /// The bare voice name, without the locale qualifier macOS appends.
@@ -751,6 +901,163 @@ Sinji               zh_HK    # 你好！我叫善怡。
     fn accepts_a_dash_separated_locale() {
         let voices = parse_voices("Tingting zh-CN # 你好\n");
         assert_eq!(pick_voice(&voices).unwrap().name, "Tingting");
+    }
+
+    #[test]
+    fn a_chosen_voice_beats_the_automatic_choice() {
+        // The point of the setting: 美佳 is `zh_TW`, so the automatic rule would
+        // never pick it — a learner who wants a Taiwanese voice has to be able
+        // to say so, and the setting has to be what actually gets used.
+        let voices = parse_voices(SAMPLE);
+        assert_eq!(base_name(&pick_voice(&voices).unwrap().name), "Tingting");
+
+        let chosen = resolve_voice(&voices, Some("Meijia"), None).expect("a voice");
+        assert_eq!(chosen.name, "Meijia");
+        assert_eq!(chosen.locale, "zh_TW");
+    }
+
+    #[test]
+    fn the_environment_override_outranks_a_stored_choice() {
+        // An environment variable is the escape hatch for a reproducible run. A
+        // settings row that outranked it would make `HANZI_TUTOR_VOICE=…` a lie,
+        // and the override does not have to name an installed voice at all —
+        // that is the whole point of it.
+        let voices = parse_voices(SAMPLE);
+        let overruled = resolve_voice(&voices, Some("Meijia"), Some("Some Unlisted Voice"))
+            .expect("the override is used as given");
+        assert_eq!(overruled.name, "Some Unlisted Voice");
+        assert_eq!(overruled.locale, "override");
+    }
+
+    #[test]
+    fn a_preference_matches_a_name_with_or_without_its_locale_qualifier() {
+        // macOS names the mainland voices `Tingting (Chinese (China mainland))`,
+        // so both the bare name the settings screen shows and the full name the
+        // system uses have to find the same voice. A fixture of exact names is
+        // what previously hid this mismatch.
+        let voices = parse_voices(SAMPLE);
+        for wanted in ["Tingting", "Tingting (Chinese (China mainland))", "tingting"] {
+            let found = find_voice(&voices, wanted).unwrap_or_else(|| panic!("{wanted}"));
+            assert_eq!(base_name(&found.name), "Tingting");
+        }
+        assert!(find_voice(&voices, "Nobody").is_none());
+    }
+
+    #[test]
+    fn an_exact_name_wins_over_a_base_name_match() {
+        let voices = vec![
+            Voice {
+                name: "Meijia (Chinese (China mainland))".into(),
+                locale: "zh_CN".into(),
+            },
+            Voice {
+                name: "Meijia".into(),
+                locale: "zh_TW".into(),
+            },
+        ];
+        assert_eq!(find_voice(&voices, "Meijia").unwrap().locale, "zh_TW");
+        assert_eq!(
+            find_voice(&voices, "Meijia (Chinese (China mainland))")
+                .unwrap()
+                .locale,
+            "zh_CN"
+        );
+    }
+
+    #[test]
+    fn a_voice_this_machine_does_not_have_falls_back_rather_than_failing() {
+        // A preference carried from another machine must not break
+        // pronunciation: the automatic choice is used instead, and the settings
+        // screen — which asks `voice()` what is really in use — can say so.
+        let voices = parse_voices(SAMPLE);
+        let picked = resolve_voice(&voices, Some("Nonexistent Voice"), None).expect("a voice");
+        assert_eq!(base_name(&picked.name), "Tingting");
+
+        // And with nothing Chinese installed there is still no voice to invent.
+        let none: Vec<Voice> = Vec::new();
+        assert!(resolve_voice(&none, Some("Meijia"), None).is_none());
+    }
+
+    #[test]
+    fn only_chinese_voices_are_offered_for_a_chinese_character() {
+        // The settings screen's list is built from `chinese_voices`, so an
+        // English voice must not appear in it — picking one is what makes the
+        // app read 汉 as an English word.
+        let offered = chinese_voices(&parse_voices(SAMPLE));
+        assert_eq!(offered.len(), 4, "{offered:?}");
+        assert!(offered.iter().all(|v| v.locale.starts_with("zh")));
+        // Sorted, so the list does not shuffle between launches.
+        let mut names: Vec<&str> = offered.iter().map(|v| v.name.as_str()).collect();
+        let unsorted = names.clone();
+        names.sort();
+        assert_eq!(names, unsorted);
+        // An iOS-style dash separator is filtered the same way.
+        assert_eq!(
+            chinese_voices(&[
+                Voice {
+                    name: "Daniel".into(),
+                    locale: "en-GB".into()
+                },
+                Voice {
+                    name: "Tingting".into(),
+                    locale: "zh-CN".into()
+                },
+            ])
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_voice_listed_twice_is_offered_once() {
+        // `say -v '?'` really does list every voice twice, and the settings
+        // screen keys its options by name — so a duplicate is not untidiness, it
+        // is a rendering error that takes the whole screen down. This fixture is
+        // the shape of the real command's output: the same lines, twice.
+        let real = "\
+Tingting (Chinese (China mainland)) zh_CN    # 你好！我叫婷婷。
+Meijia              zh_TW    # 你好，我叫美佳。
+Daniel              en_GB    # Hello, my name is Daniel.
+Tingting (Chinese (China mainland)) zh_CN    # 你好！我叫婷婷。
+Meijia              zh_TW    # 你好，我叫美佳。
+Daniel              en_GB    # Hello, my name is Daniel.
+";
+        let parsed = parse_voices(real);
+        assert_eq!(parsed.len(), 6, "the parser keeps both copies");
+
+        let offered = chinese_voices(&parsed);
+        assert_eq!(
+            offered.len(),
+            2,
+            "but the settings screen is offered each voice once: {offered:?}"
+        );
+        assert_eq!(offered[0].name, "Meijia");
+        assert_eq!(offered[1].name, "Tingting (Chinese (China mainland))");
+
+        // The names are what the screen keys on, so they have to be distinct.
+        let mut names: Vec<&str> = offered.iter().map(|v| v.name.as_str()).collect();
+        let offered_count = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), offered_count, "every offered name is unique");
+    }
+
+    #[test]
+    fn choosing_a_voice_does_not_change_what_the_speaker_resolves_to_elsewhere() {
+        // The preference is the speaker's, not the process's: `set_voice` is the
+        // only way in, and going back to `None` is the automatic choice again.
+        // (The machine this runs on may have no `say` at all, so the assertions
+        // are about `set_voice` returning the same thing `voice()` reports
+        // rather than about any particular voice being installed.)
+        let speaker = Speaker::default();
+        let automatic = speaker.voice().map(|v| v.name);
+        let chose = speaker.set_voice(Some("Meijia"));
+        assert_eq!(chose.map(|v| v.name), speaker.voice().map(|v| v.name));
+        let back = speaker.set_voice(None);
+        assert_eq!(back.map(|v| v.name), automatic.clone());
+        // A blank name is the automatic choice, not a voice called "".
+        speaker.set_voice(Some("   "));
+        assert_eq!(speaker.voice().map(|v| v.name), automatic);
     }
 
     #[test]

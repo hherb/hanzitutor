@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hanzi_core::progress::{build_queue, ReviewSource, MAX_HISTORY};
-use hanzi_core::{CursorStore, ProgressStore, Rating, SettingsStore, VocabStore};
+use hanzi_core::{BoardSize, CursorStore, Pace, ProgressStore, Rating, SettingsStore, VocabStore};
 use hanzi_store::{Db, SCHEMA_VERSION};
 
 /// A private directory per test, cleaned up by the caller's `finish`.
@@ -494,8 +494,85 @@ fn a_chosen_setting_survives_a_restart() {
 }
 
 #[test]
-fn a_setting_a_newer_build_wrote_is_not_mistaken_for_a_choice() {
-    // A row this build does not know is left alone (a newer build may have
+fn every_preference_round_trips_through_the_database() {
+    // The settings screen writes all four, so all four have to survive a
+    // restart — and the pace and the board size are stored as *names*, which is
+    // what the screen reads back. A mismatch there would show the learner their
+    // choice had been reset every time the app started.
+    let dir = dir("settings-all");
+    {
+        let db = Db::open(&dir).unwrap();
+        let mut store = SettingsStore::open_with(Box::new(db)).unwrap();
+        assert!(store.set_click_to_draw(Some(false)));
+        assert!(store.set_voice(Some("Meijia")));
+        assert!(store.set_animation_pace(Pace::Fast));
+        assert!(store.set_board_size(BoardSize::Compact));
+        store.save().unwrap();
+    }
+
+    let db = Db::open(&dir).unwrap();
+    let store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(store.click_to_draw(), Some(false));
+    assert_eq!(store.view().voice(), Some("Meijia"));
+    assert_eq!(store.view().pace(), Pace::Fast);
+    assert_eq!(store.view().board_size(), BoardSize::Compact);
+
+    // One row each, and clearing one clears only its own row.
+    let count = |db: &Db| -> i64 {
+        rusqlite::Connection::open(db.path())
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+            .unwrap()
+    };
+    assert_eq!(count(&db), 4);
+
+    let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(store.set_voice(None));
+    store.save().unwrap();
+    assert_eq!(count(&db), 3);
+    let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert_eq!(store.view().voice(), None);
+    assert_eq!(store.view().pace(), Pace::Fast, "only the voice was cleared");
+
+    // Picking the default is not a row: "normal" is what a missing row already
+    // means, so storing it would leave a database full of decisions nobody took.
+    let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(store.set_animation_pace(Pace::Normal));
+    store.save().unwrap();
+    assert_eq!(count(&db), 2);
+    let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert_eq!(store.view().pace(), Pace::Normal);
+
+    finish(&dir);
+}
+
+#[test]
+fn a_stored_name_the_build_does_not_know_is_reported_rather_than_guessed() {
+    // A pace is a closed set of names. A row holding anything else means either
+    // a hand-edited database or a build whose names changed, and silently
+    // calling it "normal" would hide a real mismatch behind a plausible default.
+    let dir = dir("settings-bad-pace");
+    let db = Db::open(&dir).unwrap();
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO settings (key, value) VALUES ('animation_pace', 'leisurely')",
+            [],
+        )
+        .unwrap();
+
+    let error = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap_err();
+    assert!(
+        matches!(&error, hanzi_core::SettingsError::Malformed(_)),
+        "{error}"
+    );
+    assert!(error.to_string().contains("animation_pace"), "{error}");
+
+    finish(&dir);
+}
+
+#[test]
+fn a_setting_a_newer_build_wrote_is_not_mistaken_for_a_choice() {    // A row this build does not know is left alone (a newer build may have
     // written it), but a row for a key it *does* know has to be readable.
     let dir = dir("settings-unknown");
     let db = Db::open(&dir).unwrap();

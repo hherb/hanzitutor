@@ -29,6 +29,15 @@
     sweep: Sweep | null;
     /** Click to start a stroke and click again to finish, rather than dragging. */
     clickToDraw: boolean;
+    /**
+     * The fraction of the room available the board should take, `0..=1`.
+     *
+     * The board is a square fitted to its container, and this is how the
+     * settings screen's board size scales that fit — the container is what the
+     * layout decides, so the preference is a share of it rather than a pixel
+     * size that would only suit one window.
+     */
+    boardFraction?: number;
     disabled?: boolean;
     onStroke: (stroke: Point[]) => void;
   }
@@ -42,6 +51,7 @@
     showCorrections,
     sweep,
     clickToDraw,
+    boardFraction = 1,
     disabled = false,
     onStroke,
   }: Props = $props();
@@ -121,17 +131,28 @@
     repaint();
   });
 
-  // Fit the largest square that the board has room for.
+  // Fit the largest square that the board has room for, at the share of it the
+  // settings ask for. `boardFraction` is read inside the effect so that changing
+  // it re-runs this and the board resizes at once, without waiting for the
+  // window to be resized.
   $effect(() => {
     const element = frame;
+    const fraction = boardFraction;
     if (!element) return;
+    const fit = (width: number, height: number) =>
+      Math.floor(Math.min(width, height) * fraction);
     const observer = new ResizeObserver((entries) => {
       const box = entries[0]?.contentRect;
       if (!box) return;
-      const next = Math.floor(Math.min(box.width, box.height));
+      const next = fit(box.width, box.height);
       if (next > 0 && next !== side) side = next;
     });
     observer.observe(element);
+    // The observer only fires on the *container* changing, so the new fraction
+    // has to be applied to what it already measured.
+    const box = element.getBoundingClientRect();
+    const immediate = fit(box.width, box.height);
+    if (immediate > 0 && immediate !== side) side = immediate;
     return () => observer.disconnect();
   });
 

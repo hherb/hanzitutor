@@ -5,9 +5,9 @@
 //! testable without opening a window — see `tests/ipc_contract.rs`.
 
 use hanzi_core::{
-    build_lessons, grade_with_outlines, tone::ToneAttempt, Character, CursorView, GradeOptions,
-    GradeReport, Grade, Lesson, Point, ProgressView, ReviewView, SettingsView, TextLookup,
-    ToneVerdict, ToneTarget, VocabView, Word,
+    build_lessons, grade_with_outlines, tone::ToneAttempt, BoardSize, Character, CursorView,
+    GradeOptions, GradeReport, Grade, Lesson, Pace, Point, ProgressView, ReviewView, SettingsView,
+    TextLookup, ToneVerdict, ToneTarget, VocabView, Word,
 };
 use serde::Serialize;
 use tauri::State;
@@ -205,6 +205,45 @@ pub fn stop_speaking(state: State<'_, AppState>) {
 #[tauri::command]
 pub fn speech_status(state: State<'_, AppState>) -> Option<String> {
     state.speech.status()
+}
+
+/// One voice the settings screen can offer, as it reads in a list.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceOption {
+    /// The name as the system reports it, which is what a choice is stored as.
+    pub name: String,
+    /// The locale, e.g. `zh_CN`. Shown beside the name because it is the only
+    /// thing that tells two similarly named Chinese voices apart.
+    pub locale: String,
+}
+
+/// The Chinese voices this machine offers, and the one actually in use.
+///
+/// Both halves matter to the settings screen: the list is what can be chosen,
+/// and `active` is what a choice *resolved to* — which is not always the same
+/// thing, since a preference naming a voice that is not installed falls back to
+/// the automatic choice rather than failing. Without `active` the screen could
+/// not say that honestly.
+///
+/// `available` is empty where the platform has no voice enumeration (see
+/// `speech.rs`), and the screen says so rather than showing an empty list.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoicesView {
+    pub available: Vec<VoiceOption>,
+    /// The name of the voice in use, or `None` when nothing Chinese is
+    /// installed and pronunciation is unavailable.
+    pub active: Option<String>,
+}
+
+/// The voices a Chinese character can be spoken with, and the one in use.
+///
+/// Served from a cached list: enumerating the system's voices takes about a
+/// second, and the settings screen asks every time it is opened.
+#[tauri::command]
+pub fn voices(state: State<'_, AppState>) -> VoicesView {
+    state.voices()
 }
 
 // ---- tone practice ---------------------------------------------------------
@@ -584,14 +623,50 @@ pub fn settings(state: State<'_, AppState>) -> SettingsView {
     state.lock_settings().view()
 }
 
-/// Change a setting.
+/// Change one or more settings.
 ///
-/// `clickToDraw` is `true`, `false`, or `null` to go back to the device's own
-/// default. The change is written straight away; the view that comes back is
-/// what the interface should render, warning included.
+/// Every argument is **optional, and absent means "leave this preference
+/// alone"** — that is what lets the settings screen send only the control the
+/// learner touched instead of resetting the other three on the way past.
+///
+/// Each preference that *can be un-chosen* spells its own clear, because a
+/// missing argument already means "leave alone" and so cannot double as
+/// "clear":
+///
+/// - `clickToDraw`: `true`/`false` to choose. Going back to the device's own
+///   answer is its own command, [`clear_click_to_draw`], since `null` over the
+///   wire is exactly what an omitted argument looks like.
+/// - `voice`: a name to choose, `""` to go back to the automatic voice. A voice
+///   is never legitimately nameless, so the empty string is free to mean this.
+/// - `animationPace` / `boardSize`: closed sets, so every value is a choice.
+///
+/// The change is written straight away; the view that comes back is what the
+/// interface should render, warning included.
 #[tauri::command]
-pub fn update_settings(state: State<'_, AppState>, click_to_draw: Option<bool>) -> SettingsView {
-    state.set_click_to_draw(click_to_draw)
+pub fn update_settings(
+    state: State<'_, AppState>,
+    click_to_draw: Option<bool>,
+    voice: Option<String>,
+    animation_pace: Option<Pace>,
+    board_size: Option<BoardSize>,
+) -> SettingsView {
+    state.update_settings(
+        click_to_draw,
+        voice.as_deref(),
+        animation_pace,
+        board_size,
+    )
+}
+
+/// Go back to the device's own answer for how a stroke is drawn.
+///
+/// A command of its own rather than a `null` argument: over the wire a missing
+/// argument and a null one are indistinguishable, and for every *other*
+/// preference absent has to keep meaning "leave it alone". The tri-state is what
+/// makes an unchosen preference worth representing, so it gets an honest route.
+#[tauri::command]
+pub fn clear_click_to_draw(state: State<'_, AppState>) -> SettingsView {
+    state.clear_click_to_draw()
 }
 
 /// Echo a line from the webview to stderr.

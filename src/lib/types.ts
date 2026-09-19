@@ -304,17 +304,78 @@ export interface CursorView {
 }
 
 /**
+ * How fast the stroke-order animation runs.
+ *
+ * A closed set, and `normal` is what the animation has always done. The scale
+ * each name maps to lives in `App.svelte`, beside the animation's own bounds.
+ */
+export type Pace = "slow" | "normal" | "fast";
+
+/** How large the practice board is drawn. */
+export type BoardSize = "compact" | "normal" | "large";
+
+/**
  * The learner's settings.
  *
- * Every field is `null` when nobody has chosen it, which is *not* the same as
+ * A field is `null` when nobody has chosen it, which is *not* the same as
  * `false`: the interface resolves an unchosen preference from the device and only
- * writes a value once the learner has flipped the switch themselves.
+ * writes a value once the learner has changed it themselves. Only the
+ * preferences a *device* can answer for are nullable — click-to-draw, and the
+ * voice. A pace or a board size has no device default to follow, so it is always
+ * one of its values and the stored absence simply means the default.
  */
 export interface SettingsView {
   /** `true` click to start and click to finish; `false` press and drag; `null` let the device decide. */
   clickToDraw: boolean | null;
+  /** The pronunciation voice by name, or `null` for the automatic choice. */
+  voice: string | null;
+  animationPace: Pace;
+  boardSize: BoardSize;
   /** Set when a change was applied in memory but could not be saved. */
   warning: string | null;
+}
+
+/**
+ * What the settings screen changed.
+ *
+ * Every field is optional, and an absent one means **leave that preference
+ * alone**: the screen sends only the control the learner touched, so changing
+ * the voice must not reset the board size on the way past. Clearing is spelled
+ * per preference — `clickToDraw` is `null` to go back to what the device wants
+ * (which is its own command, see `api.clearClickToDraw`), and `voice` is `""` to
+ * go back to the automatic voice.
+ *
+ * The index signature is what lets this go straight to `invoke`, which takes a
+ * plain object; the named fields above are still the whole of what may be sent,
+ * because Tauri rejects an argument the command does not declare.
+ */
+export interface SettingsPatch {
+  clickToDraw?: boolean;
+  voice?: string;
+  animationPace?: Pace;
+  boardSize?: BoardSize;
+  [key: string]: unknown;
+}
+
+/** One voice the settings screen can offer. */
+export interface VoiceOption {
+  /** The name as the system reports it, which is what a choice is stored as. */
+  name: string;
+  /** The locale, e.g. `zh_CN` — the only thing that tells similar voices apart. */
+  locale: string;
+}
+
+/**
+ * The voices this machine offers, and the one in use.
+ *
+ * `active` is what a choice *resolved to*, which is not always what was chosen:
+ * a preference naming a voice this machine does not have falls back to the
+ * automatic choice, and the screen says so rather than showing the stored name
+ * as though it were in use.
+ */
+export interface VoicesView {
+  available: VoiceOption[];
+  active: string | null;
 }
 
 /**

@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use hanzi_core::{
-    build_lessons, build_queue, now_iso8601, CursorStore, CursorView, Dataset, ProgressStore,
-    ProgressView, ReviewView, SettingsStore, SettingsView, VocabStore, VocabView,
+    build_lessons, build_queue, now_iso8601, BoardSize, CursorStore, CursorView, Dataset, Pace,
+    ProgressStore, ProgressView, ReviewView, SettingsStore, SettingsView, VocabStore, VocabView,
 };
 use hanzi_core::pinyin::{tone_target as build_tone_target, ToneTarget};
 use hanzi_core::tone::analyze;
@@ -16,7 +16,7 @@ use hanzi_store::Db;
 use tauri::{AppHandle, Manager};
 
 use crate::capture::{Recorder, Recording};
-use crate::commands::{ToneResult, ToneSyllableResult, LESSON_SIZE};
+use crate::commands::{ToneResult, ToneSyllableResult, VoiceOption, VoicesView, LESSON_SIZE};
 use crate::speech::Speaker;
 
 /// The compact artifact produced by `hanzi-core`'s `prepare-data` binary.
@@ -321,9 +321,6 @@ impl AppState {
         let dataset = Dataset::from_gzip_bytes(ARTIFACT)
             .map_err(|e| format!("could not read the embedded character dataset: {e}"))?;
 
-        let speech = Arc::new(Speaker::default());
-        warm_voice(Arc::clone(&speech));
-
         let course: HashSet<char> = build_lessons(&dataset, LESSON_SIZE)
             .into_iter()
             .flat_map(|lesson| lesson.characters)
@@ -366,6 +363,14 @@ impl AppState {
                 SettingsState::in_memory(),
             ),
         };
+
+        // The voice the learner chose goes to the speaker *before* the warm-up is
+        // started below: on a machine with several Chinese voices, resolving
+        // first would mean the session opened on the automatic voice and the
+        // startup log named one that is not in use.
+        let speech = Arc::new(Speaker::default());
+        speech.set_voice(settings.view().voice());
+        warm_voice(Arc::clone(&speech));
 
         Ok(Self {
             dataset,
@@ -499,21 +504,107 @@ impl AppState {
         }
     }
 
-    /// Choose how a stroke is drawn, or `None` for the device's own default.
+    /// Change the preferences, writing them immediately.
     ///
-    /// Written immediately: it is one boolean, the learner has just made the
-    /// choice, and a preference that only survives a clean exit is one that
-    /// looks broken. A failure to save is reported the same way the other stores
-    /// report one — the change stands in memory and the view says it was not
+    /// Written as one call rather than one per control because the settings
+    /// screen edits a document: a save per keystroke of a voice name would be
+    /// several writes of the same row, and the whole document is four small
+    /// values. A failure to save is reported the same way the other stores
+    /// report one — the changes stand in memory and the view says they were not
     /// written.
-    pub fn set_click_to_draw(&self, value: Option<bool>) -> SettingsView {
+    ///
+    /// A `None` argument means *leave this preference alone* rather than *clear
+    /// it*: the screen sends only what the learner touched, and clearing the
+    /// click-to-draw choice back to the device's default is asked for
+    /// explicitly by [`AppState::clear_click_to_draw`].
+    pub fn update_settings(
+        &self,
+        click_to_draw: Option<bool>,
+        voice: Option<&str>,
+        pace: Option<Pace>,
+        board_size: Option<BoardSize>,
+    ) -> SettingsView {
+        {
+            let mut settings = self.lock_settings();
+            if let Some(value) = click_to_draw {
+                settings.store.set_click_to_draw(Some(value));
+            }
+            if let Some(name) = voice {
+                settings.store.set_voice(Some(name));
+            }
+            if let Some(value) = pace {
+                settings.store.set_animation_pace(value);
+            }
+            if let Some(value) = board_size {
+                settings.store.set_board_size(value);
+            }
+        }
+        // Outside the settings lock: the speaker has its own, and taking them
+        // the other way round anywhere else would be the way to a deadlock.
+        self.apply_voice_choice();
+        self.settings_view()
+    }
+
+    /// Go back to the device's own answer for how a stroke is drawn.
+    ///
+    /// A separate call because it is the one preference the interface can
+    /// resolve for itself, which is what the tri-state is for — see
+    /// `crates/hanzi-core/src/settings.rs`.
+    pub fn clear_click_to_draw(&self) -> SettingsView {
+        {
+            let mut settings = self.lock_settings();
+            settings.store.set_click_to_draw(None);
+        }
+        self.settings_view()
+    }
+
+    /// Persist the current preferences, if anything changed, and report a
+    /// failure to write as a warning on the view.
+    fn settings_view(&self) -> SettingsView {
         let mut settings = self.lock_settings();
-        settings.store.set_click_to_draw(value);
         let mut view = settings.view();
         if let Some(warning) = settings.save() {
             view.warning = Some(warning);
         }
         view
+    }
+
+    /// Give the speaker the voice that is now stored.
+    ///
+    /// Not inside the settings lock: `Speaker` has a mutex of its own, and
+    /// holding both in this order here while some other path took them the other
+    /// way round is exactly how a deadlock is built.
+    fn apply_voice_choice(&self) {
+        let preferred = self.lock_settings().view().voice().map(str::to_string);
+        self.speech.set_voice(preferred.as_deref());
+    }
+
+    /// The Chinese voices this machine offers, and the one in use.
+    pub fn voices(&self) -> VoicesView {
+        VoicesView {
+            available: self
+                .speech
+                .chinese_voices()
+                .into_iter()
+                .map(|voice| VoiceOption {
+                    name: voice.name,
+                    locale: voice.locale,
+                })
+                .collect(),
+            active: self.speech.voice().map(|voice| voice.name),
+        }
+    }
+
+    /// Choose how a stroke is drawn, or `None` for the device's own default.
+    ///
+    /// Written immediately: it is one boolean, the learner has just made the
+    /// choice, and a preference that only survives a clean exit is one that
+    /// looks broken.
+    pub fn set_click_to_draw(&self, value: Option<bool>) -> SettingsView {
+        match value {
+            Some(value) => self.update_settings(Some(value), None, None, None),
+            None => self.clear_click_to_draw(),
+        }
     }
 
     /// How many characters the course holds, so a cursor can be clamped to it.

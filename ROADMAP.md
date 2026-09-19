@@ -725,17 +725,27 @@ Small, independently shippable, roughly in value order:
   privacy wording that "opt-in" implies. Do that next, against real handwriting,
   rather than growing the schema again.
 - **Interface localisation** — the app teaches Chinese but speaks English.
-- **A settings screen** — there is now a place for preferences to live: a
-  `Settings` document in `hanzi-core`, a `settings` table in `hanzi.db`, and a
-  `settings` / `update_settings` pair on the IPC surface. What is missing is the
-  dialog, and the second and third preferences to put in it. The first one,
-  click-to-draw, is on the board's control row because it is worth reaching
-  mid-session; the ones that follow — a colour scheme, board size, the animation's
-  pace, a voice — are not, and they want a screen. Two small things to settle
-  when it is built: an **Automatic** choice (the stored value is already
-  `Option<bool>`, so `null` — "follow the device" — can be offered without a
-  schema change) and whether the dialog reports a save failure the way every other
-  store does (it should; `SettingsView.warning` is already there for it).
+- **A settings screen** — **done**, and it holds four preferences rather than the
+  one that was on the board's control row: how a stroke is committed
+  (*Automatic* / click to draw / drag), the stroke-order animation's pace, the
+  board size, and the pronunciation voice. `src/lib/SettingsPanel.svelte` is the
+  dialog, the fourth sidebar screen. What the roadmap asked to settle when it was
+  built is settled: an **Automatic** choice is offered for the two preferences
+  whose absence has a device or system answer (click-to-draw, the voice) and the
+  stored value stays the tri-state it already was, with clearing spelled per
+  preference on the wire — `click_to_draw` has its own command, because a missing
+  argument and a `null` one are indistinguishable once they are on the wire,
+  while a voice clears with `""`. A save failure **is** reported, in
+  `SettingsView.warning`, on the screen itself and with the change standing for
+  the session. The two preferences with no device signal
+  (`animation_pace`, `board_size`) are plain values rather than tri-states, and a
+  value at its default is stored as *no row* so that a fresh install is still an
+  empty table. Still open, only because nothing needs them yet: a colour scheme
+  (which wants the dark-mode thought below) and the speech rate.
+- **A settings screen for the model download** — M12 needs somewhere to say what
+  would be downloaded, from where, at what size and under which licence, with
+  declining as a first-class state. The settings screen now exists; what it does
+  not yet have is that section, and it should not grow one until M12 is built.
 
 ## Known weak spots
 

@@ -10,21 +10,27 @@
 //!
 //! ## Why a struct rather than a flag on the app state
 //!
-//! A settings *dialog* is coming, and the expensive part of one is not the
-//! controls: it is having somewhere to put the values, a way to read them before
-//! the first frame, and a defined answer for what happens when a stored value is
-//! missing, unknown or unreadable. That is this module. Adding a preference is
-//! then a field here plus a control there — and a field the store does not know
-//! about needs no database change at all, because the rows are keyed by name.
+//! The settings *screen* is built (`src/lib/SettingsPanel.svelte`), and the
+//! expensive part of one was never the controls: it is having somewhere to put
+//! the values, a way to read them before the first frame, and a defined answer
+//! for what happens when a stored value is missing, unknown or unreadable. That
+//! is this module. Adding a preference is then a field here plus a control there
+//! — and a field the store does not know about needs no database change at all,
+//! because the rows are keyed by name.
 //!
-//! ## Every field is optional, and that is the point
+//! ## Which fields are optional, and why not all of them
 //!
 //! `None` means *the learner has not chosen*, which is not the same as `false`.
-//! The interface resolves a missing choice from the device — a trackpad or a
-//! mouse wants click-to-draw, a stylus or a finger wants to drag — and only
-//! writes a value once the learner has actually flipped the switch. Collapsing
-//! that into a plain `bool` default would make "not chosen yet" indistinguishable
-//! from "chosen off", and the device default would then be impossible to offer.
+//! That only earns its keep for a preference the interface can resolve from the
+//! **device** — a trackpad or a mouse wants click-to-draw, a stylus or a finger
+//! wants to drag — because the absence then has a third, observable meaning, and
+//! the app can follow the device until the learner actually flips the switch.
+//!
+//! A preference with no device signal ([`Pace`], [`BoardSize`]) is a plain value
+//! with a `Default` instead. Making those optional too would add a state nobody
+//! can tell apart from the default and would push a `?? "normal"` into every
+//! caller. What is *stored* is the same either way: no row at all, which is what
+//! a fresh install looks like.
 
 use std::fs;
 use std::io;
@@ -62,7 +68,87 @@ impl std::fmt::Display for SettingsError {
 
 impl std::error::Error for SettingsError {}
 
-/// What the learner has chosen, if anything.
+/// How fast the stroke-order animation runs.
+///
+/// A closed choice rather than a number of milliseconds: what a learner wants to
+/// say is "slower, please", and three bands are what the settings screen can
+/// offer honestly.
+///
+/// **The value is a name, not a scale.** What each name does to the animation is
+/// the *interface's* business — `paceScale` in `src/App.svelte` is the one place
+/// that turns a name into a factor, because that is where the animation's bounds
+/// live and a speed is meaningless without them. Do not add a `scale()` here: a
+/// second copy of the number in Rust would drift from the one the app uses, and
+/// nothing would fail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Pace {
+    /// Slower: for a learner meeting stroke order for the first time.
+    Slow,
+    /// The pace the animation has always had.
+    Normal,
+    /// Faster: for revising a character already known.
+    Fast,
+}
+
+impl Pace {
+    /// Every pace, in the order the settings screen offers them.
+    ///
+    /// The list lives here rather than in the interface so that adding a pace
+    /// cannot leave the control out of step with the enum — the same reason
+    /// [`BoardSize`] has one.
+    pub const ALL: [Pace; 3] = [Pace::Slow, Pace::Normal, Pace::Fast];
+}
+
+impl Default for Pace {
+    /// Normal, which is the pace the animation shipped with. Unlike the
+    /// device-dependent preferences this one is a *value* rather than an
+    /// `Option`: there is no device signal to read a pace from, so "nobody has
+    /// chosen" would be indistinguishable in behaviour from "chose normal", and
+    /// the stored absence is already carried by the row being missing.
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+/// How large the practice board is drawn.
+///
+/// A scale rather than a pixel size: the board sizes itself from its container
+/// so that it fits the window on any screen, and what a learner actually wants
+/// to change is how much of that space it takes. As with [`Pace`], the *name*
+/// travels and the fraction that implements it lives in the interface
+/// (`boardFraction` in `src/App.svelte`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BoardSize {
+    /// Smallest, for a window with little room to spare.
+    Compact,
+    /// The size the board has always been.
+    Normal,
+    /// Largest, for a big screen or a stylus.
+    Large,
+}
+
+impl BoardSize {
+    /// Every size, in the order the settings screen offers them.
+    pub const ALL: [BoardSize; 3] = [BoardSize::Compact, BoardSize::Normal, BoardSize::Large];
+}
+
+impl Default for BoardSize {
+    /// Normal, for the reason [`Pace::default`] gives: there is no device signal
+    /// for this either.
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+/// The preferences whose absence has a device-dependent answer.
+///
+/// Only these are `Option`: the interface can resolve a missing one *from the
+/// machine it is running on*, which is what makes storing the absence worth
+/// doing. A preference with no device signal lives as a plain value with a
+/// `Default` — the row is missing either way, and pretending otherwise would add
+/// a third state nobody can observe.
 ///
 /// Absent fields are *unset*, not defaulted — see the module note. `Default` is
 /// therefore every field `None`, which is exactly a fresh install.
@@ -72,6 +158,20 @@ pub struct Settings {
     /// How a stroke is drawn: `Some(true)` click to start and click to finish,
     /// `Some(false)` press and drag, `None` let the device decide.
     pub click_to_draw: Option<bool>,
+    /// The pronunciation voice to use, by name. Unknown names are matched
+    /// against the installed voices ignoring the locale qualifier macOS appends
+    /// — `Tingting (Chinese (China mainland))` is the same voice as `Tingting` —
+    /// and a name this machine does not have falls back to the automatic choice
+    /// rather than failing, because a preference set on one machine must not
+    /// break pronunciation on another. `None` is the automatic choice.
+    pub voice: Option<String>,
+    /// How fast the stroke-order animation runs when nobody has chosen
+    /// differently. Stored as a value, not an absence — see [`Pace::default`].
+    #[serde(default)]
+    pub animation_pace: Pace,
+    /// How large the board is drawn — see [`BoardSize::default`].
+    #[serde(default)]
+    pub board_size: BoardSize,
 }
 
 /// Where settings are kept.
@@ -125,6 +225,21 @@ impl SettingsView {
     /// `view.click_to_draw()` reading better than `view.settings.click_to_draw`.
     pub fn click_to_draw(&self) -> Option<bool> {
         self.settings.click_to_draw
+    }
+
+    /// The voice to pronounce with, or `None` for the automatic choice.
+    pub fn voice(&self) -> Option<&str> {
+        self.settings.voice.as_deref()
+    }
+
+    /// How fast the stroke-order animation should run.
+    pub fn pace(&self) -> Pace {
+        self.settings.animation_pace
+    }
+
+    /// How large the board should be drawn.
+    pub fn board_size(&self) -> BoardSize {
+        self.settings.board_size
     }
 }
 
@@ -198,6 +313,42 @@ impl SettingsStore {
             return false;
         }
         self.settings.click_to_draw = value;
+        self.dirty = true;
+        true
+    }
+
+    /// Choose the voice to pronounce with, or `None` for the automatic choice.
+    ///
+    /// An empty (or all-whitespace) name is stored as `None`, so a field the
+    /// learner has cleared goes back to the automatic choice rather than being
+    /// persisted as a voice called "".
+    pub fn set_voice(&mut self, value: Option<&str>) -> bool {
+        let value = value.map(str::trim).filter(|name| !name.is_empty());
+        let value = value.map(str::to_string);
+        if self.settings.voice == value {
+            return false;
+        }
+        self.settings.voice = value;
+        self.dirty = true;
+        true
+    }
+
+    /// Choose how fast the stroke-order animation runs.
+    pub fn set_animation_pace(&mut self, value: Pace) -> bool {
+        if self.settings.animation_pace == value {
+            return false;
+        }
+        self.settings.animation_pace = value;
+        self.dirty = true;
+        true
+    }
+
+    /// Choose how large the board is drawn.
+    pub fn set_board_size(&mut self, value: BoardSize) -> bool {
+        if self.settings.board_size == value {
+            return false;
+        }
+        self.settings.board_size = value;
         self.dirty = true;
         true
     }
@@ -326,6 +477,98 @@ mod tests {
         assert!(store.set_click_to_draw(Some(false)));
         assert!(store.set_click_to_draw(None));
         assert!(!store.set_click_to_draw(None));
+    }
+
+    #[test]
+    fn a_preference_with_no_device_signal_defaults_rather_than_going_unset() {
+        // The distinction the module note draws: a *device-dependent* preference
+        // is an `Option`, so "nobody has chosen" survives storage. A pace and a
+        // board size have no device to read, so their absence has one observable
+        // meaning and the value is a plain enum.
+        let store = SettingsStore::in_memory();
+        assert_eq!(store.settings().animation_pace, Pace::Normal);
+        assert_eq!(store.settings().board_size, BoardSize::Normal);
+        assert_eq!(store.settings().voice, None);
+
+        // And the same on a fresh document that carries none of the new keys.
+        let path = temp_path("missing-new-keys");
+        fs::write(&path, format!(r#"{{"version":{FORMAT_VERSION}}}"#)).unwrap();
+        let store = SettingsStore::open(&path).unwrap();
+        assert_eq!(store.view().pace(), Pace::Normal);
+        assert_eq!(store.view().board_size(), BoardSize::Normal);
+        assert_eq!(store.view().voice(), None);
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn the_new_preferences_round_trip_through_the_file() {
+        let path = temp_path("round-trip-new");
+        {
+            let mut store = SettingsStore::open(&path).unwrap();
+            assert!(store.set_voice(Some("Meijia")));
+            assert!(store.set_animation_pace(Pace::Slow));
+            assert!(store.set_board_size(BoardSize::Large));
+            store.save().unwrap();
+        }
+        let reopened = SettingsStore::open(&path).unwrap();
+        assert_eq!(reopened.view().voice(), Some("Meijia"));
+        assert_eq!(reopened.view().pace(), Pace::Slow);
+        assert_eq!(reopened.view().board_size(), BoardSize::Large);
+
+        // The enum names are the ones the interface and the database key rows
+        // use, so they are asserted rather than left to the derive.
+        let text = fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["animationPace"], serde_json::json!("slow"));
+        assert_eq!(parsed["boardSize"], serde_json::json!("large"));
+        assert_eq!(parsed["voice"], serde_json::json!("Meijia"));
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn clearing_the_voice_goes_back_to_automatic_rather_than_an_empty_name() {
+        let mut store = SettingsStore::in_memory();
+        assert!(store.set_voice(Some("Meijia")));
+        assert!(store.set_voice(Some("   ")));
+        assert_eq!(store.view().voice(), None);
+        assert!(!store.set_voice(None), "already unset");
+    }
+
+    #[test]
+    fn every_choice_is_offered_and_the_names_are_stable() {
+        // `ALL` is what the settings screen renders, in order, so a choice added
+        // to the enum but not to the list would be unreachable. The *names* are
+        // asserted because three things have to agree on them: this enum, the
+        // interface's own union type, and the rows in the database (see
+        // `hanzi-store`). A rename that reached only one of the three would show
+        // the learner their choice had been reset.
+        assert_eq!(Pace::ALL, [Pace::Slow, Pace::Normal, Pace::Fast]);
+        assert_eq!(Pace::default(), Pace::Normal);
+        assert_eq!(BoardSize::ALL, [BoardSize::Compact, BoardSize::Normal, BoardSize::Large]);
+        assert_eq!(BoardSize::default(), BoardSize::Normal);
+
+        let names: Vec<String> = Pace::ALL
+            .iter()
+            .map(|pace| serde_json::to_string(pace).unwrap().trim_matches('"').to_string())
+            .collect();
+        assert_eq!(names, ["slow", "normal", "fast"]);
+        let names: Vec<String> = BoardSize::ALL
+            .iter()
+            .map(|size| serde_json::to_string(size).unwrap().trim_matches('"').to_string())
+            .collect();
+        assert_eq!(names, ["compact", "normal", "large"]);
+    }
+
+    #[test]
+    fn setting_a_preference_to_its_current_value_is_not_a_change() {
+        let mut store = SettingsStore::in_memory();
+        assert!(store.set_animation_pace(Pace::Fast));
+        assert!(!store.set_animation_pace(Pace::Fast));
+        assert!(store.set_board_size(BoardSize::Compact));
+        assert!(!store.set_board_size(BoardSize::Compact));
+        assert!(store.set_voice(Some("Tingting")));
+        assert!(!store.set_voice(Some("Tingting")));
     }
 
     #[test]

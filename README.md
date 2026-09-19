@@ -22,7 +22,7 @@ Working end to end. The grading engine, the dataset pipeline, the Tauri command
 layer, the drawing UI, pronunciation, the personal vocabulary list, per-character
 progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
 measure**, the **durable study store** and **tone practice** — for characters
-*and words* — are all implemented and tested; 281 automated tests pass. What is
+*and words* — are all implemented and tested; 300 automated tests pass. What is
 not built yet is listed under
 [Next steps](#next-steps).
 
@@ -101,7 +101,15 @@ not built yet is listed under
   comes back with its drawing and its grade, to look at again or improve, and an
   unwritten one is ready to write. The word is recorded once every character has
   been written, not necessarily in order.
-- **About and licences.** The fourth screen in the sidebar names the app's own
+- **Settings you actually own.** A fourth screen holds the four things the app
+  would otherwise decide for you: whether a stroke is committed by clicking or by
+  dragging, how fast the stroke-order animation runs, how much of the window the
+  board takes, and which installed voice pronounces. Each change is written as
+  you make it — there is no Save button — and a change that could not be written
+  says so instead of pretending. The first and the last can be left **Automatic**,
+  which is what a fresh install has and what lets a trackpad get click-to-draw
+  while a stylus gets dragging without anybody deciding.
+- **About and licences.** The fifth screen in the sidebar names the app's own
   licence and shows the full text of every third-party licence its data and font
   are under, with what each source contributes and where the notice sits inside
   the bundle. Nothing on it is fetched, and nothing it names is downloaded: it is
@@ -169,6 +177,25 @@ again the moment it ends, so the pronunciation is audible even with the
 Ring/Silent switch on — while anything else that was playing is ducked rather
 than stopped.
 
+Which voice is used is a **setting**: the Settings screen lists the Chinese voices
+this machine has, with their locales, and a *Hear it* button to choose one by ear.
+It can be left Automatic, which is the rule above. Only Chinese voices are
+offered, because an English voice handed 汉 guesses at it. A chosen name that this
+machine does not have — a preference carried from another Mac — **falls back to
+the automatic voice rather than going silent**, and the screen says which voice is
+really in use rather than showing you the name it stored.
+
+The environment variable `HANZI_TUTOR_VOICE` still outranks the setting, which is
+what an environment variable is for: a run that has to be reproducible.
+
+```bash
+HANZI_TUTOR_VOICE="Meijia" pnpm run dev
+```
+
+Enumerating voices takes about a second, so it runs on a background thread at
+startup rather than on the first click — and the Settings screen is served from
+that same cached list, so opening it is immediate.
+
 The **character** is spoken rather than its pinyin: `say` has a Chinese lexicon,
 so 汉 is read correctly, whereas an English-trained voice handed `hàn` would be
 guessing at the diacritics. This also makes the control safe in recall mode —
@@ -179,14 +206,9 @@ A **word** is spoken whole, which is the only way to get a polyphonic character
 right. 着 on its own is read whichever way the synthesiser prefers; 着急 is
 `zháojí`, and the word is what carries that context.
 
-Override the voice with an environment variable:
-
-```bash
-HANZI_TUTOR_VOICE="Meijia" pnpm run dev
-```
-
-Enumerating voices takes about a second, so it runs on a background thread at
-startup rather than on the first click.
+The preferences live in the same database as the study data, one row each, and
+are described in
+[Your progress and what to review](#your-progress-and-what-to-review).
 
 ### Your study data
 
@@ -241,7 +263,24 @@ Two things are worth knowing about that first run:
 
 A preference you have not chosen has **no row at all**, which is not the same as
 one set to off: that is what lets the app follow the device until you decide, and
-then stop second-guessing you. `settings` holds only what you have chosen.
+then stop second-guessing you. `settings` holds only what you have chosen, and a
+preference set back to its default loses its row again — writing "normal" beside a
+missing row would add nothing the absence does not already say.
+
+The Settings screen writes four of them, and it is worth being precise about which
+can be *un*-chosen, because that is what decides the shape of the row:
+
+- **How a stroke is drawn** (`click_to_draw`) is `true`, `false`, or **no row** —
+  and no row is a real state, not a default. The screen offers it as *Automatic*,
+  and it is what a fresh install has: the app reads the device and gives a mouse
+  click-to-draw while a stylus keeps dragging. Flip the switch and it stops
+  second-guessing you.
+- **The pronunciation voice** (`voice`) is a name, or no row for the automatic
+  choice.
+- **The stroke-order speed** (`animation_pace`) and **the board size**
+  (`board_size`) have no device signal to read, so they are always a value:
+  `slow`/`normal`/`fast` and `compact`/`normal`/`large`. No row means the default,
+  which is `normal` for both.
 
 | Table | Holds |
 | --- | --- |
@@ -663,8 +702,9 @@ crates/hanzi-store/         the SQLite store. Native dependency, so it is
   tests/store.rs            the M10 acceptance criteria
 src-tauri/                  Tauri shell
   src/commands.rs           the IPC surface
-  src/state.rs              embedded dataset, speech warm-up, the three stores
-  src/speech.rs             pronunciation via the system synthesiser
+  src/state.rs              embedded dataset, speech warm-up, the stores
+  src/speech.rs             pronunciation via the system synthesiser, and the
+                            voice list the settings screen offers
   src/licences.rs           the notices that ship
   tests/ipc_contract.rs     locks the JSON contract the UI reads
 src/lib/                    Svelte components
@@ -672,14 +712,16 @@ src/lib/                    Svelte components
   render.ts                 canvas painting, the stroke-order sweep, verdict colours
   WordsPanel.svelte         the HSK word list: search, browse, practise
   VocabularyPanel.svelte    the vocabulary list: add, group, export, import
-  LessonSidebar.svelte      course, list and word navigation, progress marks
+  LessonSidebar.svelte      course, list, word and screen navigation
+  SettingsPanel.svelte      the four preferences, written as they are changed
+  LicencesPanel.svelte      About: the app's identity and every notice, in full
 scripts/                    data fetching, cargo env, CLI selection
 ```
 
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 228 tests
+pnpm test             # the whole Rust suite: 300 tests
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
@@ -859,7 +901,8 @@ or by clicking. The headline gaps are now:
    which cannot be bundled. The project owner has settled the question: a download
    is acceptable **provided it is optional, user-triggered, and installed from the
    settings screen**, with the app working exactly as it does today for anyone who
-   declines. Nothing is built yet; ROADMAP M12 records the constraints.
+   declines. That screen now exists (ROADMAP's cross-cutting list); the recognition
+   itself is not built, and ROADMAP M12 records the constraints it must meet.
 
 If you are picking this project up to continue development, read
 **[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the

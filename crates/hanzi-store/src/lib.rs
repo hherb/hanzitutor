@@ -38,7 +38,7 @@ use hanzi_core::progress::{
     CursorDocument, CursorSink, Document as ProgressDocument, ProgressError, ProgressSink,
     MAX_HISTORY,
 };
-use hanzi_core::settings::{Settings, SettingsError, SettingsSink};
+use hanzi_core::settings::{BoardSize, Pace, Settings, SettingsError, SettingsSink};
 use hanzi_core::vocab::{Document as VocabDocument, VocabError, VocabSink};
 use hanzi_core::{Attempt, AttemptRecord, CardState, Entry, Rating};
 use rusqlite::{params, Connection};
@@ -590,6 +590,9 @@ fn write_entry(conn: &Connection, entry: &Entry) -> rusqlite::Result<()> {
 /// The settings keys this build knows. An unknown row in the table is left
 /// alone rather than pruned: a newer build may have written it.
 const CLICK_TO_DRAW: &str = "click_to_draw";
+const VOICE: &str = "voice";
+const ANIMATION_PACE: &str = "animation_pace";
+const BOARD_SIZE: &str = "board_size";
 
 impl SettingsSink for Db {
     /// Read the settings a learner has actually chosen.
@@ -597,6 +600,9 @@ impl SettingsSink for Db {
     /// A missing row is an unset preference, not a default: the interface is
     /// what decides that a trackpad should start out click-to-draw, and it can
     /// only do that if "nobody has chosen" survives storage as an absence.
+    /// A missing row is also how the two *value* preferences ([`Pace`],
+    /// [`BoardSize`]) fall back to their `Default`, since a preference with no
+    /// device signal has only the one meaning for its absence.
     fn load(&self) -> Result<Settings, SettingsError> {
         let conn = self.lock();
         let path = self.path();
@@ -616,23 +622,104 @@ impl SettingsSink for Db {
                     }
                 });
         }
+        if let Some(text) = setting_get(&conn, VOICE).map_err(|e| settings_error(&path, e))? {
+            // An empty row is treated as no choice rather than a voice called "".
+            // `save` clears the row instead of writing one, so this is only
+            // reachable in a hand-edited database — and falling back to the
+            // automatic voice is the harmless reading of it.
+            let name = text.trim();
+            settings.voice = (!name.is_empty()).then(|| name.to_string());
+        }
+        if let Some(text) =
+            setting_get(&conn, ANIMATION_PACE).map_err(|e| settings_error(&path, e))?
+        {
+            settings.animation_pace = match text.as_str() {
+                "slow" => Pace::Slow,
+                "normal" => Pace::Normal,
+                "fast" => Pace::Fast,
+                other => {
+                    return Err(SettingsError::Malformed(format!(
+                        "{}: the stored setting {ANIMATION_PACE:?} is {other:?}, which is                              not one of slow, normal or fast",
+                        path.display()
+                    )))
+                }
+            };
+        }
+        if let Some(text) =
+            setting_get(&conn, BOARD_SIZE).map_err(|e| settings_error(&path, e))?
+        {
+            settings.board_size = match text.as_str() {
+                "compact" => BoardSize::Compact,
+                "normal" => BoardSize::Normal,
+                "large" => BoardSize::Large,
+                other => {
+                    return Err(SettingsError::Malformed(format!(
+                        "{}: the stored setting {BOARD_SIZE:?} is {other:?}, which is                              not one of compact, normal or large",
+                        path.display()
+                    )))
+                }
+            };
+        }
         Ok(settings)
     }
 
     /// Write the settings. Every field this build knows is written or cleared,
     /// so a value removed by the learner is removed from the table rather than
     /// left behind to be mistaken for a choice.
+    ///
+    /// A pace or a board size *at its default* is written as no row, for the
+    /// same reason an unset `Option` is: the default is what a missing row
+    /// already means, so a row saying "normal" adds nothing an absent row does
+    /// not, while making a fresh install look like a database full of decisions
+    /// nobody took. A learner who deliberately picks normal gets the behaviour
+    /// they asked for and the row is simply gone.
     fn save(&mut self, settings: &Settings) -> Result<(), SettingsError> {
         let path = self.path();
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(|e| settings_error(&path, e))?;
-        setting_put(
-            &tx,
-            CLICK_TO_DRAW,
-            settings.click_to_draw.map(|on| if on { "true" } else { "false" }),
-        )
-        .map_err(|e| settings_error(&path, e))?;
+        let rows = [
+            (
+                CLICK_TO_DRAW,
+                settings
+                    .click_to_draw
+                    .map(|on| if on { "true" } else { "false" }.to_string()),
+            ),
+            (VOICE, settings.voice.clone()),
+            (
+                ANIMATION_PACE,
+                (settings.animation_pace != Pace::default())
+                    .then(|| pace_key(settings.animation_pace).to_string()),
+            ),
+            (
+                BOARD_SIZE,
+                (settings.board_size != BoardSize::default())
+                    .then(|| board_size_key(settings.board_size).to_string()),
+            ),
+        ];
+        for (key, value) in rows {
+            setting_put(&tx, key, value.as_deref()).map_err(|e| settings_error(&path, e))?;
+        }
         tx.commit().map_err(|e| settings_error(&path, e))
+    }
+}
+
+/// The stored name of a pace. Asserted against the serialised form by a test, so
+/// a renamed variant cannot leave the database and the interface disagreeing
+/// about what a row means.
+fn pace_key(pace: Pace) -> &'static str {
+    match pace {
+        Pace::Slow => "slow",
+        Pace::Normal => "normal",
+        Pace::Fast => "fast",
+    }
+}
+
+/// The stored name of a board size.
+fn board_size_key(size: BoardSize) -> &'static str {
+    match size {
+        BoardSize::Compact => "compact",
+        BoardSize::Normal => "normal",
+        BoardSize::Large => "large",
     }
 }
 

@@ -760,10 +760,63 @@ fn cursor_serialises_with_camel_case_fields() {
 fn settings_serialise_with_camel_case_fields() {
     let mut store = hanzi_core::SettingsStore::in_memory();
     assert!(store.set_click_to_draw(Some(true)));
+    assert!(store.set_voice(Some("Meijia")));
+    assert!(store.set_animation_pace(hanzi_core::Pace::Slow));
+    assert!(store.set_board_size(hanzi_core::BoardSize::Compact));
     let json = serde_json::to_value(store.view()).unwrap();
-    expect_keys(&json, &["clickToDraw", "warning"]);
+    expect_keys(
+        &json,
+        &["clickToDraw", "voice", "animationPace", "boardSize", "warning"],
+    );
     assert_eq!(json["clickToDraw"], serde_json::json!(true));
+    assert_eq!(json["voice"], serde_json::json!("Meijia"));
     assert_eq!(json["warning"], serde_json::Value::Null);
+
+    // The enum values are the names the settings screen sends back and the names
+    // the database stores, so they are asserted rather than left to the derive:
+    // a rename that reached only one of the three would silently reset the
+    // learner's choice to the default.
+    assert_eq!(json["animationPace"], serde_json::json!("slow"));
+    assert_eq!(json["boardSize"], serde_json::json!("compact"));
+}
+
+#[test]
+fn settings_the_screen_can_round_trip_through_a_patch() {
+    // The screen sends only what changed, deserialised into the command's own
+    // arguments. Parsing here is what proves the names on the wire are the names
+    // the screen uses — `animationPace`, not `animation_pace`.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Patch {
+        #[serde(default)]
+        click_to_draw: Option<bool>,
+        #[serde(default)]
+        voice: Option<String>,
+        #[serde(default)]
+        animation_pace: Option<hanzi_core::Pace>,
+        #[serde(default)]
+        board_size: Option<hanzi_core::BoardSize>,
+    }
+
+    let patch: Patch = serde_json::from_value(serde_json::json!({
+        "animationPace": "fast",
+        "boardSize": "large",
+        "voice": "Tingting",
+        "clickToDraw": false,
+    }))
+    .unwrap();
+    assert_eq!(patch.click_to_draw, Some(false));
+    assert_eq!(patch.voice.as_deref(), Some("Tingting"));
+    assert_eq!(patch.animation_pace, Some(hanzi_core::Pace::Fast));
+    assert_eq!(patch.board_size, Some(hanzi_core::BoardSize::Large));
+
+    // A patch that names one preference leaves the rest absent, which is what
+    // "leave this one alone" is on the wire.
+    let partial: Patch = serde_json::from_value(serde_json::json!({ "voice": "Meijia" })).unwrap();
+    assert_eq!(partial.voice.as_deref(), Some("Meijia"));
+    assert!(partial.click_to_draw.is_none());
+    assert!(partial.animation_pace.is_none());
+    assert!(partial.board_size.is_none());
 }
 
 #[test]
@@ -774,11 +827,86 @@ fn an_unchosen_setting_is_null_rather_than_false() {
     let store = hanzi_core::SettingsStore::in_memory();
     let json = serde_json::to_value(store.view()).unwrap();
     assert_eq!(json["clickToDraw"], serde_json::Value::Null);
+    assert_eq!(json["voice"], serde_json::Value::Null);
+
+    // A pace and a board size are not nullable: there is no device signal to
+    // resolve one from, so the stored absence means the default and the wire
+    // carries the value the app will actually use.
+    assert_eq!(json["animationPace"], serde_json::json!("normal"));
+    assert_eq!(json["boardSize"], serde_json::json!("normal"));
 
     let mut store = hanzi_core::SettingsStore::in_memory();
     store.set_click_to_draw(Some(false));
     let json = serde_json::to_value(store.view()).unwrap();
     assert_eq!(json["clickToDraw"], serde_json::json!(false));
+}
+
+#[test]
+fn changing_one_preference_leaves_the_others_alone() {
+    // This is the whole reason every argument of `update_settings` is optional:
+    // the screen sends one control's new value, and a filled-in voice must not
+    // be cleared by a pace change on the way past.
+    let state = state();
+    state.update_settings(Some(true), Some("Meijia"), None, None);
+    let view = state.update_settings(None, None, Some(hanzi_core::Pace::Fast), None);
+
+    assert_eq!(view.click_to_draw(), Some(true), "click-to-draw was untouched");
+    assert_eq!(view.voice(), Some("Meijia"), "the voice was untouched");
+    assert_eq!(view.pace(), hanzi_core::Pace::Fast);
+    assert_eq!(view.board_size(), hanzi_core::BoardSize::Normal);
+
+    // And clearing the device-dependent one is its own call, because `None`
+    // above already means "leave it alone".
+    let view = state.clear_click_to_draw();
+    assert_eq!(view.click_to_draw(), None);
+    assert_eq!(view.voice(), Some("Meijia"), "only click-to-draw was cleared");
+}
+
+#[test]
+fn every_preference_survives_a_restart_through_the_state_layer() {
+    let dir = data_dir("ipc-settings-all");
+    {
+        let state = AppState::load(Some(dir.clone())).unwrap();
+        let view = state.update_settings(
+            Some(false),
+            Some("Meijia"),
+            Some(hanzi_core::Pace::Slow),
+            Some(hanzi_core::BoardSize::Large),
+        );
+        assert!(view.warning.is_none(), "{:?}", view.warning);
+    }
+
+    let state = AppState::load(Some(dir.clone())).unwrap();
+    let view = state.lock_settings().view();
+    assert_eq!(view.click_to_draw(), Some(false));
+    assert_eq!(view.voice(), Some("Meijia"));
+    assert_eq!(view.pace(), hanzi_core::Pace::Slow);
+    assert_eq!(view.board_size(), hanzi_core::BoardSize::Large);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_voice_list_says_which_voice_a_choice_resolved_to() {
+    // A preference naming a voice this machine does not have falls back rather
+    // than failing, and the screen can only say so honestly if `active` reports
+    // what is really in use rather than what was stored.
+    let state = state();
+    state.update_settings(None, Some("Definitely Not An Installed Voice"), None, None);
+
+    let voices = state.voices();
+    let json = serde_json::to_value(&voices).unwrap();
+    expect_keys(&json, &["available", "active"]);
+    for option in json["available"].as_array().unwrap() {
+        expect_keys(option, &["name", "locale"]);
+    }
+
+    // Whatever this machine has, the stored preference is not a voice it can
+    // speak with, so the two must not be reported as the same thing.
+    assert_ne!(voices.active.as_deref(), Some("Definitely Not An Installed Voice"));
+    // And the interface reads `active === null` to disable pronunciation, so it
+    // must be `null` exactly when nothing Chinese is installed.
+    assert_eq!(voices.active.is_none(), voices.available.is_empty());
 }
 
 #[test]

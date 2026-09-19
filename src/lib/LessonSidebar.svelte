@@ -1,17 +1,18 @@
 <script lang="ts">
   /**
-   * Navigation for the four screens.
+   * Navigation for the five screens.
    *
    * Course: the built-in frequency-ordered lessons, one lesson open at a time,
    * with how much of each has been practised and what is due for review.
    * Vocabulary: the user's own groups, acting as the filter for the list panel.
    * Words: the HSK dictionary, filtered by level.
+   * Settings: the learner's own preferences.
    * About: what the app is, and the licence notices it ships under.
    */
   import type { Lesson, LevelCount, ProgressCard, ReviewView, VocabEntry } from "./types";
 
   interface Props {
-    view: "course" | "vocabulary" | "words" | "about";
+    view: "course" | "vocabulary" | "words" | "settings" | "about";
     onSwitchView: (view: "course" | "vocabulary" | "words") => void;
     lessons: Lesson[];
     activeLesson: number;
@@ -36,6 +37,8 @@
     /** The level the words screen is filtered to, or null for all of them. */
     wordLevel: number | null;
     onSelectWordLevel: (level: number | null) => void;
+    /** Open the Settings screen. */
+    onShowSettings: () => void;
     /** Open the About and licences screen. */
     onShowLicences: () => void;
   }
@@ -61,6 +64,7 @@
     wordsTotal,
     wordLevel,
     onSelectWordLevel,
+    onShowSettings,
     onShowLicences,
   }: Props = $props();
 
@@ -131,6 +135,8 @@
         {summary}
       {:else if view === "words"}
         {wordsTotal.toLocaleString()} HSK words
+      {:else if view === "settings"}
+        your preferences
       {:else if view === "about"}
         licences and attribution
       {:else}
@@ -249,6 +255,14 @@
       Add characters from the practice screen with <em>Add to my list</em>, or add
       words directly in the panel.
     </p>
+  {:else if view === "settings"}
+    <div class="about">
+      <p>
+        How a stroke is drawn, how fast the stroke order is shown, how big the
+        board is and which voice pronounces. Each change is written as you make
+        it.
+      </p>
+    </div>
   {:else}
     <div class="about">
       <p>
@@ -260,6 +274,9 @@
   {/if}
 
   <div class="footer">
+    <button class:on={view === "settings"} onclick={onShowSettings}>
+      Settings
+    </button>
     <button class:on={view === "about"} onclick={onShowLicences}>
       About and licences
     </button>

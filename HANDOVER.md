@@ -32,7 +32,7 @@ ls .cargo-home 2>/dev/null || {
 #    dataset artifact, the interface font and the licence texts are all
 #    committed, so a clone builds without downloading anything.
 pnpm install
-pnpm test                        # expect 228 passed, 0 failed
+pnpm test                        # expect 300 passed, 0 failed, 1 ignored
 pnpm run check:rust && pnpm run check:web
 ```
 
@@ -144,7 +144,8 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Drawing canvas | Done, human-confirmed | trace + recall modes, colour-coded feedback |
 | Stroke-order animation (M7) | Done | pen sweeps each centre-line, the outline revealed behind it; band width measured per stroke; confirmed by window capture |
 | Input ergonomics (M8) | Done, human-confirmed | click-to-draw beside the corrections switch, on by default where there is a hover and remembered once chosen; both paths produce identical geometry; driven with synthetic pointer events, and the trackpad behaviour confirmed by hand |
-| Pronunciation | Done on macOS and iOS | 11 tests; the iOS voice list is pinned from the simulator's log; human-confirmed hearing 的 on both |
+| Pronunciation | Done on macOS and iOS | 19 tests; the iOS voice list is pinned from the simulator's log; the voice preference outranks the automatic choice but yields to the environment override, and falls back rather than going silent; human-confirmed hearing 的 on both |
+| Settings screen | Runs, and the store behind it is verified | the fourth sidebar screen. 12 `settings.rs` tests + the store round trip + the IPC contract, which pins the enum names, that a one-field change leaves the rest alone, and that a *deduplicated* voice list is what the screen is offered. Against the running app: a fresh install leaves the `settings` table **empty**, a change writes the expected rows (`voice = Meijia`, `animation_pace = slow`, `board_size = compact`), a chosen voice is applied **before** the warm-up (`[speech] using voice Meijia` on the next launch), and a compact board is visibly smaller. The pace is scale arithmetic with unit tests behind it; the sweep itself was not watched at two speeds (drawing cannot be driven from here, §6) |
 | Personal vocabulary list | Done | 27 store unit tests; persistence tested through the state layer |
 | iOS app (M9) | Runs on a physical iPhone, human-confirmed | the Rust side cross-compiles unchanged; phone layout verified by simulator screenshot; the scene-lifecycle crash and the black screen behind it are recorded in §6 |
 | Durable study store (M10) | Done | one `hanzi.db`; the old JSON imported once and left byte-identical; the attempt log past the 20 a card shows; WAL, and an uncommitted write leaves nothing |
@@ -210,8 +211,9 @@ crates/hanzi-core/          grading engine. No Tauri, no UI, no platform code.
   src/dataset.rs            Character + Word models, word search, artifact loading
   src/curriculum.rs         frequency list -> lessons
   src/vocab.rs              the personal vocabulary list, and VocabSink
-  src/settings.rs           the learner's settings: Settings, SettingsSink, and
-                            the tri-state (None = nobody has chosen)
+  src/settings.rs           the learner's settings: Settings, Pace, BoardSize,
+                            SettingsSink, and the tri-state (None = nobody has
+                            chosen) — see §7 for which fields are which
   src/progress.rs           per-character cards, SM-2 scheduling, review queue
   src/tone.rs               YIN pitch tracking, tone contours, syllable
                             segmentation, DTW scoring. Pure DSP: samples in,
@@ -261,6 +263,8 @@ src/
                             tone shape, with the verdict Rust worded
   lib/WordsPanel.svelte     the HSK word list: search, browse, practise
   lib/LicencesPanel.svelte  About and licences: the notices, with their texts
+  lib/SettingsPanel.svelte  the four preferences; each change is written at once,
+                            and an unchosen one is offered as Automatic
   lib/LessonSidebar.svelte  course, list and word navigation, progress marks
   lib/types.ts              TS mirror of the Rust structs
   lib/api.ts                typed invoke wrappers
@@ -513,7 +517,7 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
 Run before every commit:
 
 ```bash
-pnpm test           # 228 tests: engine + data pipeline units, the SQLite store, IPC contract, speech, notices, data-dir flag
+pnpm test           # 300 tests: engine + data pipeline units, the SQLite store, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
@@ -1097,14 +1101,40 @@ downstream of them is covered by the IPC tests, which drive
   inside a sandbox — so a hand-built path fails only at save time. **The format is
   settled too** (M10): one SQLite database, `hanzi.db`, holding all three stores,
   imported once from the JSON documents an older build left behind.
-- **Where settings live, and what an unchosen one means** — settled: preferences
-  are a `Settings` document in `hanzi-core`, stored as rows in `hanzi.db`'s
-  `settings` table, with **no row** meaning "nobody has chosen" rather than
-  "off". That distinction is the whole point: the interface resolves an unchosen
-  preference from the device (click-to-draw where there is a hover, dragging for
-  a finger or a stylus) and only writes a value once the learner has flipped the
-  switch. A settings *screen* is not built yet — the store, the two commands and
-  the tri-state are, so it is a UI job; see the cross-cutting list in `ROADMAP.md`.
+- **Where settings live, what an unchosen one means, and the screen that edits
+  them** — settled, and built. Preferences are a `Settings` document in
+  `hanzi-core`, stored as rows in `hanzi.db`'s `settings` table, with **no row**
+  meaning "nobody has chosen" rather than "off". That distinction is the whole
+  point: the interface resolves an unchosen preference from the device
+  (click-to-draw where there is a hover, dragging for a finger or a stylus) or
+  from the system (the pronunciation voice) and only writes a value once the
+  learner has actually made a choice. `src/lib/SettingsPanel.svelte` is the screen
+  — the fourth sidebar entry — and it edits four preferences: click-to-draw, the
+  stroke-order pace, the board size, and the voice. Three rules there are worth
+  not undoing:
+  - **Only a preference with a device or system answer is a tri-state.**
+    `click_to_draw` and `voice` are `Option`; `animation_pace` and `board_size`
+    are plain enums with a `Default`, because nothing can resolve their absence
+    and `Option` would only add a state no one can observe. `Pace`/`BoardSize`
+    carry `ALL` (the order the screen offers) and the scale the app applies, so a
+    new choice cannot be added in one place and forgotten in the other.
+  - **Clearing is spelled per preference on the wire**, because a *missing*
+    argument already means "leave this one alone" — that is what lets the screen
+    send only the control the learner touched without resetting the other three.
+    Click-to-draw therefore has its own command (`clear_click_to_draw`), and a
+    voice clears with `""`. Do not try to fold these into `null`.
+  - **A preference at its default is stored as no row.** Otherwise a fresh
+    install writes two rows saying "normal", and the settings table stops being a
+    record of decisions somebody took.
+- **The voice preference only works if it reaches the speaker before the
+  warm-up.** `AppState::load` sets it on the `Speaker` *before* `warm_voice`
+  spawns. Resolution is not cached (only the ~1s voice *list* is), so a change
+  takes effect on the next utterance; but resolving first would mean the session's
+  first utterance and the startup log both name a voice that is not the one in
+  use. The environment variable `HANZI_TUTOR_VOICE` deliberately **outranks** the
+  stored preference — see `resolve_voice` in `src-tauri/src/speech.rs`, which is a
+  pure function of (installed voices, preference, override) precisely so that the
+  ordering is testable without a synthesiser.
 - **The JSON documents are never removed, and nothing exports back to them.** The
   import leaves `vocabulary.json`, `progress.json` and `course-cursor.json`
   untouched on purpose — they are the only copy of the data until the database has
