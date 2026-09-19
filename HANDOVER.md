@@ -1115,7 +1115,7 @@ of `with-cargo-env.sh`; `src-tauri/target/` otherwise):
 
 ```
 bundle/macos/Hanzi Tutor.app
-bundle/dmg/Hanzi Tutor_0.1.0_aarch64.dmg
+bundle/dmg/Hanzi Tutor_0.2.0_aarch64.dmg
 ```
 
 ### What is inside, and why nothing is downloaded
@@ -1180,6 +1180,34 @@ doing after any change to `bundle.resources`, the font path or `vite.config.ts`.
 Step 4 also confirms the compiled-in notices reached the interface: the log line
 `[webview] licences: 12 notices bundled` appears on stderr at startup, and the
 fourth sidebar entry renders them.
+
+### Releasing it
+
+The version lives in **three files** — the workspace `version` in `Cargo.toml`,
+`package.json` and `src-tauri/tauri.conf.json` —
+and `tests/licences.rs::the_version_is_the_same_in_every_file_that_carries_one`
+fails if any two disagree. Bump all three together: the About screen, the
+bundle's `Info.plist` and the `.dmg` filename all read from them. `Cargo.lock`
+follows on the next cargo run, and `pnpm test` is the check that the three still
+agree.
+
+Then build, tag and publish:
+
+```bash
+pnpm run build                       # the signed .app and .dmg
+git tag v0.2.0
+git push origin v0.2.0
+gh release create v0.2.0 --prerelease --title "0.2.0 — alpha" \
+  --notes-file <notes> \
+  ".cargo-target/release/bundle/dmg/Hanzi Tutor_0.2.0_aarch64.dmg"
+```
+
+0.2.0 is both the first tagged release and an **alpha**, hence `--prerelease`. It
+is **macOS-only on purpose**, and that is what to tell a tester who asks for a
+phone build: the iOS shell runs on a physical iPhone from a *debug* build
+installed with `devicectl`, because iOS *release* builds still fail to link
+Tauri's Swift glue (see the traps above), so there is no IPA to attach until that
+toolchain question is settled.
 
 ### Notarisation, if the app is to leave this machine
 

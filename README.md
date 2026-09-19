@@ -594,7 +594,7 @@ set `CARGO_TARGET_DIR`:
 
 ```
 bundle/macos/Hanzi Tutor.app
-bundle/dmg/Hanzi Tutor_0.1.0_aarch64.dmg
+bundle/dmg/Hanzi Tutor_0.2.0_aarch64.dmg
 ```
 
 ### What is inside the bundle

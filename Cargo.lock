@@ -1279,7 +1279,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "csv",
  "flate2",
@@ -1290,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hanzi-core",
  "rusqlite",
@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-tutor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dispatch2",
  "hanzi-core",
