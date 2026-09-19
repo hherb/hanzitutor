@@ -2,12 +2,14 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AppInfo,
   Character,
   CursorView,
   DatasetStats,
   GradeOptions,
   GradeReport,
   Lesson,
+  LicenceNotice,
   Point,
   ProgressView,
   ReviewView,
@@ -141,3 +143,16 @@ export const courseCursor = () => invoke<CursorView>("course_cursor");
 /** Move the course cursor. The backend clamps the index to the course. */
 export const setCourseCursor = (index: number) =>
   invoke<CursorView>("set_course_cursor", { index });
+
+// ---- what the app is, and what it ships under ------------------------------
+
+/** The app's name, version and licence, for the About screen. */
+export const appInfo = () => invoke<AppInfo>("app_info");
+
+/**
+ * Every licence and attribution notice the app ships with, full text included.
+ *
+ * The texts are compiled into the binary rather than read from the bundle's
+ * resource directory, so this cannot come back empty on a packaged build.
+ */
+export const licenceNotices = () => invoke<LicenceNotice[]>("licence_notices");

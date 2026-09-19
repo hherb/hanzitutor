@@ -1,16 +1,17 @@
 <script lang="ts">
   /**
-   * Navigation for the three screens.
+   * Navigation for the four screens.
    *
    * Course: the built-in frequency-ordered lessons, one lesson open at a time,
    * with how much of each has been practised and what is due for review.
    * Vocabulary: the user's own groups, acting as the filter for the list panel.
    * Words: the HSK dictionary, filtered by level.
+   * About: what the app is, and the licence notices it ships under.
    */
   import type { Lesson, LevelCount, ProgressCard, ReviewView, VocabEntry } from "./types";
 
   interface Props {
-    view: "course" | "vocabulary" | "words";
+    view: "course" | "vocabulary" | "words" | "about";
     onSwitchView: (view: "course" | "vocabulary" | "words") => void;
     lessons: Lesson[];
     activeLesson: number;
@@ -35,6 +36,8 @@
     /** The level the words screen is filtered to, or null for all of them. */
     wordLevel: number | null;
     onSelectWordLevel: (level: number | null) => void;
+    /** Open the About and licences screen. */
+    onShowLicences: () => void;
   }
 
   let {
@@ -58,6 +61,7 @@
     wordsTotal,
     wordLevel,
     onSelectWordLevel,
+    onShowLicences,
   }: Props = $props();
 
   const total = $derived(vocabEntries.length);
@@ -127,6 +131,8 @@
         {summary}
       {:else if view === "words"}
         {wordsTotal.toLocaleString()} HSK words
+      {:else if view === "about"}
+        licences and attribution
       {:else}
         {total} entries · {practised} practised
       {/if}
@@ -216,7 +222,7 @@
       The official HSK 3.0 word lists. Practise a word without saving it, or use
       <em>+ List</em> to keep it with your own lesson material.
     </p>
-  {:else}
+  {:else if view === "vocabulary"}
     <ul class="groups">
       <li>
         <button class:current={vocabSelection === null} onclick={() => onSelectVocabGroup(null)}>
@@ -243,7 +249,21 @@
       Add characters from the practice screen with <em>Add to my list</em>, or add
       words directly in the panel.
     </p>
+  {:else}
+    <div class="about">
+      <p>
+        Hanzi Tutor runs entirely offline. The character data, the word
+        dictionary, the interface font and every licence notice it depends on
+        are inside this app.
+      </p>
+    </div>
   {/if}
+
+  <div class="footer">
+    <button class:on={view === "about"} onclick={onShowLicences}>
+      About and licences
+    </button>
+  </div>
 </nav>
 
 <style>
@@ -453,5 +473,47 @@
     font-size: 0.72rem;
     line-height: 1.45;
     color: var(--muted);
+  }
+
+  /* The About screen's sidebar body: it has no list, so it carries the space
+     that keeps the footer pinned to the bottom. */
+  .about {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 4px 16px 14px;
+  }
+  .about p {
+    margin: 0;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+
+  .footer {
+    flex: none;
+    padding: 6px;
+    border-top: 1px solid var(--line);
+  }
+  .footer button {
+    width: 100%;
+    padding: 7px 10px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    font: inherit;
+    font-size: 0.78rem;
+    color: var(--muted);
+    text-align: left;
+    cursor: pointer;
+  }
+  .footer button:hover {
+    background: var(--hover);
+    color: var(--muted-strong);
+  }
+  .footer button.on {
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-weight: 600;
   }
 </style>

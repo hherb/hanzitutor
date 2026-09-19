@@ -9,15 +9,18 @@
   import CharacterThumb from "./lib/CharacterThumb.svelte";
   import FeedbackPanel from "./lib/FeedbackPanel.svelte";
   import LessonSidebar from "./lib/LessonSidebar.svelte";
+  import LicencesPanel from "./lib/LicencesPanel.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import WordsPanel from "./lib/WordsPanel.svelte";
   import { INK_WIDTH } from "./lib/render";
   import type {
+    AppInfo,
     Character,
     DatasetStats,
     GradeReport,
     Lesson,
+    LicenceNotice,
     Point,
     PracticeItem,
     ProgressView,
@@ -29,8 +32,8 @@
   } from "./lib/types";
 
   type Mode = "trace" | "recall";
-  /** Which of the three top-level screens is showing. */
-  type View = "course" | "vocabulary" | "words";
+  /** Which of the four top-level screens is showing. */
+  type View = "course" | "vocabulary" | "words" | "about";
   /** Where the current practice session draws its characters from. */
   type Source = "course" | "vocabulary" | "review" | "words";
 
@@ -64,6 +67,25 @@
   let voice = $state<string | null | undefined>(undefined);
 
   let view = $state<View>("course");
+
+  // ---- about and licences ---------------------------------------------------
+  /**
+   * The app's own name, version and licence.
+   *
+   * Loaded once with the course rather than when the screen is opened: it is a
+   * handful of strings, and the About screen should never show a spinner.
+   */
+  let appInfo = $state<AppInfo | null>(null);
+  /** The bundled notices, full text included. */
+  let licenceList = $state<LicenceNotice[]>([]);
+  /**
+   * Set if the notices could not be read.
+   *
+   * They are compiled into the binary, so this should be unreachable — but it is
+   * shown on the About screen rather than swallowed, because an empty notice
+   * list would otherwise look like an app that ships nothing to declare.
+   */
+  let licenceError = $state<string | null>(null);
 
   // ---- personal vocabulary list -------------------------------------------
   let vocab = $state<VocabView>({ entries: [], groups: [], warning: null });
@@ -272,6 +294,28 @@
     void refreshVocabulary();
     void refreshProgress();
     void refreshReview();
+
+    // What the app is and what it ships under. Small, and wanted the instant the
+    // About screen is opened, so it is fetched with the rest of the startup
+    // rather than on demand.
+    void api
+      .appInfo()
+      .then((loaded) => {
+        appInfo = loaded;
+      })
+      .catch((cause) => {
+        void api.log(`could not read the app info: ${cause}`);
+      });
+    void api
+      .licenceNotices()
+      .then((notices) => {
+        licenceList = notices;
+        void api.log(`licences: ${notices.length} notices bundled`);
+      })
+      .catch((cause) => {
+        licenceError = `Could not read the bundled licence notices: ${cause}`;
+        void api.log(`webview error: ${licenceError}`);
+      });
 
     // Which characters the board can draw. Only needed to write a word or a
     // sentence one character at a time, but it is small and wanted immediately.
@@ -1041,6 +1085,7 @@
     wordsTotal={stats?.words ?? 0}
     {wordLevel}
     onSelectWordLevel={(level) => (wordLevel = level)}
+    onShowLicences={() => switchView("about")}
   />
 
   <main>
@@ -1097,6 +1142,8 @@
         onPractise={practiseWords}
         onAddToList={addWordToList}
       />
+    {:else if view === "about"}
+      <LicencesPanel info={appInfo} notices={licenceList} error={licenceError} />
     {:else if !character}
       <p class="status">No character selected.</p>
     {:else}

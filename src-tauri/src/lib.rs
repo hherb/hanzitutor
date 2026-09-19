@@ -4,10 +4,12 @@
 //! handles drawing and presentation. See `crate::commands` for the boundary.
 
 mod commands;
+pub mod licences;
 mod speech;
 mod state;
 
 pub use commands::{LevelCount, VocabOutcome, WordSearchView};
+pub use licences::{AppInfo, LicenceNotice};
 pub use state::{AppState, CursorState, Persisted, ProgressState, VocabState, REVIEW_LIMIT};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -50,6 +52,8 @@ pub fn run() {
             commands::review_queue,
             commands::course_cursor,
             commands::set_course_cursor,
+            commands::app_info,
+            commands::licence_notices,
             commands::webview_log,
         ])
         .run(tauri::generate_context!())

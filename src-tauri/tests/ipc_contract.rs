@@ -979,3 +979,76 @@ fn the_course_cursor_persists_and_is_clamped_to_the_course() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---- what the app is, and what it ships under ------------------------------
+
+#[test]
+fn the_about_screen_gets_camel_case_fields() {
+    let json = serde_json::to_value(hanzi_tutor_lib::licences::APP).unwrap();
+    expect_keys(
+        &json,
+        &[
+            "name",
+            "version",
+            "identifier",
+            "licence",
+            "copyright",
+            "repository",
+        ],
+    );
+    // The identifier is the one macOS files study data under, so a mismatch
+    // would quietly point the About screen at the wrong bundle.
+    assert_eq!(json["identifier"], serde_json::json!("com.hanzitutor.app"));
+    assert_eq!(
+        json["version"],
+        serde_json::json!(env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
+fn the_licence_notices_reach_the_interface_with_their_full_text() {
+    let notices = hanzi_tutor_lib::licences::notices();
+    let json = serde_json::to_value(notices).unwrap();
+    expect_keys(
+        &json[0],
+        &[
+            "id",
+            "title",
+            "licence",
+            "source",
+            "covers",
+            "file",
+            "bundlePath",
+            "text",
+        ],
+    );
+
+    // The acceptance criterion for M5: the notices are reachable from the UI,
+    // and reachable means the whole text, not a stub or an empty string.
+    for (notice, value) in notices.iter().zip(json.as_array().expect("an array")) {
+        let text = value["text"].as_str().expect("the notice text is a string");
+        assert!(
+            text.len() > 500,
+            "the {} notice is only {} bytes — the Licences screen would show a stub",
+            notice.id,
+            text.len()
+        );
+        assert!(
+            !notice.bundle_path.is_empty() && !notice.source.is_empty(),
+            "the {} notice must say where it came from and where the bundle copy is",
+            notice.id
+        );
+    }
+
+    let ids: BTreeSet<&str> = notices.iter().map(|notice| notice.id).collect();
+    assert_eq!(
+        ids.len(),
+        notices.len(),
+        "the screen keys the list by id, so a duplicate would silently drop a notice"
+    );
+    assert!(
+        notices.len() >= 8,
+        "expected the app licence, the provenance record and every data notice, got {}",
+        notices.len()
+    );
+}

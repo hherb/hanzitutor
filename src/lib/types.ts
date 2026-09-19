@@ -315,3 +315,36 @@ export interface PracticeItem {
   pinyin: string;
   meaning: string;
 }
+
+// ---- what the app is, and what it ships under ------------------------------
+
+/** The app's own identity, shown on the About screen. */
+export interface AppInfo {
+  name: string;
+  version: string;
+  identifier: string;
+  licence: string;
+  copyright: string;
+  repository: string;
+}
+
+/**
+ * One licence or attribution notice, with its full text.
+ *
+ * `covers` says what the app takes from that work and `bundlePath` names where
+ * the plain-text copy lives inside the application bundle, so a reader can
+ * check either without leaving the screen. The text itself is compiled into the
+ * binary, so it is present even if the bundle's resource copy were lost.
+ */
+export interface LicenceNotice {
+  id: string;
+  title: string;
+  licence: string;
+  source: string;
+  covers: string;
+  /** Repository-relative path the text came from. */
+  file: string;
+  /** Where the copy in the application bundle sits. */
+  bundlePath: string;
+  text: string;
+}

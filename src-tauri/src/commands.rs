@@ -11,6 +11,7 @@ use hanzi_core::{
 use serde::Serialize;
 use tauri::State;
 
+use crate::licences::{AppInfo, LicenceNotice};
 use crate::state::{AppState, ProgressState, VocabState};
 
 /// How many characters make up one lesson.
@@ -472,4 +473,27 @@ pub fn set_course_cursor(state: State<'_, AppState>, index: usize) -> CursorView
 #[tauri::command]
 pub fn webview_log(message: String) {
     eprintln!("[webview] {message}");
+}
+
+// ---- what the app is, and what it ships under ------------------------------
+
+/// The app's name, version and licence, for the About screen.
+///
+/// The version is the workspace `Cargo.toml`'s, which `tests/licences.rs` holds
+/// equal to the versions in `tauri.conf.json` and `package.json` — three files
+/// that would otherwise drift apart silently.
+#[tauri::command]
+pub fn app_info() -> AppInfo {
+    crate::licences::APP
+}
+
+/// Every licence and attribution notice the app ships with, full text included.
+///
+/// The texts are compiled into the binary, so this cannot fail on a packaged
+/// build the way reading them out of a resource directory could. The same files
+/// are also copied into the bundle as plain text, for anyone auditing it
+/// without launching it.
+#[tauri::command]
+pub fn licence_notices() -> Vec<LicenceNotice> {
+    crate::licences::NOTICES.to_vec()
 }

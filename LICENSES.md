@@ -6,11 +6,13 @@ several upstream projects under different licences, and all of them require
 their notices to be included with any redistribution. This file records what
 came from where, and what has to travel with it.
 
-## What is bundled
+Everything described here is **already inside the built app**. There is no
+first-run download, no data step for the reader, and no network access at run
+time: the dataset is compiled into the executable and the notices are compiled
+in beside it, with plain-text copies in the bundle's `Resources/licences/`. This
+document is the human-readable record of that arrangement.
 
-The app embeds a single generated file, `crates/hanzi-core/data/hanzi.bin.gz`,
-built by `prepare-data` from four upstream files. Removing that artifact removes
-all third-party data from the build.
+## What is bundled
 
 | Data | Source | Licence |
 | --- | --- | --- |
@@ -20,6 +22,22 @@ all third-party data from the build.
 | Frequency rank, pinyin, meaning, radical, HSK level | [`hanziDB.csv`](https://github.com/ruddfawcett/hanziDB.csv) | MIT |
 | Words: characters, HSK 3.0 level, derived rank | [complete-hsk-vocabulary](https://github.com/drkameleon/complete-hsk-vocabulary) | MIT |
 | Word readings and definitions | CC-CEDICT (via complete-hsk-vocabulary) | CC BY-SA 4.0 |
+| Interface font, Noto Sans SC | [noto-cjk](https://github.com/notofonts/noto-cjk) / [Google Fonts](https://fonts.google.com/noto/specimen/Noto+Sans+SC) | SIL OFL 1.1 |
+
+The first six rows are compacted by `prepare-data` into one generated artifact,
+`crates/hanzi-core/data/hanzi.bin.gz`, which `src-tauri/src/state.rs` embeds with
+`include_bytes!`. That artifact **is committed** (about 13 MB) so that a clone,
+and CI, build without downloading the 33 MB of upstream text. Removing the
+artifact removes all third-party data from the build.
+
+The font is committed at `src/assets/fonts/NotoSansSC-VF.ttf` (about 17 MB) and
+is copied into the frontend bundle by Vite. See "Fonts in the UI" below.
+
+The notice texts live in [`licences/`](licences/), committed. They are listed in
+`src-tauri/src/licences.rs` — that catalogue is what the app's Licences screen
+shows, and what `tauri.conf.json` copies into the bundle. A test fails if a file
+in `licences/` is not catalogued, if a catalogued file is missing, or if the
+bundle config does not copy exactly that set, so a notice cannot be half-added.
 
 ### Make Me a Hanzi — <https://github.com/skishore/makemeahanzi>
 
@@ -29,19 +47,27 @@ the Arphic Public License. Redistribution and modification are permitted,
 provided the licence text is included and modified versions are clearly marked
 as such. The app does not modify the outlines; it only re-encodes them.
 
+The upstream `COPYING` names the sources but is not the licence text itself — it
+points at one. The **full Arphic Public License** is therefore fetched
+separately, from the `APL/english/ARPHICPL.TXT` file the same repository
+distributes, and ships as `licences/Arphic-Public-License.txt`. (It is worth
+being explicit about this: the notice that was being fetched before this was
+only the pointer, and a pointer is not the licence a reader is entitled to.)
+
 `dictionary.txt` is derived from [Unihan](https://unicode.org/charts/unihan.html)
 and [CJKlib](https://github.com/cburgmer/cjklib) and is distributed under the
-**GNU Lesser General Public License, version 3 or later**.
+**GNU Lesser General Public License, version 3 or later**. That file,
+`licences/LGPL-3.0.txt`, also carries the Unicode/Unihan notice that the derived
+dictionary inherits.
 
-The upstream `COPYING` and `LGPL` texts are fetched into
-`data/raw/COPYING-makemeahanzi` and `data/raw/LGPL-makemeahanzi` by
-`scripts/fetch-data.sh`. **Both must be included when redistributing the app.**
+All three texts — `Arphic-Public-License.txt`, `MakeMeAHanzi-COPYING.txt` and
+`LGPL-3.0.txt` — must be included when redistributing the app.
 
 ### hanziDB.csv — <https://github.com/ruddfawcett/hanziDB.csv>
 
 MIT licensed. The list is derived from Jun Da's Modern Chinese Character
-Frequency List and uses simplified characters. Its `LICENSE` text is fetched into
-`data/raw/LICENSE-hanziDB`.
+Frequency List and uses simplified characters. Its `LICENSE` text ships as
+`licences/MIT-hanziDB.txt`.
 
 ### complete-hsk-vocabulary — <https://github.com/drkameleon/complete-hsk-vocabulary>
 
@@ -52,7 +78,7 @@ HSK 2.0/3.0 vocabulary, including
 [elkmovie/hsk30](https://github.com/elkmovie/hsk30) (MIT, extracted from the
 official Ministry of Education PDF).
 
-Its `LICENSE` is fetched into `data/raw/LICENSE-hsk-vocabulary`.
+Its `LICENSE` ships as `licences/MIT-complete-hsk-vocabulary.txt`.
 
 **The readings and definitions carry a second licence.** That project draws its
 word pinyin and English meanings from **[CC-CEDICT](https://cc-cedict.org/)**
@@ -69,22 +95,47 @@ Two consequences follow, and both matter:
    stays under CC BY-SA 4.0. This does not reach the program code, the stroke
    geometry, or the app's own interface — only the derived dictionary text.
 
+Both the attribution (`licences/CC-CEDICT.txt`, which also records what this app
+changed) and the **full legal text** (`licences/CC-BY-SA-4.0.txt`) ship. The
+CC-CEDICT wiki's front page still describes the project as CC BY-SA 3.0; the
+distribution actually used — MDBG, the publisher named in the dictionary's own
+header — states 4.0, and that is the licence recorded here.
+
 Note also what is deliberately **not** taken from that file: its `q` (frequency
 from SUBTLEX-CH) and `p` (part-of-speech) fields are ignored, so the app carries
 nothing derived from those sources. Its `r` radical field is ignored too, the
 radical coming from Make Me a Hanzi as before. The rank the app does show for a
 word is computed here from the MIT character frequency list.
 
+### Noto Sans SC — <https://github.com/notofonts/noto-cjk>
+
+The interface font is licensed under the **SIL Open Font License 1.1**, which
+permits bundling and redistribution and requires the licence to travel with the
+font. It ships as `licences/OFL-1.1.txt`. Noto is derived from Adobe's Source Han
+Sans, which is why the OFL file carries Adobe's copyright line as well; the
+font's reserved name is `Source`, not `Noto`, so no rename is required.
+
 ## Before you distribute
 
-1. Copy `data/raw/COPYING-makemeahanzi` (Arphic Public License) and
-   `data/raw/LGPL-makemeahanzi` into the app bundle, and surface them from an
-   "About / Licences" screen.
-2. Include `data/raw/LICENSE-hanziDB` (MIT) and
-   `data/raw/LICENSE-hsk-vocabulary` (MIT) too.
-3. Include the **CC-CEDICT** attribution and a link to
-   <https://creativecommons.org/licenses/by-sa/4.0/> for the word readings and
-   definitions, and mark that dictionary text as CC BY-SA 4.0.
+1. **Nothing has to be gathered by hand.** The notices are in `licences/`, are
+   compiled into the binary, and are copied into `Resources/licences/` by the
+   bundle step. They are reachable from the app's **About and licences** screen,
+   which is the fourth entry in the sidebar.
+2. Run `pnpm run build` (see README.md, "Shipping a build"). It produces a signed
+   `.app` and `.dmg`. Confirm the copies survived, since a resource path is the
+   kind of thing that only breaks in the packaged app:
+
+   ```bash
+   APP=".cargo-target/release/bundle/macos/Hanzi Tutor.app"   # or src-tauri/target/...
+   ls "$APP/Contents/Resources/licences"
+   ```
+
+   That directory must hold all ten files named in `src-tauri/src/licences.rs`.
+   The in-app screen works even if it does not — the text is compiled in — but a
+   redistributor who wants to read the notices out of the bundle would be stuck.
+3. Serve the CC-CEDICT definitions under CC BY-SA 4.0 if you redistribute them,
+   and keep the statement of what was changed in `licences/CC-CEDICT.txt`
+   accurate if you change the data pipeline.
 4. If you intend to distribute commercially, confirm the terms yourself. Nothing
    here is legal advice. The Arphic Public License is a permissive free-font
    licence rather than a copyleft one, but it does carry notice obligations; the
@@ -93,6 +144,12 @@ word is computed here from the MIT character frequency list.
 
 ## Fonts in the UI
 
-The interface uses the system CJK font stack — PingFang SC, Hiragino Sans GB,
-Heiti SC, Noto Sans CJK SC, Microsoft YaHei — and bundles no font files. The
-practice canvas does not use a font at all: it draws the stored vector outlines.
+The interface renders Chinese text — lesson lists, word tiles, headings — in
+**Noto Sans SC**, bundled at `src/assets/fonts/NotoSansSC-VF.ttf` and declared in
+`src/app.css`. Bundling it means the app looks the same on a machine that has no
+CJK fonts installed and downloads nothing on first run. The system CJK stack
+(PingFang SC, Hiragino Sans GB, Heiti SC, Noto Sans CJK SC, Microsoft YaHei) is
+still declared behind it as a fallback.
+
+The practice canvas does not use a font at all: it draws the stored vector
+outlines.
