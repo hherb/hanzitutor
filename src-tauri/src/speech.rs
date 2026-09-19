@@ -10,7 +10,11 @@
 //! so it is safe to offer in recall mode — hearing the sound and producing the
 //! glyph is exactly the skill being trained.
 
-use std::process::{Child, Command, Stdio};
+// `Child` is the stored handle on every platform; the two that start a process
+// are only used by the macOS backend below.
+use std::process::Child;
+#[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
 /// A voice as reported by `say -v '?'`.
@@ -119,6 +123,7 @@ impl Speaker {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn hold(&self, child: Child) {
         *self.lock() = Some(child);
     }
@@ -183,10 +188,15 @@ fn list_voices() -> Result<Vec<Voice>, String> {
 
 /// Parse `say -v '?'` output: `Name   locale   # sample sentence`.
 ///
+/// Only the macOS backend feeds this, but the tests are what keep it honest, so
+/// it is compiled wherever either exists — and not on iOS, where neither does
+/// and an unused function would fail the target's `-D warnings` clippy run.
+///
 /// Names may contain spaces and parentheses — `Eddy (Chinese (China
 /// mainland))` is a real one — so the locale is taken as the last
 /// whitespace-separated field before the sample comment, and everything before
 /// it is the name.
+#[cfg(any(target_os = "macos", test))]
 fn parse_voices(output: &str) -> Vec<Voice> {
     output
         .lines()

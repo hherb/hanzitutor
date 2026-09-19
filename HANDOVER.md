@@ -738,6 +738,49 @@ downstream of them is covered by the IPC tests, which drive
   what makes a kill mid-write survivable. The three JSON documents of an older
   install are **imports**, not outputs: after the import they are never read or
   written again, so do not "tidy them up" and do not add code that rewrites them.
+- **`tauri ios dev` is for *devices*; simulators are a different route.** The
+  `[DEVICE]` argument is matched against connected hardware, and the CLI prints
+  simulators in that same "Detected connected device" list — so passing a
+  simulator's name makes it build with `-sdk iphoneos`, which then fails asking
+  for a development team and provisioning profiles. That error is misleading: the
+  target was a simulator all along. The two routes that work here are
+  `tauri ios dev --open` (opens Xcode; you pick a simulator and press Run — the
+  only path that gives hot reload) and, headlessly,
+  `tauri ios build --debug --target aarch64-sim --ci` followed by
+  `xcrun simctl install <udid> "<app>"`, `xcrun simctl launch <udid> com.hanzitutor.app`,
+  and `xcrun simctl io <udid> screenshot shot.png` to look at it.
+- **The test device is a *simulator* unless `xcrun devicectl list devices` says
+  otherwise.** This machine has an iPhone for every model name and five iOS
+  runtimes, and `xcrun devicectl` is what distinguishes hardware ("available,
+  paired") from the `simulated` column. The one real phone is `HHIP1`, an
+  iPhone14,3.
+- **A build produced by `tauri ios build` embeds the frontend; it does not use
+  the dev server.** So a layout change is not a hot reload — it needs
+  `vite:build` (which `ios build` runs) *and* a Rust rebuild to re-embed, which
+  is a couple of minutes per look. `ios dev --open` is the only HMR route on iOS.
+  Do not drive `xcodebuild` at the project directly: the "Build Rust Code" phase
+  asks the parent CLI for its options over a WebSocket and panics with
+  `failed to read CLI options … Connection refused` without one.
+- **`gen/apple/tauri` is a file this project adds, and a full re-init deletes
+  it.** The npm CLI's template runs `node tauri ios xcode-script …` from
+  `src-tauri/gen/apple`, but `ios init` does not write that entry point, so the
+  build stops at `Cannot find module '…/gen/apple/tauri'`. The committed shim
+  forwards to `@tauri-apps/cli`; it has to be an **ES module** (`import`, not
+  `require`) because the repository's `package.json` sets `"type": "module"`. The
+  standalone CLI generates a different phase (`cargo tauri …`) that needs no
+  shim — whichever CLI initialised the project decides which you have.
+- **Xcode 27 refuses an iOS deployment target below 15.0,** and Tauri's template
+  defaulted to 14.0. It is set in `tauri.conf.json` as
+  `bundle.iOS.minimumSystemVersion` (which maps to `IPHONEOS_DEPLOYMENT_TARGET`).
+  Note that `tauri ios init` **leaves an existing `project.yml` alone**: to make
+  the config take effect you must delete `src-tauri/gen/apple` and re-init, which
+  also deletes the shim above.
+- **A signing identity's parenthetical is not the team ID.** `cargo-mobile2`
+  reports `Apple Development: someone@example.com (Y38YQNR57Q)`; passing that
+  value as `APPLE_DEVELOPMENT_TEAM` gives `No Account for Team "Y38YQNR57Q"`.
+  The team this project signs with is `X5DWXB4283`, and it belongs in the build
+  environment rather than in `tauri.conf.json`, for the same reason the macOS
+  identity is not in there.
 - **SQLite does not create the directory for you.** `Connection::open` fails with
   "unable to open database file" if the data directory is missing, which is
   exactly the state a first run is in — and the warning it produces blames the

@@ -1,0 +1,468 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		01E6DBE6B2A44D27559295E8 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C4636AAE19785C8A94A6A39C /* Metal.framework */; };
+		14B9812435A8A3EAAEA930C4 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0048A8FF4DDF53F206BD7937 /* CoreGraphics.framework */; };
+		36B5AA11E06573B80237447A /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = E80DB9BCAE0904CF5DD31D4A /* LaunchScreen.storyboard */; };
+		3964582827E5BD5407A7D67D /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = FDFC3586C1DEA246F468C4D9 /* main.mm */; };
+		53490B1BDE2350757E259D34 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1784F9500E1D9FF390B7ED41 /* Security.framework */; };
+		6A5399080E2DAB33B56EC3DF /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 819E67DB12645A256B75EDCF /* Assets.xcassets */; };
+		6EC85426A50BDD44A29A7179 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 69140A7CA6B27E7707B98F10 /* assets */; };
+		7E81C4E789D8232E1B23E21B /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F50773287EA3054E195C8C72 /* UIKit.framework */; };
+		8B347A08BFEC12C952A26DDD /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F224DB69919C22923A7226A4 /* MetalKit.framework */; };
+		A3BB5C575EE98EE27CB66BD2 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 170444226820C9FF9EC1B92A /* libapp.a */; };
+		B54ACD7A284DD85F96CAC893 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6C015D08BFF051A786AF2890 /* WebKit.framework */; };
+		F385C0C5F4E1FB18F3C2A951 /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 06A48D8C511B6EF25EBCFAFA /* QuartzCore.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0048A8FF4DDF53F206BD7937 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		06A48D8C511B6EF25EBCFAFA /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		170444226820C9FF9EC1B92A /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		1784F9500E1D9FF390B7ED41 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		23FFB8422D4BEC040AE2A636 /* hanzi-tutor_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "hanzi-tutor_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		32C7BDA131B0CA80178E136F /* commands.rs */ = {isa = PBXFileReference; path = commands.rs; sourceTree = "<group>"; };
+		44E6AAE2E6C1ED8E48661D92 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		69140A7CA6B27E7707B98F10 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
+		6C015D08BFF051A786AF2890 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		7F4B979F1939FB550C892896 /* speech.rs */ = {isa = PBXFileReference; path = speech.rs; sourceTree = "<group>"; };
+		819E67DB12645A256B75EDCF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		85A42E4ABE081E0E13F26A09 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		924B5C0105DF3BA2A57E9C2F /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
+		A904F01CF8B5CE6FCD763E9D /* licences.rs */ = {isa = PBXFileReference; path = licences.rs; sourceTree = "<group>"; };
+		B2E0298129C8D20162B6334D /* hanzi-tutor_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "hanzi-tutor_iOS.entitlements"; sourceTree = "<group>"; };
+		C4636AAE19785C8A94A6A39C /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		C69E33E6544558C32686D38D /* state.rs */ = {isa = PBXFileReference; path = state.rs; sourceTree = "<group>"; };
+		E80DB9BCAE0904CF5DD31D4A /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		ED372E90047B1FBDFEA9E48A /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
+		F224DB69919C22923A7226A4 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		F50773287EA3054E195C8C72 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		FDFC3586C1DEA246F468C4D9 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		607490BBF73FD6DFD679F5CD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A3BB5C575EE98EE27CB66BD2 /* libapp.a in Frameworks */,
+				14B9812435A8A3EAAEA930C4 /* CoreGraphics.framework in Frameworks */,
+				01E6DBE6B2A44D27559295E8 /* Metal.framework in Frameworks */,
+				8B347A08BFEC12C952A26DDD /* MetalKit.framework in Frameworks */,
+				F385C0C5F4E1FB18F3C2A951 /* QuartzCore.framework in Frameworks */,
+				53490B1BDE2350757E259D34 /* Security.framework in Frameworks */,
+				7E81C4E789D8232E1B23E21B /* UIKit.framework in Frameworks */,
+				B54ACD7A284DD85F96CAC893 /* WebKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		222BAB982131C88733D11F90 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				23FFB8422D4BEC040AE2A636 /* hanzi-tutor_iOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		4E1AFBB97F7A2F0C32AF34AC /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				7D0EE12AA5EBC5EF7FFBC138 /* hanzi-tutor */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		7D0EE12AA5EBC5EF7FFBC138 /* hanzi-tutor */ = {
+			isa = PBXGroup;
+			children = (
+				FDFC3586C1DEA246F468C4D9 /* main.mm */,
+				A2A84096F0C7E95DB11C1FD5 /* bindings */,
+			);
+			path = "hanzi-tutor";
+			sourceTree = "<group>";
+		};
+		89ACEA75F38A421DCD3256F9 /* Externals */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Externals;
+			sourceTree = "<group>";
+		};
+		99275013035B0092E4E0D7AE /* hanzi-tutor_iOS */ = {
+			isa = PBXGroup;
+			children = (
+				B2E0298129C8D20162B6334D /* hanzi-tutor_iOS.entitlements */,
+				85A42E4ABE081E0E13F26A09 /* Info.plist */,
+			);
+			path = "hanzi-tutor_iOS";
+			sourceTree = "<group>";
+		};
+		9D2EB6C1027AC8B6FAFA7529 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				0048A8FF4DDF53F206BD7937 /* CoreGraphics.framework */,
+				170444226820C9FF9EC1B92A /* libapp.a */,
+				C4636AAE19785C8A94A6A39C /* Metal.framework */,
+				F224DB69919C22923A7226A4 /* MetalKit.framework */,
+				06A48D8C511B6EF25EBCFAFA /* QuartzCore.framework */,
+				1784F9500E1D9FF390B7ED41 /* Security.framework */,
+				F50773287EA3054E195C8C72 /* UIKit.framework */,
+				6C015D08BFF051A786AF2890 /* WebKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		A2A84096F0C7E95DB11C1FD5 /* bindings */ = {
+			isa = PBXGroup;
+			children = (
+				44E6AAE2E6C1ED8E48661D92 /* bindings.h */,
+			);
+			path = bindings;
+			sourceTree = "<group>";
+		};
+		B6C669A6CF13CBC70297CDE5 /* src */ = {
+			isa = PBXGroup;
+			children = (
+				32C7BDA131B0CA80178E136F /* commands.rs */,
+				ED372E90047B1FBDFEA9E48A /* lib.rs */,
+				A904F01CF8B5CE6FCD763E9D /* licences.rs */,
+				924B5C0105DF3BA2A57E9C2F /* main.rs */,
+				7F4B979F1939FB550C892896 /* speech.rs */,
+				C69E33E6544558C32686D38D /* state.rs */,
+			);
+			name = src;
+			path = ../../src;
+			sourceTree = "<group>";
+		};
+		E7326A970A9361E95F5C6E96 = {
+			isa = PBXGroup;
+			children = (
+				69140A7CA6B27E7707B98F10 /* assets */,
+				819E67DB12645A256B75EDCF /* Assets.xcassets */,
+				E80DB9BCAE0904CF5DD31D4A /* LaunchScreen.storyboard */,
+				89ACEA75F38A421DCD3256F9 /* Externals */,
+				99275013035B0092E4E0D7AE /* hanzi-tutor_iOS */,
+				4E1AFBB97F7A2F0C32AF34AC /* Sources */,
+				B6C669A6CF13CBC70297CDE5 /* src */,
+				9D2EB6C1027AC8B6FAFA7529 /* Frameworks */,
+				222BAB982131C88733D11F90 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A5B34DE4A61B272D270C7E94 /* hanzi-tutor_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 22DE40D0E91DADC2F99072B4 /* Build configuration list for PBXNativeTarget "hanzi-tutor_iOS" */;
+			buildPhases = (
+				980814B2BCB3EC5F9463A639 /* Build Rust Code */,
+				A29DBFBD3BC3C4FC503134C5 /* Sources */,
+				9247A354794BB9207C0D88C1 /* Resources */,
+				607490BBF73FD6DFD679F5CD /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "hanzi-tutor_iOS";
+			packageProductDependencies = (
+			);
+			productName = "hanzi-tutor_iOS";
+			productReference = 23FFB8422D4BEC040AE2A636 /* hanzi-tutor_iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A841323A340D45FD675A64D0 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 5582346020E94903A215C0CC /* Build configuration list for PBXProject "hanzi-tutor" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = E7326A970A9361E95F5C6E96;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 222BAB982131C88733D11F90 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A5B34DE4A61B272D270C7E94 /* hanzi-tutor_iOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		9247A354794BB9207C0D88C1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6A5399080E2DAB33B56EC3DF /* Assets.xcassets in Resources */,
+				36B5AA11E06573B80237447A /* LaunchScreen.storyboard in Resources */,
+				6EC85426A50BDD44A29A7179 /* assets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		980814B2BCB3EC5F9463A639 /* Build Rust Code */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Code";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a",
+				"$(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "node tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A29DBFBD3BC3C4FC503134C5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3964582827E5BD5407A7D67D /* main.mm in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		073119CF243F55AA6415B011 /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "hanzi-tutor_iOS/hanzi-tutor_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "hanzi-tutor_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.hanzitutor.app;
+				PRODUCT_NAME = "Hanzi Tutor";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = debug;
+		};
+		23DE1EA730E3F89C0C75DC9F /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "hanzi-tutor_iOS/hanzi-tutor_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "hanzi-tutor_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.hanzitutor.app;
+				PRODUCT_NAME = "Hanzi Tutor";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = release;
+		};
+		685149440EB2634343BF2B6B /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = debug;
+		};
+		EFF2FA5FA849290C89EB543C /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		22DE40D0E91DADC2F99072B4 /* Build configuration list for PBXNativeTarget "hanzi-tutor_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				073119CF243F55AA6415B011 /* debug */,
+				23DE1EA730E3F89C0C75DC9F /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+		5582346020E94903A215C0CC /* Build configuration list for PBXProject "hanzi-tutor" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				685149440EB2634343BF2B6B /* debug */,
+				EFF2FA5FA849290C89EB543C /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A841323A340D45FD675A64D0 /* Project object */;
+}

@@ -21,7 +21,7 @@ See [`HANDOVER.md`](HANDOVER.md) for how to build, test and verify; see
 | M6 | Pronunciation on Windows/Linux | macOS-only today | S | not started |
 | M7 | Centreline stroke animation | Nicer, more accurate "show me" | S | **done** |
 | M8 | Input ergonomics | Long strokes on a trackpad | S | **done** |
-| M9 | Mobile shells | A stylus is the right input device | L | not started |
+| M9 | Mobile shells | A stylus is the right input device | L | **in progress (iOS)** |
 | M10 | Durable study store (SQLite) | The JSON format caps the attempt log the grading work needs | M | **done** |
 
 ---
@@ -531,8 +531,52 @@ Deliberately not done, and why:
 
 ## M9 — Mobile shells
 
+**Status: in progress, iOS only.** It builds and runs on the iOS Simulator, with
+a phone layout made for practice rather than for fitting; the device build and
+pronunciation are still to come. What is verified, and how, is below.
+
 **Why.** A touchscreen with a stylus is the right input device for handwriting
-practice; a trackpad is a compromise. Tauri 2 supports iOS and Android.
+practice; a trackpad is a compromise. Tauri 2 supports iOS and Android. On this
+project's own terms the motivation is sharper than "mobile would be nice": the
+iPhone is carried when the iPad is not, and practice on it is the point.
+
+**What is done.**
+
+- **The Rust side cross-compiles unchanged.**
+  `cargo check -p hanzi-tutor --target aarch64-apple-ios` succeeds with the
+  engine, the bundled SQLite, the embedded 13 MB dataset and Tauri — nothing in
+  `hanzi-core`, `hanzi-store` or the command layer needed a platform `cfg`. The
+  only iOS-specific tidying was three dead-code warnings in `speech.rs`, whose
+  macOS-only pieces were not gated tightly enough for the target's `-D warnings`.
+- **It runs on the simulator.** Built with `tauri ios build --debug --target
+  aarch64-sim`, installed with `simctl install`, launched, and looked at: the
+  course loads ("7,744 characters in 775 lessons"), the character and its
+  readings come over IPC, the data directory resolves inside the app sandbox, and
+  the board draws. The screenshot is the evidence, and the traps that got in the
+  way are in `HANDOVER.md` §6.
+- **A phone layout, made for practice.** Below 760px the shell becomes one
+  column in the order practice happens — a top bar with a navigation button, the
+  character and its reading, the *board* filling the width, the controls at
+  touch size, and only then the explanation or the graded report. The sidebar
+  becomes a sheet over the board, safe-area insets are honoured, the keyboard
+  hint is dropped (a phone has no Enter key), and the viewport refuses zoom so a
+  double tap on the board cannot magnify it. Verified by simulator screenshots.
+- **The device default from M8 pays off here.** On a touch device the app starts
+  on *drag* and leaves click-to-draw off — visible in the simulator screenshot —
+  which is the right gesture for a finger and is exactly what that rule was for.
+
+**What is left.**
+
+- **The physical device.** The build path is ready (the team is `X5DWXB4283`) and
+  the phone is connected, but a device build needs a provisioning profile, which
+  needs the Apple account signed in to Xcode. That is a human step. The run is
+  then `tauri ios dev "HHIP1" --host <lan-address>` with the dev server exposed
+  (`TAURI_DEV_HOST`, which `vite.config.ts` now honours).
+- **Pronunciation.** `speech.rs` is still macOS-only, so on iOS the control is
+  disabled and the app says why — honest, but it is one of M9's acceptance
+  criteria. It wants `AVSpeechSynthesizer` in-process, which is the same backend
+  the macOS sandbox case in §7 needs, so the two should be designed together.
+- **Android**, which nothing here has touched.
 
 **Approach.**
 

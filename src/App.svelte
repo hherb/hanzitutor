@@ -74,6 +74,28 @@
   let settings = $state<SettingsView>({ clickToDraw: null, warning: null });
 
   /**
+   * True while the navigation sheet is open.
+   *
+   * Only meaningful at phone widths, where the sidebar is a fixed sheet over the
+   * board rather than a column beside it; on a wide screen the same element is
+   * just the first column and this is never set.
+   */
+  let navOpen = $state(false);
+
+  /**
+   * Wrap a navigation callback so that using it also closes the sheet.
+   *
+   * Every route out of the sidebar changes what is on the board, and leaving the
+   * sheet open over the character the reader just chose would hide the result.
+   */
+  function navigating<A extends unknown[]>(action: (...args: A) => void) {
+    return (...args: A) => {
+      navOpen = false;
+      action(...args);
+    };
+  }
+
+  /**
    * Whether this device wants click-to-draw *by default*.
    *
    * A trackpad or a mouse has hover, so a stroke can be started and finished
@@ -1241,31 +1263,62 @@
 </script>
 
 <div class="app">
-  <LessonSidebar
-    view={view}
-    onSwitchView={switchView}
-    {lessons}
-    {activeLesson}
-    activeCharacter={courseChar}
-    {summary}
-    onSelectLesson={goToLesson}
-    onSelectCharacter={goToCharacter}
-    progressCards={progress.cards}
-    {review}
-    reviewing={source === "review"}
-    onStartReview={startReview}
-    vocabGroups={vocab.groups}
-    vocabEntries={vocab.entries}
-    vocabSelection={vocabSelection}
-    onSelectVocabGroup={(selection) => (vocabSelection = selection)}
-    wordLevels={stats?.wordLevels ?? []}
-    wordsTotal={stats?.words ?? 0}
-    {wordLevel}
-    onSelectWordLevel={(level) => (wordLevel = level)}
-    onShowLicences={() => switchView("about")}
-  />
+  <!--
+    The sidebar is a column on a wide screen and a sheet over the board on a
+    phone; the scrim is what closes it, and both only exist below the phone
+    breakpoint in the styles below.
+  -->
+  {#if navOpen}
+    <button
+      class="scrim"
+      type="button"
+      aria-label="Close navigation"
+      onclick={() => (navOpen = false)}
+    ></button>
+  {/if}
+  <div class="nav-pane" class:open={navOpen}>
+    <LessonSidebar
+      view={view}
+      onSwitchView={navigating(switchView)}
+      {lessons}
+      {activeLesson}
+      activeCharacter={courseChar}
+      {summary}
+      onSelectLesson={navigating(goToLesson)}
+      onSelectCharacter={navigating(goToCharacter)}
+      progressCards={progress.cards}
+      {review}
+      reviewing={source === "review"}
+      onStartReview={navigating(startReview)}
+      vocabGroups={vocab.groups}
+      vocabEntries={vocab.entries}
+      vocabSelection={vocabSelection}
+      onSelectVocabGroup={navigating((selection: string | null) => (vocabSelection = selection))}
+      wordLevels={stats?.wordLevels ?? []}
+      wordsTotal={stats?.words ?? 0}
+      {wordLevel}
+      onSelectWordLevel={navigating((level: number | null) => (wordLevel = level))}
+      onShowLicences={navigating(() => switchView("about"))}
+    />
+  </div>
 
   <main>
+    <!-- Phone only: the way back to the navigation the sheet hides. -->
+    <div class="topbar">
+      <button
+        class="nav-toggle"
+        type="button"
+        aria-label="Open navigation"
+        onclick={() => (navOpen = true)}
+      >
+        <span aria-hidden="true">☰</span>
+      </button>
+      <span class="topbar-title">{appInfo?.name ?? "Hanzi Tutor"}</span>
+      {#if character}
+        <span class="topbar-glyph" lang="zh-Hans">{character.ch}</span>
+      {/if}
+    </div>
+
     {#if error}
       <p class="error">{error}</p>
     {/if}
@@ -1921,5 +1974,211 @@
     color: #92400e;
     font-size: 0.8rem;
     line-height: 1.45;
+  }
+
+  /* ---- phone ---------------------------------------------------------------
+     The shell above is three columns wide: a 280px sidebar, the board, and a
+     330px panel. On a phone that leaves the board off the screen entirely — the
+     one thing this app exists to show. Below the breakpoint the same markup
+     becomes one scrolling column with the sidebar as a sheet over it, and the
+     board sized from the screen's width.
+
+     Several rules have to reach into child components (`.board` inside
+     `PracticeCanvas`, `.sidebar` inside `LessonSidebar`), which is why they are
+     wrapped in `:global()`: a scoped selector here would carry this component's
+     hash and match nothing. The phone layout is deliberately kept in one place,
+     so that "what does this look like on a phone" has one answer. */
+  .topbar {
+    display: none;
+  }
+  /* On a wide screen the pane is not a pane at all: the sidebar is simply the
+     first flex child of `.app`, exactly as it was before this existed. */
+  .nav-pane {
+    display: contents;
+  }
+  .scrim {
+    display: none;
+  }
+
+  @media (max-width: 760px) {
+    .app {
+      display: block;
+    }
+
+    main {
+      /* Sized to the *visible* viewport so the browser chrome cannot crop the
+         board; `100vh` first for iOS before `dvh` was supported. */
+      height: 100vh;
+      height: 100dvh;
+      overflow-y: auto;
+      gap: 10px;
+      padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px
+        calc(env(safe-area-inset-bottom, 0px) + 12px);
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 44px;
+    }
+    .nav-toggle {
+      flex: none;
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--muted-strong);
+      font-size: 1.1rem;
+      cursor: pointer;
+    }
+    .topbar-title {
+      flex: 1;
+      min-width: 0;
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: var(--muted-strong);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .topbar-glyph {
+      flex: none;
+      font-family: var(--hanzi-font);
+      font-size: 1.5rem;
+      color: var(--muted-strong);
+    }
+
+    /* The navigation sheet. */
+    .nav-pane {
+      display: block;
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 40;
+      width: min(86vw, 320px);
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      background: var(--surface);
+      box-shadow: 0 10px 40px rgb(15 23 42 / 0.3);
+      transform: translateX(-102%);
+      transition: transform 0.22s ease;
+      /* Nothing inside should be reachable while it is off-screen. */
+      visibility: hidden;
+    }
+    .nav-pane.open {
+      transform: none;
+      visibility: visible;
+    }
+    /* The sidebar fills the sheet rather than sitting at its fixed 280px. */
+    .nav-pane :global(.sidebar) {
+      width: 100%;
+      height: 100%;
+      border-right: 0;
+    }
+    .scrim {
+      display: block;
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      border: 0;
+      padding: 0;
+      background: rgb(15 23 42 / 0.35);
+      cursor: pointer;
+    }
+
+    /* One column, in the order practice actually happens: the board, then what
+       the board said about the attempt, then the controls you press, then the
+       one-line explanation. `display: contents` dissolves the stage wrapper so
+       those four can be ordered against each other — on a wide screen the stage
+       is a column beside the feedback panel and its own order is right. */
+    .workspace {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .stage {
+      display: contents;
+    }
+    :global(.board) {
+      order: 1;
+    }
+    .slots {
+      order: 2;
+    }
+    /* The controls come before the explanation: what a learner needs after
+       drawing is Check, not a paragraph about how grading works. The panel below
+       carries the score when there is one, which is worth a short scroll. */
+    .controls {
+      order: 3;
+    }
+    aside.feedback {
+      order: 4;
+    }
+    .controls + .note,
+    .hint {
+      order: 5;
+    }
+    /* The board is square and as wide as the phone: at this size it is the
+       screen's job to fit the board, not the board's to fit a column. */
+    :global(.board) {
+      flex: none;
+      width: 100%;
+      aspect-ratio: 1;
+      min-height: 0;
+    }
+
+    /* Fingers, not a pointer: every control reaches a comfortable target. */
+    .controls {
+      gap: 8px;
+    }
+    .controls button {
+      min-height: 44px;
+      padding: 10px 14px;
+      font-size: 0.95rem;
+    }
+    .controls .toggle {
+      min-height: 44px;
+      font-size: 0.85rem;
+    }
+    .segmented button {
+      min-height: 44px;
+      padding: 10px 16px;
+    }
+    .nav button {
+      min-height: 44px;
+      min-width: 44px;
+    }
+    .slots :global(button) {
+      min-width: 54px;
+      min-height: 54px;
+    }
+
+    /* A phone has no Enter, S, H or arrow keys to document. */
+    .keys {
+      display: none;
+    }
+
+    /* The character and its reading, compact enough to leave the board room. */
+    .meta {
+      gap: 12px;
+    }
+    .glyph {
+      width: 68px;
+      height: 68px;
+      font-size: 2.4rem;
+      border-radius: 10px;
+    }
+    .glyph.masked {
+      font-size: 1.9rem;
+    }
+    .pinyin {
+      font-size: 1.2rem;
+      margin: 0 0 2px;
+    }
   }
 </style>

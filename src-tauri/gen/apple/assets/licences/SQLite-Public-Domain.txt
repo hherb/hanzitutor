@@ -1,0 +1,45 @@
+SQLite
+======
+
+The study data — the practice schedule, the unbounded attempt log, the personal
+vocabulary list and the course cursor — is kept in a SQLite database
+(`hanzi.db`). SQLite is compiled into the app from the amalgamation vendored by
+the `libsqlite3-sys` crate (SQLite 3.45.0), so there is nothing to install
+besides the app itself and no external process is started.
+
+SQLite is in the public domain. The authors' statement of that, as it appears at
+the top of the source file that is compiled in (`sqlite3.c`), is:
+
+  /*
+  ** 2001 September 15
+  **
+  ** The author disclaims copyright to this source code.  In place of
+  ** a legal notice, here is a blessing:
+  **
+  **    May you do good and not evil.
+  **    May you find forgiveness for yourself and forgive others.
+  **    May you share freely, never taking more than you give.
+  **
+  */
+
+Source and licence page:
+  https://sqlite.org/                  Project home
+  https://sqlite.org/copyright.html    "SQLite Is Public Domain"
+
+Crate:
+  libsqlite3-sys 0.28.0 — https://crates.io/crates/libsqlite3-sys, MIT. It is
+  maintained by the rusqlite developers and carries the same licence text as
+  rusqlite, which ships beside this notice as "MIT-rusqlite.txt".
+
+What this app does with it:
+  * Creates one database, `hanzi.db`, in the study data directory — the same
+    directory `--user-dir` and `HANZI_TUTOR_DATA_DIR` select.
+  * Imports the three JSON documents this app used to keep (vocabulary.json,
+    progress.json, course-cursor.json) once, on first run, and leaves those
+    files exactly where they were.
+  * Keeps no other database, and never links against a system SQLite.
+
+The database holds study data, not shipped content, and SQLite is public domain
+— so this notice is here because a compiled-in library is worth accounting for,
+not because the licence demands it. The MIT text it points at is the one that
+does carry terms.
