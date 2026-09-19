@@ -167,6 +167,12 @@ What shipped:
   is written one character at a time, and characters the board cannot draw
   (punctuation, an unknown glyph) are skipped rather than dead-ending the board.
   There is no segmentation, and no sentence corpus: see below.
+- **A box per character of a multi-character entry**, added after the milestone
+  shipped: the boxes under the board show a miniature of each attempt already
+  made, with its score, and an empty box for each character still to write. Any
+  box can be clicked to put that character back on the board, which means a word
+  no longer has to be written strictly in order — it is recorded once every
+  character has a grade.
 - **Data and notices.** The word list comes from the MIT-licensed
   `complete-hsk-vocabulary`, whose readings and definitions are drawn from
   CC-CEDICT under **CC BY-SA 4.0** — the first obligation here that reaches the

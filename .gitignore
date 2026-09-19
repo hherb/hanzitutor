@@ -35,6 +35,7 @@ src-tauri/gen/schemas/
 # this can hold vocabulary.json, progress.json and course-cursor.json.
 .tmp-vocab/
 .tmp-data/
+.tmp-*/
 .study/
 
 # --- Editor / OS ---------------------------------------------------------

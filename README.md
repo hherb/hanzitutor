@@ -54,6 +54,13 @@ measure** are all implemented and tested; 187 automated tests pass. What is not 
   the list — a word, a phrase, a sentence — is practised character by character,
   with anything the board cannot draw (punctuation, an unknown glyph) skipped
   rather than dead-ending the attempt.
+- **A box per character of a word.** Under the board, a multi-character entry
+  shows one box per character: a character already written appears as a miniature
+  of your own attempt with the score it got, and one still to write is an empty
+  box. Click any box to put that character back on the board — a written one
+  comes back with its drawing and its grade, to look at again or improve, and an
+  unwritten one is ready to write. The word is recorded once every character has
+  been written, not necessarily in order.
 
 ## Quick start
 

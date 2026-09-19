@@ -6,6 +6,7 @@
     save as pickSavePath,
   } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
+  import CharacterThumb from "./lib/CharacterThumb.svelte";
   import FeedbackPanel from "./lib/FeedbackPanel.svelte";
   import LessonSidebar from "./lib/LessonSidebar.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
@@ -32,6 +33,17 @@
   type View = "course" | "vocabulary" | "words";
   /** Where the current practice session draws its characters from. */
   type Source = "course" | "vocabulary" | "review" | "words";
+
+  /** One character's worth of a multi-character entry: what was drawn, and the
+   * grade it got. `report` is null when the character is still to be written. */
+  interface SlotState {
+    strokes: Point[][];
+    report: GradeReport | null;
+  }
+
+  /** A character of the entry that has not been touched. One shared object, so
+   * re-rendering the strip does not hand the thumbnails a new array each time. */
+  const EMPTY_SLOT: SlotState = { strokes: [], report: null };
 
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -109,8 +121,19 @@
   let queueCursor = $state(0);
   /** Which character of the current entry is being written. */
   let charCursor = $state(0);
-  /** Scores for the characters of the current entry, averaged when it is done. */
-  let wordScores = $state<number[]>([]);
+  /**
+   * What has been written for each character of the current entry, one slot per
+   * `entryCharacters` index.
+   *
+   * A word is written one character at a time, and the boxes under the board
+   * show how far through it the learner is, so each character keeps its own
+   * attempt and grade instead of one running list. A slot is a *snapshot taken
+   * when the board leaves it*: whatever is on the board now is the current
+   * character's attempt, and `slotAt` reads it from the live state so the
+   * thumbnail follows the pen. One slot holds one grade, so revisiting a
+   * character to improve it replaces its score rather than adding a second.
+   */
+  let wordSlots = $state<SlotState[]>([]);
   /** True once the last item of a list or review session has been finished, so
    * the last entry cannot be recorded twice. */
   let sessionDone = $state(false);
@@ -322,7 +345,7 @@
   $effect(() => {
     const next = targetChar;
     if (!next || character?.ch === next) return;
-    void loadCharacter(next);
+    void loadCharacter(next, charCursor);
   });
 
   /**
@@ -370,11 +393,15 @@
     }
   }
 
-  async function loadCharacter(ch: string) {
+  async function loadCharacter(ch: string, slot: number) {
     try {
       const next = await api.getCharacter(ch);
       character = next;
       reset();
+      // A character that has already been written comes back as it was, which is
+      // what makes the boxes under the board useful for reviewing rather than
+      // only for looking at.
+      restoreSlot(slot);
       void api.log(
         `character ${next.ch}: ${next.pinyin.join("/") || "?"}, ${next.outlines.length} strokes`,
       );
@@ -392,6 +419,89 @@
     playToken += 1;
     // Don't let the previous character keep talking over the next one.
     void api.stopSpeaking();
+  }
+
+  /**
+   * What has been written for one character of the current entry.
+   *
+   * The character on the board is answered from the live strokes rather than
+   * from its recorded slot, so the box under the board follows the pen instead
+   * of lagging a character behind. A slot is written only when the board leaves
+   * it, in [`saveSlot`].
+   */
+  function slotAt(i: number): SlotState {
+    if (i === charCursor) return { strokes, report };
+    return wordSlots[i] ?? EMPTY_SLOT;
+  }
+
+  /**
+   * Tooltip for one of the boxes under the board.
+   *
+   * The character itself is only named once the answer is visible: in recall
+   * mode a tooltip is as good a way as any of giving the word away.
+   */
+  function slotTitle(ch: string, i: number, slot: SlotState): string {
+    const where = `Character ${i + 1} of ${entryCharacters.length}`;
+    const named = answerVisible ? ` (${ch})` : "";
+    if (slot.report) {
+      return `${where}${named} — wrote ${Math.round(slot.report.overall)}/100. Click to look at it again.`;
+    }
+    if (slot.strokes.length > 0) {
+      return `${where}${named} — drawn, not checked yet. Click to go back to it.`;
+    }
+    return `${where} — not written yet. Click to write it.`;
+  }
+
+  /** Keep the board's attempt for the character it is about to leave. */
+  function saveSlot() {
+    if (source === "course" || charCursor >= entryCharacters.length) return;
+    const slots = [...wordSlots];
+    while (slots.length < entryCharacters.length) {
+      slots.push(EMPTY_SLOT);
+    }
+    slots[charCursor] = { strokes: [...strokes], report };
+    wordSlots = slots;
+  }
+
+  /** Put a character's recorded attempt back on the board. */
+  function restoreSlot(i: number) {
+    if (source === "course") return;
+    const slot = wordSlots[i];
+    if (!slot) return;
+    strokes = slot.strokes;
+    report = slot.report;
+  }
+
+  /**
+   * Put another character of the current entry on the board.
+   *
+   * This is what the boxes under the board click into. A character that is still
+   * to be written arrives blank; one that has been written comes back with its
+   * drawing and its grade, so it can be looked at or improved — clearing the
+   * board and writing again replaces its score rather than adding a second one.
+   */
+  function selectSlot(i: number) {
+    if (source === "course" || i < 0 || i >= entryCharacters.length || i === charCursor) {
+      return;
+    }
+    saveSlot();
+    charCursor = i;
+    // Moving to a different glyph reloads the character, and the load restores
+    // this slot. A word that repeats a character (是不是) does not, so the board
+    // is swapped here instead rather than leaving the previous glyph's strokes
+    // underneath a new box.
+    if (character?.ch === entryCharacters[i]) {
+      reset();
+      restoreSlot(i);
+    }
+  }
+
+  /** Begin a fresh entry: no character written, nothing recorded. */
+  function beginEntry() {
+    charCursor = 0;
+    wordSlots = [];
+    sessionDone = false;
+    reset();
   }
 
   /**
@@ -697,12 +807,9 @@
   function startPractice(items: PracticeItem[], from: Source) {
     queue = items;
     queueCursor = 0;
-    charCursor = 0;
-    wordScores = [];
-    sessionDone = false;
     source = from;
     mode = "recall";
-    reset();
+    beginEntry();
     statusMessage = null;
     wordMessage = null;
   }
@@ -787,10 +894,7 @@
     source = "course";
     queue = [];
     queueCursor = 0;
-    charCursor = 0;
-    wordScores = [];
-    sessionDone = false;
-    reset();
+    beginEntry();
   }
 
   /** Move within the practice queue, abandoning an unfinished entry. */
@@ -798,10 +902,7 @@
     const next = queueCursor + delta;
     if (next < 0 || next >= queue.length) return;
     queueCursor = next;
-    charCursor = 0;
-    wordScores = [];
-    sessionDone = false;
-    reset();
+    beginEntry();
   }
 
   /**
@@ -811,32 +912,36 @@
    * characters, so a long word cannot be credited on one good stroke. Each
    * character already has its own card by the time this runs; the mean is what
    * the vocabulary entry itself remembers.
+   *
+   * Every character of the entry has to be written before it counts, but not
+   * necessarily in order: the boxes under the board can put any character on the
+   * board, and this moves to whichever ones are still outstanding.
    */
   async function finishCharacter() {
     // Once the queue is exhausted the last entry must not be finished again: a
     // second press would credit it with an attempt nobody made.
     if (sessionDone || !currentItem || !report) return;
-    const scores = [...wordScores, report.overall];
+    saveSlot();
 
-    if (charCursor + 1 < entryCharacters.length) {
-      wordScores = scores;
-      charCursor += 1;
-      reset();
+    const outstanding = entryCharacters.findIndex((_, i) => !wordSlots[i]?.report);
+    if (outstanding >= 0) {
+      selectSlot(outstanding);
       return;
     }
 
+    const scores = entryCharacters.map((_, i) => wordSlots[i]!.report!.overall);
     const mean = scores.reduce((total, value) => total + value, 0) / scores.length;
     const finished = currentItem;
     const entryId = finished.entryId;
-    wordScores = [];
 
     const isLast = queueCursor + 1 >= queue.length;
     if (isLast) {
       charCursor = 0;
+      wordSlots = [];
       sessionDone = true;
     } else {
       queueCursor += 1;
-      reset();
+      beginEntry();
     }
 
     const characters = `${scores.length} ${scores.length === 1 ? "character" : "characters"}`;
@@ -1093,6 +1198,32 @@
             onStroke={addStroke}
           />
 
+          {#if source !== "course" && entryCharacters.length > 1}
+            <div class="slots" role="group" aria-label="Characters in this entry">
+              {#each entryCharacters as ch, i (i)}
+                {@const slot = slotAt(i)}
+                <button
+                  type="button"
+                  class="slot"
+                  class:current={i === charCursor}
+                  class:graded={slot.report !== null}
+                  aria-current={i === charCursor ? "true" : undefined}
+                  title={slotTitle(ch, i, slot)}
+                  onclick={() => selectSlot(i)}
+                >
+                  {#if slot.strokes.length > 0}
+                    <CharacterThumb strokes={slot.strokes} report={slot.report} />
+                  {:else if answerVisible}
+                    <span class="slot-glyph" lang="zh-Hans">{ch}</span>
+                  {/if}
+                  {#if slot.report}
+                    <span class="slot-score">{Math.round(slot.report.overall)}</span>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          {/if}
+
           <div class="controls">
             <div class="segmented" role="group" aria-label="Practice mode">
               <button class:on={mode === "trace"} onclick={() => switchMode("trace")}>
@@ -1344,6 +1475,59 @@
     gap: 12px;
     min-width: 0;
     min-height: 0;
+  }
+
+  /* One box per character of a multi-character entry. A written character shows
+     a miniature of the attempt; one still to write is an empty box. */
+  .slots {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+  .slot {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 54px;
+    height: 54px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface);
+    font: inherit;
+    cursor: pointer;
+  }
+  .slot:hover {
+    border-color: var(--accent);
+  }
+  /* Anything not written yet reads as a slot to fill in. */
+  .slot:not(.graded) {
+    border-style: dashed;
+  }
+  .slot.current {
+    border-style: solid;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+  }
+  .slot-glyph {
+    font-size: 1.6rem;
+    line-height: 1;
+    /* The same faintness as the guide on the board: a target, not the answer. */
+    color: #c3cfdd;
+    user-select: none;
+  }
+  .slot-score {
+    position: absolute;
+    right: 1px;
+    bottom: 1px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-size: 0.62rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
   }
 
   .controls {

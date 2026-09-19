@@ -183,17 +183,8 @@ function drawInk(ctx: CanvasRenderingContext2D, scene: Scene) {
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
-  const report = scene.report;
-  const colourFor = (userIndex: number): string => {
-    if (!report) return INK;
-    const refIndex = report.assignment[userIndex];
-    if (refIndex === null || refIndex === undefined) return EXTRA_STROKE;
-    const verdict = report.strokes[refIndex]?.verdict;
-    return verdict ? VERDICT_COLOUR[verdict] : INK;
-  };
-
   scene.strokes.forEach((stroke, index) => {
-    ctx.strokeStyle = colourFor(index);
+    ctx.strokeStyle = colourForStroke(scene.report, index);
     strokePath(ctx, stroke);
   });
 
@@ -201,6 +192,48 @@ function drawInk(ctx: CanvasRenderingContext2D, scene: Scene) {
     ctx.strokeStyle = INK;
     strokePath(ctx, scene.current);
   }
+}
+
+/** Colour for one of the user's strokes, given what it was matched with. */
+function colourForStroke(report: GradeReport | null, userIndex: number): string {
+  if (!report) return INK;
+  const refIndex = report.assignment[userIndex];
+  if (refIndex === null || refIndex === undefined) return EXTRA_STROKE;
+  const verdict = report.strokes[refIndex]?.verdict;
+  return verdict ? VERDICT_COLOUR[verdict] : INK;
+}
+
+/** Everything needed to paint one small copy of an attempt. */
+export interface ThumbScene {
+  /** Side of the square canvas in device pixels. */
+  size: number;
+  strokes: Point[][];
+  report: GradeReport | null;
+}
+
+/**
+ * Paint a small copy of one attempt: the ink only, on a clean square.
+ *
+ * This is what the boxes under the board show for the characters of a
+ * multi-character entry that have already been written. The strokes go through
+ * the same display-space transform and the same proportional pen width as the
+ * board, so a thumbnail is a true miniature of the attempt — and it is coloured
+ * by the same verdicts, so a stroke that was marked wrong is still visible as
+ * wrong at thumbnail size.
+ */
+export function drawThumb(ctx: CanvasRenderingContext2D, scene: ThumbScene) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, scene.size, scene.size);
+  if (scene.strokes.length === 0) return;
+
+  applyDisplaySpace(ctx, scene.size);
+  ctx.lineWidth = INK_WIDTH;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  scene.strokes.forEach((stroke, index) => {
+    ctx.strokeStyle = colourForStroke(scene.report, index);
+    strokePath(ctx, stroke);
+  });
 }
 
 function strokePath(ctx: CanvasRenderingContext2D, points: Point[]) {

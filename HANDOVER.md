@@ -203,6 +203,7 @@ src-tauri/
 src/
   App.svelte                shell: modes, navigation, keyboard, state ownership
   lib/PracticeCanvas.svelte pointer capture, coalesced sampling, display space
+  lib/CharacterThumb.svelte one small picture of one character's attempt
   lib/render.ts             canvas painting, font<->display transforms, colours
   lib/FeedbackPanel.svelte  report -> readable advice
   lib/WordsPanel.svelte     the HSK word list: search, browse, practise
@@ -279,6 +280,21 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
     list. Loading, grading, the ghost, the hints and the recording of progress all
     key off it. Add a fifth source by extending that derivation and the
     `PracticeItem` queue, not by forking the practice code.
+
+    A multi-character entry adds one thing on top: `wordSlots` holds one
+    `{strokes, report}` per character, which is what the boxes under the board
+    show and click into. The rule that keeps it honest is that **the current
+    character is never read from its slot** — `slotAt` answers it from the live
+    `strokes`/`report`, so the thumbnail follows the pen — and a slot is written
+    only when the board *leaves* it (`saveSlot`, called from `selectSlot` and
+    `finishCharacter`). One slot therefore holds one grade, so going back to
+    improve a character replaces its score instead of averaging it in twice, and
+    an entry finishes once every slot has a grade rather than once the last one
+    does. Two consequences worth keeping: `reset()` clears the board but not the
+    slots (a mode switch abandons the attempt, and the next `saveSlot` writes the
+    abandoned state over the slot), and `selectSlot` has to swap the board itself
+    when the target glyph does not change, because a word may repeat a character
+    (是不是) and the loader effect deliberately does nothing for the same glyph.
 
 11. **A rating is the grade, and the grade bands live in one place.**
     `Rating::from_score` maps the 0..=100 headline score through
