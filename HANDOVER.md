@@ -32,7 +32,7 @@ ls .cargo-home 2>/dev/null || {
 #    dataset artifact, the interface font and the licence texts are all
 #    committed, so a clone builds without downloading anything.
 pnpm install
-pnpm test                        # expect 196 passed, 0 failed
+pnpm test                        # expect 202 passed, 0 failed
 pnpm run check:rust && pnpm run check:web
 ```
 
@@ -89,14 +89,17 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
   They live in the platform application data directory
   (`~/Library/Application Support/com.hanzitutor.app/` on macOS: `vocabulary.json`,
   `progress.json` and `course-cursor.json`), which is *outside* the workspace, so a
-  sandboxed run cannot save them. Point them somewhere writable instead:
+  sandboxed run cannot save them. Point them somewhere writable instead — either
+  way works, and `--user-dir` is the one to use for a built binary:
 
   ```bash
   HANZI_TUTOR_DATA_DIR="$PWD/.tmp-vocab" ./.cargo-target/debug/hanzi-tutor
+  ./.cargo-target/debug/hanzi-tutor --user-dir "$PWD/.tmp-vocab"
   ```
 
-  The app degrades honestly — it reports the save failure in the UI rather than
-  losing data — but for testing persistence you must set this.
+  The resolved directory is logged at startup (`[data] study files in …`), and the
+  app degrades honestly — it reports the save failure in the UI rather than losing
+  data — but for testing persistence you must set one of these.
 - **`npm` is broken** for this user (`~/.npm/_cacache/tmp` contains root-owned
   files). Use `pnpm`; it works, with a project-local store.
 - **You can screenshot the app, but not drive it.** Screen Recording is granted
@@ -152,6 +155,7 @@ Verified end-to-end by reading the app's own logs:
 ```bash
 HANZI_TUTOR_DATA_DIR="$PWD/.tmp-data" ./.cargo-target/debug/hanzi-tutor 2>&1 \
   | grep --line-buffered -vE "could not create directory|WebKit"
+# [data] study files in /Users/hherb/Library/Application Support/com.hanzitutor.app
 # [speech] using voice Tingting (Chinese (China mainland)) (zh_CN)
 # [webview] course loaded: 7744 characters in 775 lessons
 # [webview] vocabulary: 2 entries in 2 groups
@@ -224,7 +228,8 @@ src/
   lib/api.ts                typed invoke wrappers
   assets/fonts/             Noto Sans SC, the bundled interface face (OFL)
 licences/                   every notice text that ships, plus README.md
-scripts/                    fetch-data, with-cargo-env, tauri-cli, build-release
+scripts/                    fetch-data, with-cargo-env, tauri-cli, build-release,
+                            probe-app-sandbox
 .github/workflows/ci.yml    test + clippy + svelte-check on push
 ```
 
@@ -448,7 +453,7 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
 Run before every commit:
 
 ```bash
-pnpm test           # 196 tests: engine + store + data pipeline units, IPC contract, speech, notices
+pnpm test           # 202 tests: engine + store + data pipeline units, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
@@ -704,8 +709,29 @@ downstream of them is covered by the IPC tests, which drive
   merge format would be guesswork.
 - **What the schedule does not yet record**: only a bounded recent history per
   character (20 attempts). A longer log is what M4's tolerance tuning and the
-  cross-cutting "attempt logging" item both want, so the two should be designed
-  together rather than growing the card format twice.
+  cross-cutting "attempt logging" item both want, and the two are now settled to
+  be built together as `ROADMAP.md` **M10 — Durable study store (SQLite)**, which
+  records why the current whole-document JSON format cannot hold an unbounded log
+  and what the migration has to preserve. Do not grow the card format twice.
+- **Where study data lives** — settled: the platform's application data directory,
+  resolved through the platform API rather than assembled from `$HOME`, and
+  overridable with `--user-dir` (which wins) or `HANZI_TUTOR_DATA_DIR`. Not a
+  `~/.hanzi-tutor` of our own: a Mac App Store build is sandboxed, the real home is
+  not writable there, and some home-directory APIs still return the real home
+  inside a sandbox — so a hand-built path fails only at save time. See M10 for the
+  format decision.
+- **The App Store path is untested, and one part of it is at risk.** A Mac App
+  Store build must be sandboxed, and `src/speech.rs` pronounces by spawning
+  `/usr/bin/say` — which a sandbox may refuse. `scripts/probe-app-sandbox.sh` was
+  written to settle it and **could not do so from here**: applying any sandbox
+  profile is refused in this development environment (`sandbox-exec -p '(version
+  1)(allow default)' …` → `sandbox_apply: Operation not permitted`), and an app
+  signed with `com.apple.security.app-sandbox` and launched through launchd ran
+  with the entitlement present but unenforced. The script detects exactly that and
+  reports "inconclusive" rather than a false answer. Run it from a normal login
+  session, or put a build on TestFlight and try *hear it* there. If `say` is
+  refused, the macOS backend needs `AVSpeechSynthesizer` in-process — the same
+  shape M9 needs for iOS, so settle it before writing M6's three backends.
 - **An accepted dependency advisory.** Dependabot flags `glib` 0.18.5 (moderate,
   fixed in 0.20.0). It is Linux-GTK-only and absent from the macOS build graph,
   and it is not fixable from here because `gtk 0.18` pins `glib ^0.18` — cargo
