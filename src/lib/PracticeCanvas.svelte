@@ -6,6 +6,13 @@
    * lifted to the parent so that undo, clearing and grading all have one source
    * of truth. Coordinates are converted to display space (0..=1024, y down)
    * before leaving this component, which is the space the Rust grader expects.
+   *
+   * Two ways to draw share this one path. *Drag* is press-and-hold, which suits a
+   * stylus. *Click to draw* starts a stroke with one click, extends it as the
+   * pointer moves with no button held, and ends it with a second click — because
+   * a long stroke on a trackpad means holding the button down for a long time.
+   * Both produce their points through the same conversion and the same filtering
+   * below, so a stroke's geometry does not depend on which one drew it.
    */
   import { BOX, drawScene } from "./render";
   import type { Sweep } from "./render";
@@ -20,6 +27,8 @@
     showCorrections: boolean;
     /** Where the stroke-order pen is, or null when nothing is animating. */
     sweep: Sweep | null;
+    /** Click to start a stroke and click again to finish, rather than dragging. */
+    clickToDraw: boolean;
     disabled?: boolean;
     onStroke: (stroke: Point[]) => void;
   }
@@ -32,6 +41,7 @@
     ghostStyle,
     showCorrections,
     sweep,
+    clickToDraw,
     disabled = false,
     onStroke,
   }: Props = $props();
@@ -54,6 +64,11 @@
    * would mean paying for deep proxying at pointer frequency.
    */
   let current: Point[] | null = null;
+  /**
+   * True while a click-to-draw stroke is open, between its two clicks. It is a
+   * plain variable for the same reason as `current`.
+   */
+  let open = false;
 
   /** Ignore samples closer together than this (design units), to cut jitter. */
   const MIN_SPACING = 2;
@@ -147,9 +162,41 @@
     current.push(point);
   }
 
+  /** Lift whatever has been drawn to the parent as a finished stroke. */
+  function commit() {
+    const finished = current;
+    current = null;
+    open = false;
+    if (finished && finished.length > 0) onStroke(finished);
+    repaint();
+  }
+
+  /** Throw away an open click-to-draw stroke that was never finished. */
+  function cancelDraft() {
+    if (!open) return;
+    current = null;
+    open = false;
+    repaint();
+  }
+
   function handleDown(event: PointerEvent) {
     if (disabled || event.button !== 0) return;
     event.preventDefault();
+
+    if (clickToDraw) {
+      // The second click ends the stroke where it lands. Nothing is captured:
+      // the stroke is extended by hover moves, which need no button.
+      if (open) {
+        push(toDisplay(event));
+        commit();
+      } else {
+        current = [toDisplay(event)];
+        open = true;
+        repaint();
+      }
+      return;
+    }
+
     canvas?.setPointerCapture(event.pointerId);
     current = [toDisplay(event)];
     repaint();
@@ -168,6 +215,13 @@
   }
 
   function handleUp(event: PointerEvent) {
+    // In click-to-draw mode the release is not the end of the stroke — the
+    // stroke stays open until the next press, so the pointer can be repositioned
+    // as many times as it takes without the button held down.
+    if (clickToDraw) {
+      if (current) event.preventDefault();
+      return;
+    }
     if (!current) return;
     event.preventDefault();
     if (canvas?.hasPointerCapture(event.pointerId)) {
@@ -179,16 +233,54 @@
     // exactly like the app throwing the stroke away. `push` drops it when it
     // merely repeats the last sample, so this costs nothing normally.
     push(toDisplay(event));
-    const finished = current;
-    current = null;
-    if (finished.length > 0) onStroke(finished);
-    repaint();
+    commit();
   }
 
   // A pointer that leaves the window mid-stroke should still commit the stroke.
   function handleCancel(event: PointerEvent) {
+    if (!current) return;
+    if (clickToDraw) {
+      // The pointer is gone, so there is no second click to wait for; keeping
+      // the stroke open would leave ink on the board that nothing can finish.
+      event.preventDefault();
+      push(toDisplay(event));
+      commit();
+      return;
+    }
     handleUp(event);
   }
+
+  /**
+   * Escape or Backspace abandons an open stroke.
+   *
+   * This listens in the *capture* phase so that Backspace can mean two things
+   * without the two handlers fighting: with a stroke open it cancels that stroke,
+   * and `stopPropagation` keeps the app's Backspace-to-undo from also removing
+   * the last committed one.
+   */
+  $effect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!open) return;
+      if (event.key !== "Escape" && event.key !== "Backspace") return;
+      const target = event.target as HTMLElement | null;
+      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      cancelDraft();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  });
+
+  /**
+   * Switching how strokes are drawn keeps the learner's ink: a stroke that is
+   * open when the mode changes is committed rather than discarded, since it is
+   * already on the board and throwing it away would look like the app losing it.
+   */
+  $effect(() => {
+    void clickToDraw;
+    if (open) commit();
+  });
 </script>
 
 <div class="board" bind:this={frame}>

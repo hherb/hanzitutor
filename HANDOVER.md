@@ -142,6 +142,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | IPC surface | Done | contract tests asserting exact JSON key sets |
 | Drawing canvas | Done, human-confirmed | trace + recall modes, colour-coded feedback |
 | Stroke-order animation (M7) | Done | pen sweeps each centre-line, the outline revealed behind it; band width measured per stroke; confirmed by window capture |
+| Input ergonomics (M8) | Done | click-to-draw mode beside the corrections switch; both paths produce identical geometry; the handlers were driven with synthetic pointer events |
 | Pronunciation | Done on macOS | 9 tests; human-confirmed speaking |
 | Personal vocabulary list | Done | 27 store unit tests; persistence tested through the state layer |
 | Per-character progress, SRS | Done | 30 store/scheduler unit tests; record → relaunch → due-date cycle tested through the state layer |
@@ -219,7 +220,8 @@ src-tauri/
 src/
   App.svelte                shell: modes, navigation, keyboard, state ownership,
                             and the stroke-order animation's clock
-  lib/PracticeCanvas.svelte pointer capture, coalesced sampling, display space
+  lib/PracticeCanvas.svelte pointer capture, coalesced sampling, display space,
+                            drag and click-to-draw input modes
   lib/CharacterThumb.svelte one small picture of one character's attempt
   lib/render.ts             canvas painting, the stroke-order sweep,
                             font<->display transforms, colours
@@ -580,6 +582,29 @@ downstream of them is covered by the IPC tests, which drive
   takes its point in *canvas* coordinates while the path is transformed by the
   current matrix, so the measurement clears the transform and works in font space
   at 1:1 — measuring under the drawing transform silently reports nonsense.
+- **A key that means two things has to be cancelled in the capture phase.** In
+  click-to-draw mode (M8) Backspace abandons the open stroke, and with no stroke
+  open it is still the app's undo — two listeners on `window`, one in
+  `PracticeCanvas` and one in `App`. Registering the cancel with
+  `addEventListener("keydown", …, true)` puts it in the capture phase, where
+  `stopPropagation()` keeps the event from ever reaching `App`'s bubble-phase
+  handler. Both listeners on the *same* node would not do it: at-target phase runs
+  capture and bubble listeners in registration order, so only
+  `stopImmediatePropagation` would separate them — and that is not what a real
+  keypress does, where the target is `body` and `window` is an ancestor.
+- **Pointer work can be verified here after all — with synthetic events.** Drawing
+  cannot be *driven* (§1, §6), but `PracticeCanvas`'s handlers are ordinary DOM
+  handlers, so a temporary seed can dispatch `new PointerEvent("pointerdown" |
+  "pointermove" | "pointerup", {clientX, clientY, buttons, pointerId: 1,
+  bubbles: true})` at the canvas with coordinates computed from the canvas rect,
+  and the app's own log (a `TEMP …` line through `api.log`) reports what the state
+  became. Two things to know: stub `setPointerCapture` / `releasePointerCapture`
+  first, because a synthetic pointer id is not a real pointer and the call throws;
+  and dispatch key events at `document.body` with `bubbles: true`, not at
+  `window`, or the capture trick above is not exercised. That is how M8's six
+  cases were checked — the same geometry from both modes, Escape, Backspace,
+  `pointercancel` and a mid-draft mode switch — and it is worth reaching for
+  before declaring any input change unverifiable. Take the seed out afterwards.
 - **A stroke has to end where the pointer was released.** `handleUp` in
   `PracticeCanvas.svelte` appends the `pointerup` position before committing the
   stroke. Without that, a quick flick whose only sample arrives with the release
@@ -700,9 +725,13 @@ downstream of them is covered by the IPC tests, which drive
   every stroke at one fixed width, so nothing a learner does on a trackpad can put
   down *less* ink than `INK_WIDTH` and the `faint` verdict is unreachable in daily
   use; what M4 does catch today is overshoot and short strokes. The width half
-  becomes live when input can report a real pen width — a stylus, or the
-  velocity-thickened brush M8 calls "cosmetic only", which stops being true now
-  that this measure exists. Whichever comes first wants real attempts to re-tune
+  becomes live when input can report a real pen width — a stylus. **M8 chose not
+  to add the velocity-thickened brush it had listed as "cosmetic only"**, and the
+  reason is worth keeping: ink amount became a quarter of the score in M4, so
+  stroke width is a grading input now, and a brush that thinned with speed would
+  score a fast stroke worse for being fast. Doing it properly means the grader
+  takes a width per stroke and `INK_OK` is re-tuned against real attempts — the
+  attempt log's job (M10). Whichever comes first wants real attempts to re-tune
   `INK_OK` against.
 - **The four headline weights are a judgement, not a measurement.** An equal
   quarter each, chosen so a third-inked character cannot read "Excellent". The

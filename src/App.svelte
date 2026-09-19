@@ -65,6 +65,13 @@
   let grading = $state(false);
   let showCorrections = $state(true);
   /**
+   * How a stroke is committed: dragged with the button held, or started and
+   * finished with two clicks. The default is dragging, which is right for a
+   * stylus; click-to-draw exists because holding a trackpad button for a long
+   * stroke is unpleasant (see `PracticeCanvas`).
+   */
+  let clickToDraw = $state(false);
+  /**
    * The TTS voice, once known: a name when pronunciation is available, `null`
    * when the system has no Chinese voice, `undefined` while still resolving.
    */
@@ -1345,6 +1352,7 @@
             {ghostStyle}
             {showCorrections}
             {sweep}
+            {clickToDraw}
             onStroke={addStroke}
           />
 
@@ -1430,6 +1438,13 @@
             <label class="toggle">
               <input type="checkbox" bind:checked={showCorrections} />
               corrections
+            </label>
+            <label
+              class="toggle"
+              title="Click once to start a stroke and once to finish it, instead of holding the button down — easier for long strokes on a trackpad. Escape or Backspace abandons an unfinished stroke."
+            >
+              <input type="checkbox" bind:checked={clickToDraw} />
+              click to draw
             </label>
             <span class="count" title={report
               ? `${report.givenStrokes} of ${report.expectedStrokes} strokes were graded; ignored stray marks are not counted`

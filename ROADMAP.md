@@ -20,7 +20,7 @@ See [`HANDOVER.md`](HANDOVER.md) for how to build, test and verify; see
 | M5 | Distribution readiness | Licence notices and signed bundles | M | **done** |
 | M6 | Pronunciation on Windows/Linux | macOS-only today | S | not started |
 | M7 | Centreline stroke animation | Nicer, more accurate "show me" | S | **done** |
-| M8 | Input ergonomics | Long strokes on a trackpad | S | not started |
+| M8 | Input ergonomics | Long strokes on a trackpad | S | **done** |
 | M9 | Mobile shells | A stylus is the right input device | L | not started |
 | M10 | Durable study store (SQLite) | The JSON format caps the attempt log the grading work needs | M | not started |
 
@@ -453,26 +453,65 @@ Deliberately not as originally planned, and why:
 
 ## M8 — Input ergonomics
 
-**Why.** Drawing is currently press-and-drag, which is awkward on a trackpad for
-long strokes — the practical reason someone would give up on 囊.
+**Status: done.**
 
-**Approach.**
+Drawing was press-and-drag only, which is awkward on a trackpad: a long stroke
+means holding the button down for a long time. There is now a **click to draw**
+mode beside the *corrections* switch, off by default, in which one click starts a
+stroke, moving the pointer extends it with no button held, and a second click
+ends it. The state machine lives in `src/lib/PracticeCanvas.svelte`; `App.svelte`
+owns the switch.
 
-- An optional **click-to-start / click-to-end** mode: the first click begins the
-  stroke, movement extends it, a second click commits it. Backspace or Escape
-  cancels.
-- Consider velocity- or pressure-based stroke width for a more natural line. The
-  reference outlines have real width, but grading uses centrelines, so this is
-  cosmetic only.
-- Offer the choice in the UI rather than forcing it; the current behaviour is fine
-  for stylus users who said so.
+What shipped:
 
-**Acceptance criteria.**
+- **Two ways to draw, one path.** Both modes start their stroke with
+  `toDisplay` and extend it with the same `push` (same display-space conversion,
+  same `MIN_SPACING` filter, same `MAX_POINTS` cap), so the points that reach the
+  grader do not depend on which one drew them — only what starts and ends the
+  stroke differs. That is asserted below, not assumed.
+- **A hover stroke is really open.** In click-to-draw mode the release is *not*
+  the end: the stroke stays open across as many pointer moves as it takes, which
+  is the whole point, and the ink is painted live the same way a drag paints it.
+- **Escape or Backspace abandons an unfinished stroke.** Both listeners already
+  exist and mean something else in the app, so the cancel listens in the *capture*
+  phase and stops propagation: with a stroke open, Backspace cancels that stroke
+  and does **not** also undo the last committed one. With no stroke open, both
+  keep their old meaning.
+- **Switching mid-stroke keeps the ink.** Toggling the mode with a stroke open
+  commits it rather than dropping it, because it is already on the board and
+  discarding it would look like the app losing the learner's work. What is *not*
+  touched is the committed attempt: the mode switch neither clears the board nor
+  invalidates the recorded strokes.
+- **A cancelled pointer commits.** `pointercancel` (a system gesture taking the
+  pointer, a window losing it) finishes the open stroke instead of leaving ink
+  that nothing can finish.
 
-- A long stroke can be drawn without holding the trackpad button.
-- Switching modes does not corrupt an in-progress attempt.
-- The stored stroke geometry is identical in shape to the drag version, so grading
-  is unaffected.
+Verified by driving the real handlers with synthetic `PointerEvent`s of the same
+canvas coordinates in both modes — the sequence a click-to-draw user performs,
+with no button held for the moves. The log from that run: the drag produced one
+stroke of four points; the click sequence produced nothing at the release, then
+the same four points at the second press, **byte-identical to the drag stroke**;
+Escape left zero strokes; Backspace with one stroke already committed left one;
+and switching the mode mid-draft committed exactly one. The board was captured
+with the click-drawn stroke on it and the switch checked. What that does not
+prove is the operating system's own delivery of hover moves — the one part that
+needs a human at the trackpad, and the reason this is recorded as verified by
+hand rather than by a test.
+
+Deliberately not done, and why:
+
+- **No velocity- or pressure-based stroke width.** The roadmap called it
+  "cosmetic only", and that stopped being true in M4: the canvas tells the grader
+  the width it painted with (`GradeOptions.inkWidth`) and **ink amount is a
+  quarter of the score**, so a brush that thinned with speed would make a fast
+  stroke score worse for being fast — the same class of fault invariant 15
+  exists to prevent, one level up. A real variable-width brush therefore needs
+  the grader to take a width per stroke, and probably to re-tune `INK_OK` against
+  real attempts, which is the attempt log's job (M10). This is a decision to make
+  deliberately, not a pen stroke to slip into an input change.
+- **The mode is not remembered between runs.** Nothing else about the board is
+  either — trace/recall, the corrections switch — and there is no settings store
+  to put it in. M10 is the natural home for one.
 
 ---
 
@@ -614,8 +653,11 @@ Recorded honestly, because they bound how much the current scores mean:
   canvas paints every stroke at one fixed width, so a learner cannot put down
   *less* ink than that and the `faint` verdict cannot fire from a trackpad. What
   the measure catches today is overshoot and short strokes; a stylus that reports
-  real width, or M8's velocity-thickened brush, is what makes the width half of it
-  live. Do not mistake "the measure works" for "the case happens".
+  real width is what makes the width half of it live. **M8 deliberately did not
+  add the velocity-thickened brush it had listed as cosmetic**: ink amount is a
+  quarter of the score, so stroke width is now a grading input, and a brush that
+  thinned with speed would penalise drawing quickly. See M8. Do not mistake "the
+  measure works" for "the case happens".
 - **The ink weight is a first guess.** Shape, placement, ink and order each carry
   a quarter of the headline score, chosen for symmetry and to stop a third-inked
   character reading "Excellent" rather than from any data. Like the shape

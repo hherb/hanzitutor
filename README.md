@@ -28,6 +28,11 @@ measure** are all implemented and tested; 202 automated tests pass. What is not 
 - **Two practice modes.** *Trace* puts a faint copy of the character on the board
   to follow. *Recall* shows only the pinyin and meaning, and grades what you
   write from memory.
+- **Two ways to draw.** Press-and-drag, which is what a stylus does, or **click to
+  draw**: one click starts a stroke, moving the pointer extends it, and a second
+  click ends it — no button to hold down for a long stroke on a trackpad. Escape
+  or Backspace abandons an unfinished stroke. Both modes put down identical
+  geometry, so the grade does not depend on which one you used.
 - **Stroke-order animation** — a pen walks each stroke's centre-line and the
   outline appears behind it, so the direction a stroke is written in is shown and
   not only the order the strokes come in. It can be stopped at any point, and
@@ -606,15 +611,14 @@ derived data rather than only the notices — see [`LICENSES.md`](LICENSES.md).
 See **[ROADMAP.md](ROADMAP.md)** for what to build next, in priority order, with
 approach notes and acceptance criteria. Distribution is done — the notices ship
 in the bundle, the data and font need no download, and CI runs the suite on every
-push — and so is the stroke-order animation, which now draws each stroke along its
-centre-line rather than switching strokes on one at a time. The headline gaps are
-now:
+push — and so are the two interface milestones: the stroke-order animation now
+draws each stroke along its centre-line, and the board draws either by dragging
+or by clicking. The headline gaps are now:
 
 1. **Pronunciation on Windows and Linux**, so the app is not macOS-only.
-2. **Input ergonomics** for long strokes on a trackpad — the small one that makes
-   daily practice nicer.
-3. **Mobile shells**, since a touchscreen with a stylus is the right input device,
-   and **the durable study store** that an unbounded attempt log needs.
+2. **Mobile shells**, since a touchscreen with a stylus is the right input device.
+3. **The durable study store** (SQLite) and the unbounded attempt log it exists
+   for, which is also what the grading tolerances want tuned against.
 
 If you are picking this project up to continue development, read
 **[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the
