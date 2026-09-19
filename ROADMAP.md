@@ -567,14 +567,18 @@ iPhone is carried when the iPad is not, and practice on it is the point.
 
 **What is left.**
 
-- **The physical device — installed, and one check short.** A debug device build
+- **The physical device — running, confirmed by hand.** A debug device build
   signs with the team (`X5DWXB4283`, from the environment), exports an IPA, and
-  installs onto the connected iPhone with `devicectl`; it has been installed and
-  it launches. What is *not* established from here is what it looks like on the
-  device: this setup cannot screenshot a physical iPhone, and the app's console
-  did not come back through `devicectl --console`. Somebody has to say what they
-  see on the screen, and that is the difference between "installed" and "verified
-  on a device" for M9's acceptance criteria.
+  installs onto the connected iPhone with `devicectl`. Getting it to *run* took
+  two steps, both recorded in `HANDOVER.md` §6: iOS 26 and later kill an app that
+  has not adopted the scene life cycle (a black flash and a crash report, and
+  nothing in the app's own log), and the obvious repair — declaring
+  `UIApplicationSceneManifest` with `UIApplicationSupportsMultipleScenes` false —
+  turns the crash into a **black screen**, because `tao` only enters scene mode
+  when that key is true. With it true the app renders, on the simulator and on the
+  phone, and the device run is confirmed by hand: it opens, the board is there,
+  and strokes can be drawn. That is M9's device criterion met for iOS; the release
+  build and pronunciation are what remain.
 - **iOS release builds.** `ios build` in release fails to link Tauri's Swift glue
   because the release Swift product keeps those symbols local; debug links. This
   is a toolchain/Tauri-version question rather than a change here, and it is

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The scene life cycle, which iOS 26 and later require.
+
+	  Without any manifest UIKit kills the app on launch — not a warning but an
+	  immediate trap:
+
+	      EXC_BREAKPOINT (SIGTRAP) in
+	      ___UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption_block_
+
+	  which on a phone looks like a black flash and a return to the home screen,
+	  with a crash report and nothing in the app's own log. The simulator did not
+	  complain because it runs iOS 18.
+
+	  `UIApplicationSupportsMultipleScenes` is **true on purpose**, and it is not a
+	  claim that this app wants several windows: it is how `tao`, Tauri's windowing
+	  layer, is told to use the scene life cycle at all. Its code reads exactly
+	  this key (`multiple_scenes_enabled()` in `tao/src/platform_impl/ios/scene.rs`),
+	  and with it false tao takes the pre-scene path — it creates the window in
+	  `didFinishLaunching`, before any scene exists, and a window that is not
+	  attached to a scene is invisible once a manifest is present. The result is a
+	  *black screen rather than a crash*, which is a harder failure to read.
+
+	  There is deliberately no `UISceneConfigurations` here: tao answers UIKit's
+	  `configurationForConnectingSceneSession` with a `UISceneConfiguration` named
+	  `TaoScene` whose delegate class it sets to `TaoSceneDelegate`. Naming a
+	  delegate here as well would be a second, competing source of truth.
+
+	  Tauri's iOS template does not add this file yet. Tauri merges it over the
+	  generated `Info.plist` **at build time** — `tauri ios init` alone does not,
+	  so the built app's plist is where to check it landed.
+	-->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

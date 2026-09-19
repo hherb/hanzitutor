@@ -146,6 +146,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Input ergonomics (M8) | Done, human-confirmed | click-to-draw beside the corrections switch, on by default where there is a hover and remembered once chosen; both paths produce identical geometry; driven with synthetic pointer events, and the trackpad behaviour confirmed by hand |
 | Pronunciation | Done on macOS | 9 tests; human-confirmed speaking |
 | Personal vocabulary list | Done | 27 store unit tests; persistence tested through the state layer |
+| iOS app (M9) | Runs on a physical iPhone, human-confirmed | the Rust side cross-compiles unchanged; phone layout verified by simulator screenshot; the scene-lifecycle crash and the black screen behind it are recorded in §6 |
 | Durable study store (M10) | Done | one `hanzi.db`; the old JSON imported once and left byte-identical; the attempt log past the 20 a card shows; WAL, and an uncommitted write leaves nothing |
 | Per-character progress, SRS | Done | 30 store/scheduler unit tests; record → relaunch → due-date cycle tested through the state layer |
 | HSK 3.0 word list | Done | 9,443 words in the artifact; every one drawable character by character, checked against the shipped dataset |
@@ -754,6 +755,52 @@ downstream of them is covered by the IPC tests, which drive
   runtimes, and `xcrun devicectl` is what distinguishes hardware ("available,
   paired") from the `simulated` column. The one real phone is `HHIP1`, an
   iPhone14,3.
+- **iOS 26 and 27 kill an app that has not adopted the scene life cycle — and it
+  looks like nothing at all.** On the phone the app showed a black flash, closed,
+  and printed nothing to its own log; the only evidence was a crash report
+  (`idevicecrashreport -u <udid> -k <dir>`), whose faulting frame names it
+  exactly:
+
+  ```
+  EXC_BREAKPOINT (SIGTRAP)
+  UIKitCore  ___UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption_block_
+  ```
+
+  The simulator did not complain because it runs iOS 18. `tao` already implements
+  the scene delegate (`TaoSceneDelegate`, in
+  `tao/src/platform_impl/ios/scene.rs`), so nothing needs patching — what was
+  missing is the declaration that makes UIKit create a scene at all:
+  `UIApplicationSceneManifest`, which Tauri's iOS template does not add. It lives
+  in `src-tauri/Info.ios.plist`, which the CLI **merges at build time** (not at
+  `ios init`: re-initialising alone left the generated `Info.plist` without it,
+  while the built app's did have it). Two details are load-bearing and both were
+  learned the hard way:
+
+  * `UIApplicationSupportsMultipleScenes` must be **true**. That is not a claim
+    that this app wants several windows: it is the switch that puts `tao` into
+    scene mode at all (`multiple_scenes_enabled()` in
+    `tao/src/platform_impl/ios/scene.rs`). With it **false** the crash above is
+    gone but the app shows a **black screen** — tao takes its pre-scene path,
+    creates the window in `didFinishLaunching` before any scene exists, and a
+    window that is not attached to a scene is invisible once a manifest is
+    present. A black screen instead of a crash is much harder to read: nothing
+    is logged and the crash reports stop.
+  * There must be **no `UISceneConfigurations`**. tao answers UIKit's
+    `configurationForConnectingSceneSession` with a `UISceneConfiguration` named
+    `TaoScene` and sets its delegate class to `TaoSceneDelegate` itself; naming a
+    delegate in this file as well is a second, competing source of truth.
+
+  Diagnose this class of failure on the **simulator**, not the phone: the same
+  manifest that black-screens an iOS 27 phone black-screens an iOS 18 simulator,
+  and the simulator can be screenshotted.
+- **A device build writes `DEVELOPMENT_TEAM` into the generated
+  `project.pbxproj`.** It is Xcode's doing, not the project's; revert that line
+  before committing, so the file does not carry one person's team.
+- **`ios build` cannot replace a stale archive.** A second build fails with
+  `failed to rename app …/hanzi-tutor_iOS.xcarchive/Products/Applications/Hanzi
+  Tutor.app: Directory not empty (os error 66)` — the previous app is still in the
+  archive's products directory. `rm -rf src-tauri/gen/apple/build` first, every
+  time; it is gitignored, so nothing is lost.
 - **A device run is `ios build` + `devicectl`, and the phone must be unlocked.**
   `tauri ios build --debug --target aarch64 --ci` produces an **IPA**
   (`src-tauri/gen/apple/build/arm64/Hanzi Tutor.ipa`), not a loose bundle:

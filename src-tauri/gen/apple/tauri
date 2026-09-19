@@ -1,36 +1,14 @@
 #!/usr/bin/env node
-
 /*
  * The entry point the Xcode "Build Rust Code" phase expects.
  *
- * The npm Tauri CLI generates a script phase that runs
+ * The npm Tauri CLI generates a script phase that runs `node tauri ios
+ * xcode-script …` with `src-tauri/gen/apple` as the working directory, and
+ * `tauri ios init` does not create this file, so the build stops with
+ * "Cannot find module '…/gen/apple/tauri'". This forwards to the CLI the
+ * repository already depends on (the npm package declares no `exports` map).
  *
- *     node tauri ios xcode-script ...
- *
- * with `src-tauri/gen/apple` as the working directory, so Node looks for a file
- * called `tauri` right here — but `tauri ios init` does not create it (CLI
- * 2.11.4), so the build stops with
- *
- *     Error: Cannot find module '/…/src-tauri/gen/apple/tauri'
- *
- * This forwards to the CLI the repository already depends on, so an iOS build
- * needs nothing but `pnpm install`. `@tauri-apps/cli` declares no `exports` map,
- * so the subpath require resolves, and Node finds it by walking up from here to
- * the repository's `node_modules`.
- *
- * Two things to know before "fixing" this file:
- *
- *  - The *standalone* CLI (`cargo tauri`, e.g. `~/.cargo/bin/cargo-tauri`)
- *    generates a different script phase instead — `cargo tauri ios xcode-script`
- *    — which needs no shim but does need a `cargo-tauri` on Xcode's PATH.
- *    Whichever CLI initialised the project decides which of the two you get.
- *  - `tauri ios init` leaves an existing `project.yml` alone, but deleting
- *    `gen/apple` and re-initialising **deletes this file**, because init only
- *    knows about the files it generates. If a rebuild suddenly cannot find
- *    `gen/apple/tauri`, that is what happened: restore this file.
+ * Deleting `gen/apple` and re-initialising removes this file — init only knows
+ * the files it generates. Restore it if a build suddenly cannot find it.
  */
-// The repository's `package.json` sets `"type": "module"`, and this file has no
-// extension for Node to key off — so it *is* an ES module, and `require` is not
-// defined here. Importing the CommonJS entry executes it with argv untouched,
-// which is all this needs to do.
 import "@tauri-apps/cli/tauri.js";
