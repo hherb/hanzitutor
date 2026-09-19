@@ -29,10 +29,10 @@ ls .cargo-home 2>/dev/null || {
 }
 
 # 2. Data + deps, then confirm the baseline is green.
-./scripts/fetch-data.sh          # ~33 MB upstream, into data/raw/ (gitignored)
+./scripts/fetch-data.sh          # ~36 MB upstream, into data/raw/ (gitignored)
 pnpm install
-pnpm run prepare-data            # builds the 13 MB artifact (gitignored)
-pnpm test                        # expect 136 passed, 0 failed
+pnpm run prepare-data            # builds the 13.6 MB artifact (gitignored)
+pnpm test                        # expect 170 passed, 0 failed
 pnpm run check:rust && pnpm run check:web
 ```
 
@@ -134,6 +134,9 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Pronunciation | Done on macOS | 9 tests; human-confirmed speaking |
 | Personal vocabulary list | Done | 27 store unit tests; persistence tested through the state layer |
 | Per-character progress, SRS | Done | 30 store/scheduler unit tests; record → relaunch → due-date cycle tested through the state layer |
+| HSK 3.0 word list | Done | 9,443 words in the artifact; every one drawable character by character, checked against the shipped dataset |
+| Word search and browsing | Done | by character, reading (tones/spacing/`ü` folded) or meaning; exact-beats-prefix ranking proven in tests |
+| Words spoken and read whole | Done | the dictionary's own reading is used, so 着急 is `zháojí` where the isolated 着 has no context |
 
 Verified end-to-end by reading the app's own logs:
 
@@ -145,6 +148,7 @@ HANZI_TUTOR_DATA_DIR="$PWD/.tmp-data" ./.cargo-target/debug/hanzi-tutor 2>&1 \
 # [webview] vocabulary: 2 entries in 2 groups
 # [webview] progress: 4 practised, 3 due
 # [webview] review queue: 2 due, 2 in this session
+# [webview] drawable characters: 9574
 # [webview] speech: using Tingting (Chinese (China mainland)) (zh_CN)
 # [webview] course cursor: resuming at character 413
 # [webview] character 的: de, 8 strokes
@@ -152,6 +156,13 @@ HANZI_TUTOR_DATA_DIR="$PWD/.tmp-data" ./.cargo-target/debug/hanzi-tutor 2>&1 \
 # [webview] graded 十: 100/100, legible=true, order=true
 # [webview] progress 十: 100/100, due 2026-09-20T09:00:00Z
 ```
+
+`drawable characters` is the word-list counterpart of the course load: 9,574
+characters have stroke geometry (against 7,744 with a frequency rank). The
+interface needs that set to skip the punctuation in a sentence instead of asking
+the board to draw a comma. A `webview error:` or `webview rejection:` line means
+an exception reached the window — the handler exists because a rendering error
+otherwise shows up only as a window that silently stops updating.
 
 `progress` and `review queue` are the lines to watch: with four practised
 characters and three of them overdue, the queue is **2** items, not 3 — the two
@@ -167,7 +178,7 @@ will hide everything and you will conclude the frontend never started.
 crates/hanzi-core/          grading engine. No Tauri, no UI, no platform code.
   src/geom.rs               resampling, normalisation, distances, similarity fit
   src/grade.rs              Hungarian pairing, order analysis, verdicts, scoring
-  src/dataset.rs            Character model + artifact loading
+  src/dataset.rs            Character + Word models, word search, artifact loading
   src/curriculum.rs         frequency list -> lessons
   src/vocab.rs              the personal vocabulary list and its JSON file
   src/progress.rs           per-character cards, SM-2 scheduling, review queue
@@ -184,7 +195,8 @@ src/
   lib/PracticeCanvas.svelte pointer capture, coalesced sampling, display space
   lib/render.ts             canvas painting, font<->display transforms, colours
   lib/FeedbackPanel.svelte  report -> readable advice
-  lib/LessonSidebar.svelte  course navigation, progress marks, review entry
+  lib/WordsPanel.svelte     the HSK word list: search, browse, practise
+  lib/LessonSidebar.svelte  course, list and word navigation, progress marks
   lib/types.ts              TS mirror of the Rust structs
   lib/api.ts                typed invoke wrappers
 scripts/                    fetch-data, with-cargo-env, tauri-cli
@@ -250,12 +262,13 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
    stroke order, pronunciation and advance mid-word. The `onKey` handler in
    `App.svelte` bails out for `INPUT`, `TEXTAREA` and `SELECT` targets.
 
-10. **Practice has one path for all three sources.** `targetChar` in `App.svelte`
+10. **Practice has one path for all four sources.** `targetChar` in `App.svelte`
     is the only thing that decides which character the board asks for: the course
-    cursor, the current character of a vocabulary entry, or the current character
-    of a review item. Loading, grading, the ghost, the hints and the recording of
-    progress all key off it. Add a fourth source by extending that derivation and
-    the `PracticeItem` queue, not by forking the practice code.
+    cursor, the current character of a vocabulary entry, the current character of
+    a review item, or the current character of an HSK word drilled from the word
+    list. Loading, grading, the ghost, the hints and the recording of progress all
+    key off it. Add a fifth source by extending that derivation and the
+    `PracticeItem` queue, not by forking the practice code.
 
 11. **A rating is the grade, and the grade bands live in one place.**
     `Rating::from_score` maps the 0..=100 headline score through
@@ -297,15 +310,53 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
     `fit_on_matched` resamples each matched stroke evenly before deriving the fit
     for the same reason. There are tests for all three.
 
+16. **The artifact is versioned by its magic, and the magic must move with the
+    payload.** `ARTIFACT_MAGIC` is `HANZID02` since M3 added the word list; `01`
+    carried a bare `Vec<Character>`. `postcard` is not self-describing, so
+    decoding an old payload with the new struct would produce plausible nonsense
+    rather than an error. Anything that changes the payload shape — adding a
+    field to `Character` or `Word`, or adding a third list — must bump the magic
+    and regenerate. There is a test that feeds the old `HANZID01` bytes in and
+    requires a loud failure.
+
+17. **The word dictionary holds multi-character words only.** A single character
+    is the course's job, and `Character` already carries its most common reading
+    first. A word entry for the same glyph would be a second, competing source of
+    truth: the dictionary lists 安 as the surname `Ān` before `ān` "peaceful".
+    `Dataset::lookup_text` enforces the same precedence — one character is
+    answered from the character dataset, a longer text from the dictionary if it
+    is there, and otherwise by composing the readings with **no** meaning. Never
+    let a word entry answer for a single character.
+
+18. **Every listed word must be drawable character by character.** `prepare-data`
+    keeps a word only when all of its characters have stroke geometry *and* a
+    frequency rank, and prints how many it dropped; the count must stay `0` for
+    the "unteachable character" case, and there is an IPC test that walks all
+    9,443 words checking each character against `practisable_characters()`. A
+    listed word that the board cannot ask for is a dead end in the interface.
+
+19. **Practice skips characters the board cannot draw; it never dead-ends.**
+    `entryCharacters` in `App.svelte` filters a word or sentence through the
+    character set the backend reports, so the punctuation in a sentence is passed
+    over instead of being handed to `getCharacter` and failing. That filter is
+    why any text can be practised one character at a time without sentence data.
+    It falls back to splitting the text as typed while the set is still loading,
+    so a practice session started in the first milliseconds still works.
+
 ## 5. The verification loop
 
 Run before every commit:
 
 ```bash
-pnpm test           # 139 tests: engine + store units, IPC contract, speech
+pnpm test           # 170 tests: engine + store + data pipeline units, IPC contract, speech
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
+
+`pnpm test` enables hanzi-core's `prepare` feature deliberately, so the data
+pipeline's parsing — which upstream fields are trusted and how a word's reading is
+chosen — is covered by the same run. Without the feature flag the nine
+`prepare-data` tests silently do not run.
 
 Additionally, **if you touched anything in the grading path**:
 
@@ -334,7 +385,10 @@ explodes into the thousands.
 `selfcheck` is also the tripwire for milestone M2: it must be **byte-identical**
 before and after a scheduling change, because scheduling interprets the score and
 must never alter it. Extracting the grade bands into `Grade::from_score` was
-checked that way. (The placement fix above *did* move the tolerance table
+checked that way. M3 was checked the same way for a different reason: it changed
+the artifact (a new payload struct, 9,443 words added), and every figure above —
+including the `0` on the last line — is unchanged, which is what proves the word
+list touched no geometry. (The placement fix above *did* move the tolerance table
 slightly — `normal sigma=15` position mean 0.93 → 0.91 — because the global fit
 now weights each stroke equally instead of by sample count. Legibility at 1.5%
 and 3% jitter is unchanged at 100% and 99.1%, which is the property that
@@ -412,6 +466,31 @@ downstream of them is covered by the IPC tests, which drive
   change the heartbeat with it or the badge will look stuck.
 - **`src-tauri/gen/schemas/`** is generated and gitignored; `capabilities/default.json`
   references it with `$schema`, so editors will warn until the first build. Expected.
+- **A stale artifact fails on the magic, not on the JSON.** `crates/hanzi-core/data/hanzi.bin.gz`
+  is gitignored, so a checkout that pulled an artifact-changing commit keeps the
+  old file and the app refuses to decode it. The message says *re-run
+  `prepare-data`*; do that rather than hunting for a bug in the loader. `build.rs`
+  checks only that the file *exists*, not that it is current, so this is a runtime
+  error rather than a build one.
+- **`prepare-data` is the only place the word list is filtered.** Words whose
+  characters lack geometry or a frequency rank are dropped there, not at load, so
+  "why is this word missing?" is answered by its `words from …: N kept` line. If
+  you add a rule, add it there and print the count it dropped — the silent
+  version of that filter is how a word list ends up with entries the board cannot
+  draw.
+- **Clicking a character in a word is a search, not navigation.** `WordsPanel`
+  turns the click into a query for that character, which is the browse-by-radical
+  route the roadmap asked for. The course jump lives on the sidebar instead.
+- **A word can repeat a character, so never key a per-character `{#each}` by the
+  character.** 是不是 is one of the first words in the list, and keying the glyph
+  tiles by `ch` throws `each_key_duplicate`. The nastier half is *how* it fails:
+  the error is raised inside Svelte's render flush, so the window simply stops
+  updating — the panel sat on "Searching…" with the correct data already in
+  state, and nothing appeared in the terminal, because a webview's console is not
+  visible from here. Key by index for character tiles. The `error` /
+  `unhandledrejection` handler in `App.svelte` now forwards that class of failure
+  to `[webview] webview error: …`, which is what turned this from a mystery into
+  a one-line answer — keep it.
 
 ## 7. Open decisions
 
@@ -426,9 +505,24 @@ downstream of them is covered by the IPC tests, which drive
   revisiting once there are real attempts to look at — ideally by logging
   attempts and re-running the distribution analysis in `selfcheck`.
 - **Vocabulary list scope** — settled: M1 shipped with auto-fill for single
-  characters, a composed reading for words, and hand-typed meanings. The
-  remaining intentional gaps (CSV import, word meanings, tone sandhi) are
-  recorded at the end of `ROADMAP.md` M1.
+  characters, a composed reading for words, and hand-typed meanings. M3 changed
+  one half of that: a word in the HSK dictionary now gets its real reading *and*
+  its real meaning, and only a word the dictionary does not know falls back to a
+  composed reading with a blank meaning. The remaining intentional gaps (CSV
+  import, tone sandhi, sentence segmentation) are recorded at the end of
+  `ROADMAP.md` M1 and M3.
+- **Word dictionary scope** — settled: the HSK 3.0 lists, multi-character entries
+  only, MIT compilation with CC-CEDICT readings and definitions (CC BY-SA 4.0).
+  The share-alike obligation is real and is recorded in `LICENSES.md`; it is why
+  the upstream fields that would add a third licence (SUBTLEX-CH frequency, HanLP
+  part-of-speech) are not bundled. If a future milestone wants published word
+  frequencies, that is a licensing decision, not just a data one.
+- **A word's reading is chosen by a rule, not resolved by context.** The first
+  dictionary form wins unless it is a capitalised proper noun, in which case the
+  first ordinary reading wins. That fixes 安 (`Ān` the surname → `ān` peaceful)
+  but leaves a minority of genuinely ambiguous headwords on their less common
+  reading (便宜). There is no context to do better without the sentence, so this
+  is documented rather than papered over.
 - **Scheduling scope** — settled: M2 shipped SM-2 behind a `Scheduler` trait, with
   the intervals and file layout recorded at the end of `ROADMAP.md` M2. FSRS was
   deliberately not attempted: it wants a review history one learner will not

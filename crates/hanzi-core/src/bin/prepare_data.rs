@@ -1,25 +1,27 @@
-//! Build the compact character artifact that ships with the app.
+//! Build the compact dataset artifact that ships with the app.
 //!
-//! Fuses two upstream datasets into one `postcard` payload:
+//! Fuses the upstream datasets into one `postcard` payload:
 //!
 //! * `graphics.txt` (Make Me a Hanzi) — stroke outlines and stroke-order
 //!   centre-lines, converted from font space into display space here so that
 //!   the app never has to think about the flipped y axis when grading.
 //! * `hanziDB.csv` — frequency rank, pinyin, meaning, radical, HSK level.
 //! * `dictionary.txt` (Make Me a Hanzi) — etymology hints, for mnemonics.
+//! * `hsk-words.json` (complete-hsk-vocabulary) — the word list: text, reading
+//!   and definition for every multi-character word in the HSK 3.0 lists.
 //!
 //! ```text
 //! cargo run -p hanzi-core --features prepare --bin prepare-data -- \
 //!     [--raw <dir>] [--out <file>]
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use hanzi_core::dataset::{Character, ARTIFACT_MAGIC};
+use hanzi_core::dataset::{Artifact, Character, Word, ARTIFACT_MAGIC};
 use hanzi_core::geom::Point;
 use serde::Deserialize;
 
@@ -69,6 +71,35 @@ struct FrequencyRow {
     hsk_level: String,
 }
 
+/// One entry of `hsk-words.json`. The file is minified, so the field names are
+/// the abbreviations its own README documents.
+#[derive(Deserialize)]
+struct RawWord {
+    /// Simplified headword.
+    s: String,
+    /// Levels the word appears in, e.g. `["n3", "o2"]`.
+    #[serde(default, rename = "l")]
+    levels: Vec<String>,
+    #[serde(default, rename = "f")]
+    forms: Vec<RawWordForm>,
+}
+
+/// One reading/traditional-form variant of a word.
+#[derive(Deserialize)]
+struct RawWordForm {
+    #[serde(default, rename = "i")]
+    transcriptions: RawTranscriptions,
+    #[serde(default, rename = "m")]
+    meanings: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawTranscriptions {
+    /// Hanyu Pinyin with tone marks, e.g. `"ài hào"`.
+    #[serde(default, rename = "y")]
+    pinyin: String,
+}
+
 /// Lexical data merged from both lexical sources, keyed by character.
 #[derive(Default, Clone)]
 struct Lexical {
@@ -113,8 +144,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let graphics_path = raw_dir.join("graphics.txt");
     let dictionary_path = raw_dir.join("dictionary.txt");
     let frequency_path = raw_dir.join("hanziDB.csv");
+    let words_path = raw_dir.join("hsk-words.json");
 
-    for path in [&graphics_path, &dictionary_path, &frequency_path] {
+    for path in [&graphics_path, &dictionary_path, &frequency_path, &words_path] {
         if !path.exists() {
             return Err(format!(
                 "missing {} — run scripts/fetch-data.sh first",
@@ -227,15 +259,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // 4. Sort by frequency rank, ranked characters first, then by codepoint so
+    // 4. Words, from the HSK lists. Every character of a word has to be
+    //    drawable, or the word could be listed but never practised.
+    let drawable: HashSet<char> = characters.iter().map(|c| c.ch).collect();
+    let words = build_words(&words_path, &lexical, &drawable)?;
+
+    // 5. Sort by frequency rank, ranked characters first, then by codepoint so
     //    the artifact is byte-for-byte reproducible.
     characters.sort_by_key(|c| {
         let rank = if c.rank == 0 { u32::MAX } else { c.rank };
         (rank, c.ch as u32)
     });
 
-    // 5. Serialise and compress.
-    let payload = postcard::to_allocvec(&characters)?;
+    // 6. Summarise before the collections are moved into the payload.
+    let character_count = characters.len();
+    let ranked = characters.iter().filter(|c| c.rank > 0).count();
+    let with_etymology = characters.iter().filter(|c| !c.etymology.is_empty()).count();
+    let with_pinyin = characters.iter().filter(|c| !c.pinyin.is_empty()).count();
+    let avg_strokes = characters.iter().map(|c| c.medians.len()).sum::<usize>() as f64
+        / characters.len().max(1) as f64;
+    let word_count = words.len();
+    let words_with_meaning = words.iter().filter(|w| !w.meaning.is_empty()).count();
+    let avg_word_chars =
+        words.iter().map(|w| w.text.chars().count()).sum::<usize>() as f64 / words.len().max(1) as f64;
+    let word_levels: Vec<String> = level_census(&words)
+        .into_iter()
+        .map(|(level, count)| format!("HSK {level}: {count}"))
+        .collect();
+
+    // 7. Serialise and compress.
+    let payload = postcard::to_allocvec(&Artifact::new(characters, words))?;
     let mut raw = Vec::with_capacity(payload.len() + ARTIFACT_MAGIC.len());
     raw.extend_from_slice(ARTIFACT_MAGIC);
     raw.extend_from_slice(&payload);
@@ -252,21 +305,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     writer.flush()?;
 
     let artifact_bytes = std::fs::metadata(&out_path)?.len();
-    let ranked = characters.iter().filter(|c| c.rank > 0).count();
-    let with_etymology = characters.iter().filter(|c| !c.etymology.is_empty()).count();
-    let with_pinyin = characters.iter().filter(|c| !c.pinyin.is_empty()).count();
-    let avg_strokes =
-        characters.iter().map(|c| c.medians.len()).sum::<usize>() as f64 / characters.len().max(1) as f64;
 
     println!("prepare-data: wrote {}", out_path.display());
     println!("  frequency rows        {freq_rows}");
     println!("  dictionary rows       {dict_lines}");
     println!("  graphics rows         {graphics_lines} ({skipped} skipped)");
-    println!("  characters            {}", characters.len());
-    println!("  ranked / teachable    {ranked}");
+    println!("  characters            {character_count}");
     println!("  with pinyin           {with_pinyin}");
     println!("  with etymology        {with_etymology}");
+    println!("  ranked / teachable    {ranked}");
     println!("  average strokes       {avg_strokes:.1}");
+    println!("  words                 {word_count} ({words_with_meaning} with a definition)");
+    println!("  average word length   {avg_word_chars:.1} characters");
+    println!("  words per level       {}", word_levels.join(", "));
     println!(
         "  artifact              {:.2} MB compressed from {:.2} MB ({:.0}%)",
         artifact_bytes as f64 / 1e6,
@@ -274,6 +325,157 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         100.0 * artifact_bytes as f64 / raw.len() as f64
     );
     Ok(())
+}
+
+/// Build the word list from `hsk-words.json`.
+///
+/// Words the app cannot teach are dropped rather than listed: a word is only
+/// kept when every one of its characters is drawable and has a frequency rank,
+/// so the word browser can never offer something the board cannot ask for.
+fn build_words(
+    path: &Path,
+    lexical: &HashMap<char, Lexical>,
+    drawable: &HashSet<char>,
+) -> Result<Vec<Word>, Box<dyn std::error::Error>> {
+    let file = BufReader::new(File::open(path)?);
+    let raw: Vec<RawWord> = serde_json::from_reader(file)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+
+    let mut words: Vec<Word> = Vec::new();
+    let mut kept = HashSet::new();
+    let mut single_character = 0usize;
+    let mut unteachable = 0usize;
+    let mut not_hsk3 = 0usize;
+
+    for entry in &raw {
+        let text = entry.s.trim();
+        let characters: Vec<char> = text.chars().collect();
+
+        // Single characters are the course's job; see `Word`'s documentation.
+        if characters.len() < 2 {
+            single_character += 1;
+            continue;
+        }
+
+        let Some(hsk) = hsk3_level(&entry.levels) else {
+            not_hsk3 += 1;
+            continue;
+        };
+
+        // The word's derived frequency is its rarest character's rank, so it is
+        // only defined when every character has one.
+        let mut rank = 0u32;
+        let mut usable = true;
+        for ch in &characters {
+            match (drawable.contains(ch), lexical.get(ch).map(|l| l.rank)) {
+                (true, Some(rank_of)) if rank_of > 0 => rank = rank.max(rank_of),
+                _ => {
+                    usable = false;
+                    break;
+                }
+            }
+        }
+        if !usable {
+            unteachable += 1;
+            continue;
+        }
+
+        let Some(form) = choose_form(&entry.forms) else {
+            continue;
+        };
+        let pinyin: String = form.transcriptions.pinyin.split_whitespace().collect();
+        if pinyin.is_empty() {
+            continue;
+        }
+        let meaning = form
+            .meanings
+            .iter()
+            .map(|sense| sense.trim())
+            .filter(|sense| !sense.is_empty())
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        // The file is meant to hold each word once; if it ever does not, the
+        // first mention wins so the artifact stays deterministic.
+        if !kept.insert(text.to_string()) {
+            continue;
+        }
+
+        words.push(Word {
+            text: text.to_string(),
+            pinyin,
+            meaning,
+            hsk,
+            rank,
+        });
+    }
+
+    println!(
+        "prepare-data: words from {}: {} kept, {} single characters, {} not HSK 3.0, \
+         {} with an unteachable character",
+        path.display(),
+        words.len(),
+        single_character,
+        not_hsk3,
+        unteachable,
+    );
+    Ok(words)
+}
+
+/// The HSK 3.0 level of an entry, which is the lowest `n1`..`n7` it appears in.
+///
+/// The same file also carries the older HSK 2.0 (`o1`..`o6`) and a third set of
+/// codes; only the `n` levels are the current lists the app teaches.
+fn hsk3_level(levels: &[String]) -> Option<u8> {
+    levels
+        .iter()
+        .filter_map(|level| level.strip_prefix('n'))
+        .filter_map(|number| number.parse::<u8>().ok())
+        .filter(|level| (1..=7).contains(level))
+        .min()
+}
+
+/// Choose which of a word's several dictionary forms to teach.
+///
+/// CC-CEDICT gives a surname or a place name its own form, capitalised, and it
+/// is frequently first: 安 is `Ān` "surname An" before `ān` "peaceful", and 都
+/// is `Dū` before `dōu`. A learner wants the ordinary word, so a capitalised
+/// reading is passed over whenever an ordinary one exists. Whatever is left
+/// keeps the dictionary's own order, which is right for the large majority.
+fn choose_form(forms: &[RawWordForm]) -> Option<&RawWordForm> {
+    let first = forms.first()?;
+    if is_proper_noun(&first.transcriptions.pinyin) {
+        if let Some(ordinary) = forms
+            .iter()
+            .find(|f| !is_proper_noun(&f.transcriptions.pinyin) && !f.meanings.is_empty())
+        {
+            return Some(ordinary);
+        }
+    }
+    Some(first)
+}
+
+/// True when a reading is a proper noun: CC-CEDICT capitalises its first letter.
+fn is_proper_noun(pinyin: &str) -> bool {
+    pinyin
+        .trim_start()
+        .chars()
+        .next()
+        .is_some_and(char::is_uppercase)
+}
+
+/// How many words sit at each level, lowest first.
+fn level_census(words: &[Word]) -> Vec<(u8, usize)> {
+    let mut census: Vec<(u8, usize)> = Vec::new();
+    let mut sorted: Vec<u8> = words.iter().map(|w| w.hsk).collect();
+    sorted.sort_unstable();
+    for level in sorted {
+        match census.last_mut() {
+            Some((last, count)) if *last == level => *count += 1,
+            _ => census.push((level, 1)),
+        }
+    }
+    census
 }
 
 /// First `char` of a string, ignoring anything after it.
@@ -326,5 +528,82 @@ mod tests {
         assert_eq!(single_char("好"), Some('好'));
         assert_eq!(single_char(" 一 "), Some('一'));
         assert_eq!(single_char(""), None);
+    }
+
+    // ---- the word list ----------------------------------------------------
+
+    fn form(pinyin: &str, meanings: &[&str]) -> RawWordForm {
+        RawWordForm {
+            transcriptions: RawTranscriptions {
+                pinyin: pinyin.to_string(),
+            },
+            meanings: meanings.iter().map(|m| m.to_string()).collect(),
+        }
+    }
+
+    fn levels(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn only_the_current_hsk_levels_count() {
+        assert_eq!(hsk3_level(&levels(&["n2"])), Some(2));
+        // An entry in several lists takes the lowest current level.
+        assert_eq!(hsk3_level(&levels(&["n4", "n2", "o3"])), Some(2));
+        // The older 2.0 lists and the mixed codes are not the course.
+        assert_eq!(hsk3_level(&levels(&["o1", "t3"])), None);
+        assert_eq!(hsk3_level(&[]), None);
+        // A level outside 1..=7 is ignored rather than trusted.
+        assert_eq!(hsk3_level(&levels(&["n9"])), None);
+    }
+
+    #[test]
+    fn a_proper_noun_reading_is_passed_over_for_the_ordinary_word() {
+        // 安 as the dictionary lists it: the surname first.
+        let forms = vec![
+            form("Ān", &["surname An"]),
+            form("ān", &["calm; peaceful", "safe"]),
+        ];
+        let chosen = choose_form(&forms).unwrap();
+        assert_eq!(chosen.transcriptions.pinyin, "ān");
+        assert!(is_proper_noun("Ān"));
+        assert!(!is_proper_noun("ān"));
+    }
+
+    #[test]
+    fn a_word_with_no_ordinary_reading_keeps_the_dictionary_order() {
+        let forms = vec![form("Běi jīng", &["Beijing"])];
+        assert_eq!(
+            choose_form(&forms).unwrap().transcriptions.pinyin,
+            "Běi jīng"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_first_reading_is_left_alone() {
+        let forms = vec![
+            form("hǎo", &["good"]),
+            form("hào", &["to be fond of"]),
+        ];
+        assert_eq!(choose_form(&forms).unwrap().transcriptions.pinyin, "hǎo");
+    }
+
+    #[test]
+    fn an_empty_form_list_is_not_a_word() {
+        assert!(choose_form(&[]).is_none());
+    }
+
+    #[test]
+    fn the_level_census_counts_every_level_once() {
+        let word = |hsk: u8| Word {
+            text: "x".into(),
+            pinyin: "x".into(),
+            meaning: String::new(),
+            hsk,
+            rank: 1,
+        };
+        let words = vec![word(1), word(3), word(1), word(3), word(3)];
+        assert_eq!(level_census(&words), vec![(1, 2), (3, 3)]);
+        assert!(level_census(&[]).is_empty());
     }
 }

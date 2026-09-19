@@ -15,7 +15,7 @@ See [`HANDOVER.md`](HANDOVER.md) for how to build, test and verify; see
 | --- | --- | --- | --- | --- |
 | M1 | Personal vocabulary list | Track and drill your own lesson material | M | **done** |
 | M2 | Per-character progress + spaced repetition | Practice history still does not persist | M | **done** |
-| M3 | Words and sentences | Single characters are not reading | L | not started |
+| M3 | Words and sentences | Single characters are not reading | L | **done** |
 | M4 | Raster legibility (IoU) | Catches errors centrelines cannot | M | not started |
 | M5 | Distribution readiness | Licence notices and signed bundles | M | not started |
 | M6 | Pronunciation on Windows/Linux | macOS-only today | S | not started |
@@ -125,41 +125,74 @@ Deliberately left out, and why:
 
 ## M3 — Words and sentences
 
-**Why.** The app teaches single characters. Reading needs vocabulary in context.
-This also fixes a correctness problem: polyphonic characters are currently always
-spoken with the synthesiser's preferred reading, so 着 is read `zhe` even when the
-text means `zháo`. A word carries enough context to know the reading.
+**Status: done.**
 
-**Approach.**
+Reading is more than single characters, and a word is also what disambiguates a
+polyphonic character. The word list now ships in the same artifact as the
+characters, `crates/hanzi-core/src/dataset.rs` indexes and searches it,
+`src-tauri/src/commands.rs` exposes it, and `src/lib/WordsPanel.svelte` with the
+sidebar renders it.
 
-- Add a word data source. Options, in order of preference:
-  - **HSK 3.0 vocabulary lists** — small, curated, directly useful, and they align
-    with a learner's goals. Check the licence before bundling.
-  - **CC-CEDICT** — comprehensive and offline, but large (~10 MB+) and
-    CC-BY-SA-4.0, which adds attribution obligations to `LICENSES.md`.
-  - User-typed only — no new data, but tedious, and it is what M1 already allows.
-- Extend the prepared artifact, or add a second one, with word entries:
-  `{ text, pinyin, meaning, hsk, characters }`.
-- Grading a word: grade each character in turn with the existing engine, then
-  aggregate (mean score, and report the worst character). Do **not** invent a
-  whole-word geometric comparison — character-by-character is what a learner
-  needs and reuses everything already tested.
-- Sentences are a further step: they need segmentation into characters and a
-  sensible "one character at a time" flow. Treat as a separate milestone if it
-  grows.
-- Search: once words exist, "find every word containing this character" becomes
-  the natural way to browse.
+What shipped:
 
-**Acceptance criteria.**
+- **9,443 HSK 3.0 words** in the artifact, each with its characters, its own
+  reading and an English definition. Words are the multi-character entries only:
+  a single character is the course's job, and the character dataset already holds
+  its most common reading, so a second entry for the same glyph would be a
+  competing source of truth.
+- **Every word is practisable**: a word is kept only when all of its characters
+  have stroke geometry and a frequency rank, which is checked at preparation
+  time — `0 words with an unteachable character` is part of `prepare-data`'s
+  output. Writing a word reuses the existing one-character-at-a-time flow, with
+  per-character feedback and the mean as the entry's score; nothing about the
+  grader changed.
+- **The dictionary now answers for a word, not just for a character.** The
+  lookup used by the vocabulary add form returns the dictionary's reading and
+  meaning, so 着急 is `zháojí`, not the `zhe` the isolated 着 gets, and a word's
+  meaning is a definition rather than a blank. A word the dictionary does not
+  know still gets its readings composed and its meaning left empty — inventing
+  one is still refused.
+- **Search by character, reading or meaning.** Readings match with or without
+  tone marks and with `v` for `ü` (`xuexi`, `xuéxí`, `xüexi`), and results are
+  ranked so an exact word beats a prefix, which beats a reading, which beats a
+  definition. A single character is a browse-by-character request: every word
+  containing it, most useful first. Every character in a result is clickable and
+  performs that search, which is the natural way to browse once a character is
+  known. One capped page of 100 is returned with the true total beside it, and
+  the sidebar narrows everything to one HSK level.
+- **Speaking a word speaks the word**, which is the whole fix for polyphonic
+  characters: the synthesiser gets context, and `着急` is heard as a word.
+- **Sentences work through the same path without any sentence data.** Any
+  multi-character text — in the list, or drilled straight from the dictionary —
+  is written one character at a time, and characters the board cannot draw
+  (punctuation, an unknown glyph) are skipped rather than dead-ending the board.
+  There is no segmentation, and no sentence corpus: see below.
+- **Data and notices.** The word list comes from the MIT-licensed
+  `complete-hsk-vocabulary`, whose readings and definitions are drawn from
+  CC-CEDICT under **CC BY-SA 4.0** — the first obligation here that reaches the
+  derived data rather than only the notices. It is recorded in `LICENSES.md`,
+  the licence text is fetched by `scripts/fetch-data.sh`, and the fields that
+  would have added a third licence (SUBTLEX-CH frequency, HanLP
+  part-of-speech) are deliberately **not** bundled. The word rank the app shows
+  is computed locally from the MIT character frequency list.
 
-- A word can be practised by writing each of its characters, with per-character
-  feedback and an aggregate score.
-- Pronunciation speaks the word, not the isolated characters, so polyphonic
-  readings are correct.
-- New data is reflected in `LICENSES.md` with its obligations, and the app still
-  builds and runs offline.
-- The artifact size stays reasonable (target under ~30 MB compressed) or words are
-  loaded on demand.
+Deliberately left out, and why:
+
+- **Sentence data and segmentation** — a sentence needs to be cut into words and
+  characters, and the useful version of that is a segmentation model or a tagged
+  corpus, which is a different project from the grading engine. The practice
+  flow already handles arbitrary text, so the missing half is *which* text to
+  study, and that is what the user's own vocabulary list is for. Revisit as its
+  own milestone if a corpus appears.
+- **Word meanings inside CC-CEDICT's share-alike are the only dictionary text
+  bundled**; the app carries no glosses of its own, and the definitions are
+  displayed verbatim rather than rewritten, so nothing new is derived from them.
+- **Frequency data from SUBTLEX-CH** — it is free for research rather than for
+  redistribution, so it is not used even though the upstream file carries it.
+- **A per-word progress card.** Progress is still per character, which is what
+  the schedule is built on; a word practised from the dictionary records its
+  characters and leaves no entry behind. Adding word-level cards would want the
+  attempt log that M4's tuning also wants — the cross-cutting item again.
 
 ---
 
@@ -363,8 +396,24 @@ Small, independently shippable, roughly in value order:
 Recorded honestly, because they bound how much the current scores mean:
 
 - **Legibility is centreline-only** (see M4). Thin or overshooting strokes pass.
-- **Polymorphic characters are mispronounced** — 着 is read `zhe` whichever reading
-  the synthesiser prefers, because there is no context (see M3).
+- **An isolated character has no context, so a polyphonic one may be read wrong.**
+  着 on its own is read whichever way the synthesiser prefers. M3 fixed this for
+  words — the word carries the reading, and 着急 is `zháojí` — but a single
+  character met in the course still has nothing to disambiguate it. The course's
+  own pinyin list has the same limit: it shows every reading, most common first,
+  and does not know which one the text means.
+- **The word dictionary's reading can be the wrong one for a minority of words.**
+  Where CC-CEDICT lists several readings for one headword, the reading chosen is
+  the first, except that a capitalised proper-noun reading is passed over when an
+  ordinary one exists — which is what stops 安 being taught as the surname `Ān`.
+  That leaves roughly 1% of words, mostly single-character-sized ambiguities such
+  as 便宜 (`biànyí` "convenient" rather than `piányi` "cheap"), with the less
+  common reading. The dictionary cannot tell which sense a learner wants without
+  the sentence; M3's search shows the definitions, so the mismatch is visible
+  rather than silent.
+- **The word rank is derived, not published.** It is the rarest character's
+  frequency rank, so it orders the list sensibly but is not a corpus frequency
+  and should not be presented as one (the UI does not show it).
 - **Shape tolerance is tuned on synthetic Gaussian jitter**, not real learners. It
   is deliberately loose to suit a trackpad; that leniency may well be wrong. The
   jitter is also blind to anything that depends on *how the pointer sampled* a

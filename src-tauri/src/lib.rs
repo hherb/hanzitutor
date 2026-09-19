@@ -7,7 +7,7 @@ mod commands;
 mod speech;
 mod state;
 
-pub use commands::VocabOutcome;
+pub use commands::{LevelCount, VocabOutcome, WordSearchView};
 pub use state::{AppState, CursorState, Persisted, ProgressState, VocabState, REVIEW_LIMIT};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -28,6 +28,8 @@ pub fn run() {
             commands::dataset_stats,
             commands::lessons,
             commands::character,
+            commands::teachable_characters,
+            commands::search_words,
             commands::grade_attempt,
             commands::speak,
             commands::stop_speaking,

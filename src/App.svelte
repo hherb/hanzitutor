@@ -10,6 +10,7 @@
   import LessonSidebar from "./lib/LessonSidebar.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
+  import WordsPanel from "./lib/WordsPanel.svelte";
   import type {
     Character,
     DatasetStats,
@@ -21,13 +22,15 @@
     ReviewView,
     VocabEntry,
     VocabView,
+    Word,
+    WordSearchView,
   } from "./lib/types";
 
   type Mode = "trace" | "recall";
-  /** Which of the two top-level screens is showing. */
-  type View = "course" | "vocabulary";
+  /** Which of the three top-level screens is showing. */
+  type View = "course" | "vocabulary" | "words";
   /** Where the current practice session draws its characters from. */
-  type Source = "course" | "vocabulary" | "review";
+  type Source = "course" | "vocabulary" | "review" | "words";
 
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -55,6 +58,29 @@
   let vocabSelection = $state<string | null>(null);
   let statusMessage = $state<string | null>(null);
   let vocabBusy = $state(false);
+
+  // ---- the word dictionary -------------------------------------------------
+  /** The HSK level the words screen is filtered to, or null for all of them. */
+  let wordLevel = $state<number | null>(null);
+  /**
+   * What is in the words screen's search box.
+   *
+   * Held here rather than inside the panel so that drilling a word and coming
+   * back does not lose the search that found it.
+   */
+  let wordQuery = $state("");
+  /** A note from the words screen, e.g. what was just added to the list. */
+  let wordMessage = $state<string | null>(null);
+  /**
+   * Every character the board can draw.
+   *
+   * A word — or a sentence — is written one character at a time, so anything in
+   * the text with no strokes to grade (a comma, an unknown glyph) has to be
+   * skipped rather than dead-ending the board. Loaded once, like the course.
+   * While it is empty the text is split as typed, which is only reachable in the
+   * moment before startup finishes.
+   */
+  let drawable = $state<ReadonlySet<string>>(new Set());
 
   // ---- progress and review -------------------------------------------------
   /** Per-character history and due dates, as the backend has them. */
@@ -102,10 +128,14 @@
     source === "course" ? null : (queue[queueCursor] ?? null),
   );
   /** Code-point split, matching Rust's `chars()`. */
-  const entryCharacters = $derived(currentItem ? [...currentItem.text] : []);
+  const entryCharacters = $derived(
+    currentItem
+      ? [...currentItem.text].filter((ch) => drawable.size === 0 || drawable.has(ch))
+      : [],
+  );
   /**
    * The character the board is asking for. Everything downstream — loading,
-   * grading, the ghost and the hint — keys off this, so all three sources share
+   * grading, the ghost and the hint — keys off this, so all four sources share
    * one practice path.
    */
   const targetChar = $derived(
@@ -176,6 +206,24 @@
   }
 
   onMount(() => {
+    /**
+     * Bring runtime errors out to the terminal.
+     *
+     * A webview's console is invisible from here, so an exception thrown while
+     * rendering — a duplicate key in an `each`, a bad property access — shows up
+     * only as a window that stops updating, with nothing to go on. Svelte
+     * reports these through `window.onerror`, so forwarding them to the same log
+     * the rest of the startup uses turns a blank screen into a line of text.
+     */
+    const onError = (event: ErrorEvent) => {
+      void api.log(`webview error: ${event.message}`);
+    };
+    const onRejection = (event: PromiseRejectionEvent) => {
+      void api.log(`webview rejection: ${event.reason}`);
+    };
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onRejection);
+
     void (async () => {
       try {
         const [loadedStats, loadedLessons] = await Promise.all([
@@ -200,6 +248,18 @@
     void refreshVocabulary();
     void refreshProgress();
     void refreshReview();
+
+    // Which characters the board can draw. Only needed to write a word or a
+    // sentence one character at a time, but it is small and wanted immediately.
+    void api
+      .teachableCharacters()
+      .then((characters) => {
+        drawable = new Set(characters);
+        void api.log(`drawable characters: ${characters.length}`);
+      })
+      .catch((cause) => {
+        void api.log(`could not list the drawable characters: ${cause}`);
+      });
 
     // Resolving the voice runs the system voice list, which takes about a
     // second, so it is deliberately not part of the course load above.
@@ -248,6 +308,8 @@
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onRejection);
       clearInterval(reviewTimer);
       clearTimeout(cursorTimer);
     };
@@ -431,7 +493,7 @@
   /**
    * Record a graded character in the practice schedule.
    *
-   * All three sources funnel through here: a character met in a lesson and the
+   * All four sources funnel through here: a character met in a lesson and the
    * same character met inside a word are the same thing to learn, so they share
    * one card and one due date.
    */
@@ -637,6 +699,7 @@
     mode = "recall";
     reset();
     statusMessage = null;
+    wordMessage = null;
   }
 
   /** Start drilling a snapshot of the given entries. */
@@ -678,6 +741,40 @@
       `reviewing ${items.length} of ${review.dueCount} due ` +
         `${review.dueCount === 1 ? "item" : "items"}`,
     );
+  }
+
+  // ---- practising the word dictionary --------------------------------------
+
+  /** Drill words straight from the dictionary, without saving them first. */
+  function practiseWords(words: Word[]) {
+    if (words.length === 0) return;
+    startPractice(
+      words.map((word) => ({
+        text: word.text,
+        entryId: null,
+        pinyin: word.pinyin,
+        meaning: word.meaning,
+      })),
+      "words",
+    );
+    void api.log(`practising ${words.length} dictionary words`);
+  }
+
+  /** Put a dictionary word in the personal list, reading and meaning filled in. */
+  function addWordToList(word: Word) {
+    const group = vocabSelection && vocabSelection !== "" ? vocabSelection : null;
+    void withVocab(
+      () => api.vocabAdd(word.text, word.pinyin, word.meaning, group),
+      undefined,
+      () => {
+        wordMessage = `Added ${word.text} to your vocabulary list`;
+      },
+    );
+  }
+
+  /** One page of the word list; the panel owns the query and the debounce. */
+  function searchWords(query: string, level: number | null): Promise<WordSearchView> {
+    return api.searchWords(query, level);
   }
 
   /** Return to the course sequence. */
@@ -761,8 +858,10 @@
     if (next === view) return;
     view = next;
     statusMessage = null;
-    // Leaving the vocabulary screen abandons a list or review session; the
-    // course is always there to come back to.
+    wordMessage = null;
+    // Leaving for the course abandons a list, word or review session; the
+    // course is always there to come back to. Moving between the vocabulary
+    // list and the words screen keeps whatever is on the board.
     if (next === "course" && source !== "course") leavePractice();
   }
 
@@ -794,11 +893,13 @@
     if (found >= 0) index = found;
   }
 
-  /** Stop drilling the list and go back to managing it. */
+  /** Stop drilling and go back to what was being drilled. */
   function stopPractising() {
+    const target: View = source === "words" ? "words" : "vocabulary";
     leavePractice();
-    view = "vocabulary";
+    view = target;
     statusMessage = null;
+    wordMessage = null;
   }
 
   /** Stop reviewing and show what is left of the queue. */
@@ -826,6 +927,10 @@
     vocabEntries={vocab.entries}
     vocabSelection={vocabSelection}
     onSelectVocabGroup={(selection) => (vocabSelection = selection)}
+    wordLevels={stats?.wordLevels ?? []}
+    wordsTotal={stats?.words ?? 0}
+    {wordLevel}
+    onSelectWordLevel={(level) => (wordLevel = level)}
   />
 
   <main>
@@ -872,6 +977,16 @@
         onExport={(format) => void exportVocabulary(format)}
         onImport={(merge) => void importVocabulary(merge)}
       />
+    {:else if view === "words" && source !== "words"}
+      <WordsPanel
+        bind:query={wordQuery}
+        search={searchWords}
+        level={wordLevel}
+        message={wordMessage}
+        busy={vocabBusy}
+        onPractise={practiseWords}
+        onAddToList={addWordToList}
+      />
     {:else if !character}
       <p class="status">No character selected.</p>
     {:else}
@@ -888,7 +1003,11 @@
                 <li>character {charCursor + 1} of {entryCharacters.length}</li>
               {/if}
               <li>
-                {source === "review" ? "review" : "entry"} {queueCursor + 1} of {queue.length}
+                {source === "review"
+                  ? "review"
+                  : source === "words"
+                    ? "word"
+                    : "entry"} {queueCursor + 1} of {queue.length}
               </li>
               <li>{strokeTotal} {strokeTotal === 1 ? "stroke" : "strokes"}</li>
               {#if activeCard}
@@ -1008,6 +1127,8 @@
               </button>
             {:else if source === "vocabulary"}
               <button onclick={stopPractising}>Back to list</button>
+            {:else if source === "words"}
+              <button onclick={stopPractising}>Back to words</button>
             {:else}
               <button onclick={stopReview}>Stop reviewing</button>
             {/if}

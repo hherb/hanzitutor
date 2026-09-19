@@ -6,7 +6,7 @@
 
 use hanzi_core::{
     build_lessons, grade, Character, CursorView, GradeOptions, GradeReport, Lesson, Point,
-    ProgressView, ReviewView, TextLookup, VocabView,
+    ProgressView, ReviewView, TextLookup, VocabView, Word,
 };
 use serde::Serialize;
 use tauri::State;
@@ -16,6 +16,12 @@ use crate::state::{AppState, ProgressState, VocabState};
 /// How many characters make up one lesson.
 pub const LESSON_SIZE: usize = 10;
 
+/// How many words one search returns.
+///
+/// The word list is thousands long, so a page is capped and the true total is
+/// reported beside it — the same honesty the review queue uses.
+pub const WORD_PAGE: usize = 100;
+
 /// Summary of what the app ships with, shown in the sidebar.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +30,28 @@ pub struct DatasetStats {
     pub teachable: usize,
     pub lessons: usize,
     pub lesson_size: usize,
+    /// How many words the dictionary holds.
+    pub words: usize,
+    /// How many words sit at each HSK level, lowest first.
+    pub word_levels: Vec<LevelCount>,
+}
+
+/// How many words one HSK level holds.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LevelCount {
+    pub level: u8,
+    pub words: usize,
+}
+
+/// One page of a word search, with the number of matches behind it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WordSearchView {
+    /// The page itself, best match first.
+    pub words: Vec<Word>,
+    /// How many words matched in total; `words` is capped to one page.
+    pub total: usize,
 }
 
 impl AppState {
@@ -34,6 +62,29 @@ impl AppState {
             teachable: dataset.ranked().count(),
             lessons: build_lessons(dataset, LESSON_SIZE).len(),
             lesson_size: LESSON_SIZE,
+            words: dataset.word_count(),
+            word_levels: dataset
+                .words_per_level()
+                .into_iter()
+                .map(|(level, words)| LevelCount { level, words })
+                .collect(),
+        }
+    }
+
+    /// One page of a word search, plus how many words matched altogether.
+    ///
+    /// `query` is matched against characters, readings and definitions; `level`
+    /// narrows it to one HSK level; an empty query browses from the most useful
+    /// word down. See [`hanzi_core::Dataset::search_words`].
+    pub fn search_words(&self, query: &str, level: Option<u8>, limit: usize) -> WordSearchView {
+        WordSearchView {
+            words: self
+                .dataset
+                .search_words(query, level, limit)
+                .into_iter()
+                .cloned()
+                .collect(),
+            total: self.dataset.count_words(query, level),
         }
     }
 
@@ -81,6 +132,36 @@ pub fn lessons(state: State<'_, AppState>) -> Vec<Lesson> {
 #[tauri::command]
 pub fn character(state: State<'_, AppState>, ch: char) -> Result<Character, String> {
     state.character(ch)
+}
+
+/// Every character the board can ask for.
+///
+/// The interface needs this to tell a word from the punctuation around it: a
+/// sentence added to the vocabulary list should be written one character at a
+/// time with the commas skipped, not dead-end on a mark that has no strokes.
+/// Sent once and held, like the course itself.
+#[tauri::command]
+pub fn teachable_characters(state: State<'_, AppState>) -> Vec<char> {
+    state.dataset.practisable_characters()
+}
+
+// ---- the word dictionary ----------------------------------------------------
+
+/// Search the HSK word list by character, reading or meaning.
+///
+/// `query` empty browses from the most useful word down; a single character
+/// lists every word containing it. `level` narrows to one HSK level. The result
+/// is capped at [`WORD_PAGE`] unless `limit` says otherwise, with the true
+/// total reported beside it.
+#[tauri::command]
+pub fn search_words(
+    state: State<'_, AppState>,
+    query: String,
+    level: Option<u8>,
+    limit: Option<usize>,
+) -> WordSearchView {
+    let limit = limit.unwrap_or(WORD_PAGE).clamp(1, WORD_PAGE);
+    state.search_words(&query, level, limit)
 }
 
 #[tauri::command]

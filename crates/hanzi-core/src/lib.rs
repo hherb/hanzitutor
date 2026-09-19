@@ -38,7 +38,7 @@ pub mod time;
 pub mod vocab;
 
 pub use curriculum::{build_lessons, lesson_at, Lesson};
-pub use dataset::{Character, CharacterHint, Dataset, TextLookup};
+pub use dataset::{Artifact, Character, CharacterHint, Dataset, TextLookup, Word};
 pub use geom::Point;
 pub use grade::{
     grade, FitInfo, Grade, GradeOptions, GradeReport, StrokeVerdict, Verdict,

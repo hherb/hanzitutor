@@ -1,16 +1,17 @@
 <script lang="ts">
   /**
-   * Navigation for the two screens.
+   * Navigation for the three screens.
    *
    * Course: the built-in frequency-ordered lessons, one lesson open at a time,
    * with how much of each has been practised and what is due for review.
    * Vocabulary: the user's own groups, acting as the filter for the list panel.
+   * Words: the HSK dictionary, filtered by level.
    */
-  import type { Lesson, ProgressCard, ReviewView, VocabEntry } from "./types";
+  import type { Lesson, LevelCount, ProgressCard, ReviewView, VocabEntry } from "./types";
 
   interface Props {
-    view: "course" | "vocabulary";
-    onSwitchView: (view: "course" | "vocabulary") => void;
+    view: "course" | "vocabulary" | "words";
+    onSwitchView: (view: "course" | "vocabulary" | "words") => void;
     lessons: Lesson[];
     activeLesson: number;
     activeCharacter: string | null;
@@ -28,6 +29,12 @@
     /** `null` is everything, `""` the unfiled entries, otherwise a group. */
     vocabSelection: string | null;
     onSelectVocabGroup: (selection: string | null) => void;
+    /** How many words sit at each HSK level, for the words screen. */
+    wordLevels: LevelCount[];
+    wordsTotal: number;
+    /** The level the words screen is filtered to, or null for all of them. */
+    wordLevel: number | null;
+    onSelectWordLevel: (level: number | null) => void;
   }
 
   let {
@@ -47,6 +54,10 @@
     vocabEntries,
     vocabSelection,
     onSelectVocabGroup,
+    wordLevels,
+    wordsTotal,
+    wordLevel,
+    onSelectWordLevel,
   }: Props = $props();
 
   const total = $derived(vocabEntries.length);
@@ -111,7 +122,15 @@
 <nav class="sidebar">
   <header>
     <h1>Hanzi Tutor</h1>
-    <p>{view === "course" ? summary : `${total} entries · ${practised} practised`}</p>
+    <p>
+      {#if view === "course"}
+        {summary}
+      {:else if view === "words"}
+        {wordsTotal.toLocaleString()} HSK words
+      {:else}
+        {total} entries · {practised} practised
+      {/if}
+    </p>
   </header>
 
   <div class="switch" role="group" aria-label="Screen">
@@ -119,7 +138,10 @@
       Course
     </button>
     <button class:on={view === "vocabulary"} onclick={() => onSwitchView("vocabulary")}>
-      My vocabulary
+      My list
+    </button>
+    <button class:on={view === "words"} onclick={() => onSwitchView("words")}>
+      HSK words
     </button>
   </div>
 
@@ -170,6 +192,30 @@
         </li>
       {/each}
     </ol>
+  {:else if view === "words"}
+    <ul class="groups">
+      <li>
+        <button class:current={wordLevel === null} onclick={() => onSelectWordLevel(null)}>
+          <span class="title">All levels</span>
+          <span class="count">{wordsTotal}</span>
+        </button>
+      </li>
+      {#each wordLevels as entry (entry.level)}
+        <li>
+          <button
+            class:current={wordLevel === entry.level}
+            onclick={() => onSelectWordLevel(entry.level)}
+          >
+            <span class="title">HSK {entry.level}</span>
+            <span class="count">{entry.words}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+    <p class="footnote">
+      The official HSK 3.0 word lists. Practise a word without saving it, or use
+      <em>+ List</em> to keep it with your own lesson material.
+    </p>
   {:else}
     <ul class="groups">
       <li>

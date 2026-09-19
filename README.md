@@ -13,14 +13,18 @@ and the Rust core is written to be reusable from a mobile shell later.
 ## Status
 
 Working end to end. The grading engine, the dataset pipeline, the Tauri command
-layer, the drawing UI, pronunciation, the personal vocabulary list and per-character
-progress with spaced repetition are all implemented and tested; 136 automated tests
-pass. What is not built yet is listed under [Next steps](#next-steps).
+layer, the drawing UI, pronunciation, the personal vocabulary list, per-character
+progress with spaced repetition, and the HSK 3.0 **word list** are all implemented
+and tested; 170 automated tests pass. What is not built yet is listed under
+[Next steps](#next-steps).
 
 ## What it does
 
 - **9,574 characters** with real stroke geometry, of which **7,744** are in the
   frequency list and organised into **775 lessons** of ten.
+- **9,443 HSK 3.0 words**, searchable by character, reading (with or without tone
+  marks) or English meaning, and practisable straight from the list. Clicking a
+  character in a word finds every word that uses it.
 - **Two practice modes.** *Trace* puts a faint copy of the character on the board
   to follow. *Recall* shows only the pinyin and meaning, and grades what you
   write from memory.
@@ -32,20 +36,24 @@ pass. What is not built yet is listed under [Next steps](#next-steps).
   shapes are ghosted in red where a stroke should have gone.
 - **Readings and meanings** — pinyin, English gloss, radical, stroke count, HSK
   level and frequency rank, plus the etymology mnemonic where one exists.
-- **Pronunciation** — hear any character through the system's own speech
+- **Pronunciation** — hear any character or word through the system's own speech
   synthesiser. Nothing is downloaded and nothing leaves the machine.
 - **Your own vocabulary list** — record the characters and words from your own
   lessons, file them under your own group names, and drill exactly those. A
-  character fills in its pinyin and meaning automatically; a word gets its reading
-  composed from its characters, while its meaning is yours to write — so the list
-  can hold vocabulary the built-in course never covers. Export to JSON (lossless)
-  or CSV for a spreadsheet.
+  character fills in its pinyin and meaning automatically; so does a word, from
+  the HSK dictionary, and a word the dictionary does not know still gets its
+  reading composed from its characters. It can hold vocabulary the built-in course
+  never covers. Export to JSON (lossless) or CSV for a spreadsheet.
 - **Progress that persists, and a review queue.** Every graded character is
   remembered — attempts, best score, a short history and a due date — whether it
   came from the course or from a word in your list. Answer well and it comes back
   later; answer badly and it comes back within the minute. The course opens where
   you left off, each lesson shows how much of it you have practised, and
   *Review due* drills what has come back, most overdue first.
+- **Sentences, one character at a time.** Any multi-character text written into
+  the list — a word, a phrase, a sentence — is practised character by character,
+  with anything the board cannot draw (punctuation, an unknown glyph) skipped
+  rather than dead-ending the attempt.
 
 ## Quick start
 
@@ -106,6 +114,10 @@ guessing at the diacritics. This also makes the control safe in recall mode —
 hearing the sound does not give away the glyph, so it doubles as a dictation
 exercise.
 
+A **word** is spoken whole, which is the only way to get a polyphonic character
+right. 着 on its own is read whichever way the synthesiser prefers; 着急 is
+`zháojí`, and the word is what carries that context.
+
 Override the voice with an environment variable:
 
 ```bash
@@ -158,6 +170,37 @@ stretches — one day, six days, and then by the ease factor, up to a year. The
 algorithm sits behind a small `Scheduler` trait so it can be replaced (FSRS wants
 far more data than one learner produces quickly) without touching the store or the
 interface.
+
+### The HSK word list
+
+The **HSK words** screen carries the 9,443 multi-character words of the official
+HSK 3.0 vocabulary, with each word's own reading and English definition. All of it
+is compiled into the same offline artifact as the characters, so it costs no
+network access and adds about 280 KB compressed.
+
+Search takes any of three things, and does not care which you meant:
+
+| You type | You get |
+| --- | --- |
+| `学` (a single character) | every word containing it, most common first |
+| `xuexi`, `xuéxí` or `xüexi` | words whose reading matches — tone marks, spacing and `ü` are all folded away |
+| `teacher` | words whose definition contains the word |
+
+Results are one capped page of 100 with the true total reported beside it, and the
+sidebar narrows everything to a single HSK level. **Practise** drills a word
+without saving it; **+ List** puts it in your own vocabulary list with the reading
+and meaning already filled in.
+
+Two deliberate choices are worth knowing about:
+
+- **Single characters are not in the word list.** They are the course's job, and
+  the character dataset already carries each one's most common reading. A second
+  entry for the same glyph would be a competing source of truth — the dictionary
+  lists 安 as the surname `Ān` before `ān`, "peaceful".
+- **The frequency shown for a word is derived, not published.** It is the rank of
+  the word's rarest character, taken from the same MIT frequency list the course
+  is built from: a word is no more common than its least common character. It
+  exists to order the list and should not be read as a corpus frequency.
 
 ## How grading works
 
@@ -268,22 +311,22 @@ stroke as well as absolute.
 │                              │        │                              │
 │  PracticeCanvas   pointer →  │ invoke │  commands (thin IPC shell)    │
 │    display space 0..1024     │───────▶│    ├── dataset_stats          │
-│  render.ts        Path2D,    │        │    ├── lessons                │
-│     font↔display transforms  │◀───────│    ├── character              │
+│  render.ts        Path2D,    │        │    ├── lessons, character     │
+│     font↔display transforms  │◀───────│    ├── search_words           │
 │  FeedbackPanel    verdicts   │  JSON  │    ├── grade_attempt          │
-│  LessonSidebar    course,    │        │    ├── vocab_*                │
-│     progress marks, review   │        │    └── progress, review_queue │
-└──────────────────────────────┘        │         │                     │
-                                        │         ▼                     │
-                                        │  hanzi-core                   │
-                                        │    geom   resample, distance  │
-                                        │    grade  Hungarian + Kendall │
-                                        │    dataset  13 MB artifact    │
-                                        │    curriculum  frequency      │
-                                        │    vocab    the list          │
-                                        │    progress SM-2, due dates   │
-                                        │    time     ISO-8601 text     │
-                                        └──────────────────────────────┘
+│  LessonSidebar    course and │        │    ├── vocab_*                │
+│     words, review, progress  │        │    └── progress, review_queue │
+│  WordsPanel       HSK list,  │        │         │                     │
+│     search by character     │        │         ▼                     │
+│  VocabularyPanel  your list  │        │  hanzi-core                   │
+│                              │        │    geom   resample, distance  │
+│                              │        │    grade  Hungarian + Kendall │
+│                              │        │    dataset  chars + 9k words  │
+│                              │        │    curriculum  frequency      │
+│                              │        │    vocab    the list          │
+│                              │        │    progress SM-2, due dates   │
+│                              │        │    time     ISO-8601 text     │
+└──────────────────────────────┘        └──────────────────────────────┘
 ```
 
 The Rust core has no UI or platform dependency, so it can be driven from a CLI, a
@@ -312,7 +355,7 @@ preparation so the grader never has to think about the flip.
 crates/hanzi-core/          engine + data, no UI dependency
   src/geom.rs               resampling, normalisation, distance measures
   src/grade.rs              pairing, order analysis, verdicts, scoring
-  src/dataset.rs            the character model and artifact loading
+  src/dataset.rs            characters, the word dictionary, artifact loading
   src/curriculum.rs         frequency list → lessons
   src/vocab.rs              the personal vocabulary list and its JSON file
   src/progress.rs           per-character history, SM-2 scheduling, review queue
@@ -327,20 +370,25 @@ src-tauri/                  Tauri shell
 src/lib/                    Svelte components
   PracticeCanvas.svelte     pointer capture, stroke recording
   render.ts                 canvas painting, verdict colours
+  WordsPanel.svelte         the HSK word list: search, browse, practise
   VocabularyPanel.svelte    the vocabulary list: add, group, export, import
-  LessonSidebar.svelte      course and vocabulary navigation, progress marks
+  LessonSidebar.svelte      course, list and word navigation, progress marks
 scripts/                    data fetching, cargo env, CLI selection
 ```
 
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 139 tests
-pnpm run test:core    # just the engine and store unit tests
+pnpm test             # the whole Rust suite: 170 tests
+pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
 pnpm run check:rust   # clippy, warnings denied
 ```
+
+`pnpm test` enables hanzi-core's `prepare` feature so that the data pipeline's
+parsing — which upstream fields are trusted, and how a word's reading is chosen —
+is covered by the same run as everything else.
 
 The tests that earned their place:
 
@@ -363,7 +411,11 @@ The tests that earned their place:
   implementation is exercised to prove the policy really is swappable;
 - persistence is tested through the **state layer** and the real file names as
   well as the store, including the case that matters most: a corrupt schedule is
-  reported and the file on disk is left byte-for-byte unchanged.
+  reported and the file on disk is left byte-for-byte unchanged;
+- the word tests run against the **shipped artifact**, not fixtures: every one of
+  the 9,443 words is checked to be drawable character by character, 着急 is
+  checked to read `zháojí` where the isolated 着 does not, and an unknown pairing
+  of real characters is checked to still invent no meaning.
 
 ## Data and licences
 
@@ -377,22 +429,27 @@ obligations. See **[LICENSES.md](LICENSES.md)**.
 | Stroke outlines and centrelines | Make Me a Hanzi | Arphic Public License |
 | Etymology hints | Make Me a Hanzi `dictionary.txt` | LGPL-3.0-or-later |
 | Frequency rank, pinyin, meaning, radical, HSK | hanziDB.csv | MIT |
+| Word list, HSK 3.0 levels, derived rank | complete-hsk-vocabulary | MIT |
+| Word readings and definitions | CC-CEDICT | CC BY-SA 4.0 |
 
 The generated artifact is not committed; `./scripts/fetch-data.sh` followed by
 `pnpm run prepare-data` rebuilds it. Upstream licence texts are fetched into
-`data/raw/` and must ship with any distribution.
+`data/raw/` and must ship with any distribution. Note that the **word readings and
+definitions carry a share-alike licence** (CC BY-SA 4.0), which is the one
+obligation here that reaches the derived data rather than only the notices — see
+[`LICENSES.md`](LICENSES.md).
 
 ## Next steps
 
 See **[ROADMAP.md](ROADMAP.md)** for what to build next, in priority order, with
 approach notes and acceptance criteria. The headline gaps:
 
-1. **Words and sentences**, so the app supports actual reading and can
-   disambiguate polyphonic characters.
-2. **A stricter legibility measure** (raster IoU), which catches errors the
-   centreline comparison cannot.
-3. **Distribution readiness** — licence notices inside the bundle, and CI, before
+1. **A stricter legibility measure** (raster IoU), which catches errors the
+   centreline comparison cannot: a stroke drawn along the right path but far too
+   thin still passes today.
+2. **Distribution readiness** — licence notices inside the bundle, and CI, before
    the app can leave this machine.
+3. **Pronunciation on Windows and Linux**, so the app is not macOS-only.
 
 If you are picking this project up to continue development, read
 **[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the

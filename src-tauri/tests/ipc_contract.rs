@@ -68,12 +68,48 @@ fn embedded_dataset_loads_with_the_expected_coverage() {
         stats.teachable.div_ceil(stats.lesson_size),
         "lessons should partition the teachable characters"
     );
+    assert!(
+        stats.words > 9_000,
+        "expected the HSK word list, got {} words",
+        stats.words
+    );
 }
 
 #[test]
 fn stats_serialise_with_camel_case_fields() {
-    let json = serde_json::to_value(state().stats()).unwrap();
-    expect_keys(&json, &["characters", "teachable", "lessons", "lessonSize"]);
+    let stats = state().stats();
+    let json = serde_json::to_value(&stats).unwrap();
+    expect_keys(
+        &json,
+        &[
+            "characters",
+            "teachable",
+            "lessons",
+            "lessonSize",
+            "words",
+            "wordLevels",
+        ],
+    );
+
+    // The sidebar lists the levels in order, with the count behind each.
+    expect_keys(&json["wordLevels"][0], &["level", "words"]);
+    let levels: Vec<u64> = json["wordLevels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["level"].as_u64().unwrap())
+        .collect();
+    assert_eq!(levels, vec![1, 2, 3, 4, 5, 6, 7], "lowest level first");
+    assert_eq!(
+        json["wordLevels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["words"].as_u64().unwrap())
+            .sum::<u64>(),
+        stats.words as u64,
+        "every word belongs to exactly one level"
+    );
 }
 
 #[test]
@@ -287,14 +323,17 @@ fn text_lookup_serialises_with_camel_case_fields() {
 }
 
 #[test]
-fn a_word_lookup_composes_the_real_reading_and_invents_no_meaning() {
+fn a_word_lookup_uses_the_dictionary_rather_than_inventing_a_meaning() {
     // Against the shipped dataset, not a fixture: this is the behaviour the add
     // form depends on.
     let state = state();
 
     let word = state.dataset.lookup_text("学习");
-    assert_eq!(word.pinyin, "xuéxí", "readings of 学 and 习 run together");
-    assert_eq!(word.meaning, "", "a word's meaning must not be invented");
+    assert_eq!(word.pinyin, "xuéxí", "the word's own reading");
+    assert!(
+        !word.meaning.is_empty(),
+        "M3: a word's meaning now comes from the dictionary"
+    );
     assert!(word.complete);
     assert_eq!(word.characters.len(), 2);
     assert_eq!(word.characters[1].ch, '习');
@@ -307,6 +346,30 @@ fn a_word_lookup_composes_the_real_reading_and_invents_no_meaning() {
 }
 
 #[test]
+fn a_polyphonic_word_is_read_from_its_own_entry() {
+    // The correctness problem M3 exists to fix: the character 着 is offered by
+    // the synthesiser as `zhe`, but 着急 is `zháojí`.
+    let state = state();
+    let word = state.dataset.lookup_text("着急");
+    assert_eq!(word.pinyin, "zháojí");
+    assert!(word.meaning.contains("worry"), "got {:?}", word.meaning);
+    assert_ne!(
+        state.dataset.lookup_text("着").pinyin,
+        "zháo",
+        "the isolated character has no context, which is the point"
+    );
+}
+
+#[test]
+fn a_word_that_is_not_in_the_dictionary_still_invents_no_meaning() {
+    let state = state();
+    // 学 is a character and 龙 is a character, but 学龙 is not an HSK word.
+    let unknown = state.dataset.lookup_text("学龙");
+    assert_eq!(unknown.pinyin, "xuélóng", "the readings still compose");
+    assert_eq!(unknown.meaning, "", "no meaning may be invented");
+}
+
+#[test]
 fn a_lookup_of_something_unknown_is_flagged_incomplete() {
     let state = state();
     let mixed = state.dataset.lookup_text("学Q");
@@ -315,6 +378,141 @@ fn a_lookup_of_something_unknown_is_flagged_incomplete() {
     assert!(mixed.characters[1].pinyin.is_empty());
 
     assert!(!state.dataset.lookup_text("").complete);
+}
+
+// ---- the word dictionary --------------------------------------------------
+
+#[test]
+fn words_serialise_with_camel_case_fields() {
+    let state = state();
+    let word = state.dataset.word("学习").expect("学习 is an HSK word");
+    let json = serde_json::to_value(word).unwrap();
+    expect_keys(&json, &["text", "pinyin", "meaning", "hsk", "rank"]);
+    assert_eq!(json["text"], serde_json::json!("学习"));
+    assert_eq!(json["hsk"], serde_json::json!(1));
+    // The reading is the word's own, spaces removed, which is how the app
+    // writes pinyin everywhere else.
+    assert_eq!(json["pinyin"], serde_json::json!("xuéxí"));
+}
+
+#[test]
+fn the_search_view_reports_a_page_and_an_honest_total() {
+    let state = state();
+    let view = state.search_words("学", None, 5);
+    let json = serde_json::to_value(&view).unwrap();
+    expect_keys(&json, &["words", "total"]);
+    expect_keys(&json["words"][0], &["text", "pinyin", "meaning", "hsk", "rank"]);
+
+    assert_eq!(view.words.len(), 5, "the page is capped");
+    assert!(
+        view.total > view.words.len(),
+        "but the total says how many matched: {}",
+        view.total
+    );
+    assert!(
+        view.words.iter().all(|word| word.text.contains('学')),
+        "every hit really contains the character"
+    );
+}
+
+#[test]
+fn browsing_from_the_top_starts_at_the_most_useful_words() {
+    let state = state();
+    let page = state.search_words("", None, 100);
+    assert_eq!(page.words.len(), 100);
+    assert_eq!(page.total, state.stats().words, "browsing matches everything");
+    assert!(
+        page.words.iter().all(|word| word.hsk == 1),
+        "the most useful words are the first HSK level"
+    );
+    // The top of the list is the everyday words a beginner meets first, which
+    // is what the derived frequency — the rarest character's rank — is for.
+    let top: Vec<&str> = page.words.iter().take(10).map(|w| w.text.as_str()).collect();
+    assert!(
+        top.contains(&"他们") && top.contains(&"我们"),
+        "expected the most common pronouns at the top, got {top:?}"
+    );
+    // 学习 is an HSK 1 word, so browsing that level in full must reach it.
+    let hsk1 = state.search_words("", Some(1), 300);
+    assert!(
+        hsk1.words.iter().any(|word| word.text == "学习"),
+        "学习 should be in the HSK 1 list"
+    );
+}
+
+#[test]
+fn a_level_filter_narrows_the_search_to_that_level() {
+    let state = state();
+    let hsk2 = state.search_words("", Some(2), 100);
+    assert!(hsk2.words.iter().all(|word| word.hsk == 2));
+    let expected = state
+        .stats()
+        .word_levels
+        .iter()
+        .find(|entry| entry.level == 2)
+        .map(|entry| entry.words)
+        .expect("HSK 2 should have words");
+    assert_eq!(hsk2.total, expected);
+}
+
+#[test]
+fn words_can_be_found_by_reading_and_by_meaning() {
+    let state = state();
+
+    let by_reading = state.search_words("xuexi", None, 10);
+    assert!(
+        by_reading.words.iter().any(|word| word.text == "学习"),
+        "a reading without tone marks finds the word"
+    );
+
+    let by_meaning = state.search_words("teacher", None, 10);
+    assert!(
+        by_meaning.words.iter().any(|word| word.text == "老师"),
+        "an English word finds it via the definition, got {:?}",
+        by_meaning
+            .words
+            .iter()
+            .map(|w| &w.text)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn every_word_can_be_drawn_character_by_character() {
+    // The acceptance criterion, against the real data: a word is practised by
+    // writing each of its characters, so every one of them must be on the board.
+    let state = state();
+    let teachable: BTreeSet<char> = state.dataset.practisable_characters().into_iter().collect();
+    assert!(teachable.contains(&'学'));
+    assert!(!teachable.contains(&'，'), "punctuation is not drawable");
+
+    let mut checked = 0usize;
+    for word in state.dataset.words() {
+        for ch in word.characters() {
+            assert!(
+                teachable.contains(&ch),
+                "{} cannot be practised: {ch} has no strokes",
+                word.text
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked > 9_000, "checked only {checked} words");
+}
+
+#[test]
+fn a_sentence_is_practised_one_character_at_a_time_without_the_punctuation() {
+    // Words are the milestone; the same path makes any text — a sentence — a
+    // sequence of characters, with the marks the board cannot draw skipped.
+    let state = state();
+    let teachable: BTreeSet<char> = state.dataset.practisable_characters().into_iter().collect();
+    let sentence = "我爱学习。";
+    let drawable: Vec<char> = sentence.chars().filter(|ch| teachable.contains(ch)).collect();
+    assert_eq!(drawable, vec!['我', '爱', '学', '习']);
+    // And each of them really is offered by the dictionary.
+    for ch in &drawable {
+        assert!(state.dataset.get(*ch).is_some(), "{ch} should be loaded");
+    }
 }
 
 #[test]

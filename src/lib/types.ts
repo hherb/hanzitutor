@@ -86,6 +86,47 @@ export interface DatasetStats {
   teachable: number;
   lessons: number;
   lessonSize: number;
+  /** How many words the HSK dictionary holds. */
+  words: number;
+  /** How many words sit at each HSK level, lowest first. */
+  wordLevels: LevelCount[];
+}
+
+/** How many words one HSK level holds. */
+export interface LevelCount {
+  level: number;
+  words: number;
+}
+
+// ---- the word dictionary --------------------------------------------------
+
+/**
+ * One word from the HSK 3.0 vocabulary.
+ *
+ * Single characters are deliberately absent: the course already teaches every
+ * character with its most common reading, so a word entry is always several
+ * characters written in turn.
+ */
+export interface Word {
+  /** The word in simplified characters, e.g. `"学习"`. */
+  text: string;
+  /**
+   * The reading of the whole word, e.g. `"xuéxí"`. Taken from a dictionary, so
+   * a polyphonic word is right: 着急 is `zháojí`, not `zhejí`.
+   */
+  pinyin: string;
+  meaning: string;
+  /** Lowest HSK 3.0 level the word appears in, 1..=7. */
+  hsk: number;
+  /** Derived frequency: the rarest character's rank. Ordering only. */
+  rank: number;
+}
+
+/** One page of a word search, with the number of matches behind it. */
+export interface WordSearchView {
+  words: Word[];
+  /** How many words matched in total; `words` is capped to one page. */
+  total: number;
 }
 
 export interface GradeOptions {

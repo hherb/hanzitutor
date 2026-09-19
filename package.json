@@ -13,8 +13,8 @@
     "vite:build": "vite build",
     "fetch-data": "./scripts/fetch-data.sh",
     "prepare-data": "./scripts/with-cargo-env.sh cargo run --release -p hanzi-core --features prepare --bin prepare-data",
-    "test": "./scripts/with-cargo-env.sh cargo test --workspace",
-    "test:core": "./scripts/with-cargo-env.sh cargo test -p hanzi-core",
+    "test": "./scripts/with-cargo-env.sh cargo test --workspace --features hanzi-core/prepare",
+    "test:core": "./scripts/with-cargo-env.sh cargo test -p hanzi-core --features prepare",
     "selfcheck": "./scripts/with-cargo-env.sh cargo run --release -p hanzi-core --example selfcheck",
     "check:rust": "./scripts/with-cargo-env.sh cargo clippy --workspace --all-targets -- -D warnings",
     "check:web": "svelte-check --tsconfig ./tsconfig.json"

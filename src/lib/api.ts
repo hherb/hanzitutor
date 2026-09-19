@@ -14,6 +14,7 @@ import type {
   TextLookup,
   VocabOutcome,
   VocabView,
+  WordSearchView,
 } from "./types";
 
 export const datasetStats = () => invoke<DatasetStats>("dataset_stats");
@@ -21,6 +22,28 @@ export const datasetStats = () => invoke<DatasetStats>("dataset_stats");
 export const listLessons = () => invoke<Lesson[]>("lessons");
 
 export const getCharacter = (ch: string) => invoke<Character>("character", { ch });
+
+/**
+ * Every character the board can ask for.
+ *
+ * Used to tell a word from the punctuation around it: a sentence written out
+ * one character at a time should skip the marks it cannot draw, not dead-end on
+ * them. Sent once and held.
+ */
+export const teachableCharacters = () => invoke<string[]>("teachable_characters");
+
+// ---- the word dictionary --------------------------------------------------
+
+/**
+ * Search the HSK word list.
+ *
+ * An empty `query` browses from the most useful word down; a single character
+ * lists every word containing it; readings match with or without tone marks
+ * (`xuexi`, `xuéxí`) and meanings match in English. `level` narrows to one HSK
+ * level. The result is one capped page plus the true total.
+ */
+export const searchWords = (query: string, level: number | null, limit?: number) =>
+  invoke<WordSearchView>("search_words", { query, level, limit: limit ?? null });
 
 /**
  * Grade an attempt. `strokes` are in display space (0..=1024, y downwards), in

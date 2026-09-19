@@ -13,6 +13,8 @@
 #   graphics.txt, dictionary.txt  Make Me a Hanzi
 #                                 (Arphic Public License / LGPL-3.0-or-later)
 #   hanziDB.csv                   MIT, derived from Jun Da's frequency list
+#   hsk-words.json                HSK 2.0/3.0 vocabulary, MIT compilation whose
+#                                 definitions come from CC-CEDICT (CC BY-SA 4.0)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,6 +23,7 @@ mkdir -p "$RAW"
 
 MMAH="https://raw.githubusercontent.com/skishore/makemeahanzi/master"
 HANZIDB="https://raw.githubusercontent.com/ruddfawcett/hanziDB.csv/master"
+HSKVOCAB="https://raw.githubusercontent.com/drkameleon/complete-hsk-vocabulary/main"
 
 # fetch <url> <destination> [optional]
 fetch() {
@@ -48,9 +51,11 @@ echo "fetching datasets into $RAW"
 fetch "$MMAH/graphics.txt"   "$RAW/graphics.txt"
 fetch "$MMAH/dictionary.txt" "$RAW/dictionary.txt"
 fetch "$HANZIDB/data/hanziDB.csv" "$RAW/hanziDB.csv"
+fetch "$HSKVOCAB/complete.min.json" "$RAW/hsk-words.json"
 
 echo "fetching upstream licence texts"
 fetch "$MMAH/COPYING"    "$RAW/COPYING-makemeahanzi" optional
 fetch "$MMAH/LGPL"       "$RAW/LGPL-makemeahanzi"    optional
 fetch "$HANZIDB/LICENSE" "$RAW/LICENSE-hanziDB"      optional
+fetch "$HSKVOCAB/LICENSE" "$RAW/LICENSE-hsk-vocabulary" optional
 echo "done"
