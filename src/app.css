@@ -1,3 +1,27 @@
+/**
+ * The bundled Chinese face.
+ *
+ * Noto Sans SC, OFL-1.1. It ships inside the app so that Chinese rendered as
+ * text — lesson lists, word tiles, headings — looks the same whatever fonts the
+ * machine happens to have, and so nothing is downloaded on first run. One
+ * variable file covers every weight the interface asks for.
+ *
+ * The name is deliberately not "Noto Sans SC": a machine that has that family
+ * installed would otherwise be matched instead of the bundled file, and the
+ * whole point is to render from the copy we ship and license. The system faces
+ * after it in `--hanzi-font` are the fallback if this file is ever missing.
+ *
+ * The practice board does not use a font at all — it draws the stored vector
+ * outlines.
+ */
+@font-face {
+  font-family: "Noto Sans SC Bundled";
+  src: url("./assets/fonts/NotoSansSC-VF.ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --bg: #f5f7fa;
   --surface: #ffffff;
@@ -9,9 +33,12 @@
   --accent-ink: #1d4ed8;
   --accent-soft: #eff6ff;
   /* The canvas draws real glyph outlines, but lists and headings still need a
-     CJK face for the characters they render as text. */
-  --hanzi-font: "PingFang SC", "Hiragino Sans GB", "Heiti SC", "Noto Sans CJK SC",
-    "Microsoft YaHei", sans-serif;
+     CJK face for the characters they render as text. The first entry is the
+     copy bundled with the app; the rest are what any machine can be relied on
+     to have. */
+  --hanzi-font: "Noto Sans SC Bundled", "Noto Sans SC", "PingFang SC",
+    "Hiragino Sans GB", "Heiti SC", "Noto Sans CJK SC", "Microsoft YaHei",
+    sans-serif;
   color-scheme: light;
 }
 
