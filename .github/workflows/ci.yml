@@ -1,0 +1,67 @@
+name: CI
+
+# The suite that HANDOVER.md asks to be run before every commit, so that "it
+# passed locally" is a fact about the branch rather than about one machine.
+#
+# No data step is needed: `crates/hanzi-core/data/hanzi.bin.gz` is committed, so
+# the embedded dataset is there from the first checkout. (It used to be
+# generated-only, which meant CI would have had to download ~33 MB of upstream
+# text and rebuild it before the workspace would even compile.)
+#
+# The runner is macOS because that is the platform the app is built and shipped
+# for. On a Linux runner the Tauri crate needs the system WebKit/GTK development
+# packages (libwebkit2gtk-4.1-dev and friends) before `cargo test --workspace`
+# will build; see README.md, "Shipping a build".
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # The project scripts point cargo here; setting it for the job as well keeps
+  # the cache action looking at the same directory the build actually uses.
+  CARGO_TARGET_DIR: .cargo-target
+
+jobs:
+  verify:
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # `Cargo.lock` is committed, so the key should follow it and not the
+          # whole workspace's mtimes.
+          workspaces: ". -> .cargo-target"
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Enables hanzi-core's `prepare` feature, so the data-pipeline parsing is
+      # covered by the same run as everything else.
+      - name: Test
+        run: pnpm test
+
+      - name: Lint the Rust
+        run: pnpm run check:rust
+
+      - name: Type-check the interface
+        run: pnpm run check:web
