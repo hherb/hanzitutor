@@ -7,6 +7,12 @@
 //! Both backends pick a voice with the same rule ([`pick_voice`]), so the
 //! mainland-Mandarin preference is one decision rather than two.
 //!
+//! On iOS the audio session is taken for the duration of an utterance and given
+//! back when it ends. That is not decoration: under the default session category
+//! iOS mutes speech synthesis whenever the Ring/Silent switch is on, so a tap on
+//! an explicit pronunciation button produced nothing on a phone while the very
+//! same build spoke perfectly on the simulator, which has no such switch.
+//!
 //! The **character** is spoken rather than its pinyin: `say` has a Chinese
 //! lexicon, so handing it 汉 produces the Mandarin reading, whereas handing an
 //! English-trained voice the string `hàn` would have it guess at the
@@ -31,13 +37,17 @@ use dispatch2::DispatchQueue;
 #[cfg(target_os = "ios")]
 use objc2::rc::Retained;
 #[cfg(target_os = "ios")]
-use objc2::MainThreadMarker;
+use objc2::runtime::ProtocolObject;
+#[cfg(target_os = "ios")]
+use objc2::{define_class, msg_send, AnyThread, MainThreadMarker};
 #[cfg(target_os = "ios")]
 use objc2_avf_audio::{
-    AVSpeechBoundary, AVSpeechSynthesisVoice, AVSpeechSynthesizer, AVSpeechUtterance,
+    AVAudioSession, AVAudioSessionCategoryOptions, AVAudioSessionCategoryPlayback,
+    AVAudioSessionModeSpokenAudio, AVAudioSessionSetActiveOptions, AVSpeechBoundary,
+    AVSpeechSynthesisVoice, AVSpeechSynthesizer, AVSpeechSynthesizerDelegate, AVSpeechUtterance,
 };
 #[cfg(target_os = "ios")]
-use objc2_foundation::NSString;
+use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 
 /// A voice as reported by `say -v '?'`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,15 +198,87 @@ impl Speaker {
 
 #[cfg(target_os = "ios")]
 thread_local! {
-    /// The synthesiser, on the only thread allowed to touch it.
+    /// The synthesiser and its delegate, on the only thread allowed to touch
+    /// them.
     ///
     /// A `thread_local` rather than a field or a global because that is what
     /// makes "main thread only" structural instead of a promise: the value is
     /// created by the thread that uses it, and the newtype machinery that keeps
     /// AVFoundation objects out of `Send` structs never has to be worked around.
     /// Everything that reaches it goes through [`with_main`].
-    static SYNTHESIZER: RefCell<Option<Retained<AVSpeechSynthesizer>>> =
-        const { RefCell::new(None) };
+    static SPEECH: RefCell<Option<Speech>> = const { RefCell::new(None) };
+}
+
+/// The iOS synthesiser, paired with the delegate it only holds weakly.
+#[cfg(target_os = "ios")]
+struct Speech {
+    synthesizer: Retained<AVSpeechSynthesizer>,
+    /// `AVSpeechSynthesizer.delegate` is a weak property, so this reference is
+    /// what keeps the delegate alive; it is also what gives the audio session
+    /// back once an utterance is over.
+    _delegate: Retained<SpeechSession>,
+}
+
+#[cfg(target_os = "ios")]
+impl Speech {
+    /// Create the synthesiser and its delegate, on the main thread.
+    fn new() -> Self {
+        // SAFETY: on the main thread, which is where AVSpeechSynthesizer has to
+        // be created and used.
+        let synthesizer = unsafe { AVSpeechSynthesizer::new() };
+        let delegate = SpeechSession::new();
+        // SAFETY: the synthesizer holds its delegate weakly, and this same
+        // reference is kept alive by `Speech` for as long as it exists.
+        unsafe { synthesizer.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
+        Self {
+            synthesizer,
+            _delegate: delegate,
+        }
+    }
+}
+
+#[cfg(target_os = "ios")]
+define_class!(
+    /// Ends the audio session's involvement when an utterance is over.
+    ///
+    /// The synthesizer calls this on the main thread — the only thread it runs
+    /// on — which is also where AVFoundation's session calls belong.
+    ///
+    /// SAFETY:
+    /// - `NSObject` has no subclassing requirements.
+    /// - `SpeechSession` is stateless and does not implement `Drop`.
+    #[unsafe(super(NSObject))]
+    #[name = "HanziTutorSpeechSession"]
+    #[ivars = ()]
+    struct SpeechSession;
+
+    unsafe impl NSObjectProtocol for SpeechSession {}
+
+    unsafe impl AVSpeechSynthesizerDelegate for SpeechSession {
+        #[unsafe(method(speechSynthesizer:didFinishSpeechUtterance:))]
+        fn finished(&self, _synthesizer: &AVSpeechSynthesizer, _utterance: &AVSpeechUtterance) {
+            utterance_ended();
+        }
+
+        #[unsafe(method(speechSynthesizer:didCancelSpeechUtterance:))]
+        fn cancelled(&self, _synthesizer: &AVSpeechSynthesizer, _utterance: &AVSpeechUtterance) {
+            utterance_ended();
+        }
+    }
+);
+
+/// Allocate and initialise a delegate.
+///
+/// Outside the `define_class!` block because everything inside one is read as an
+/// Objective-C method, and this is an ordinary Rust constructor.
+#[cfg(target_os = "ios")]
+impl SpeechSession {
+    fn new() -> Retained<Self> {
+        let this = Self::alloc().set_ivars(());
+        // SAFETY: `init` is `NSObject`'s designated initialiser, and this
+        // subclass adds no state of its own to initialise.
+        unsafe { msg_send![super(this), init] }
+    }
 }
 
 /// Run `work` on the main thread and wait for its result.
@@ -226,32 +308,123 @@ fn speak_on_main(text: &str, name: &str) -> Result<(), String> {
     let name = name.to_string();
     with_main(move || {
         let utterance = utterance_for(&text, &name)?;
-        SYNTHESIZER.with(|slot| {
+        if let Err(problem) = engage_session() {
+            // Worth saying, not worth refusing to speak over: this costs
+            // volume, not words. Speech still happens, it may just be muted by
+            // the Ring/Silent switch the way it was before this call.
+            eprintln!("[speech] could not take the audio session: {problem}");
+        }
+        // The synthesiser is cloned out of the `thread_local` rather than the
+        // borrow being held across the call: speaking may run a delegate
+        // callback on this very thread, and that callback borrows `SPEECH`
+        // again. A `RefCell` does not allow that while a `RefMut` is live.
+        let synthesizer = SPEECH.with(|slot| {
             let mut slot = slot.borrow_mut();
-            let synthesizer = slot.get_or_insert_with(|| {
-                // SAFETY: on the main thread, and the object is kept in this
-                // thread's `SYNTHESIZER`, so it outlives the utterance.
-                unsafe { AVSpeechSynthesizer::new() }
-            });
-            // SAFETY: as above.
-            unsafe { synthesizer.speakUtterance(&utterance) };
-            Ok(())
-        })
+            let speech = slot.get_or_insert_with(Speech::new);
+            speech.synthesizer.clone()
+        });
+        // SAFETY: on the main thread, and the delegate that the synthesizer
+        // refers to is kept alive inside `SPEECH`.
+        unsafe { synthesizer.speakUtterance(&utterance) };
+        Ok(())
     })
+}
+
+/// Hand the audio session back once an utterance is over.
+///
+/// The delegate reports both endings — finished and cancelled — but the session
+/// is only released when the queue really is quiet. [`Speaker::speak`] stops the
+/// previous utterance before starting the next, and AVFoundation may deliver
+/// that cancellation after its replacement has already begun; releasing the
+/// session then would cut the new word off mid-syllable. That order is also why
+/// this never holds a borrow of `SPEECH` while it asks.
+///
+/// "Quiet" is `Some(false)`, not "not true": a `None` means the callback did not
+/// arrive on the thread that owns the synthesizer — an empty `SPEECH` was just
+/// created for this thread — and then the state is unknown, so the session is
+/// left alone rather than yanked out from under whatever is speaking.
+#[cfg(target_os = "ios")]
+fn utterance_ended() {
+    let still_speaking = SPEECH.with(|slot| {
+        slot.borrow().as_ref().map(|speech| {
+            // SAFETY: on the main thread, like every call a delegate makes.
+            unsafe { speech.synthesizer.isSpeaking() }
+        })
+    });
+    if still_speaking == Some(false) {
+        release_session();
+    }
 }
 
 /// Stop whatever is being spoken, on the main thread.
 #[cfg(target_os = "ios")]
 fn stop_on_main() {
     with_main(|| {
-        SYNTHESIZER.with(|slot| {
-            if let Some(synthesizer) = slot.borrow().as_ref() {
-                // SAFETY: on the main thread, and the object is older than this
-                // borrow.
-                unsafe { synthesizer.stopSpeakingAtBoundary(AVSpeechBoundary::Immediate) };
-            }
+        // Cloned out of the borrow for the same reason as in `speak_on_main`:
+        // stopping can run the cancellation callback inline.
+        let synthesizer = SPEECH.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .map(|speech| speech.synthesizer.clone())
         });
+        let Some(synthesizer) = synthesizer else {
+            return;
+        };
+        // SAFETY: on the main thread, and the clone keeps the object alive.
+        let speaking = unsafe { synthesizer.isSpeaking() };
+        // SAFETY: as above.
+        unsafe { synthesizer.stopSpeakingAtBoundary(AVSpeechBoundary::Immediate) };
+        // Stopping nothing fires no delegate callback, so without this the
+        // session would stay active — and other audio ducked — after a `stop`
+        // that had nothing left to cut off.
+        if !speaking {
+            release_session();
+        }
     });
+}
+
+/// Take the audio session for the duration of one utterance.
+///
+/// The category is `playback` rather than the default `soloAmbient`, and that is
+/// the entire point: iOS silences `soloAmbient` whenever the Ring/Silent switch
+/// is on, so on a phone an explicit tap on the pronunciation button produced
+/// nothing at all, while the simulator — which has no such switch — played it
+/// perfectly. Someone who taps a speaker button has asked to hear something, so
+/// the switch does not apply to that request. `duckOthers` lowers whatever else
+/// is playing instead of stopping it, and [`release_session`] restores it.
+///
+/// The mode is the one Apple documents for text-to-speech prompts, so routing
+/// behaves on CarPlay and similar outputs as a spoken prompt rather than as
+/// music.
+#[cfg(target_os = "ios")]
+fn engage_session() -> Result<(), String> {
+    // SAFETY: on the main thread (see `with_main`).
+    unsafe {
+        let session = AVAudioSession::sharedInstance();
+        session
+            .setCategory_mode_options_error(
+                AVAudioSessionCategoryPlayback.expect("declared by AVFAudio"),
+                AVAudioSessionModeSpokenAudio.expect("declared by AVFAudio"),
+                AVAudioSessionCategoryOptions::DuckOthers,
+            )
+            .map_err(|error| error.localizedDescription().to_string())?;
+        session
+            .setActive_error(true)
+            .map_err(|error| error.localizedDescription().to_string())
+    }
+}
+
+/// Give the audio session back, so anything that was ducked returns to volume.
+#[cfg(target_os = "ios")]
+fn release_session() {
+    // SAFETY: on the main thread (see `with_main`).
+    unsafe {
+        let session = AVAudioSession::sharedInstance();
+        let _ = session.setActive_withOptions_error(
+            false,
+            AVAudioSessionSetActiveOptions::NotifyOthersOnDeactivation,
+        );
+    }
 }
 
 /// An utterance for `text`, spoken in the voice called `name`.

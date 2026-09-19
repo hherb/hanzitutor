@@ -591,9 +591,15 @@ iPhone is carried when the iPad is not, and practice on it is the point.
   to be the same voice name, `Tingting`. Verified on the simulator (65 voices
   installed, three Chinese, `Tingting (zh-CN)` chosen; speak, stop a live
   synthesizer, and speak again all logged as succeeding) and confirmed by ear:
-  the character 的 was heard. The two AVFoundation constraints are recorded in
-  `HANDOVER.md` §6 — the objects are not `Send`, so the work goes to the main
-  thread, and there is deliberately no audio-session override.
+  the character 的 was heard. The same build was then silent on the phone, with
+  the Ring/Silent switch on: the simulator has no such switch, so it could not
+  show that the default audio-session category is muted by it. Pronunciation now
+  takes the session as `playback` + `spokenAudio` + `duckOthers` for the duration
+  of an utterance and gives it back when the synthesizer says the utterance has
+  finished, so an explicit tap is audible either way and ducked music returns.
+  The AVFoundation constraints are recorded in `HANDOVER.md` §6 — the objects are
+  not `Send`, so the work goes to the main thread, and the delegate that ends the
+  session is why the synthesizer and its delegate are kept together.
 - **Android**, which nothing here has touched.
 
 **Approach.**

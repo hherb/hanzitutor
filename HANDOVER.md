@@ -765,12 +765,32 @@ downstream of them is covered by the IPC tests, which drive
   a `Result`) crosses back. On iOS the `Utterance` field does not exist at all:
   the macOS backend holds a `say` process, iOS holds nothing, which is why the
   struct has a `#[cfg]` on that field.
-- **iOS speech deliberately does not touch the audio session.** Forcing
-  `AVAudioSession` to `.playback` would make pronunciation audible with the
-  ringer switch silenced, and would also interrupt whatever the learner is
-  listening to. An app that reads a character aloud is not a media app, so the
-  silent switch is respected; if pronunciation ever seems mute on a phone, that
-  switch is the first thing to check.
+- **iOS speech takes the audio session, and gives it back.** The device build
+  spoke on the simulator and was silent on the phone with no error anywhere,
+  because the default `soloAmbient` category is muted by the Ring/Silent switch —
+  and the simulator cannot reproduce that, having no such switch. Pronunciation
+  now sets `playback` + `spokenAudio` + `duckOthers` for the duration of an
+  utterance and deactivates the session (`notifyOthersOnDeactivation`) when the
+  synthesizer reports it finished or cancelled. A deliberate tap on "Hear it" is
+  therefore audible whatever the switch says, while a learner's music is ducked
+  rather than stopped and returns to volume when the word ends. Two details are
+  load-bearing:
+  * The session is released only when `isSpeaking` is false. `Speaker::speak`
+    stops the previous utterance before starting the next, and AVFoundation may
+    deliver that cancellation *after* its replacement has begun: releasing
+    unconditionally then cuts the new word off mid-syllable.
+  * `AVSpeechSynthesizer.delegate` is a **weak** property, which is why the
+    synthesizer lives in a `Speech` struct beside its `Retained` delegate rather
+    than alone in the `thread_local`. The delegate is ordinary Rust with no
+    `MainThreadOnly`, and its callbacks arrive on the main thread, which is also
+    where the session calls belong.
+  * Failing to take the session is logged and otherwise ignored: it costs volume,
+    not speech.
+- **Never hold the synthesizer's `RefCell` borrow across an AVFoundation call.**
+  A delegate callback can run inline on the main thread during
+  `speakUtterance`/`stopSpeakingAtBoundary`, and it borrows the same
+  `thread_local`; a live `RefMut` would panic. Both call sites clone the
+  `Retained<AVSpeechSynthesizer>` out of the borrow and call through the clone.
 - **iOS 26 and 27 kill an app that has not adopted the scene life cycle — and it
   looks like nothing at all.** On the phone the app showed a black flash, closed,
   and printed nothing to its own log; the only evidence was a crash report

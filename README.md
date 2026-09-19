@@ -146,7 +146,10 @@ audio leaves the machine. The voice is chosen automatically: mainland Mandarin
 (`zh_CN`) is preferred and, within that, the long-standing `Tingting` voice,
 with other Chinese locales as fallbacks. If no Chinese voice is installed the
 control is disabled with an explanation rather than reading the character aloud
-in English.
+in English. On iOS the audio session is taken for each utterance and released
+again the moment it ends, so the pronunciation is audible even with the
+Ring/Silent switch on — while anything else that was playing is ducked rather
+than stopped.
 
 The **character** is spoken rather than its pinyin: `say` has a Chinese lexicon,
 so 汉 is read correctly, whereas an English-trained voice handed `hàn` would be
