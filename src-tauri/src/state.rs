@@ -2,6 +2,7 @@
 //! application state that outlive a single command.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -30,11 +31,24 @@ const VOCAB_FILE: &str = "vocabulary.json";
 const PROGRESS_FILE: &str = "progress.json";
 const CURSOR_FILE: &str = "course-cursor.json";
 
-/// Overrides where study data is stored.
+/// Overrides where study data is stored, as an environment variable.
 ///
 /// Useful for portable installs, for keeping study data outside the standard
 /// application support folder, and for testing persistence in a specific place.
 pub const DATA_DIR_ENV: &str = "HANZI_TUTOR_DATA_DIR";
+
+/// The command-line argument that does the same job, taking precedence over the
+/// variable above.
+///
+/// `--user-dir` follows the convention the rest of the command-line world uses;
+/// `--user_dir` is accepted as an alias because that is what this project's own
+/// notes called it first, and a flag that has to be looked up is a flag that gets
+/// mistyped. Either may be written `--user-dir <path>` or `--user-dir=<path>`.
+pub const USER_DIR_FLAG: &str = "--user-dir";
+pub const USER_DIR_FLAG_ALIAS: &str = "--user_dir";
+
+/// What to say when the flag is there but the directory is not.
+const USER_DIR_MISSING: &str = "--user-dir needs a directory, written as --user-dir <path>";
 
 /// How many items one review session takes.
 ///
@@ -311,17 +325,88 @@ impl AppState {
     }
 }
 
+/// Read a data-directory override out of a command line.
+///
+/// Arguments this does not recognise are **ignored rather than rejected**. macOS
+/// launches a bundled application with arguments of its own (`-psn_0_12345` and
+/// the like), so a parser that refused anything unfamiliar would be unusable from
+/// Finder. Only a `--user-dir` that is present but has no usable value is an
+/// error, because that is a typo worth stopping for: quietly falling back to the
+/// default would scatter a testing session's data into the real application
+/// support directory, which is exactly what the flag exists to avoid.
+pub fn user_dir_from_args<I, S>(args: I) -> Result<Option<PathBuf>, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let spaced = format!("{USER_DIR_FLAG}=");
+    let spaced_alias = format!("{USER_DIR_FLAG_ALIAS}=");
+    let mut args = args.into_iter();
+
+    while let Some(argument) = args.next() {
+        let argument = argument.as_ref().to_string_lossy().into_owned();
+
+        let value = if let Some(rest) = argument.strip_prefix(&spaced) {
+            Some(rest.to_string())
+        } else if let Some(rest) = argument.strip_prefix(&spaced_alias) {
+            Some(rest.to_string())
+        } else if argument == USER_DIR_FLAG || argument == USER_DIR_FLAG_ALIAS {
+            match args.next() {
+                // A following flag is a missing value, not a directory named
+                // "--verbose". A bare "-" is allowed through, so that the error
+                // comes from the filesystem rather than from here.
+                Some(next) => {
+                    let next = next.as_ref().to_string_lossy().into_owned();
+                    if next.starts_with('-') && next != "-" {
+                        return Err(USER_DIR_MISSING.to_string());
+                    }
+                    Some(next)
+                }
+                None => return Err(USER_DIR_MISSING.to_string()),
+            }
+        } else {
+            None
+        };
+
+        if let Some(value) = value {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(USER_DIR_MISSING.to_string());
+            }
+            return Ok(Some(PathBuf::from(value)));
+        }
+    }
+    Ok(None)
+}
+
+/// The override from either source, with the flag winning over the variable.
+///
+/// A blank variable is not an override: `HANZI_TUTOR_DATA_DIR=` in a shell is
+/// more likely to be an unset variable than an intent to write study data to the
+/// current directory.
+fn override_dir(cli: Option<PathBuf>, env: Option<&str>) -> Option<PathBuf> {
+    if cli.is_some() {
+        return cli;
+    }
+    env.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 /// Where study data should live.
 ///
-/// Honours [`DATA_DIR_ENV`] first, so the location can be overridden without
-/// touching the app, then falls back to the platform's application data
-/// directory.
-pub fn resolve_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Ok(dir) = std::env::var(DATA_DIR_ENV) {
-        let dir = dir.trim();
-        if !dir.is_empty() {
-            return Ok(PathBuf::from(dir));
-        }
+/// The `--user-dir` argument wins, then [`DATA_DIR_ENV`], then the platform's
+/// application data directory — which on macOS is
+/// `~/Library/Application Support/com.hanzitutor.app`, and inside a sandboxed
+/// build is that path *in the app's container* rather than in the real home.
+/// Deliberately resolved through the platform API rather than assembled from
+/// `$HOME`: under the App Sandbox the real home is not writable, and some
+/// home-directory APIs still return it, which makes a hand-built `~/.hanzi-tutor`
+/// path fail only at save time.
+pub fn resolve_data_dir(app: &AppHandle, cli: Option<PathBuf>) -> Result<PathBuf, String> {
+    let configured = std::env::var(DATA_DIR_ENV).ok();
+    if let Some(dir) = override_dir(cli, configured.as_deref()) {
+        return Ok(dir);
     }
     app.path()
         .app_data_dir()
@@ -340,4 +425,85 @@ fn warm_voice(speaker: Arc<Speaker>) {
             "[speech] no Chinese voice installed; pronunciation will be unavailable"
         ),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn args(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn a_command_line_without_the_flag_has_no_override() {
+        assert_eq!(user_dir_from_args(args(&[])).unwrap(), None);
+        // macOS passes a bundled application arguments of its own. Refusing
+        // them would make the app unlaunchable from Finder.
+        assert_eq!(user_dir_from_args(args(&["-psn_0_12345"])).unwrap(), None);
+        assert_eq!(user_dir_from_args(args(&["--verbose"])).unwrap(), None);
+        assert_eq!(user_dir_from_args(args(&["--user-directory"])).unwrap(), None);
+    }
+
+    #[test]
+    fn the_flag_takes_the_next_argument_whichever_way_it_is_spelled() {
+        assert_eq!(
+            user_dir_from_args(args(&["--user-dir", "/tmp/one"])).unwrap(),
+            Some(PathBuf::from("/tmp/one"))
+        );
+        assert_eq!(
+            user_dir_from_args(args(&["--user_dir", "/tmp/two"])).unwrap(),
+            Some(PathBuf::from("/tmp/two"))
+        );
+        // Position does not matter, and other arguments are left alone.
+        assert_eq!(
+            user_dir_from_args(args(&["--verbose", "--user-dir", "/tmp/three"])).unwrap(),
+            Some(PathBuf::from("/tmp/three"))
+        );
+    }
+
+    #[test]
+    fn the_flag_also_takes_an_equals_form() {
+        assert_eq!(
+            user_dir_from_args(args(&["--user-dir=/tmp/one"])).unwrap(),
+            Some(PathBuf::from("/tmp/one"))
+        );
+        assert_eq!(
+            user_dir_from_args(args(&["--user_dir=/tmp/two"])).unwrap(),
+            Some(PathBuf::from("/tmp/two"))
+        );
+    }
+
+    #[test]
+    fn a_path_with_a_space_survives() {
+        assert_eq!(
+            user_dir_from_args(args(&["--user-dir", "/tmp/a b c"])).unwrap(),
+            Some(PathBuf::from("/tmp/a b c"))
+        );
+    }
+
+    #[test]
+    fn a_flag_with_no_usable_value_is_an_error() {
+        // Better to stop than to write a session's data somewhere unexpected.
+        assert!(user_dir_from_args(args(&["--user-dir"])).is_err());
+        assert!(user_dir_from_args(args(&["--user-dir="])).is_err());
+        assert!(user_dir_from_args(args(&["--user-dir", "   "])).is_err());
+        // A following flag is a missing value, not a directory named "--verbose".
+        assert!(user_dir_from_args(args(&["--user-dir", "--verbose"])).is_err());
+    }
+
+    #[test]
+    fn the_flag_wins_over_the_environment_variable() {
+        let flag = Some(PathBuf::from("/tmp/flag"));
+        assert_eq!(override_dir(flag.clone(), Some("/tmp/env")), flag);
+        assert_eq!(
+            override_dir(None, Some("/tmp/env")),
+            Some(PathBuf::from("/tmp/env"))
+        );
+        // A blank variable is an unset variable, not the current directory.
+        assert_eq!(override_dir(None, Some("")), None);
+        assert_eq!(override_dir(None, Some("   ")), None);
+        assert_eq!(override_dir(None, None), None);
+    }
 }

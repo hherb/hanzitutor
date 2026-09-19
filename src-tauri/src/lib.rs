@@ -14,14 +14,38 @@ pub use state::{AppState, CursorState, Persisted, ProgressState, VocabState, REV
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Where study data goes has to be settled before anything opens a file, and
+    // a malformed `--user-dir` is worth stopping for. Carrying on with the
+    // default would scatter a testing session's data into the real application
+    // support directory, which is the one thing the flag exists to prevent.
+    let user_dir = match crate::state::user_dir_from_args(std::env::args_os().skip(1)) {
+        Ok(dir) => dir,
+        Err(message) => {
+            eprintln!("error: {message}");
+            std::process::exit(2);
+        }
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
             use tauri::Manager;
             // The vocabulary list lives in the platform's application data
             // directory; a failure to locate it is not fatal, the list simply
-            // stays in memory and says so.
-            let data_dir = crate::state::resolve_data_dir(app.handle()).ok();
+            // stays in memory and says so. The chosen location is logged because
+            // it is the first thing worth knowing when a save misbehaves — and
+            // because `--user-dir` makes it a choice rather than a given.
+            let data_dir = match crate::state::resolve_data_dir(app.handle(), user_dir) {
+                Ok(dir) => {
+                    eprintln!("[data] study files in {}", dir.display());
+                    Some(dir)
+                }
+                Err(message) => {
+                    eprintln!("[data] {message}");
+                    eprintln!("[data] study data will not be saved this session");
+                    None
+                }
+            };
             let state = AppState::load(data_dir)?;
             app.manage(state);
             Ok(())

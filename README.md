@@ -15,7 +15,7 @@ and the Rust core is written to be reusable from a mobile shell later.
 Working end to end. The grading engine, the dataset pipeline, the Tauri command
 layer, the drawing UI, pronunciation, the personal vocabulary list, per-character
 progress with spaced repetition, the HSK 3.0 **word list**, and the **raster ink
-measure** are all implemented and tested; 196 automated tests pass. What is not built yet is listed under
+measure** are all implemented and tested; 202 automated tests pass. What is not built yet is listed under
 [Next steps](#next-steps).
 
 ## What it does
@@ -151,13 +151,25 @@ The list lives in the platform's application data directory —
 plain, human-readable JSON, written atomically so an interrupted write cannot
 leave it half-saved. Nothing is sent anywhere.
 
-Override the location with `HANZI_TUTOR_DATA_DIR`, which is useful for a portable
+Where that directory is can be overridden, which is useful for a portable
 install, for keeping study data outside the application support folder, or for
-running under a sandbox that cannot write there:
+running under a sandbox that cannot write there. `--user-dir` sets it for one
+run and takes precedence; `HANZI_TUTOR_DATA_DIR` does the same from the
+environment:
 
 ```bash
 HANZI_TUTOR_DATA_DIR="$PWD/.study" pnpm run dev
+
+# The built app takes the flag directly (`--user_dir` is accepted too), which is
+# the useful form when running a bundle instead of the dev server.
+".cargo-target/release/bundle/macos/Hanzi Tutor.app/Contents/MacOS/hanzi-tutor" \
+  --user-dir "$PWD/.study"
 ```
+
+The resolved location is logged at startup as `[data] study files in …`, which
+is the first thing worth knowing when a save misbehaves. A `--user-dir` with no
+usable value stops the app with an error rather than falling back to the default,
+so a testing session cannot quietly write into your real study data.
 
 If the file exists but cannot be parsed, the app says so and **refuses to save**
 rather than replacing your notes with an empty list. Fix or move the file, then
@@ -447,7 +459,7 @@ scripts/                    data fetching, cargo env, CLI selection
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 196 tests
+pnpm test             # the whole Rust suite: 202 tests
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
