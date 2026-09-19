@@ -28,15 +28,21 @@ ls .cargo-home 2>/dev/null || {
   cp -Rc ~/.cargo/registry/index/$REG .cargo-home/registry/index/$REG
 }
 
-# 2. Data + deps, then confirm the baseline is green.
-./scripts/fetch-data.sh          # ~36 MB upstream, into data/raw/ (gitignored)
+# 2. Deps, then confirm the baseline is green. There is no data step: the
+#    dataset artifact, the interface font and the licence texts are all
+#    committed, so a clone builds without downloading anything.
 pnpm install
-pnpm run prepare-data            # builds the 13.6 MB artifact (gitignored)
-pnpm test                        # expect 187 passed, 0 failed
+pnpm test                        # expect 196 passed, 0 failed
 pnpm run check:rust && pnpm run check:web
 ```
 
-Then `pnpm run dev` to launch it. `pnpm run build` makes a bundled `.app`.
+Then `pnpm run dev` to launch it. `pnpm run build` makes a **signed** `.app` and
+`.dmg` — see §8 for what that involves and what ends up inside.
+
+`./scripts/fetch-data.sh` is only wanted when you are changing the data pipeline:
+it re-downloads the ~33 MB of upstream text into gitignored `data/raw/`, restores
+any deleted licence text or font, and `pnpm run prepare-data` then rebuilds the
+artifact. Nothing in the normal build path needs either.
 
 ### Quirk 1 — cargo must use a project-local CARGO_HOME
 
@@ -138,6 +144,8 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | HSK 3.0 word list | Done | 9,443 words in the artifact; every one drawable character by character, checked against the shipped dataset |
 | Word search and browsing | Done | by character, reading (tones/spacing/`ü` folded) or meaning; exact-beats-prefix ranking proven in tests |
 | Words spoken and read whole | Done | the dictionary's own reading is used, so 着急 is `zháojí` where the isolated 着 has no context |
+| Licence notices in the bundle | Done | 7 tests pin the catalogue, the files on disk, the compiled-in text and the bundle config against each other; the packaged `.app` was checked by hand (see §8) |
+| Nothing downloaded, ever | Done | no HTTP client anywhere in the dependency graph; the dataset, the font and the notices are committed, so a clone and CI build offline |
 
 Verified end-to-end by reading the app's own logs:
 
@@ -151,6 +159,7 @@ HANZI_TUTOR_DATA_DIR="$PWD/.tmp-data" ./.cargo-target/debug/hanzi-tutor 2>&1 \
 # [webview] review queue: 2 due, 2 in this session
 # [webview] drawable characters: 9574
 # [webview] speech: using Tingting (Chinese (China mainland)) (zh_CN)
+# [webview] licences: 10 notices bundled
 # [webview] course cursor: resuming at character 413
 # [webview] character 的: de, 8 strokes
 # [webview] spoke 面
@@ -198,8 +207,10 @@ crates/hanzi-core/          grading engine. No Tauri, no UI, no platform code.
 src-tauri/
   src/commands.rs           the IPC surface; thin wrappers over AppState methods
   src/state.rs              embedded dataset, speech warm-up, the three stores
+  src/licences.rs           the catalogue of notices that ship; see §8
   src/speech.rs             macOS `say` backend, voice selection
   tests/ipc_contract.rs     locks the JSON contract the UI reads
+  tests/licences.rs         pins the notices, the version and the bundle config
 src/
   App.svelte                shell: modes, navigation, keyboard, state ownership
   lib/PracticeCanvas.svelte pointer capture, coalesced sampling, display space
@@ -207,10 +218,14 @@ src/
   lib/render.ts             canvas painting, font<->display transforms, colours
   lib/FeedbackPanel.svelte  report -> readable advice
   lib/WordsPanel.svelte     the HSK word list: search, browse, practise
+  lib/LicencesPanel.svelte  About and licences: the notices, with their texts
   lib/LessonSidebar.svelte  course, list and word navigation, progress marks
   lib/types.ts              TS mirror of the Rust structs
   lib/api.ts                typed invoke wrappers
-scripts/                    fetch-data, with-cargo-env, tauri-cli
+  assets/fonts/             Noto Sans SC, the bundled interface face (OFL)
+licences/                   every notice text that ships, plus README.md
+scripts/                    fetch-data, with-cargo-env, tauri-cli, build-release
+.github/workflows/ci.yml    test + clippy + svelte-check on push
 ```
 
 **The seam to preserve:** `hanzi-core` must stay free of Tauri and platform
@@ -403,15 +418,43 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
     (92 before M4, 85 after); it is a judgement, not a measurement, and the
     attempt log the roadmap keeps asking for is what should tune it.
 
+23. **Every notice that ships is named in one catalogue, and three things are
+    checked against it.** `src-tauri/src/licences.rs` lists, for each notice, the
+    text, its file under `licences/` and its path inside the bundle. The text is
+    pulled in with `include_str!`, so it is **compiled into the binary** and
+    cannot be lost at packaging time; `tauri.conf.json`'s `bundle.resources`
+    copies the same files into `Contents/Resources/licences/` for anyone auditing
+    the bundle without launching it. `tests/licences.rs` fails if the three
+    disagree in *any* direction: a file in `licences/` that is not catalogued, a
+    catalogued file that is missing, a file edited without the compiled copy
+    following, or a bundle config that copies a different set. Adding a notice
+    means touching all three, and the test is what makes forgetting one loud
+    instead of a licence breach discovered after shipping. The same file pins the
+    version across `Cargo.toml`, `tauri.conf.json` and `package.json`, which
+    otherwise drift apart in silence.
+
+24. **The bundled font is a file this project licenses, under a name it
+    controls.** The interface's Chinese face is Noto Sans SC, committed at
+    `src/assets/fonts/NotoSansSC-VF.ttf` and declared in `src/app.css` as
+    `"Noto Sans SC Bundled"` — deliberately *not* `"Noto Sans SC"`, because a
+    machine with that family installed would otherwise match the installed copy
+    rather than the one the bundle licenses and the About screen credits. The
+    system CJK stack stays declared behind it, so a missing font file degrades to
+    the old behaviour rather than to blank boxes. It is only for Chinese rendered
+    as *text*; the board draws the stored outlines and uses no font at all.
+
 ## 5. The verification loop
 
 Run before every commit:
 
 ```bash
-pnpm test           # 187 tests: engine + store + data pipeline units, IPC contract, speech
+pnpm test           # 196 tests: engine + store + data pipeline units, IPC contract, speech, notices
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
+
+These three are exactly what `.github/workflows/ci.yml` runs on every push and
+pull request, on a macOS runner, with no data step.
 
 `pnpm test` enables hanzi-core's `prepare` feature deliberately, so the data
 pipeline's parsing — which upstream fields are trusted and how a word's reading is
@@ -581,16 +624,45 @@ downstream of them is covered by the IPC tests, which drive
   `unhandledrejection` handler in `App.svelte` now forwards that class of failure
   to `[webview] webview error: …`, which is what turned this from a mystery into
   a one-line answer — keep it.
+- **A notice that names a licence is not the licence.** `fetch-data.sh` had been
+  fetching Make Me a Hanzi's `COPYING`, which describes what `graphics.txt` and
+  `dictionary.txt` are derived from and sends the reader to a URL for the Arphic
+  Public License. That URL was never followed, so the app would have shipped the
+  notice *about* the licence without the licence itself. The same was true of the
+  CC BY-SA legal code. If you touch the data pipeline or the notices, check that
+  every licence a notice points at is also present as a **file**;
+  `tests/licences.rs` now requires the text, and looks for a phrase only the
+  genuine text contains, so a stub cannot pass as a licence.
+- **`include_str!` makes the licence texts part of the Rust build.** Editing
+  `LICENSES.md` or anything in `licences/` recompiles `hanzi-core` and
+  `hanzi-tutor`. That is correct, and surprising when a build you expected to be
+  instant takes ten seconds. It also produced the only false alarm this suite has
+  given: a test compares the compiled-in text with the file on disk, so editing a
+  text *while* cargo is compiling leaves the binary holding the old copy and the
+  comparison fails. Re-run before investigating.
+- **Bundle resource paths are relative to `src-tauri/`**, not to the repository
+  root, so a notice at `licences/x.txt` is written `"../licences/x.txt"` in
+  `tauri.conf.json`. `tests/licences.rs` derives that string from each catalogue
+  entry and compares the whole map, so a config that drifts from the catalogue
+  fails the suite rather than the bundle.
+- **`pnpm run build` signs.** `scripts/build-release.sh` picks a Developer ID
+  certificate from the keychain automatically, so a build on someone else's Mac
+  will be signed as *them* unless they set `APPLE_SIGNING_IDENTITY` — and on a
+  machine with no certificate it falls back to ad-hoc, which still launches
+  locally. `pnpm run build:unsigned` skips the wrapper entirely.
 
 ## 7. Open decisions
 
-- **Distribution.** For real distribution the Arphic Public License and LGPL texts
-  must ship inside the bundle and be surfaced from an About/Licences screen.
-  `LICENSES.md` says so; nothing implements it yet. See `ROADMAP.md`.
-- **Committing the artifact.** It is gitignored, so a fresh clone needs
-  `fetch-data && prepare-data` before it compiles. That is documented and the
-  failure is a clear message, but it does mean CI needs a data step. If that
-  becomes annoying, commit the 13 MB artifact instead.
+- **Distribution** — settled by M5. The notices ship inside the bundle and are
+  surfaced from the About and licences screen, with the whole arrangement
+  described in §8 and the reasoning in `ROADMAP.md` M5. What is deliberately left
+  open is **notarisation**, which needs Apple credentials and uploads the build;
+  it is an operator step, documented in `README.md`, not a gap in the app.
+- **Committing the artifact** — settled the other way, deliberately. The 13 MB
+  artifact and the 17 MB interface font are both committed, so a clone and a CI
+  run go straight from `pnpm install` to a build with no download. The cost is
+  ~30 MB of binary in the repository; the 33 MB of upstream text stays ignored.
+  `.gitignore` records the reversal and the command that regenerates the artifact.
 - **The ink measure is proven, but half of it cannot fire yet.** The canvas paints
   every stroke at one fixed width, so nothing a learner does on a trackpad can put
   down *less* ink than `INK_WIDTH` and the `faint` verdict is unreachable in daily
@@ -640,3 +712,108 @@ downstream of them is covered by the IPC tests, which drive
   rejects the upgrade. `ROADMAP.md` records the detail. **Do not spend time on
   it**: if you want to confirm the scope, `cargo tree --target
   aarch64-apple-darwin -e normal | grep glib` returns nothing.
+
+## 8. The app bundle, and the notices inside it
+
+This section is what M5 added. Read it before changing anything under `licences/`,
+`src-tauri/src/licences.rs` or `tauri.conf.json`'s `bundle` block.
+
+### Building it
+
+```bash
+pnpm run build            # signed .app + .dmg (scripts/build-release.sh)
+pnpm run build:unsigned   # the plain Tauri build, no signing wrapper
+```
+
+`scripts/build-release.sh` resolves a signing identity in this order:
+`$APPLE_SIGNING_IDENTITY`, then the first *Developer ID Application* certificate
+in the keychain, then ad-hoc (`-`) — which still launches on this machine, since
+Apple Silicon refuses a completely unsigned binary. The identity is **not** in
+`tauri.conf.json`, because that file is committed and one person's certificate
+does not belong in it.
+
+Output, under the project's own target directory (`.cargo-target/` here, because
+of `with-cargo-env.sh`; `src-tauri/target/` otherwise):
+
+```
+bundle/macos/Hanzi Tutor.app
+bundle/dmg/Hanzi Tutor_0.1.0_aarch64.dmg
+```
+
+### What is inside, and why nothing is downloaded
+
+| Part | How it gets in | Size |
+| --- | --- | --- |
+| Characters, words, stroke geometry | `include_bytes!` in `src-tauri/src/state.rs` | ~13 MB |
+| Interface font, Noto Sans SC | Vite, from `src/assets/fonts/`, via `src/app.css` | ~17 MB |
+| Ten licence notices, as text | `bundle.resources` → `Contents/Resources/licences/` | ~60 KB |
+
+The app makes no network requests at all — there is no HTTP client anywhere in the
+dependency graph — so "everything the reader needs" is a claim that has to hold at
+build time, which is why the artifact and the font are committed rather than
+fetched.
+
+### The notices are pinned three ways
+
+`src-tauri/src/licences.rs` is the catalogue. For each notice it holds the text
+(`include_str!`, so it is compiled into the binary), the file under `licences/`,
+and the path the bundle copies it to. `tauri.conf.json` copies the same files.
+`src-tauri/tests/licences.rs` fails unless all three agree — in either direction,
+so an uncatalogued file and a missing one are both failures. **Adding a notice
+means editing the catalogue and the bundle config; the test is what stops you
+forgetting the second one.**
+
+Two copies is not redundancy for its own sake. The compiled-in copy is what the
+About screen shows, and it cannot be lost in packaging — the roadmap's warning was
+that notices are "easy to get wrong and only shows up in the packaged app". The
+file copy is what a redistributor can read without launching the app, which is the
+conventional form of the obligation.
+
+### Verifying a build, by hand
+
+There is no test for the packaged artefact, because there is no packaged artefact
+in CI. After a build, check these four things:
+
+```bash
+APP=".cargo-target/release/bundle/macos/Hanzi Tutor.app"
+
+# 1. Every notice survived as a file, and there are ten of them.
+ls "$APP/Contents/Resources/licences"
+
+# 2. The font made it into the frontend bundle.
+ls "$APP/Contents/Resources/assets" | grep -i noto
+
+# 3. It is signed, and by whom.
+codesign --verify --deep --strict --verbose=2 "$APP"
+codesign -dv --verbose=4 "$APP" 2>&1 | grep -E "Authority|TeamIdentifier"
+
+# 4. It opens, and the About screen shows the notices.
+open "$APP"
+```
+
+A failure of step 1 or 2 is the class of bug the tests cannot see, so it is worth
+doing after any change to `bundle.resources`, the font path or `vite.config.ts`.
+Step 4 also confirms the compiled-in notices reached the interface: the log line
+`[webview] licences: 10 notices bundled` appears on stderr at startup, and the
+fourth sidebar entry renders them.
+
+### Notarisation, if the app is to leave this machine
+
+Signing is automatic; notarisation is not attempted, because it needs Apple
+credentials and uploads the build. To do it, provide either `APPLE_ID`,
+`APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID`, or an App Store
+Connect API key (`APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH`), and
+let the bundler staple the ticket. Without it a signed `.dmg` copied to another
+Mac needs a right-click-Open the first time — the standard Gatekeeper prompt for a
+build Apple has not seen, not a defect.
+
+### What is deliberately not in the bundle
+
+- **Speech.** Pronunciation uses the system synthesiser. Apple's voices cannot be
+  redistributed, so there is no lawful way to bundle one; the app disables the
+  control with an explanation when no Chinese voice is installed. A current macOS
+  ships several.
+- **Any browser-opening capability.** The licences screen shows source addresses
+  as text rather than links, because opening one would need the opener plugin and
+  a new permission, and would contradict the app's "nothing leaves the machine"
+  promise for no gain — the full licence texts are already bundled.

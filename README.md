@@ -15,7 +15,7 @@ and the Rust core is written to be reusable from a mobile shell later.
 Working end to end. The grading engine, the dataset pipeline, the Tauri command
 layer, the drawing UI, pronunciation, the personal vocabulary list, per-character
 progress with spaced repetition, the HSK 3.0 **word list**, and the **raster ink
-measure** are all implemented and tested; 187 automated tests pass. What is not built yet is listed under
+measure** are all implemented and tested; 196 automated tests pass. What is not built yet is listed under
 [Next steps](#next-steps).
 
 ## What it does
@@ -61,6 +61,11 @@ measure** are all implemented and tested; 187 automated tests pass. What is not 
   comes back with its drawing and its grade, to look at again or improve, and an
   unwritten one is ready to write. The word is recorded once every character has
   been written, not necessarily in order.
+- **About and licences.** The fourth screen in the sidebar names the app's own
+  licence and shows the full text of every third-party licence its data and font
+  are under, with what each source contributes and where the notice sits inside
+  the bundle. Nothing on it is fetched, and nothing it names is downloaded: it is
+  the receipt for the claims in [Data and licences](#data-and-licences).
 
 ## Quick start
 
@@ -68,14 +73,19 @@ Requires Rust (1.77+), Node 20+ and pnpm. On macOS you also need Xcode command
 line tools.
 
 ```bash
-./scripts/fetch-data.sh     # ~33 MB of upstream data
 pnpm install
-pnpm run prepare-data       # builds the compact dataset artifact (~13 MB)
 pnpm run dev                # launches the app
 ```
 
+There is no data step. The ~13 MB dataset artifact, the interface font and every
+licence notice are committed, so a clone builds and runs offline from the first
+command — and CI needs no download either. (The 33 MB of upstream text in
+`data/raw/` and the build output are still gitignored for size; neither is needed
+to build. `./scripts/fetch-data.sh` followed by `pnpm run prepare-data` restores
+them, and is only wanted when changing the data pipeline.)
+
 `pnpm run dev` runs Vite and the Tauri CLI together. `pnpm run build` produces a
-bundled `.app` / `.dmg`.
+signed `.app` and `.dmg` — see [Shipping a build](#shipping-a-build).
 
 ### This checkout uses a project-local Cargo home
 
@@ -437,7 +447,7 @@ scripts/                    data fetching, cargo env, CLI selection
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 187 tests
+pnpm test             # the whole Rust suite: 196 tests
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
@@ -475,12 +485,88 @@ The tests that earned their place:
   checked to read `zháojí` where the isolated 着 does not, and an unknown pairing
   of real characters is checked to still invent no meaning.
 
+## Shipping a build
+
+```bash
+pnpm run build              # signed .app and .dmg
+pnpm run build:unsigned     # the plain Tauri build, if you would rather not sign
+```
+
+`scripts/build-release.sh` picks a codesigning identity in this order: whatever
+is in `$APPLE_SIGNING_IDENTITY`, then the first *Developer ID Application*
+certificate in your keychain, then ad-hoc (`-`) as a last resort — which still
+produces a bundle that launches on this machine, because Apple Silicon refuses to
+run a completely unsigned binary. The identity is deliberately not written into
+`tauri.conf.json`: that file is committed, and one person's certificate does not
+belong in it. Nothing here notarises; see below.
+
+The result lands in `.cargo-target/release/bundle/` — in this checkout the
+project's own target directory, or `src-tauri/target/` on a machine that has not
+set `CARGO_TARGET_DIR`:
+
+```
+bundle/macos/Hanzi Tutor.app
+bundle/dmg/Hanzi Tutor_0.1.0_aarch64.dmg
+```
+
+### What is inside the bundle
+
+Everything. There is nothing to download on first run and nothing to install
+besides the app itself:
+
+| Part | How it gets in | Size |
+| --- | --- | --- |
+| Characters, words, stroke geometry | `include_bytes!` in `src-tauri/src/state.rs` | ~13 MB |
+| The interface, including the Noto Sans SC font | Tauri embeds `frontendDist` into the executable | ~18 MB |
+| Ten licence notices, as plain text | `bundle.resources` → `Contents/Resources/licences/` | ~60 KB |
+
+So the executable is about 35 MB and `Contents/Resources/` holds only the icon
+and the notices. The notices are **also** compiled into the binary, which is why
+the About screen cannot come up blank in a packaged build: the loose files are
+for a redistributor who wants to read them without launching the app. Both copies
+come from the same source file at build time, and a test requires them to agree,
+so they cannot drift.
+
+Check the copies survived a build — a resource path is exactly the kind of thing
+that breaks only in the packaged app:
+
+```bash
+APP=".cargo-target/release/bundle/macos/Hanzi Tutor.app"
+ls "$APP/Contents/Resources/licences"       # ten files, named in src-tauri/src/licences.rs
+ls -lh "$APP/Contents/MacOS/hanzi-tutor"    # ~35 MB: the data and the font are in here
+codesign -dv --verbose=4 "$APP" 2>&1 | grep -E "Authority|TeamIdentifier"
+open "$APP"                                 # then look at About and licences
+```
+
+The tests in `src-tauri/tests/licences.rs` are what keep the catalogue, the files
+on disk and the bundle config in step; the four commands above are the part they
+cannot cover.
+
+### Notarisation
+
+Notarisation is not attempted, because it needs Apple credentials and uploads the
+build. To do it, either set `APPLE_ID`, `APPLE_PASSWORD` (an app-specific
+password) and `APPLE_TEAM_ID`, or an App Store Connect API key in
+`APPLE_API_ISSUER` / `APPLE_API_KEY` / `APPLE_API_KEY_PATH`, and let the bundler
+staple the ticket. Until then a signed-but-unnotarised `.dmg` copied to another
+Mac needs a right-click-Open the first time, which is the standard Gatekeeper
+prompt for a build Apple has not seen.
+
+### CI
+
+`.github/workflows/ci.yml` runs `pnpm test`, `pnpm run check:rust` and
+`pnpm run check:web` on every push to `main` and every pull request, on a macOS
+runner. It needs no data step, because the artifact is committed. A Linux runner
+would work too, but `cargo test --workspace` would first need Tauri's system
+dependencies (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`,
+`librsvg2-dev`, `patchelf`).
+
 ## Data and licences
 
 Hanzi Tutor's own source code is licensed under the **GNU Affero General Public
 License, version 3** (see [`LICENSE`](LICENSE)). The app bundles no third-party
-code, but it does bundle third-party **data**, and under terms that carry notice
-obligations. See **[LICENSES.md](LICENSES.md)**.
+code, but it does bundle third-party **data** and one third-party **font**, under
+terms that carry notice obligations. See **[LICENSES.md](LICENSES.md)**.
 
 | Data | Source | Licence |
 | --- | --- | --- |
@@ -489,24 +575,28 @@ obligations. See **[LICENSES.md](LICENSES.md)**.
 | Frequency rank, pinyin, meaning, radical, HSK | hanziDB.csv | MIT |
 | Word list, HSK 3.0 levels, derived rank | complete-hsk-vocabulary | MIT |
 | Word readings and definitions | CC-CEDICT | CC BY-SA 4.0 |
+| Interface font, Noto Sans SC | noto-cjk / Google Fonts | SIL OFL 1.1 |
 
-The generated artifact is not committed; `./scripts/fetch-data.sh` followed by
-`pnpm run prepare-data` rebuilds it. Upstream licence texts are fetched into
-`data/raw/` and must ship with any distribution. Note that the **word readings and
-definitions carry a share-alike licence** (CC BY-SA 4.0), which is the one
-obligation here that reaches the derived data rather than only the notices — see
-[`LICENSES.md`](LICENSES.md).
+The generated artifact **is committed** (about 13 MB), so a clone and a CI run
+need no data step; `./scripts/fetch-data.sh` followed by `pnpm run prepare-data`
+regenerates it when the pipeline changes. Every notice it obliges ships as a
+compiled-in text *and* as a file in `Resources/licences/`, catalogued in
+`src-tauri/src/licences.rs` and readable from the app's **About and licences**
+screen. Note that the **word readings and definitions carry a share-alike
+licence** (CC BY-SA 4.0), which is the one obligation here that reaches the
+derived data rather than only the notices — see [`LICENSES.md`](LICENSES.md).
 
 ## Next steps
 
 See **[ROADMAP.md](ROADMAP.md)** for what to build next, in priority order, with
-approach notes and acceptance criteria. The headline gaps:
+approach notes and acceptance criteria. Distribution is done — the notices ship
+in the bundle, the data and font need no download, and CI runs the suite on every
+push, so the headline gaps are now:
 
-1. **Distribution readiness** — licence notices inside the bundle, and CI, before
-   the app can leave this machine.
-2. **Pronunciation on Windows and Linux**, so the app is not macOS-only.
-3. **Centreline stroke animation** and **input ergonomics** for long strokes on a
+1. **Pronunciation on Windows and Linux**, so the app is not macOS-only.
+2. **Centreline stroke animation** and **input ergonomics** for long strokes on a
    trackpad — the two small ones that make daily practice nicer.
+3. **Mobile shells**, since a touchscreen with a stylus is the right input device.
 
 If you are picking this project up to continue development, read
 **[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the

@@ -17,7 +17,7 @@ See [`HANDOVER.md`](HANDOVER.md) for how to build, test and verify; see
 | M2 | Per-character progress + spaced repetition | Practice history still does not persist | M | **done** |
 | M3 | Words and sentences | Single characters are not reading | L | **done** |
 | M4 | Raster legibility (IoU) | Catches errors centrelines cannot | M | **done** |
-| M5 | Distribution readiness | Licence notices and signed bundles | M | not started |
+| M5 | Distribution readiness | Licence notices and signed bundles | M | **done** |
 | M6 | Pronunciation on Windows/Linux | macOS-only today | S | not started |
 | M7 | Centreline stroke animation | Nicer, more accurate "show me" | S | not started |
 | M8 | Input ergonomics | Long strokes on a trackpad | S | not started |
@@ -268,33 +268,80 @@ Deliberately not as originally planned, and why:
 
 ## M5 — Distribution readiness
 
-**Why.** The data licences require notices to travel with the app, and an unsigned
-bundle is awkward for anyone else to run. Until this is done the app is
-personal-use only.
+**Status: done.**
 
-**Approach.**
+The app can now leave this machine: the notices travel inside it, a fresh clone
+builds without downloading anything, and CI runs the suite on every push.
+`src-tauri/src/licences.rs` is the catalogue, `src/lib/LicencesPanel.svelte` is
+the screen, `scripts/build-release.sh` is the build.
 
-- An **About / Licences** screen listing the app's AGPL-3.0 licence and the three
-  upstream data notices. `LICENSES.md` already records exactly what must ship;
-  `scripts/fetch-data.sh` fetches the texts into `data/raw/`.
-- Bundle those texts as Tauri resources so they are present in the `.app`.
-- Verify the notices survive bundling — this is easy to get wrong and only shows
-  up in the packaged app.
-- Then: `pnpm run build` producing a DMG, an app icon set (already generated), a
-  version string that matches `tauri.conf.json` and `Cargo.toml`, and macOS
-  signing/notarisation if the app is to leave this machine.
-- Add a GitHub Actions workflow running `pnpm test`, `check:rust` and
-  `check:web`. **It needs the data step** — the artifact is gitignored, so either
-  run `fetch-data && prepare-data` in CI (slow, ~33 MB download) or cache the
-  artifact. Decide and document.
+What shipped:
 
-**Acceptance criteria.**
+- **The notices are a catalogue, not a copy-paste.** `src-tauri/src/licences.rs`
+  names all ten — the app's own AGPL text, this project's provenance record, the
+  Arphic and Make Me a Hanzi pointers, the LGPL, the two MIT texts, the CC-CEDICT
+  attribution, the CC BY-SA 4.0 legal code and the font's OFL — each with what it
+  covers, where it came from and where its bundle copy sits. The text is pulled
+  in with `include_str!`, so it is **compiled into the binary** and cannot go
+  missing at packaging time.
+- **`src-tauri/tests/licences.rs` holds the three-way correspondence together.**
+  It fails if a file in `licences/` is not catalogued, if a catalogued file is
+  missing, if the file on disk differs from the text compiled in, or if
+  `tauri.conf.json`'s `bundle.resources` does not copy exactly that set. Adding a
+  notice therefore cannot be half-done — which is the failure mode the roadmap
+  warned about, where the omission "only shows up in the packaged app".
+- **An About and licences screen**, the fourth entry in the sidebar, listing the
+  app's name, version, licence and repository above each notice with its full
+  text. It is fed by two new commands, `app_info` and `licence_notices`, whose
+  JSON shape the IPC contract test pins. The screen shows addresses as text
+  rather than as links, deliberately: the app's promise is that it makes no
+  network requests, and a click that navigated the single webview to a website
+  would both break that and strand the window there.
+- **The Arphic Public License is now actually bundled, and was not before.**
+  `fetch-data.sh` had been fetching Make Me a Hanzi's `COPYING`, which *names* the
+  Arphic licence and points at its text — a pointer is not the licence a reader is
+  entitled to. The real text is now fetched from `APL/english/ARPHICPL.TXT` and
+  ships as `licences/Arphic-Public-License.txt`. The CC BY-SA 4.0 legal code was
+  missing for the same reason and now ships too, with a hand-written CC-CEDICT
+  notice that records what the pipeline changed, as the licence requires.
+- **The generated artifact is committed** — the open question this roadmap left
+  from M3, decided the other way. It is ~13 MB, and committing it means a clone
+  and a CI run go from `pnpm install` straight to a build, with no 33 MB download
+  and no `fetch-data && prepare-data` step. `.gitignore` records the reversal and
+  how to regenerate it. The 33 MB of upstream text stays ignored.
+- **The interface font ships too.** Noto Sans SC (SIL OFL 1.1, ~17 MB, variable
+  weight) is committed and declared in `src/app.css` ahead of the system CJK
+  stack, so Chinese rendered as text looks the same on a machine with no CJK
+  fonts installed. The family is named `Noto Sans SC Bundled` so an installed
+  copy of Noto cannot be substituted for the one this bundle licenses.
+- **`pnpm run build` produces a signed `.app` and `.dmg`.**
+  `scripts/build-release.sh` takes the identity from `$APPLE_SIGNING_IDENTITY`,
+  else the first `Developer ID Application` certificate in the keychain, else
+  ad-hoc — which still launches locally, since Apple Silicon refuses a completely
+  unsigned binary. The identity is not written into `tauri.conf.json`, because
+  that file is committed.
+- **CI**, `.github/workflows/ci.yml`: `pnpm test`, `check:rust` and `check:web` on
+  push and pull request, on a macOS runner, with no data step.
+- **The version string is pinned in one test.** `Cargo.toml`, `tauri.conf.json`
+  and `package.json` each carry a version, and the About screen reports a fourth
+  copy; `tests/licences.rs` fails if they disagree.
 
-- The bundled `.app` contains the Arphic, LGPL and MIT notices, reachable from the
-  UI.
-- `pnpm run build` produces a launchable bundle on a clean checkout after the
-  documented data steps.
-- CI runs the suite on push and is green.
+Deliberately not done, and why:
+
+- **Notarisation.** It needs Apple credentials and uploads the build, so it is
+  left as an operator step with the required environment variables documented in
+  `README.md`. The bundle is signed, so the only consequence is the standard
+  right-click-Open on a Mac that has never seen the build.
+- **No links out of the licences screen.** Tauri does not open external URLs
+  without the opener plugin, and adding a capability so a licence screen can
+  browse the web is a poor trade for an app whose stated value is that it is
+  offline and private. This is why the full legal texts are bundled rather than
+  referenced.
+- **No bundled speech.** Apple's voices cannot be redistributed, so the only way
+  to make pronunciation independent of the system voices would be a new
+  open-source synthesiser and a ~50 MB model. The app already degrades honestly
+  when no Chinese voice is installed, and a current macOS ships several. A
+  decision for a future milestone, not a gap in this one.
 
 ---
 
@@ -466,7 +513,14 @@ Recorded honestly, because they bound how much the current scores mean:
   sample mean survived tuning while marking 18,763 strokes wrong under realistic
   input. `selfcheck` now carries a density-perturbed pass as well as a noisy one;
   the remaining gap is real handwriting rather than either synthetic case.
-- **No CI**, so nothing enforces the test suite on push.
+- **CI checks the code, not the bundle.** The workflow runs `pnpm test`,
+  `check:rust` and `check:web` on a macOS runner; it does not run
+  `pnpm run build`, so a packaging regression — a resource path, a signing
+  identity, a missing notice *file* — is still caught by hand. Building on every
+  push costs a release compile plus a DMG, and the notices themselves are pinned
+  by tests that do run, so this is a deliberate trade rather than an oversight.
+- **The bundle is signed but not notarised**, so the first launch on a Mac that
+  has not seen the build needs a right-click-Open. See M5.
 - **Pronunciation is macOS-only.**
 - **The course is frequency-ordered only.** It starts at 的 (8 strokes), which is
   right for reading but a demanding first character to *write*. A hand-ordered or
