@@ -393,7 +393,22 @@
     return revealed;
   });
   const ghostStyle = $derived(mode === "trace" && !playing ? "faint" : "highlight");
-  const answerVisible = $derived(mode === "trace" || revealed > 0);
+  /**
+   * Whether the top-left box shows the character or hides it behind a `?`.
+   *
+   * Recall mode withholds the answer until the learner has committed to one, and
+   * **grading is that commitment**: pressing Check is the moment the attempt is
+   * finished, so the correct form is then what they need to see — comparing what
+   * they wrote against the real character is the whole of the feedback. Before
+   * this, only the stroke-order animation revealed it, so a graded recall left a
+   * `?` sitting beside the score, which is the one moment the box has something
+   * to say.
+   *
+   * Writing again, undoing or switching mode clears the report, which hides the
+   * answer again — so the reveal is tied to the grade it belongs to rather than
+   * to a flag that could outlive it.
+   */
+  const answerVisible = $derived(mode === "trace" || revealed > 0 || report !== null);
 
   const summary = $derived(
     stats

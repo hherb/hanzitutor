@@ -450,9 +450,12 @@ Deliberately not as originally planned, and why:
 - **The whole character is not revealed faintly underneath.** In trace mode the
   guide is on the board anyway and the animation replaces it; drawing it under the
   sweep as well would hide the very thing the animation is demonstrating.
-- **There is no speed control.** One pace, proportional to each stroke, bounded
-  for a whole character. A learner who wants to go slower has the step-through
-  button and the ghost.
+- **There is no speed control *here*.** One pace, proportional to each stroke,
+  bounded for a whole character. A learner who wants to go slower has the
+  step-through button and the ghost. (**The settings screen added `Slow` and
+  `Fast` afterwards**, and it scales the whole timeline — bounds included, so
+  `Slow` is genuinely half speed for a character whose strokes are already at
+  `MAX_STROKE_MS`. The *default* is still the single pace this milestone chose.)
 
 ---
 
