@@ -32,7 +32,7 @@ ls .cargo-home 2>/dev/null || {
 #    dataset artifact, the interface font and the licence texts are all
 #    committed, so a clone builds without downloading anything.
 pnpm install
-pnpm test                        # expect 211 passed, 0 failed
+pnpm test                        # expect 228 passed, 0 failed
 pnpm run check:rust && pnpm run check:web
 ```
 
@@ -143,7 +143,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | IPC surface | Done | contract tests asserting exact JSON key sets |
 | Drawing canvas | Done, human-confirmed | trace + recall modes, colour-coded feedback |
 | Stroke-order animation (M7) | Done | pen sweeps each centre-line, the outline revealed behind it; band width measured per stroke; confirmed by window capture |
-| Input ergonomics (M8) | Done, human-confirmed | click-to-draw mode beside the corrections switch; both paths produce identical geometry; driven with synthetic pointer events, and the trackpad behaviour confirmed by hand |
+| Input ergonomics (M8) | Done, human-confirmed | click-to-draw beside the corrections switch, on by default where there is a hover and remembered once chosen; both paths produce identical geometry; driven with synthetic pointer events, and the trackpad behaviour confirmed by hand |
 | Pronunciation | Done on macOS | 9 tests; human-confirmed speaking |
 | Personal vocabulary list | Done | 27 store unit tests; persistence tested through the state layer |
 | Durable study store (M10) | Done | one `hanzi.db`; the old JSON imported once and left byte-identical; the attempt log past the 20 a card shows; WAL, and an uncommitted write leaves nothing |
@@ -208,6 +208,8 @@ crates/hanzi-core/          grading engine. No Tauri, no UI, no platform code.
   src/dataset.rs            Character + Word models, word search, artifact loading
   src/curriculum.rs         frequency list -> lessons
   src/vocab.rs              the personal vocabulary list, and VocabSink
+  src/settings.rs           the learner's settings: Settings, SettingsSink, and
+                            the tri-state (None = nobody has chosen)
   src/progress.rs           per-character cards, SM-2 scheduling, review queue
   src/time.rs               ISO-8601 formatting, parsing, date arithmetic
   src/bin/prepare_data.rs   upstream data -> compact artifact (feature = "prepare")
@@ -215,7 +217,8 @@ crates/hanzi-core/          grading engine. No Tauri, no UI, no platform code.
 crates/hanzi-store/         the study database: SQLite, and nothing else.
                             Separate from the engine so the engine keeps no
                             native dependency
-  src/schema.rs             the tables, and applying them
+  src/schema.rs             the tables, and applying them. Bump SCHEMA_VERSION
+                            with any change; the guard reads it *before* apply()
   src/migrate.rs            the once-only, per-document import of the old JSON
   src/lib.rs                ProgressSink / VocabSink / CursorSink, and the
                             attempt log's reader (attempt_count, attempts)
@@ -491,7 +494,7 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
 Run before every commit:
 
 ```bash
-pnpm test           # 211 tests: engine + data pipeline units, the SQLite store, IPC contract, speech, notices, data-dir flag
+pnpm test           # 228 tests: engine + data pipeline units, the SQLite store, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
@@ -720,6 +723,21 @@ downstream of them is covered by the IPC tests, which drive
   what makes a kill mid-write survivable. The three JSON documents of an older
   install are **imports**, not outputs: after the import they are never read or
   written again, so do not "tidy them up" and do not add code that rewrites them.
+- **SQLite does not create the directory for you.** `Connection::open` fails with
+  "unable to open database file" if the data directory is missing, which is
+  exactly the state a first run is in — and the warning it produces blames the
+  database, not the missing folder. `Db::open` therefore does `create_dir_all`
+  first, which is what the JSON stores used to do as they wrote. If that line
+  ever moves, every fresh install breaks, and `--user-dir` at a path that does
+  not exist yet breaks with it. There is a test that starts with no directory.
+- **Port 1420 may be held by an orphaned Vite.** `pkill -f vite` does not always
+  match it, because `pnpm` here runs Electron as Node, and a survivor makes
+  `pnpm run dev` fail in `beforeDevCommand` while the app itself still starts
+  against the *old* dev server — so a stale bundle can be what you are looking
+  at. Check `curl -s -o /dev/null -w '%{http_code}' http://localhost:1420` before
+  trusting a run; a leftover server serving the same directory will happily serve
+  current sources, which is convenient but makes "which bundle is this?" a real
+  question.
 - **A compiled-in dependency is a shipped notice.** SQLite and `rusqlite` are the
   first third-party *code* in the binary, and they were added to
   `src-tauri/src/licences.rs`, `tauri.conf.json` and `licences/` together because
@@ -856,6 +874,14 @@ downstream of them is covered by the IPC tests, which drive
   inside a sandbox — so a hand-built path fails only at save time. **The format is
   settled too** (M10): one SQLite database, `hanzi.db`, holding all three stores,
   imported once from the JSON documents an older build left behind.
+- **Where settings live, and what an unchosen one means** — settled: preferences
+  are a `Settings` document in `hanzi-core`, stored as rows in `hanzi.db`'s
+  `settings` table, with **no row** meaning "nobody has chosen" rather than
+  "off". That distinction is the whole point: the interface resolves an unchosen
+  preference from the device (click-to-draw where there is a hover, dragging for
+  a finger or a stylus) and only writes a value once the learner has flipped the
+  switch. A settings *screen* is not built yet — the store, the two commands and
+  the tri-state are, so it is a UI job; see the cross-cutting list in `ROADMAP.md`.
 - **The JSON documents are never removed, and nothing exports back to them.** The
   import leaves `vocabulary.json`, `progress.json` and `course-cursor.json`
   untouched on purpose — they are the only copy of the data until the database has

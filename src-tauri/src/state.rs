@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use hanzi_core::{
     build_lessons, build_queue, now_iso8601, CursorStore, CursorView, Dataset, ProgressStore,
-    ProgressView, ReviewView, VocabStore, VocabView,
+    ProgressView, ReviewView, SettingsStore, SettingsView, VocabStore, VocabView,
 };
 use hanzi_store::Db;
 use tauri::{AppHandle, Manager};
@@ -236,6 +236,48 @@ impl Persisted<CursorStore> {
     }
 }
 
+/// The learner's own settings. Preferences rather than study data, but persisted
+/// the same way and behind the same refusal-to-overwrite-a-bad-document rule.
+pub type SettingsState = Persisted<SettingsStore>;
+
+impl Persisted<SettingsStore> {
+    /// Open the settings from the study database. They live in the same file as
+    /// everything else because they have the same lifetime: a preference that
+    /// could come adrift from the data it applies to would be a second thing to
+    /// keep in step.
+    fn open_database(db: &Db, path: PathBuf) -> Self {
+        const NOUN: &str = "settings";
+        match SettingsStore::open_with(Box::new(db.clone())) {
+            Ok(store) => Self::loaded(store, path, NOUN),
+            Err(error) => Self::failed(SettingsStore::in_memory(), path, NOUN, error),
+        }
+    }
+
+    /// Settings kept in memory because there is no data directory at all.
+    fn in_memory() -> Self {
+        const NOUN: &str = "settings";
+        Self::loaded(SettingsStore::in_memory(), PathBuf::new(), NOUN)
+    }
+
+    /// Settings that cannot be opened at all, with the reason to show.
+    fn unavailable(path: PathBuf, reason: &str) -> Self {
+        const NOUN: &str = "settings";
+        Self::failed(SettingsStore::in_memory(), path, NOUN, reason)
+    }
+
+    /// The settings as the interface should see them.
+    pub fn view(&self) -> SettingsView {
+        let mut view = self.store.view();
+        view.warning = self.load_error.clone();
+        view
+    }
+
+    /// Persist the settings, returning a warning if that was skipped or failed.
+    pub fn save(&mut self) -> Option<String> {
+        self.save_with(SettingsStore::save)
+    }
+}
+
 /// State held for the lifetime of the app and shared by all commands.
 pub struct AppState {
     pub dataset: Dataset,
@@ -246,6 +288,7 @@ pub struct AppState {
     pub vocab: Mutex<VocabState>,
     pub progress: Mutex<ProgressState>,
     pub cursor: Mutex<CursorState>,
+    pub settings: Mutex<SettingsState>,
     /// The teachable characters, as a set.
     ///
     /// The review queue needs to know which characters the course can offer, and
@@ -277,23 +320,25 @@ impl AppState {
         // having. What the three *separate files* used to buy — one bad document
         // not taking the others down — is kept where it still applies, in the
         // once-only import of those files, which is per document.
-        let (vocab, progress, cursor) = match &data_dir {
+        let (vocab, progress, cursor, settings) = match &data_dir {
             Some(dir) => {
                 let where_it_lives = dir.join(Db::FILE_NAME);
                 match Db::open(dir) {
                     Ok(db) => (
                         VocabState::open_database(&db, where_it_lives.clone()),
                         ProgressState::open_database(&db, where_it_lives.clone()),
-                        CursorState::open_database(&db, where_it_lives),
+                        CursorState::open_database(&db, where_it_lives.clone()),
+                        SettingsState::open_database(&db, where_it_lives),
                     ),
-                    // Without the database none of the three can be read, so all
-                    // three say so and refuse to write. Nothing was destroyed:
+                    // Without the database none of the stores can be read, so all
+                    // of them say so and refuse to write. Nothing was destroyed:
                     // the reason names the file, and the JSON documents the
                     // import would have read are untouched.
                     Err(reason) => (
                         VocabState::unavailable(where_it_lives.clone(), &reason),
                         ProgressState::unavailable(where_it_lives.clone(), &reason),
-                        CursorState::unavailable(where_it_lives, &reason),
+                        CursorState::unavailable(where_it_lives.clone(), &reason),
+                        SettingsState::unavailable(where_it_lives, &reason),
                     ),
                 }
             }
@@ -303,6 +348,7 @@ impl AppState {
                 VocabState::in_memory(),
                 ProgressState::in_memory(),
                 CursorState::in_memory(),
+                SettingsState::in_memory(),
             ),
         };
 
@@ -313,6 +359,7 @@ impl AppState {
             vocab: Mutex::new(vocab),
             progress: Mutex::new(progress),
             cursor: Mutex::new(cursor),
+            settings: Mutex::new(settings),
         })
     }
 
@@ -330,6 +377,28 @@ impl AppState {
     /// Lock the course cursor, tolerating a poisoned mutex.
     pub fn lock_cursor(&self) -> MutexGuard<'_, CursorState> {
         self.cursor.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Lock the settings, tolerating a poisoned mutex.
+    pub fn lock_settings(&self) -> MutexGuard<'_, SettingsState> {
+        self.settings.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Choose how a stroke is drawn, or `None` for the device's own default.
+    ///
+    /// Written immediately: it is one boolean, the learner has just made the
+    /// choice, and a preference that only survives a clean exit is one that
+    /// looks broken. A failure to save is reported the same way the other stores
+    /// report one — the change stands in memory and the view says it was not
+    /// written.
+    pub fn set_click_to_draw(&self, value: Option<bool>) -> SettingsView {
+        let mut settings = self.lock_settings();
+        settings.store.set_click_to_draw(value);
+        let mut view = settings.view();
+        if let Some(warning) = settings.save() {
+            view.warning = Some(warning);
+        }
+        view
     }
 
     /// How many characters the course holds, so a cursor can be clamped to it.

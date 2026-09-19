@@ -15,7 +15,7 @@ and the Rust core is written to be reusable from a mobile shell later.
 Working end to end. The grading engine, the dataset pipeline, the Tauri command
 layer, the drawing UI, pronunciation, the personal vocabulary list, per-character
 progress with spaced repetition, the HSK 3.0 **word list**, and the **raster ink
-measure** and the **durable study store** are all implemented and tested; 211
+measure** and the **durable study store** are all implemented and tested; 228
 automated tests pass. What is not built yet is listed under
 [Next steps](#next-steps).
 
@@ -33,7 +33,9 @@ automated tests pass. What is not built yet is listed under
   draw**: one click starts a stroke, moving the pointer extends it, and a second
   click ends it — no button to hold down for a long stroke on a trackpad. Escape
   or Backspace abandons an unfinished stroke. Both modes put down identical
-  geometry, so the grade does not depend on which one you used.
+  geometry, so the grade does not depend on which one you used. On a trackpad or
+  with a mouse, click-to-draw is what you get to begin with; a touch or pen device
+  still starts on dragging. Flip the switch and your choice is remembered.
 - **Stroke-order animation** — a pen walks each stroke's centre-line and the
   outline appears behind it, so the direction a stroke is written in is shown and
   not only the order the strokes come in. It can be stopped at any point, and
@@ -208,12 +210,17 @@ Two things are worth knowing about that first run:
 
 ### Your progress and what to review
 
+A preference you have not chosen has **no row at all**, which is not the same as
+one set to off: that is what lets the app follow the device until you decide, and
+then stop second-guessing you. `settings` holds only what you have chosen.
+
 | Table | Holds |
 | --- | --- |
 | `vocab_entry`, `vocab_group` | your list: entries, groups, per-entry attempts |
 | `progress_card` | one row per practised character: attempts, best and last score, the interval, ease and when it is next due |
 | `attempt` | **every attempt ever recorded**, in order — not a bounded history |
 | `course_cursor` | where you were in the course, so the app opens there |
+| `settings` | the preferences you have actually chosen, one row each |
 | `meta` | the schema version and the record of the one-time import |
 
 The card and the attempt log are deliberately different things. The card holds
@@ -513,7 +520,7 @@ scripts/                    data fetching, cargo env, CLI selection
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 211 tests
+pnpm test             # the whole Rust suite: 228 tests
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check

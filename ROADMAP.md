@@ -506,6 +506,14 @@ for, and the one thing about it that no test in this repository can establish.
 
 Deliberately not done, and why:
 
+- **The default was left to the device, and then remembered.** Clicking was the
+  better gesture on a trackpad from the day it landed, so the mode now starts
+  *on* wherever there is a hover — a mouse or a trackpad — and stays *off* for a
+  finger or a stylus, which have no hover to plan a second click with. The
+  learner's own flip wins from then on and is stored in the study database's
+  `settings` table, so the app stops second-guessing them. That storage and the
+  two commands behind it arrived with the settings seam described under
+  [Cross-cutting polish](#cross-cutting-polish); only the dialog is missing.
 - **No velocity- or pressure-based stroke width.** The roadmap called it
   "cosmetic only", and that stopped being true in M4: the canvas tells the grader
   the width it painted with (`GradeOptions.inkWidth`) and **ink amount is a
@@ -646,6 +654,17 @@ Small, independently shippable, roughly in value order:
   privacy wording that "opt-in" implies. Do that next, against real handwriting,
   rather than growing the schema again.
 - **Interface localisation** — the app teaches Chinese but speaks English.
+- **A settings screen** — there is now a place for preferences to live: a
+  `Settings` document in `hanzi-core`, a `settings` table in `hanzi.db`, and a
+  `settings` / `update_settings` pair on the IPC surface. What is missing is the
+  dialog, and the second and third preferences to put in it. The first one,
+  click-to-draw, is on the board's control row because it is worth reaching
+  mid-session; the ones that follow — a colour scheme, board size, the animation's
+  pace, a voice — are not, and they want a screen. Two small things to settle
+  when it is built: an **Automatic** choice (the stored value is already
+  `Option<bool>`, so `null` — "follow the device" — can be offered without a
+  schema change) and whether the dialog reports a save failure the way every other
+  store does (it should; `SettingsView.warning` is already there for it).
 
 ## Known weak spots
 

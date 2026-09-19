@@ -757,6 +757,70 @@ fn cursor_serialises_with_camel_case_fields() {
 }
 
 #[test]
+fn settings_serialise_with_camel_case_fields() {
+    let mut store = hanzi_core::SettingsStore::in_memory();
+    assert!(store.set_click_to_draw(Some(true)));
+    let json = serde_json::to_value(store.view()).unwrap();
+    expect_keys(&json, &["clickToDraw", "warning"]);
+    assert_eq!(json["clickToDraw"], serde_json::json!(true));
+    assert_eq!(json["warning"], serde_json::Value::Null);
+}
+
+#[test]
+fn an_unchosen_setting_is_null_rather_than_false() {
+    // The interface reads this to decide whether to follow the device, so the
+    // two states have to be distinguishable over the wire: `null` means "nobody
+    // has chosen", `false` means "chosen: drag".
+    let store = hanzi_core::SettingsStore::in_memory();
+    let json = serde_json::to_value(store.view()).unwrap();
+    assert_eq!(json["clickToDraw"], serde_json::Value::Null);
+
+    let mut store = hanzi_core::SettingsStore::in_memory();
+    store.set_click_to_draw(Some(false));
+    let json = serde_json::to_value(store.view()).unwrap();
+    assert_eq!(json["clickToDraw"], serde_json::json!(false));
+}
+
+#[test]
+fn the_default_state_keeps_settings_in_memory() {
+    let state = state();
+    let mut settings = state.lock_settings();
+    assert_eq!(settings.view().click_to_draw(), None);
+    assert!(settings.load_error.is_none());
+    assert!(settings.save().is_none());
+}
+
+#[test]
+fn a_setting_choice_survives_a_restart_through_the_state_layer() {
+    let dir = data_dir("ipc-settings-persist");
+
+    {
+        let state = AppState::load(Some(dir.clone())).unwrap();
+        assert_eq!(
+            state.lock_settings().view().click_to_draw(),
+            None,
+            "a fresh install has chosen nothing"
+        );
+        let view = state.set_click_to_draw(Some(true));
+        assert_eq!(view.click_to_draw(), Some(true));
+        assert!(view.warning.is_none(), "{:?}", view.warning);
+    }
+
+    // A second session, as if the app had been started again.
+    let state = AppState::load(Some(dir.clone())).unwrap();
+    let settings = state.lock_settings();
+    assert!(settings.load_error.is_none(), "{:?}", settings.load_error);
+    assert_eq!(settings.view().click_to_draw(), Some(true));
+
+    // And it lives in the same database as everything else, not a file of its own.
+    assert!(dir.join("hanzi.db").exists());
+    assert!(!dir.join("settings.json").exists());
+
+    drop(settings);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn the_default_state_keeps_progress_and_the_cursor_in_memory() {
     let state = state();
     let mut progress = state.lock_progress();

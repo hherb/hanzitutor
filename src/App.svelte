@@ -26,6 +26,7 @@
     PracticeItem,
     ProgressView,
     ReviewView,
+    SettingsView,
     VocabEntry,
     VocabView,
     Word,
@@ -65,12 +66,36 @@
   let grading = $state(false);
   let showCorrections = $state(true);
   /**
-   * How a stroke is committed: dragged with the button held, or started and
-   * finished with two clicks. The default is dragging, which is right for a
-   * stylus; click-to-draw exists because holding a trackpad button for a long
-   * stroke is unpleasant (see `PracticeCanvas`).
+   * The learner's own settings, as the backend has them.
+   *
+   * `clickToDraw` is `null` until they choose; see [`clickToDraw`] for how an
+   * unchosen value is resolved.
    */
-  let clickToDraw = $state(false);
+  let settings = $state<SettingsView>({ clickToDraw: null, warning: null });
+
+  /**
+   * Whether this device wants click-to-draw *by default*.
+   *
+   * A trackpad or a mouse has hover, so a stroke can be started and finished
+   * with two clicks and nothing held down — which is the only comfortable way to
+   * write a long stroke with them, and the reason the feature exists. A stylus
+   * or a finger has no hover: dragging is the natural gesture there, and
+   * click-to-draw would be a mode to escape from. `hover: none` is the honest
+   * signal for that; `pointer: coarse` is there because the two disagree on some
+   * platforms, and either one being true means this is not a mouse.
+   */
+  const deviceWantsClickToDraw = !window.matchMedia("(hover: none), (pointer: coarse)")
+    .matches;
+
+  /**
+   * How a stroke is committed: dragged with the button held, or started and
+   * finished with two clicks.
+   *
+   * The learner's choice wins when they have made one; otherwise the device
+   * decides. `null` in the stored settings is what makes that distinguishable
+   * from a deliberate "off".
+   */
+  const clickToDraw = $derived(settings.clickToDraw ?? deviceWantsClickToDraw);
   /**
    * The TTS voice, once known: a name when pronunciation is available, `null`
    * when the system has no Chinese voice, `undefined` while still resolving.
@@ -310,6 +335,7 @@
     })();
 
     void refreshVocabulary();
+    void refreshSettings();
     void refreshProgress();
     void refreshReview();
 
@@ -452,6 +478,48 @@
       cursorWarning = `Could not restore your place in the course: ${cause}`;
     } finally {
       cursorRestored = true;
+    }
+  }
+
+  /**
+   * Read the learner's settings, and say what they resolved to.
+   *
+   * The log line is the same kind of evidence as `review queue`: it says whether
+   * the board is following the device or a stored choice, which is the first
+   * thing worth knowing when the input mode surprises someone.
+   */
+  async function refreshSettings() {
+    try {
+      const loaded = await api.settings();
+      settings = loaded;
+      if (loaded.warning) void api.log(`settings warning: ${loaded.warning}`);
+      void api.log(
+        `settings: click to draw ${clickToDraw ? "on" : "off"} ` +
+          `(${loaded.clickToDraw === null ? "this device's default" : "chosen"})`,
+      );
+    } catch (cause) {
+      error = `Could not load your settings: ${cause}`;
+    }
+  }
+
+  /**
+   * Choose how a stroke is drawn, and remember it.
+   *
+   * The switch moves immediately and the backend is told after, because a
+   * preference that waits for a round trip feels broken; if the save fails the
+   * switch goes back and the reason is shown, which is the same bargain the
+   * study stores make.
+   */
+  async function setClickToDraw(value: boolean) {
+    const previous = settings;
+    settings = { clickToDraw: value, warning: null };
+    try {
+      const saved = await api.updateSettings(value);
+      settings = saved;
+      if (saved.warning) error = saved.warning;
+    } catch (cause) {
+      settings = previous;
+      error = `Could not save your setting: ${cause}`;
     }
   }
 
@@ -1441,9 +1509,15 @@
             </label>
             <label
               class="toggle"
-              title="Click once to start a stroke and once to finish it, instead of holding the button down — easier for long strokes on a trackpad. Escape or Backspace abandons an unfinished stroke."
+              title={settings.clickToDraw === null
+                ? `Click once to start a stroke and once to finish it, instead of holding the button down. Following this device for now (${deviceWantsClickToDraw ? "a mouse or trackpad, so click to draw" : "a stylus or a finger, so hold and drag"}); flip this to choose for yourself.`
+                : "Click once to start a stroke and once to finish it, instead of holding the button down. Escape or Backspace abandons an unfinished stroke."}
             >
-              <input type="checkbox" bind:checked={clickToDraw} />
+              <input
+                type="checkbox"
+                checked={clickToDraw}
+                onchange={(event) => void setClickToDraw(event.currentTarget.checked)}
+              />
               click to draw
             </label>
             <span class="count" title={report

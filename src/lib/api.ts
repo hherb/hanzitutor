@@ -13,6 +13,7 @@ import type {
   Point,
   ProgressView,
   ReviewView,
+  SettingsView,
   TextLookup,
   VocabOutcome,
   VocabView,
@@ -143,6 +144,21 @@ export const courseCursor = () => invoke<CursorView>("course_cursor");
 /** Move the course cursor. The backend clamps the index to the course. */
 export const setCourseCursor = (index: number) =>
   invoke<CursorView>("set_course_cursor", { index });
+
+// ---- settings --------------------------------------------------------------
+
+/** The learner's settings, with an unchosen preference reported as `null`. */
+export const settings = () => invoke<SettingsView>("settings");
+
+/**
+ * Change how a stroke is drawn.
+ *
+ * `null` goes back to the device's own default, which is what a "follow my
+ * device" option in a future settings dialog will send; the switch in the
+ * controls writes `true` or `false`.
+ */
+export const updateSettings = (clickToDraw: boolean | null) =>
+  invoke<SettingsView>("update_settings", { clickToDraw });
 
 // ---- what the app is, and what it ships under ------------------------------
 

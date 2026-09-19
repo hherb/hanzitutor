@@ -35,6 +35,7 @@ pub mod geom;
 pub mod grade;
 pub mod progress;
 mod raster;
+pub mod settings;
 pub mod time;
 pub mod vocab;
 
@@ -51,5 +52,6 @@ pub use progress::{
     CursorStore, CursorView, ProgressError, ProgressSink, ProgressStore, ProgressView, Rating,
     ReviewItem, ReviewSource, ReviewView, Scheduler, Sm2,
 };
+pub use settings::{Settings, SettingsError, SettingsSink, SettingsStore, SettingsView};
 pub use time::{iso8601_from_unix, now_iso8601, parse_iso8601};
 pub use vocab::{Entry, ImportSummary, VocabError, VocabSink, VocabStore, VocabView};

@@ -304,6 +304,20 @@ export interface CursorView {
 }
 
 /**
+ * The learner's settings.
+ *
+ * Every field is `null` when nobody has chosen it, which is *not* the same as
+ * `false`: the interface resolves an unchosen preference from the device and only
+ * writes a value once the learner has flipped the switch themselves.
+ */
+export interface SettingsView {
+  /** `true` click to start and click to finish; `false` press and drag; `null` let the device decide. */
+  clickToDraw: boolean | null;
+  /** Set when a change was applied in memory but could not be saved. */
+  warning: string | null;
+}
+
+/**
  * One thing the board is asking for: a single character, or a word written one
  * character at a time. Both the vocabulary list and a review session hand the
  * board a queue of these, so practice has one path.

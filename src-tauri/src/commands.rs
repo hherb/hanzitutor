@@ -6,7 +6,7 @@
 
 use hanzi_core::{
     build_lessons, grade_with_outlines, Character, CursorView, GradeOptions, GradeReport, Lesson,
-    Point, ProgressView, ReviewView, TextLookup, VocabView, Word,
+    Point, ProgressView, ReviewView, SettingsView, TextLookup, VocabView, Word,
 };
 use serde::Serialize;
 use tauri::State;
@@ -462,6 +462,27 @@ pub fn course_cursor(state: State<'_, AppState>) -> CursorView {
 #[tauri::command]
 pub fn set_course_cursor(state: State<'_, AppState>, index: usize) -> CursorView {
     state.set_cursor(index)
+}
+
+/// The learner's settings, with an unset preference reported as `null`.
+///
+/// `null` is not `false`: it means nobody has chosen, which is what lets the
+/// interface follow the device — click-to-draw on a trackpad or with a mouse,
+/// dragging with a stylus or a finger — and only override it once the learner
+/// has actually flipped the switch.
+#[tauri::command]
+pub fn settings(state: State<'_, AppState>) -> SettingsView {
+    state.lock_settings().view()
+}
+
+/// Change a setting.
+///
+/// `clickToDraw` is `true`, `false`, or `null` to go back to the device's own
+/// default. The change is written straight away; the view that comes back is
+/// what the interface should render, warning included.
+#[tauri::command]
+pub fn update_settings(state: State<'_, AppState>, click_to_draw: Option<bool>) -> SettingsView {
+    state.set_click_to_draw(click_to_draw)
 }
 
 /// Echo a line from the webview to stderr.

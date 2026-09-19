@@ -6,13 +6,18 @@
 //! card holds what the *schedule* needs and a count, and every attempt ever made
 //! goes in `attempt`, which nothing rewrites.
 //!
-//! `meta` carries the schema version and the once-only import markers.
+//! `meta` carries the schema version and the once-only import markers, and
+//! `settings` holds the learner's own preferences — a different kind of thing
+//! from study data, kept in the same file because it is the same lifetime.
 
 use rusqlite::Connection;
 
-/// Bumped when a table changes shape. There is one version so far; a future
-/// change adds a step here rather than reading an old shape hopefully.
-pub const SCHEMA_VERSION: i64 = 1;
+/// Bumped when a table changes shape.
+///
+/// 1 — progress cards, the attempt log, the vocabulary list, the cursor.
+/// 2 — `settings`, which is additive: an older database gains the table empty on
+///     the next open, and nothing has to be rewritten.
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Everything the database needs, in one idempotent script.
 ///
@@ -74,6 +79,14 @@ CREATE TABLE IF NOT EXISTS course_cursor (
     only_row   INTEGER PRIMARY KEY CHECK (only_row = 1),
     position   INTEGER NOT NULL,
     updated_at TEXT
+);
+
+-- The learner's preferences, one row per value they have actually chosen. A
+-- preference that has not been chosen has *no row*: absent is not false, and
+-- the interface turns an absent choice into the device's own default.
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 ";
 

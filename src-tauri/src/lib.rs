@@ -10,7 +10,9 @@ mod state;
 
 pub use commands::{LevelCount, VocabOutcome, WordSearchView};
 pub use licences::{AppInfo, LicenceNotice};
-pub use state::{AppState, CursorState, Persisted, ProgressState, VocabState, REVIEW_LIMIT};
+pub use state::{
+    AppState, CursorState, Persisted, ProgressState, SettingsState, VocabState, REVIEW_LIMIT,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -76,6 +78,8 @@ pub fn run() {
             commands::review_queue,
             commands::course_cursor,
             commands::set_course_cursor,
+            commands::settings,
+            commands::update_settings,
             commands::app_info,
             commands::licence_notices,
             commands::webview_log,

@@ -38,6 +38,7 @@ use hanzi_core::progress::{
     CursorDocument, CursorSink, Document as ProgressDocument, ProgressError, ProgressSink,
     MAX_HISTORY,
 };
+use hanzi_core::settings::{Settings, SettingsError, SettingsSink};
 use hanzi_core::vocab::{Document as VocabDocument, VocabError, VocabSink};
 use hanzi_core::{Attempt, AttemptRecord, CardState, Entry, Rating};
 use rusqlite::{params, Connection};
@@ -68,6 +69,12 @@ impl Db {
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, String> {
         let dir = dir.into();
         let path = dir.join(Self::FILE_NAME);
+        // The directory has to exist before SQLite can create a database in it,
+        // and on a first run it may not: `app_data_dir()` is a path, not a
+        // promise, and `--user-dir` names one the reader chose. The study files
+        // used to make their own directories as they wrote; this is that
+        // behaviour, moved to where the file is now opened.
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let conn = Connection::open(&path).map_err(|e| at(&path, e))?;
         // Write-ahead logging is what makes an interrupted write survivable:
         // a half-finished transaction is rolled back out of the log rather than
@@ -86,7 +93,11 @@ impl Db {
             .map_err(|e| at(&path, e))?;
         conn.busy_timeout(Duration::from_secs(5))
             .map_err(|e| at(&path, e))?;
-        schema::apply(&conn).map_err(|e| at(&path, e))?;
+        // The version is read *before* the schema is applied, which is the whole
+        // point of the guard: `apply` stamps this build's version, so checking
+        // afterwards would silently downgrade a database written by a newer app
+        // and then accept it. A database whose tables this build does not
+        // understand must be refused untouched, not rewritten.
         if let Some(found) = schema::version(&conn).map_err(|e| at(&path, e))? {
             if found > SCHEMA_VERSION {
                 return Err(format!(
@@ -96,6 +107,7 @@ impl Db {
                 ));
             }
         }
+        schema::apply(&conn).map_err(|e| at(&path, e))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             dir,
@@ -191,6 +203,10 @@ fn progress_error(path: &Path, e: rusqlite::Error) -> ProgressError {
 
 fn vocab_error(path: &Path, e: rusqlite::Error) -> VocabError {
     VocabError::Io(at(path, e))
+}
+
+fn settings_error(path: &Path, e: rusqlite::Error) -> SettingsError {
+    SettingsError::Io(at(path, e))
 }
 
 // ---- the schedule ---------------------------------------------------------
@@ -566,6 +582,89 @@ fn write_entry(conn: &Connection, entry: &Entry) -> rusqlite::Result<()> {
             entry.last_practised,
         ],
     )?;
+    Ok(())
+}
+
+// ---- settings -------------------------------------------------------------
+
+/// The settings keys this build knows. An unknown row in the table is left
+/// alone rather than pruned: a newer build may have written it.
+const CLICK_TO_DRAW: &str = "click_to_draw";
+
+impl SettingsSink for Db {
+    /// Read the settings a learner has actually chosen.
+    ///
+    /// A missing row is an unset preference, not a default: the interface is
+    /// what decides that a trackpad should start out click-to-draw, and it can
+    /// only do that if "nobody has chosen" survives storage as an absence.
+    fn load(&self) -> Result<Settings, SettingsError> {
+        let conn = self.lock();
+        let path = self.path();
+        let mut settings = Settings::default();
+        if let Some(text) =
+            setting_get(&conn, CLICK_TO_DRAW).map_err(|e| settings_error(&path, e))?
+        {
+            settings.click_to_draw =
+                Some(match text.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    other => {
+                        return Err(SettingsError::Malformed(format!(
+                            "{}: the stored setting {CLICK_TO_DRAW:?} is {other:?}, which is                              neither true nor false",
+                            path.display()
+                        )))
+                    }
+                });
+        }
+        Ok(settings)
+    }
+
+    /// Write the settings. Every field this build knows is written or cleared,
+    /// so a value removed by the learner is removed from the table rather than
+    /// left behind to be mistaken for a choice.
+    fn save(&mut self, settings: &Settings) -> Result<(), SettingsError> {
+        let path = self.path();
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(|e| settings_error(&path, e))?;
+        setting_put(
+            &tx,
+            CLICK_TO_DRAW,
+            settings.click_to_draw.map(|on| if on { "true" } else { "false" }),
+        )
+        .map_err(|e| settings_error(&path, e))?;
+        tx.commit().map_err(|e| settings_error(&path, e))
+    }
+}
+
+fn setting_get(conn: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+        row.get(0)
+    })
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other),
+    })
+}
+
+/// Set a value, or remove the row when there is none.
+fn setting_put(
+    conn: &Connection,
+    key: &str,
+    value: Option<&str>,
+) -> rusqlite::Result<()> {
+    match value {
+        Some(value) => {
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?;
+        }
+        None => {
+            conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+        }
+    }
     Ok(())
 }
 

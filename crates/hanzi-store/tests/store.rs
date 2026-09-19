@@ -16,8 +16,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hanzi_core::progress::{build_queue, ReviewSource, MAX_HISTORY};
-use hanzi_core::{CursorStore, ProgressStore, Rating, VocabStore};
-use hanzi_store::Db;
+use hanzi_core::{CursorStore, ProgressStore, Rating, SettingsStore, VocabStore};
+use hanzi_store::{Db, SCHEMA_VERSION};
 
 /// A private directory per test, cleaned up by the caller's `finish`.
 fn dir(name: &str) -> PathBuf {
@@ -124,6 +124,28 @@ fn an_existing_install_is_imported_and_its_files_are_left_alone() {
     assert_eq!(progress.card('好').unwrap().attempts, 2);
     assert!(progress.record_at('好', 70.0, "2026-09-20T09:00:00Z").is_ok());
     assert!(progress.save().is_ok());
+
+    finish(&dir);
+}
+
+#[test]
+fn a_data_directory_that_does_not_exist_yet_is_created() {
+    // A first run has no directory, and `--user-dir` names one the reader chose:
+    // SQLite will not create either, and a study store that needs `mkdir` first
+    // is a study store that does not work on a fresh install.
+    let dir = dir("create-dir");
+    finish(&dir);
+    assert!(!dir.exists(), "the test must start with no directory");
+
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    store.record_at('好', 83.0, "2026-09-19T09:00:00Z").unwrap();
+    store.save().unwrap();
+
+    assert!(dir.join("hanzi.db").exists());
+    drop(store);
+    let reopened = ProgressStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert_eq!(reopened.card('好').unwrap().attempts, 1);
 
     finish(&dir);
 }
@@ -403,6 +425,179 @@ fn the_cursor_round_trips_and_only_ever_has_one_row() {
         .query_row("SELECT COUNT(*) FROM course_cursor", [], |row| row.get(0))
         .unwrap();
     assert_eq!(rows, 1);
+
+    finish(&dir);
+}
+
+#[test]
+fn a_setting_that_was_never_chosen_is_not_a_setting_that_is_off() {
+    // The distinction the whole tri-state exists for: the interface resolves an
+    // unchosen preference from the device, so storage has to be able to say
+    // "nobody chose" rather than "chose off".
+    let dir = dir("settings");
+    let db = Db::open(&dir).unwrap();
+
+    let store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(store.click_to_draw(), None, "a fresh database has no choice");
+
+    // Off is a choice, and it round-trips as one.
+    let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(store.set_click_to_draw(Some(false)));
+    store.save().unwrap();
+    drop(store);
+
+    let store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(store.click_to_draw(), Some(false));
+
+    // Choosing nothing again removes the row rather than storing a third state.
+    let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(store.set_click_to_draw(None));
+    store.save().unwrap();
+    drop(store);
+
+    let rows: i64 = rusqlite::Connection::open(db.path())
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0, "an unset preference leaves no row behind");
+    let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert_eq!(store.click_to_draw(), None);
+
+    finish(&dir);
+}
+
+#[test]
+fn a_chosen_setting_survives_a_restart() {
+    let dir = dir("settings-restart");
+    {
+        let db = Db::open(&dir).unwrap();
+        let mut store = SettingsStore::open_with(Box::new(db)).unwrap();
+        store.set_click_to_draw(Some(true));
+        store.save().unwrap();
+    }
+
+    // A second session, as if the app had been started again.
+    let db = Db::open(&dir).unwrap();
+    let store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(store.click_to_draw(), Some(true));
+
+    // And the settings table is not the study data: it is a row of its own, and
+    // nothing about it touches the cards or the log.
+    assert_eq!(db.attempt_count().unwrap(), 0);
+    let rows: i64 = rusqlite::Connection::open(db.path())
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 1);
+
+    finish(&dir);
+}
+
+#[test]
+fn a_setting_a_newer_build_wrote_is_not_mistaken_for_a_choice() {
+    // A row this build does not know is left alone (a newer build may have
+    // written it), but a row for a key it *does* know has to be readable.
+    let dir = dir("settings-unknown");
+    let db = Db::open(&dir).unwrap();
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('from_a_newer_build', 'whatever')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('click_to_draw', 'true')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(store.click_to_draw(), Some(true));
+
+    // A value that is neither true nor false is reported rather than guessed at.
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        conn.execute(
+            "UPDATE settings SET value = 'perhaps' WHERE key = 'click_to_draw'",
+            [],
+        )
+        .unwrap();
+    }
+    let error = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap_err();
+    assert!(
+        matches!(&error, hanzi_core::SettingsError::Malformed(_)),
+        "{error}"
+    );
+    assert!(error.to_string().contains("click_to_draw"), "{error}");
+
+    finish(&dir);
+}
+
+#[test]
+fn a_database_from_a_newer_build_is_refused_untouched() {
+    // The guard has to read the version *before* stamping its own, or it would
+    // downgrade the file and then accept it — the one failure mode a version
+    // number exists to prevent.
+    let dir = dir("newer-schema");
+    let path = Db::open(&dir).unwrap().path();
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("UPDATE meta SET value = '99' WHERE key = 'schema'", [])
+            .unwrap();
+    }
+    let before = fs::metadata(&path).unwrap().len();
+
+    let error = Db::open(&dir).expect_err("a newer schema must not be opened");
+    assert!(error.contains("newer version"), "{error}");
+    assert!(error.contains("99"), "the message should say what it found: {error}");
+
+    let recorded: String = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(recorded, "99", "the file was rewritten, not refused");
+    assert_eq!(fs::metadata(&path).unwrap().len(), before);
+
+    finish(&dir);
+}
+
+#[test]
+fn an_older_database_gains_the_new_tables_without_losing_anything() {
+    // The upgrade path for schema 1 → 2: a database with study data in it, and
+    // no `settings` table yet, opens and works.
+    let dir = dir("older-schema");
+    let db = Db::open(&dir).unwrap();
+    let mut progress = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    progress.record_at('好', 83.0, "2026-09-19T09:00:00Z").unwrap();
+    progress.save().unwrap();
+    drop(progress);
+
+    // Roll the file back to what schema 1 looked like.
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        conn.execute("DROP TABLE settings", []).unwrap();
+        conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema'", [])
+            .unwrap();
+    }
+
+    let db = Db::open(&dir).unwrap();
+    assert_eq!(db.attempt_count().unwrap(), 1, "the study data is still there");
+    let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(store.click_to_draw(), None, "and the new table starts empty");
+    store.set_click_to_draw(Some(true));
+    store.save().unwrap();
+
+    let recorded: String = rusqlite::Connection::open(db.path())
+        .unwrap()
+        .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(recorded, SCHEMA_VERSION.to_string());
 
     finish(&dir);
 }
