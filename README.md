@@ -15,7 +15,8 @@ and the Rust core is written to be reusable from a mobile shell later.
 Working end to end. The grading engine, the dataset pipeline, the Tauri command
 layer, the drawing UI, pronunciation, the personal vocabulary list, per-character
 progress with spaced repetition, the HSK 3.0 **word list**, and the **raster ink
-measure** are all implemented and tested; 202 automated tests pass. What is not built yet is listed under
+measure** and the **durable study store** are all implemented and tested; 211
+automated tests pass. What is not built yet is listed under
 [Next steps](#next-steps).
 
 ## What it does
@@ -58,6 +59,10 @@ measure** are all implemented and tested; 202 automated tests pass. What is not 
   later; answer badly and it comes back within the minute. The course opens where
   you left off, each lesson shows how much of it you have practised, and
   *Review due* drills what has come back, most overdue first.
+- **A study store with room to grow.** The schedule, the list and your place in
+  the course live in one SQLite database, and every attempt ever made is kept in
+  an unbounded log rather than a twenty-entry history — which is what the grading
+  tolerances will be tuned against, once there are real attempts to look at.
 - **Sentences, one character at a time.** Any multi-character text written into
   the list — a word, a phrase, a sentence — is practised character by character,
   with anything the board cannot draw (punctuation, an unknown glyph) skipped
@@ -152,12 +157,14 @@ HANZI_TUTOR_VOICE="Meijia" pnpm run dev
 Enumerating voices takes about a second, so it runs on a background thread at
 startup rather than on the first click.
 
-### Your vocabulary list
+### Your study data
 
-The list lives in the platform's application data directory —
-`~/Library/Application Support/com.hanzitutor.app/vocabulary.json` on macOS — as
-plain, human-readable JSON, written atomically so an interrupted write cannot
-leave it half-saved. Nothing is sent anywhere.
+Everything you do lives in one SQLite database, `hanzi.db`, in the platform's
+application data directory —
+`~/Library/Application Support/com.hanzitutor.app/hanzi.db` on macOS. Nothing is
+sent anywhere, and nothing else is written: the database holds the vocabulary
+list, the per-character schedule with its log of every attempt, and your place in
+the course.
 
 Where that directory is can be overridden, which is useful for a portable
 install, for keeping study data outside the application support folder, or for
@@ -179,25 +186,46 @@ is the first thing worth knowing when a save misbehaves. A `--user-dir` with no
 usable value stops the app with an error rather than falling back to the default,
 so a testing session cannot quietly write into your real study data.
 
-If the file exists but cannot be parsed, the app says so and **refuses to save**
-rather than replacing your notes with an empty list. Fix or move the file, then
-restart.
+If the database cannot be opened, the app says so and **refuses to save** rather
+than starting empty over it. Fix or move the file, then restart.
+
+### Upgrading from an older version
+
+Earlier builds kept three plain-JSON documents in the same directory: `vocabulary.json`, `progress.json` and `course-cursor.json`. The first
+time the app runs against that directory it **imports** all three — vocabulary,
+schedule, history and course position — and leaves the files exactly where they
+are, byte for byte. Nothing is deleted, so the JSON is still there afterwards if
+you want to look at it or roll back to an older build.
+
+Two things are worth knowing about that first run:
+
+- The import is recorded in the database (`meta`), so it happens once. After
+  that the JSON files are not read again, and editing them changes nothing.
+- It is per document. A `course-cursor.json` that cannot be parsed blocks the
+  cursor and nothing else: the schedule and the list still load, that document is
+  simply not marked as imported, and fixing it and restarting imports it. It is
+  never overwritten.
 
 ### Your progress and what to review
 
-Two more files live beside the vocabulary list, and they are kept separate on
-purpose so that one bad file cannot take the others down:
-
-| File | Holds |
+| Table | Holds |
 | --- | --- |
-| `vocabulary.json` | your list: entries, groups, per-entry attempts |
-| `progress.json` | one card per practised character: attempts, best and last score, a short history, and when it is next due |
-| `course-cursor.json` | where you were in the course, so the app opens there |
+| `vocab_entry`, `vocab_group` | your list: entries, groups, per-entry attempts |
+| `progress_card` | one row per practised character: attempts, best and last score, the interval, ease and when it is next due |
+| `attempt` | **every attempt ever recorded**, in order — not a bounded history |
+| `course_cursor` | where you were in the course, so the app opens there |
+| `meta` | the schema version and the record of the one-time import |
 
-All three are plain, human-readable JSON written atomically, and all three follow
-the same safety rule: a file that cannot be parsed is reported and **never
-overwritten**. A missing file is simply a fresh start. Delete any of them to reset
-that part of your study data.
+The card and the attempt log are deliberately different things. The card holds
+what the Scheduler needs plus the newest twenty attempts for the board to show
+you; the log holds everything, and nothing rewrites it. That is what the database
+is for: a document that is rewritten whole on every attempt could never grow past
+a bounded array, so the log had a ceiling that rows do not.
+
+The database uses SQLite's write-ahead journal, so a write that is interrupted —
+the app killed mid-save — is rolled back rather than left half-applied. The
+`hanzi.db-wal` and `hanzi.db-shm` files beside it are SQLite's own; deleting them
+while the app is closed is safe, deleting `hanzi.db` resets everything.
 
 Scheduling is **SM-2**: an attempt's 0..=100 score becomes one of four ratings
 (*again* / *hard* / *good* / *easy*, using the same grade bands the feedback panel
@@ -414,6 +442,11 @@ stroke as well as absolute.
 │                              │        │    vocab    the list          │
 │                              │        │    progress SM-2, due dates   │
 │                              │        │    time     ISO-8601 text     │
+│                              │        │         │ sink trait          │
+│                              │        │         ▼                     │
+│                              │        │  hanzi-store  SQLite          │
+│                              │        │    hanzi.db: cards, the       │
+│                              │        │    attempt log, the list      │
 └──────────────────────────────┘        └──────────────────────────────┘
 ```
 
@@ -421,6 +454,10 @@ The Rust core has no UI or platform dependency, so it can be driven from a CLI, 
 test harness or a mobile shell unchanged. The command layer is deliberately thin —
 each `#[tauri::command]` forwards to a method on `AppState` — which is what makes
 the whole webview-facing surface testable without opening a window.
+
+The store is a crate of its own for the same reason: `hanzi-core` decides *what* to
+remember and this decides *where*, behind a trait the engine defines, so SQL never
+enters the engine and the engine's tests never need a database.
 
 ### Coordinate systems
 
@@ -441,19 +478,28 @@ preparation so the grader never has to think about the flip.
 
 ```
 crates/hanzi-core/          engine + data, no UI dependency
+  src/store trait           ProgressSink / VocabSink / CursorSink, in
+                            progress.rs and vocab.rs
   src/geom.rs               resampling, normalisation, distance measures
   src/grade.rs              pairing, order analysis, verdicts, scoring
   src/dataset.rs            characters, the word dictionary, artifact loading
   src/curriculum.rs         frequency list → lessons
-  src/vocab.rs              the personal vocabulary list and its JSON file
+  src/vocab.rs              the personal vocabulary list
   src/progress.rs           per-character history, SM-2 scheduling, review queue
   src/time.rs               ISO-8601 timestamps and date arithmetic
   src/bin/prepare_data.rs   upstream data → compact artifact
   examples/selfcheck.rs     self-consistency and tolerance measurement
+crates/hanzi-store/         the SQLite store. Native dependency, so it is
+                            separate from the engine
+  src/schema.rs             the tables, and applying them
+  src/migrate.rs            the once-only import of the old JSON documents
+  src/lib.rs                the sinks, and the attempt log's reader
+  tests/store.rs            the M10 acceptance criteria
 src-tauri/                  Tauri shell
   src/commands.rs           the IPC surface
   src/state.rs              embedded dataset, speech warm-up, the three stores
   src/speech.rs             pronunciation via the system synthesiser
+  src/licences.rs           the notices that ship
   tests/ipc_contract.rs     locks the JSON contract the UI reads
 src/lib/                    Svelte components
   PracticeCanvas.svelte     pointer capture, stroke recording
@@ -467,7 +513,7 @@ scripts/                    data fetching, cargo env, CLI selection
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 202 tests
+pnpm test             # the whole Rust suite: 211 tests
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
@@ -498,8 +544,12 @@ The tests that earned their place:
 - the scheduler tests pin every interval and due date, and a second `Scheduler`
   implementation is exercised to prove the policy really is swappable;
 - persistence is tested through the **state layer** and the real file names as
-  well as the store, including the case that matters most: a corrupt schedule is
+  well as the store, including the case that matters most: a corrupt document is
   reported and the file on disk is left byte-for-byte unchanged;
+- the store's own tests start from **real saved files**, not fixtures: they write
+  the JSON documents with the app's own stores, open the database over them, and
+  check the import, the markers, the untouched bytes, the unbounded log past the
+  twenty a card shows, and that an uncommitted write leaves nothing behind;
 - the word tests run against the **shipped artifact**, not fixtures: every one of
   the 9,443 words is checked to be drawable character by character, 着急 is
   checked to read `zháojí` where the isolated 着 does not, and an unknown pairing
@@ -538,7 +588,7 @@ besides the app itself:
 | --- | --- | --- |
 | Characters, words, stroke geometry | `include_bytes!` in `src-tauri/src/state.rs` | ~13 MB |
 | The interface, including the Noto Sans SC font | Tauri embeds `frontendDist` into the executable | ~18 MB |
-| Ten licence notices, as plain text | `bundle.resources` → `Contents/Resources/licences/` | ~60 KB |
+| Twelve licence notices, as plain text | `bundle.resources` → `Contents/Resources/licences/` | ~65 KB |
 
 So the executable is about 35 MB and `Contents/Resources/` holds only the icon
 and the notices. The notices are **also** compiled into the binary, which is why
@@ -584,11 +634,13 @@ dependencies (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3
 ## Data and licences
 
 Hanzi Tutor's own source code is licensed under the **GNU Affero General Public
-License, version 3** (see [`LICENSE`](LICENSE)). The app bundles no third-party
-code, but it does bundle third-party **data** and one third-party **font**, under
-terms that carry notice obligations. See **[LICENSES.md](LICENSES.md)**.
+License, version 3** (see [`LICENSE`](LICENSE)). It bundles third-party **data**,
+one third-party **font**, and — since the study store became a database — one
+third-party **library**: SQLite, compiled in from the vendored amalgamation.
+Every one of them carries a notice obligation. See
+**[LICENSES.md](LICENSES.md)**.
 
-| Data | Source | Licence |
+| Bundled | Source | Licence |
 | --- | --- | --- |
 | Stroke outlines and centrelines | Make Me a Hanzi | Arphic Public License |
 | Etymology hints | Make Me a Hanzi `dictionary.txt` | LGPL-3.0-or-later |
@@ -596,6 +648,8 @@ terms that carry notice obligations. See **[LICENSES.md](LICENSES.md)**.
 | Word list, HSK 3.0 levels, derived rank | complete-hsk-vocabulary | MIT |
 | Word readings and definitions | CC-CEDICT | CC BY-SA 4.0 |
 | Interface font, Noto Sans SC | noto-cjk / Google Fonts | SIL OFL 1.1 |
+| The study database engine, SQLite 3.45.0 | sqlite.org, via `libsqlite3-sys` | Public domain |
+| The SQLite bindings, `rusqlite` | rusqlite | MIT |
 
 The generated artifact **is committed** (about 13 MB), so a clone and a CI run
 need no data step; `./scripts/fetch-data.sh` followed by `pnpm run prepare-data`

@@ -606,8 +606,14 @@ fn the_vocabulary_list_persists_through_the_state_layer() {
         entry.id
     };
 
-    let path = dir.join("vocabulary.json");
+    // One database, and no JSON beside it: a fresh install writes `hanzi.db` and
+    // nothing else.
+    let path = dir.join("hanzi.db");
     assert!(path.exists(), "expected a file at {}", path.display());
+    assert!(
+        !dir.join("vocabulary.json").exists(),
+        "the list should no longer be a JSON document of its own"
+    );
 
     // A second session, as if the app had been restarted.
     let state = AppState::load(Some(dir.clone())).unwrap();
@@ -868,8 +874,14 @@ fn practice_survives_a_restart_through_the_state_layer() {
         ch
     };
 
-    let path = dir.join("progress.json");
+    // `hanzi.db`, not `progress.json`: the schedule is rows now, and the attempt
+    // it just recorded is a row in the log.
+    let path = dir.join("hanzi.db");
     assert!(path.exists(), "expected a file at {}", path.display());
+    assert!(
+        !dir.join("progress.json").exists(),
+        "the schedule should no longer be a JSON document of its own"
+    );
 
     // A second session, as if the app had been restarted.
     let state = AppState::load(Some(dir.clone())).unwrap();

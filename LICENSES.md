@@ -12,6 +12,11 @@ time: the dataset is compiled into the executable and the notices are compiled
 in beside it, with plain-text copies in the bundle's `Resources/licences/`. This
 document is the human-readable record of that arrangement.
 
+One of the entries below is **code rather than data** — SQLite, the engine behind
+the study database — so it is the first third-party library compiled into the
+binary. It is public domain, which is why it adds no conditions, but it is
+recorded here rather than left implicit.
+
 ## What is bundled
 
 | Data | Source | Licence |
@@ -23,6 +28,8 @@ document is the human-readable record of that arrangement.
 | Words: characters, HSK 3.0 level, derived rank | [complete-hsk-vocabulary](https://github.com/drkameleon/complete-hsk-vocabulary) | MIT |
 | Word readings and definitions | CC-CEDICT (via complete-hsk-vocabulary) | CC BY-SA 4.0 |
 | Interface font, Noto Sans SC | [noto-cjk](https://github.com/notofonts/noto-cjk) / [Google Fonts](https://fonts.google.com/noto/specimen/Noto+Sans+SC) | SIL OFL 1.1 |
+| Study database engine, SQLite 3.45.0 | [sqlite.org](https://sqlite.org/), vendored by `libsqlite3-sys` | Public domain |
+| SQLite bindings, `rusqlite` | [rusqlite](https://github.com/rusqlite/rusqlite) | MIT |
 
 The first six rows are compacted by `prepare-data` into one generated artifact,
 `crates/hanzi-core/data/hanzi.bin.gz`, which `src-tauri/src/state.rs` embeds with
@@ -107,6 +114,24 @@ nothing derived from those sources. Its `r` radical field is ignored too, the
 radical coming from Make Me a Hanzi as before. The rank the app does show for a
 word is computed here from the MIT character frequency list.
 
+### SQLite — <https://sqlite.org/>
+
+The study data — schedule, attempt log, vocabulary list and course cursor — lives
+in one SQLite database, `hanzi.db`, in the user's study data directory. SQLite is
+compiled into the app from the amalgamation vendored by the `libsqlite3-sys` crate
+(SQLite 3.45.0), so there is no external process, nothing to install, and no
+system SQLite is linked against.
+
+SQLite is in the **public domain**. Its authors' statement of that is the blessing
+at the top of `sqlite3.c`, reproduced in
+[`licences/SQLite-Public-Domain.txt`](licences/SQLite-Public-Domain.txt), which
+also records what this app does with it. That file ships, and is catalogued in
+`src-tauri/src/licences.rs`, along with [`licences/MIT-rusqlite.txt`](licences/MIT-rusqlite.txt)
+for the MIT-licensed `rusqlite` and `libsqlite3-sys` crates that bind it to Rust.
+Neither adds a condition to redistribution beyond the MIT notice, and the database
+holds study data rather than content — nothing from SQLite is redistributed with
+the dataset.
+
 ### Noto Sans SC — <https://github.com/notofonts/noto-cjk>
 
 The interface font is licensed under the **SIL Open Font License 1.1**, which
@@ -130,7 +155,7 @@ font's reserved name is `Source`, not `Noto`, so no rename is required.
    ls "$APP/Contents/Resources/licences"
    ```
 
-   That directory must hold all ten files named in `src-tauri/src/licences.rs`.
+   That directory must hold all twelve files named in `src-tauri/src/licences.rs`.
    The in-app screen works even if it does not — the text is compiled in — but a
    redistributor who wants to read the notices out of the bundle would be stuck.
 3. Serve the CC-CEDICT definitions under CC BY-SA 4.0 if you redistribute them,

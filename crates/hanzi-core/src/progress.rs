@@ -37,12 +37,14 @@ use crate::vocab::Entry;
 /// add a migration; a document from the future is refused rather than guessed at.
 pub const FORMAT_VERSION: u32 = 1;
 
-/// How many attempts are kept per character.
+/// How many attempts are kept per character in memory, and shown to the learner.
 ///
 /// The whole history is not needed to schedule anything — the intervals carry
-/// that — but a recent run of scores is what a learner actually wants to see, and
-/// a bounded vector keeps the file from growing without limit.
-const MAX_HISTORY: usize = 20;
+/// that — but a recent run of scores is what a learner wants to see, and a
+/// bounded vector keeps the document from growing without limit. A backing store
+/// that keeps an unbounded log still fills this from the newest rows, which is
+/// why the bound is public: it is the store's contract, not a private detail.
+pub const MAX_HISTORY: usize = 20;
 
 /// How soon a failed character comes back.
 ///
@@ -491,6 +493,11 @@ impl ProgressStore {
         &self.path
     }
 
+    /// The whole schedule, as a sink sees it.
+    pub fn document(&self) -> &Document {
+        &self.document
+    }
+
     /// Every card, keyed by character.
     pub fn cards(&self) -> &BTreeMap<String, CardState> {
         &self.document.cards
@@ -798,6 +805,11 @@ impl CursorStore {
     /// The file this cursor is kept in, or an empty path when a sink holds it.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The whole cursor, as a sink sees it.
+    pub fn document(&self) -> &CursorDocument {
+        &self.document
     }
 
     pub fn index(&self) -> usize {

@@ -158,6 +158,25 @@ fn the_required_licences_are_present_and_are_the_real_texts() {
     for id in ["arphic", "lgpl", "cc-by-sa", "font"] {
         assert!(ids.contains(id), "the {id} notice must ship");
     }
+
+    // The study database is a compiled-in third-party library, so it is
+    // accounted for too. SQLite's notice is short by nature — it is a statement
+    // that there is no licence — so it is checked for its own words rather than
+    // for the length a legal code has.
+    for (id, marker) in [
+        ("sqlite", "public domain"),
+        ("sqlite", "disclaims copyright to this source code"),
+        ("rusqlite", "The rusqlite developers"),
+    ] {
+        let notice = NOTICES
+            .iter()
+            .find(|n| n.id == id)
+            .unwrap_or_else(|| panic!("the {id} notice is missing; present: {ids:?}"));
+        assert!(
+            notice.text.contains(marker),
+            "the {id} notice does not contain {marker:?}"
+        );
+    }
 }
 
 #[test]

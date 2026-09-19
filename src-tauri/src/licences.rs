@@ -198,6 +198,31 @@ pub const NOTICES: &[LicenceNotice] = &[
         bundle_path: "licences/OFL-1.1.txt",
         text: include_str!("../../licences/OFL-1.1.txt"),
     },
+    LicenceNotice {
+        id: "sqlite",
+        title: "SQLite — the study database",
+        licence: "Public domain",
+        source: "https://sqlite.org/ (SQLite 3.45.0, via the libsqlite3-sys crate)",
+        covers: "The database the study data lives in: the practice schedule, the \
+                 attempt log, the vocabulary list and the course cursor. It is \
+                 compiled into the app from the vendored amalgamation, so no \
+                 external process is started and nothing has to be installed.",
+        file: "licences/SQLite-Public-Domain.txt",
+        bundle_path: "licences/SQLite-Public-Domain.txt",
+        text: include_str!("../../licences/SQLite-Public-Domain.txt"),
+    },
+    LicenceNotice {
+        id: "rusqlite",
+        title: "rusqlite — the SQLite bindings",
+        licence: "MIT",
+        source: "https://github.com/rusqlite/rusqlite",
+        covers: "The Rust bindings the app opens and queries the study database \
+                 with. The same licence and copyright line cover libsqlite3-sys, \
+                 which vendors SQLite itself.",
+        file: "licences/MIT-rusqlite.txt",
+        bundle_path: "licences/MIT-rusqlite.txt",
+        text: include_str!("../../licences/MIT-rusqlite.txt"),
+    },
 ];
 
 /// The notices the Licences screen shows, in catalogue order.

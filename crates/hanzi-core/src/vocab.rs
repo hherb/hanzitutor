@@ -249,6 +249,11 @@ impl VocabStore {
         &self.path
     }
 
+    /// The whole list, as a sink sees it.
+    pub fn document(&self) -> &Document {
+        &self.document
+    }
+
     pub fn view(&self) -> VocabView {
         VocabView {
             entries: self.document.entries.clone(),

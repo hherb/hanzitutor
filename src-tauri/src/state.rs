@@ -10,6 +10,7 @@ use hanzi_core::{
     build_lessons, build_queue, now_iso8601, CursorStore, CursorView, Dataset, ProgressStore,
     ProgressView, ReviewView, VocabStore, VocabView,
 };
+use hanzi_store::Db;
 use tauri::{AppHandle, Manager};
 
 use crate::commands::LESSON_SIZE;
@@ -22,21 +23,11 @@ use crate::speech::Speaker;
 /// wrong. It is about 13 MB compressed.
 const ARTIFACT: &[u8] = include_bytes!("../../crates/hanzi-core/data/hanzi.bin.gz");
 
-/// File names inside the application data directory.
-///
-/// The schedule and the reader's place in the course are deliberately **separate
-/// files**: exploring the course moves the cursor constantly, and one corrupt
-/// file must not take the other down with it.
-const VOCAB_FILE: &str = "vocabulary.json";
-const PROGRESS_FILE: &str = "progress.json";
-const CURSOR_FILE: &str = "course-cursor.json";
-
 /// Overrides where study data is stored, as an environment variable.
 ///
 /// Useful for portable installs, for keeping study data outside the standard
 /// application support folder, and for testing persistence in a specific place.
 pub const DATA_DIR_ENV: &str = "HANZI_TUTOR_DATA_DIR";
-
 /// The command-line argument that does the same job, taking precedence over the
 /// variable above.
 ///
@@ -127,16 +118,30 @@ impl<S> Persisted<S> {
 pub type VocabState = Persisted<VocabStore>;
 
 impl Persisted<VocabStore> {
-    /// Open the list, degrading to an in-memory one with an explanation.
-    fn open(path: PathBuf) -> Self {
+    /// Open the list from the study database, degrading to an in-memory one with
+    /// an explanation if it cannot be read.
+    ///
+    /// The failure this reports is the import's: a `vocabulary.json` that cannot
+    /// be parsed leaves the list unwritten rather than replaced by an empty one,
+    /// exactly as it did when the list *was* that file.
+    fn open_database(db: &Db, path: PathBuf) -> Self {
         const NOUN: &str = "vocabulary list";
-        if path.as_os_str().is_empty() {
-            return Self::loaded(VocabStore::in_memory(), path, NOUN);
-        }
-        match VocabStore::open(&path) {
+        match VocabStore::open_with(Box::new(db.clone())) {
             Ok(store) => Self::loaded(store, path, NOUN),
             Err(error) => Self::failed(VocabStore::in_memory(), path, NOUN, error),
         }
+    }
+
+    /// A list kept in memory because there is no data directory at all.
+    fn in_memory() -> Self {
+        const NOUN: &str = "vocabulary list";
+        Self::loaded(VocabStore::in_memory(), PathBuf::new(), NOUN)
+    }
+
+    /// A list that cannot be opened at all, with the reason to show.
+    fn unavailable(path: PathBuf, reason: &str) -> Self {
+        const NOUN: &str = "vocabulary list";
+        Self::failed(VocabStore::in_memory(), path, NOUN, reason)
     }
 
     /// The list as the interface should see it.
@@ -156,15 +161,26 @@ impl Persisted<VocabStore> {
 pub type ProgressState = Persisted<ProgressStore>;
 
 impl Persisted<ProgressStore> {
-    fn open(path: PathBuf) -> Self {
+    /// Open the schedule from the study database. See
+    /// [`Persisted::<VocabStore>::open_database`] for the failure rule.
+    fn open_database(db: &Db, path: PathBuf) -> Self {
         const NOUN: &str = "practice progress";
-        if path.as_os_str().is_empty() {
-            return Self::loaded(ProgressStore::in_memory(), path, NOUN);
-        }
-        match ProgressStore::open(&path) {
+        match ProgressStore::open_with(Box::new(db.clone())) {
             Ok(store) => Self::loaded(store, path, NOUN),
             Err(error) => Self::failed(ProgressStore::in_memory(), path, NOUN, error),
         }
+    }
+
+    /// A schedule kept in memory because there is no data directory at all.
+    fn in_memory() -> Self {
+        const NOUN: &str = "practice progress";
+        Self::loaded(ProgressStore::in_memory(), PathBuf::new(), NOUN)
+    }
+
+    /// A schedule that cannot be opened at all, with the reason to show.
+    fn unavailable(path: PathBuf, reason: &str) -> Self {
+        const NOUN: &str = "practice progress";
+        Self::failed(ProgressStore::in_memory(), path, NOUN, reason)
     }
 
     /// The schedule as the interface should see it.
@@ -184,15 +200,27 @@ impl Persisted<ProgressStore> {
 pub type CursorState = Persisted<CursorStore>;
 
 impl Persisted<CursorStore> {
-    fn open(path: PathBuf) -> Self {
+    /// Open the cursor from the study database. The cursor is a table like the
+    /// others, so one bad legacy document cannot take the schedule with it —
+    /// the import is per document.
+    fn open_database(db: &Db, path: PathBuf) -> Self {
         const NOUN: &str = "place in the course";
-        if path.as_os_str().is_empty() {
-            return Self::loaded(CursorStore::in_memory(), path, NOUN);
-        }
-        match CursorStore::open(&path) {
+        match CursorStore::open_with(Box::new(db.clone())) {
             Ok(store) => Self::loaded(store, path, NOUN),
             Err(error) => Self::failed(CursorStore::in_memory(), path, NOUN, error),
         }
+    }
+
+    /// A cursor kept in memory because there is no data directory at all.
+    fn in_memory() -> Self {
+        const NOUN: &str = "place in the course";
+        Self::loaded(CursorStore::in_memory(), PathBuf::new(), NOUN)
+    }
+
+    /// A cursor that cannot be opened at all, with the reason to show.
+    fn unavailable(path: PathBuf, reason: &str) -> Self {
+        const NOUN: &str = "place in the course";
+        Self::failed(CursorStore::in_memory(), path, NOUN, reason)
     }
 
     /// The cursor as the interface should see it.
@@ -243,18 +271,48 @@ impl AppState {
             .flat_map(|lesson| lesson.characters)
             .collect();
 
-        let path = |name: &str| match &data_dir {
-            Some(dir) => dir.join(name),
-            None => PathBuf::new(),
+        // One database holds all three stores: progress and the vocabulary list
+        // are read together on every review-queue build, and a review item
+        // pointing at an entry that does not exist is not a failure mode worth
+        // having. What the three *separate files* used to buy — one bad document
+        // not taking the others down — is kept where it still applies, in the
+        // once-only import of those files, which is per document.
+        let (vocab, progress, cursor) = match &data_dir {
+            Some(dir) => {
+                let where_it_lives = dir.join(Db::FILE_NAME);
+                match Db::open(dir) {
+                    Ok(db) => (
+                        VocabState::open_database(&db, where_it_lives.clone()),
+                        ProgressState::open_database(&db, where_it_lives.clone()),
+                        CursorState::open_database(&db, where_it_lives),
+                    ),
+                    // Without the database none of the three can be read, so all
+                    // three say so and refuse to write. Nothing was destroyed:
+                    // the reason names the file, and the JSON documents the
+                    // import would have read are untouched.
+                    Err(reason) => (
+                        VocabState::unavailable(where_it_lives.clone(), &reason),
+                        ProgressState::unavailable(where_it_lives.clone(), &reason),
+                        CursorState::unavailable(where_it_lives, &reason),
+                    ),
+                }
+            }
+            // No data directory at all: the stores stay in memory, which is what
+            // the tests use and what a build without a resolvable directory gets.
+            None => (
+                VocabState::in_memory(),
+                ProgressState::in_memory(),
+                CursorState::in_memory(),
+            ),
         };
 
         Ok(Self {
             dataset,
             speech,
             course,
-            vocab: Mutex::new(VocabState::open(path(VOCAB_FILE))),
-            progress: Mutex::new(ProgressState::open(path(PROGRESS_FILE))),
-            cursor: Mutex::new(CursorState::open(path(CURSOR_FILE))),
+            vocab: Mutex::new(vocab),
+            progress: Mutex::new(progress),
+            cursor: Mutex::new(cursor),
         })
     }
 

@@ -19,9 +19,13 @@ there is exactly one copy of each to keep current.
 | `CC-CEDICT.txt` | The word readings and definitions, with the attribution and the changes this app made | CC BY-SA 4.0 |
 | `CC-BY-SA-4.0.txt` | The full legal text of the share-alike licence above | CC BY-SA 4.0 |
 | `OFL-1.1.txt` | Noto Sans SC, the CJK face bundled for the interface | SIL Open Font License 1.1 |
+| `SQLite-Public-Domain.txt` | SQLite, the engine behind the study database — the first piece of third-party *code* in the binary | Public domain |
+| `MIT-rusqlite.txt` | The `rusqlite` bindings, and `libsqlite3-sys` which vendors SQLite | MIT |
 
-All of these are fetched verbatim by `scripts/fetch-data.sh` (`CC-CEDICT.txt` is
-written by hand, since it is an attribution notice rather than an upstream
-file). They are committed rather than generated, so a clone has them without a
-network round-trip. See [`../LICENSES.md`](../LICENSES.md) for the full
-provenance discussion.
+All of these are fetched verbatim by `scripts/fetch-data.sh` (`CC-CEDICT.txt`,
+`SQLite-Public-Domain.txt` and `MIT-rusqlite.txt` are written by hand, since they
+are attribution or provenance notices rather than upstream files — the SQLite one
+quotes the blessing from the source that is compiled in, and the `rusqlite` text
+is copied from that crate's `LICENSE`). They are committed rather than generated,
+so a clone has them without a network round-trip. See
+[`../LICENSES.md`](../LICENSES.md) for the full provenance discussion.

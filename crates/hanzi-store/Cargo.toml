@@ -1,0 +1,16 @@
+[package]
+name = "hanzi-store"
+description = "Durable study storage: one SQLite database behind the engine's stores"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hanzi-core = { path = "../hanzi-core" }
+
+# SQLite, compiled into the binary from the vendored amalgamation. The app makes
+# no network requests and starts no external process, so the study data has to
+# live in a library that ships with it. This is also why the database crate is
+# separate from hanzi-core: the engine stays free of native dependencies, and can
+# still be tested without a filesystem.
+rusqlite = { version = "0.31", features = ["bundled"] }

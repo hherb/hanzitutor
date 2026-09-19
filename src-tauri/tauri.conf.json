@@ -42,7 +42,9 @@
       "../licences/MIT-complete-hsk-vocabulary.txt": "licences/MIT-complete-hsk-vocabulary.txt",
       "../licences/CC-CEDICT.txt": "licences/CC-CEDICT.txt",
       "../licences/CC-BY-SA-4.0.txt": "licences/CC-BY-SA-4.0.txt",
-      "../licences/OFL-1.1.txt": "licences/OFL-1.1.txt"
+      "../licences/OFL-1.1.txt": "licences/OFL-1.1.txt",
+      "../licences/SQLite-Public-Domain.txt": "licences/SQLite-Public-Domain.txt",
+      "../licences/MIT-rusqlite.txt": "licences/MIT-rusqlite.txt"
     },
     "macOS": {
       "minimumSystemVersion": "11.0",

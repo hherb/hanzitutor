@@ -22,7 +22,7 @@ See [`HANDOVER.md`](HANDOVER.md) for how to build, test and verify; see
 | M7 | Centreline stroke animation | Nicer, more accurate "show me" | S | **done** |
 | M8 | Input ergonomics | Long strokes on a trackpad | S | **done** |
 | M9 | Mobile shells | A stylus is the right input device | L | not started |
-| M10 | Durable study store (SQLite) | The JSON format caps the attempt log the grading work needs | M | not started |
+| M10 | Durable study store (SQLite) | The JSON format caps the attempt log the grading work needs | M | **done** |
 
 ---
 
@@ -104,7 +104,10 @@ What shipped:
   `course-cursor.json`. A corrupt schedule cannot lose your place, and a corrupt
   cursor cannot take your history with it. All three follow the M1 rule — a file
   that cannot be parsed is reported, never overwritten — now enforced in one place
-  (`Persisted<S>` in `src-tauri/src/state.rs`) instead of three.
+  (`Persisted<S>` in `src-tauri/src/state.rs`) instead of three. (**M10 replaced
+  the three files with one database.** The rule survived, and so did the
+  isolation: the import of those files is per document, so one unreadable document
+  still blocks only its own store.)
 - Timestamps are ISO-8601 UTC **strings**, so "is this due?" and "which is most
   overdue?" are string comparisons; `crates/hanzi-core/src/time.rs` owns the
   formatting, parsing and whole-second arithmetic, including the range guard that
@@ -541,80 +544,72 @@ practice; a trackpad is a compromise. Tauri 2 supports iOS and Android.
 
 ## M10 — Durable study store (SQLite)
 
-**Why.** Study data is three pretty-printed JSON documents, each rewritten
-*whole* on every change: `progress.json` on every graded character,
-`vocabulary.json` on every list edit, `course-cursor.json` on navigation. That is
-comfortable at today's sizes — a real session wrote 3.4 KB for five cards, and the
-ceiling is one card per teachable character, about 9,574 × 1.8 KB ≈ 17 MB — so
-this is **not** a performance milestone and should not be sold as one. It is
-about a ceiling on the thing the project most wants:
+**Status: done.**
 
-**An unbounded attempt log.** `HANDOVER.md` §7 has recorded for three milestones
-that the schedule keeps only the newest 20 attempts per character, that M4's
-tolerance tuning and the cross-cutting "attempt logging" item both want a longer
-log, and that the two should be designed together rather than growing the card
-format twice. In a whole-document format that log is quadratic: after N attempts
-the file is O(N), and every attempt rewrites all of it. SQLite is what removes
-that ceiling.
+Study data was three pretty-printed JSON documents, each rewritten *whole* on
+every change. That was comfortable at today's sizes and is not what this
+milestone was about; it was about a ceiling on the thing the project most wants.
+The schedule kept only the newest 20 attempts per character, and an unbounded
+attempt log in a whole-document format is quadratic — after N attempts the file is
+O(N) and every attempt rewrites all of it. It is now one SQLite database,
+`hanzi.db`, holding every attempt ever recorded.
 
-**Do this with the attempt-log item, not before it.** The migration on its own has
-no user-visible benefit, and the schema should be designed around the log rather
-than around the current card.
+What shipped:
 
-**Approach.**
+- **One database, not three.** `crates/hanzi-store` opens `hanzi.db` and the three
+  stores share it: `progress_card` (what the scheduler needs), `attempt` (the
+  log), `vocab_entry` and `vocab_group`, `course_cursor`, and `meta` for the
+  schema version and the import markers. Progress and the list are read together
+  on every review-queue build, so two files would have meant two connections and a
+  cross-file consistency problem for nothing. The `-wal` and `-shm` files beside
+  it are SQLite's, and write-ahead logging is what makes an interrupted save
+  survivable — a test opens a write transaction, drops it uncommitted, and
+  requires that the committed data is intact and the uncommitted rows are gone.
+- **The log is the log.** `ProgressSink::save` is handed the cards that changed
+  *and* every attempt recorded since the last save, so the log is not limited by
+  the twenty attempts a card keeps for display. The test records 25 attempts on
+  one character: the card shows the newest 20, `card.attempts` says 25, and the
+  `attempt` table holds all 25 in order. `Db::attempts` and `Db::attempt_count`
+  read it back, which is what the analysis in the cross-cutting "attempt logging"
+  item will want.
+- **The engine does not know.** `ProgressSink`, `VocabSink` and `CursorSink` in
+  `hanzi-core` are the seam; `hanzi-store` is the only thing that knows SQL. The
+  engine's tests are **unchanged** — they open a JSON file or nothing at all — and
+  `selfcheck` is byte-identical, because nothing in the grading path moved.
+- **One import, per document, never destructive.** The first time each store is
+  opened, if its marker is not in `meta`, the corresponding JSON document is read
+  with *the engine's own reader* (so the import cannot disagree with the app about
+  what "corrupt" means), copied into the tables, and the marker recorded — in one
+  transaction, so a crash cannot half-import. The files are left **byte for byte**
+  as they were. Because the markers are per document, a corrupt
+  `course-cursor.json` blocks the cursor and nothing else, which is the isolation
+  the three separate files used to provide; that document is simply not marked, so
+  fixing it and restarting imports it.
+- **A fresh install writes no JSON at all**, and the only file it creates is the
+  database. `--user-dir` and `HANZI_TUTOR_DATA_DIR` keep working and now select
+  the directory that holds `hanzi.db`, verified on the built binary: it created
+  the database in the chosen directory, imported all three legacy documents,
+  recorded the markers, and left the JSON untouched.
+- **The app's first third-party *code*** is now compiled in, so SQLite and
+  `rusqlite` joined the notice catalogue — twelve notices, each still pinned
+  three ways by `tests/licences.rs`.
 
-- **One database, not one per store.** Progress and vocabulary are read together
-  on every review-queue build, with a deliberate lock ordering to avoid deadlock,
-  so two files would mean two connections and a cross-file consistency problem
-  (a review item pointing at a deleted entry) for nothing. The "separate files so
-  one bad file cannot take the others down" rule exists because a hand-written
-  JSON document can fail to *parse*; that specific failure does not apply to
-  tables, and one file with `progress_card`, `attempt`, `vocab_entry`,
-  `vocab_group`, `course_cursor` and `meta` gets the isolation without the second
-  lifetime.
-- **Do not put `rusqlite` in `hanzi-core`.** It is a native dependency, and the
-  invariant that matters most here is that the engine stays free of platform
-  code so it can be tested without a window and reused behind a mobile shell. Put
-  the implementation in a new crate (or in `src-tauri`) behind a repository trait,
-  and keep the schema-agnostic logic — scheduling, review-queue building, search
-  — exactly where it is.
-- **WAL, and one connection behind the existing mutex.** Single process, so this
-  is simple; the journal mode is what makes an interrupted write survivable.
-- **Keep the platform's own data directory as the default.** Resolve it through
-  the platform API, never by assembling `$HOME/...`: a Mac App Store build is
-  sandboxed, the real home is not writable there, and some home-directory APIs
-  still return the real home inside a sandbox — so a hand-built path fails only at
-  save time. `--user-dir` and `HANZI_TUTOR_DATA_DIR` keep working unchanged and
-  now select the directory that holds `hanzi.db`.
-- **Migrate once, and never destroy anything.** Import `vocabulary.json`,
-  `progress.json` and `course-cursor.json` on first run of the new store, leave
-  the JSON files on disk untouched, and record in `meta` that the import
-  happened. The existing safety rule is not negotiable: a file that cannot be
-  parsed is reported, never overwritten.
-- **Achievements, if they are wanted, are derived.** A count stored separately
-  from the attempts it counts is a second source of truth, which is exactly the
-  mistake M3 avoided for single-character dictionary entries. Derive them from the
-  attempt log, or do not have them.
-- **Keep JSON export/import for the vocabulary list.** It is the user-facing
-  escape hatch and a different thing from the storage format.
-- `rusqlite` is MIT and SQLite itself is public domain, so neither adds an
-  obligation to `LICENSES.md` beyond a notice — check whether one is wanted, and
-  add it to the catalogue in `src-tauri/src/licences.rs` if so.
+Deliberately not done, and why:
 
-**Acceptance criteria.**
-
-- An existing install upgrades by importing its JSON files, and the files are
-  still there, byte for byte, afterwards; a test starts from real saved files
-  rather than fixtures.
-- Killing the app mid-write cannot lose or corrupt the schedule; the journal mode
-  and a test that interrupts a write show it.
-- The whole suite passes against the new store with the engine's tests unchanged —
-  they must not know which backing store is in use.
-- A fresh install creates no JSON documents at all, only `hanzi.db`.
-- `--user-dir` and `HANZI_TUTOR_DATA_DIR` select the directory containing
-  `hanzi.db`, verified on the built binary.
-
----
+- **No export of the log yet.** The ceiling is gone and the rows are readable
+  (`Db::attempts`), but nothing writes them out and `selfcheck` still tunes
+  against synthetic jitter. That is the second half of the cross-cutting
+  "attempt logging" item, and it is now a feature to build rather than a format to
+  change first — which was the point of doing this milestone with it in mind.
+- **Achievements are still not a thing.** If they are added they must be derived
+  from the log: a count stored separately from the attempts it counts is the
+  second source of truth this project has twice refused.
+- **The old JSON is never rewritten or removed.** It is the only copy of the data
+  until the database has it, and leaving it means an older build still opens the
+  study data. It therefore goes stale the moment the new build runs, and that is
+  intended; the vocabulary list's own JSON export is the user-facing escape hatch.
+- **No `rusqlite` in `hanzi-core`**, as planned: the engine keeps no native
+  dependency, and the store crate is the only place SQL appears.
 
 ## Cross-cutting polish
 
@@ -639,10 +634,14 @@ Small, independently shippable, roughly in value order:
   guide for the first attempts.
 - **Attempt logging for tuning** — record real attempts (locally, opt-in) so
   `selfcheck`'s tolerance analysis can be re-run against real handwriting instead
-  of synthetic jitter. This is how the shape tolerance should eventually be set.
-  **Build this with [M10](#m10--durable-study-store-sqlite)**, not before it: the
-  current whole-document JSON format cannot hold an unbounded log, and the schema
-  should be designed around the log rather than around the card that exists now.
+  of synthetic jitter. This is how the shape tolerance should eventually be set,
+  and it is now **half built**: [M10](#m10--durable-study-store-sqlite) removed
+  the ceiling, so every attempt is recorded in `hanzi.db`'s `attempt` table and
+  readable through `Db::attempts`. What is missing is the rest — getting those
+  attempts out (`hanzi-store` has no export), turning them into the shape/ink/order
+  distributions `selfcheck` prints today for synthetic jitter, and the consent and
+  privacy wording that "opt-in" implies. Do that next, against real handwriting,
+  rather than growing the schema again.
 - **Interface localisation** — the app teaches Chinese but speaks English.
 
 ## Known weak spots
@@ -696,6 +695,19 @@ Recorded honestly, because they bound how much the current scores mean:
   by tests that do run, so this is a deliberate trade rather than an oversight.
 - **The bundle is signed but not notarised**, so the first launch on a Mac that
   has not seen the build needs a right-click-Open. See M5.
+- **The attempt log has no way out of the app yet.** It is recorded, unbounded
+  and readable from Rust (`Db::attempts`), but there is no export and no screen
+  that shows it, so its value is still latent — see the cross-cutting "attempt
+  logging" item. A migrated card also keeps a pre-import `attempts` *count* larger
+  than the rows in the log (the JSON it came from held only the newest 20), so
+  anything that reads the log as a complete history must not do that.
+- **The store is one file, so its failure modes are shared.** Losing `hanzi.db` —
+  or corrupting it — costs the schedule, the list and the cursor at once, where
+  three files used to fail independently. The isolation that replaces it is at the
+  *import* rather than at steady state, and the app refuses to write rather than
+  starting empty, so the failure is loud; but there is no backup, no export of the
+  schedule, and no "open the folder" affordance. A corrupt database is a support
+  question with no good answer yet.
 - **Pronunciation is macOS-only.**
 - **No CI builds the bundle** (see M5), and **the App Sandbox has never been
   tested — where the speech backend probably does not survive it.** A Mac App

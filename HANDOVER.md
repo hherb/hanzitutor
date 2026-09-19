@@ -32,7 +32,7 @@ ls .cargo-home 2>/dev/null || {
 #    dataset artifact, the interface font and the licence texts are all
 #    committed, so a clone builds without downloading anything.
 pnpm install
-pnpm test                        # expect 202 passed, 0 failed
+pnpm test                        # expect 211 passed, 0 failed
 pnpm run check:rust && pnpm run check:web
 ```
 
@@ -85,12 +85,13 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 
 ### Other environment facts
 
-- **The study files' default location is not writable under this sandbox.**
-  They live in the platform application data directory
-  (`~/Library/Application Support/com.hanzitutor.app/` on macOS: `vocabulary.json`,
-  `progress.json` and `course-cursor.json`), which is *outside* the workspace, so a
-  sandboxed run cannot save them. Point them somewhere writable instead — either
-  way works, and `--user-dir` is the one to use for a built binary:
+- **The study data's default location is not writable under this sandbox.** It
+  is one SQLite database, `hanzi.db` (with SQLite's own `-wal` and `-shm`
+  sidecars), in the platform application data directory
+  (`~/Library/Application Support/com.hanzitutor.app/` on macOS), which is
+  *outside* the workspace, so a sandboxed run cannot save it. Point it somewhere
+  writable instead — either way works, and `--user-dir` is the one to use for a
+  built binary:
 
   ```bash
   HANZI_TUTOR_DATA_DIR="$PWD/.tmp-vocab" ./.cargo-target/debug/hanzi-tutor
@@ -145,6 +146,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Input ergonomics (M8) | Done | click-to-draw mode beside the corrections switch; both paths produce identical geometry; the handlers were driven with synthetic pointer events |
 | Pronunciation | Done on macOS | 9 tests; human-confirmed speaking |
 | Personal vocabulary list | Done | 27 store unit tests; persistence tested through the state layer |
+| Durable study store (M10) | Done | one `hanzi.db`; the old JSON imported once and left byte-identical; the attempt log past the 20 a card shows; WAL, and an uncommitted write leaves nothing |
 | Per-character progress, SRS | Done | 30 store/scheduler unit tests; record → relaunch → due-date cycle tested through the state layer |
 | HSK 3.0 word list | Done | 9,443 words in the artifact; every one drawable character by character, checked against the shipped dataset |
 | Word search and browsing | Done | by character, reading (tones/spacing/`ü` folded) or meaning; exact-beats-prefix ranking proven in tests |
@@ -165,7 +167,7 @@ HANZI_TUTOR_DATA_DIR="$PWD/.tmp-data" ./.cargo-target/debug/hanzi-tutor 2>&1 \
 # [webview] review queue: 2 due, 2 in this session
 # [webview] drawable characters: 9574
 # [webview] speech: using Tingting (Chinese (China mainland)) (zh_CN)
-# [webview] licences: 10 notices bundled
+# [webview] licences: 12 notices bundled
 # [webview] course cursor: resuming at character 413
 # [webview] character 的: de, 8 strokes
 # [webview] spoke 面
@@ -205,14 +207,23 @@ crates/hanzi-core/          grading engine. No Tauri, no UI, no platform code.
   src/grade.rs              Hungarian pairing, order analysis, verdicts, scoring
   src/dataset.rs            Character + Word models, word search, artifact loading
   src/curriculum.rs         frequency list -> lessons
-  src/vocab.rs              the personal vocabulary list and its JSON file
+  src/vocab.rs              the personal vocabulary list, and VocabSink
   src/progress.rs           per-character cards, SM-2 scheduling, review queue
   src/time.rs               ISO-8601 formatting, parsing, date arithmetic
   src/bin/prepare_data.rs   upstream data -> compact artifact (feature = "prepare")
   examples/selfcheck.rs     whole-dataset measurement and tolerance tuning
+crates/hanzi-store/         the study database: SQLite, and nothing else.
+                            Separate from the engine so the engine keeps no
+                            native dependency
+  src/schema.rs             the tables, and applying them
+  src/migrate.rs            the once-only, per-document import of the old JSON
+  src/lib.rs                ProgressSink / VocabSink / CursorSink, and the
+                            attempt log's reader (attempt_count, attempts)
+  tests/store.rs            the M10 acceptance criteria, from real saved files
 src-tauri/
   src/commands.rs           the IPC surface; thin wrappers over AppState methods
   src/state.rs              embedded dataset, speech warm-up, the three stores
+                            (all three opened over the one database)
   src/licences.rs           the catalogue of notices that ship; see §8
   src/speech.rs             macOS `say` backend, voice selection
   tests/ipc_contract.rs     locks the JSON contract the UI reads
@@ -284,15 +295,22 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
    instructions if it is missing. Keep that guard — otherwise a fresh clone fails
    with an inscrutable macro error.
 
-8. **A study file that cannot be parsed is never overwritten.** There are three of
-   them now — `vocabulary.json`, `progress.json` and `course-cursor.json` — and
-   all three follow the same rule, enforced in one place: `Persisted<S>` in
-   `src-tauri/src/state.rs` keeps the reason in `load_error`, refuses to save
-   while it is set, and carries it to the UI as `warning`. Losing someone's study
-   notes to a parse error would be far worse than refusing to write. There are
-   tests for this; do not "simplify" it away by falling back to an empty document.
-   The schedule and the cursor are **separate files** on purpose, so one bad file
-   cannot take the other down.
+8. **Study data that cannot be read is never overwritten.** One rule, one place:
+   `Persisted<S>` in `src-tauri/src/state.rs` keeps the reason in `load_error`,
+   refuses to save while it is set, and carries it to the UI as `warning`. Losing
+   someone's study notes to a read error would be far worse than refusing to
+   write. There are tests for this; do not "simplify" it away by falling back to
+   an empty document. **What "read" means changed in M10** and the rule did not:
+   the data is one SQLite database (`hanzi.db`), and the failures it can have are
+   a database that will not open (a corrupt file, a schema from a newer build) or
+   — once, on the first run — a legacy JSON document that will not parse.
+   The three *separate files* this invariant used to name bought isolation from
+   that second failure, and M10 keeps it **where it still applies**: the import is
+   per document, each records its own marker in `meta`, and a bad
+   `course-cursor.json` blocks the cursor and nothing else. Do not collapse that
+   into one all-or-nothing import, and do not delete or rewrite the JSON files —
+   they are read, and left byte for byte.
+
 
 9. **Keyboard shortcuts must not fire while a text field has focus.** The
    vocabulary screen has inputs, and `S`/`H`/`Enter` would otherwise trigger
@@ -454,12 +472,26 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
     the old behaviour rather than to blank boxes. It is only for Chinese rendered
     as *text*; the board draws the stored outlines and uses no font at all.
 
+25. **The engine decides what to remember; the store decides where.** Three traits
+    in `hanzi-core` — `ProgressSink`, `VocabSink` and `CursorSink`, at the bottom
+    of `progress.rs` and `vocab.rs` — are the seam, and `crates/hanzi-store` is the
+    only thing that knows SQL. The engine must stay free of `rusqlite`: it is a
+    native dependency, and the point of `hanzi-core` is that it can be tested
+    without a filesystem and reused behind a mobile shell. Two consequences to
+    keep. **The engine's tests must not know which store is in use** — they open a
+    JSON file or nothing at all, and they were not touched when the app moved to
+    SQLite. And `ProgressSink::save` is handed the changed cards *and* every
+    attempt recorded since the last save, deliberately: `CardState::history` is
+    capped at `MAX_HISTORY`, so a sink left to infer the log from it would silently
+    drop the 21st attempt of a burst. Do not "simplify" that into a whole-document
+    save — a whole-document save is the ceiling the database exists to remove.
+
 ## 5. The verification loop
 
 Run before every commit:
 
 ```bash
-pnpm test           # 202 tests: engine + store + data pipeline units, IPC contract, speech, notices, data-dir flag
+pnpm test           # 211 tests: engine + data pipeline units, the SQLite store, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
@@ -535,7 +567,26 @@ M7 changed no Rust at all — it is the canvas and the state above it — so
 `selfcheck` must come out **byte-identical**, and it does: 0 of 7,744 not perfect,
 0 verdict changes under resampling, the same tolerance rows. Reading it is still
 worth the minute, because it is the cheapest proof that an interface change did
-not reach into the grader.
+not reach into the grader. M10 moved the study data and touched no grading code
+either, and the same reasoning applies: `selfcheck` is unchanged.
+
+**If you touched the store**, the tests that matter are `crates/hanzi-store/tests/store.rs`:
+they start from documents written by the app's own JSON stores rather than
+fixtures, and they cover the import, the markers, the untouched bytes, the log
+past the 20 a card shows, WAL, and an uncommitted write. `src-tauri/tests/ipc_contract.rs`
+then covers the same ground through `AppState`, which is where the `Persisted`
+rules live. And check it **on the built binary** with `--user-dir`, because the
+data directory is the part a unit test cannot see:
+
+```bash
+./.cargo-target/debug/hanzi-tutor --user-dir "$PWD/.tmp-db"   # then look in .tmp-db
+sqlite3 .tmp-db/hanzi.db "select key, value from meta; select ch, attempts from progress_card;"
+```
+
+That is how M10 was checked: the binary created `hanzi.db` in the chosen
+directory, imported all three legacy documents, recorded the markers, and left the
+JSON byte-identical. Remember that a plain `cargo build` binary does not render
+(see §6) — for a run you can *look at*, use `pnpm run dev`.
 
 **If you touched the scheduler**, the numbers to hold still are in
 `progress.rs`'s tests, which pin every interval and due date outright: a failure
@@ -646,11 +697,31 @@ downstream of them is covered by the IPC tests, which drive
   the dev server thrashes watching build output.
 - **`cargo build`: the dev profile is `opt-level = 1`** for both the workspace and
   dependencies, so grading feels instant while iterating. Do not remove it.
-- **The cursor is only written when it moves.** `set_index` returns false for the
-  same position, and the UI debounces by 400 ms and skips a write that matches
-  what it just restored. A fresh install therefore creates no `course-cursor.json`
-  until you actually navigate. If you are checking persistence by hand and see no
-  file, that is why — move a step, then look.
+- **The cursor row only changes when the cursor moves.** `set_index` returns false
+  for the same position, and the UI debounces by 400 ms and skips a write that
+  matches what it just restored, so a fresh install writes no cursor row until you
+  actually navigate. If you are checking persistence by hand and see nothing in
+  `course_cursor`, that is why — move a step, then look.
+- **A plain `cargo build` binary renders a blank window.** The frontend comes from
+  `build.devUrl` (`http://localhost:1420`) unless the Tauri CLI builds it for
+  production, so `.cargo-target/debug/hanzi-tutor` run by hand is a white window
+  with no `[webview]` lines — only `[data]` and `[speech]` — unless Vite is up.
+  Use `pnpm run dev` to look at the app, or the binary inside a built `.app` to
+  test the packaged path. This is not a broken build, and it wasted an hour once.
+- **The study data is a database, so "look at your data" means `sqlite3`.** The
+  tables are `progress_card`, `attempt` (every attempt, ever), `vocab_entry`,
+  `vocab_group`, `course_cursor` and `meta`. `hanzi.db-wal` and `hanzi.db-shm`
+  beside it are SQLite's write-ahead log and shared memory, not stray files; the
+  `-wal` file is where a save lives until the next checkpoint, which is exactly
+  what makes a kill mid-write survivable. The three JSON documents of an older
+  install are **imports**, not outputs: after the import they are never read or
+  written again, so do not "tidy them up" and do not add code that rewrites them.
+- **A compiled-in dependency is a shipped notice.** SQLite and `rusqlite` are the
+  first third-party *code* in the binary, and they were added to
+  `src-tauri/src/licences.rs`, `tauri.conf.json` and `licences/` together because
+  the tests only check the three against *each other* — a dependency nobody
+  catalogued is invisible to them. Adding one means checking its licence by hand
+  and adding a notice, and the count in the §2 log line moves with it.
 - **An "again" card is due 60 seconds later, not tomorrow.** That is deliberate
   (see `AGAIN_SECONDS`), and it is why the interface refreshes the queue on a
   60-second heartbeat as well as after every answer. If you change the interval,
@@ -764,19 +835,30 @@ downstream of them is covered by the IPC tests, which drive
   produce quickly, and the trait is the seam for revisiting it. There is no
   export/import for the schedule either — it is derived from practice, and a
   merge format would be guesswork.
-- **What the schedule does not yet record**: only a bounded recent history per
-  character (20 attempts). A longer log is what M4's tolerance tuning and the
-  cross-cutting "attempt logging" item both want, and the two are now settled to
-  be built together as `ROADMAP.md` **M10 — Durable study store (SQLite)**, which
-  records why the current whole-document JSON format cannot hold an unbounded log
-  and what the migration has to preserve. Do not grow the card format twice.
+- **The attempt log exists; what reads it is still to come.** M10 shipped the
+  unbounded log (`attempt`, with `Db::attempts` and `Db::attempt_count` to read
+  it) and the schedule now shows the newest 20 attempts per character from it, but
+  nothing yet *exports* it and `selfcheck` still tunes the tolerances against
+  synthetic jitter. The cross-cutting "attempt logging" item is therefore half
+  done on purpose: the ceiling is gone, and the analysis that wanted it is the
+  next thing to build. A migrated card's `attempts` count can exceed the rows in
+  the log — the JSON it came from kept only the newest 20 — so any analysis must
+  treat the log as starting at the import, not at the learner's first attempt.
 - **Where study data lives** — settled: the platform's application data directory,
   resolved through the platform API rather than assembled from `$HOME`, and
   overridable with `--user-dir` (which wins) or `HANZI_TUTOR_DATA_DIR`. Not a
   `~/.hanzi-tutor` of our own: a Mac App Store build is sandboxed, the real home is
   not writable there, and some home-directory APIs still return the real home
-  inside a sandbox — so a hand-built path fails only at save time. See M10 for the
-  format decision.
+  inside a sandbox — so a hand-built path fails only at save time. **The format is
+  settled too** (M10): one SQLite database, `hanzi.db`, holding all three stores,
+  imported once from the JSON documents an older build left behind.
+- **The JSON documents are never removed, and nothing exports back to them.** The
+  import leaves `vocabulary.json`, `progress.json` and `course-cursor.json`
+  untouched on purpose — they are the only copy of the data until the database has
+  it, and a rollback to an older build is then possible. Nothing writes them
+  again, so they go stale the moment the app runs; that is intended, and the
+  vocabulary list's own JSON export (File → export in the list screen) is the
+  user-facing escape hatch, not these files.
 - **The App Store path is untested, and one part of it is at risk.** A Mac App
   Store build must be sandboxed, and `src/speech.rs` pronounces by spawning
   `/usr/bin/say` — which a sandbox may refuse. `scripts/probe-app-sandbox.sh` was
@@ -833,7 +915,8 @@ bundle/dmg/Hanzi Tutor_0.1.0_aarch64.dmg
 | --- | --- | --- |
 | Characters, words, stroke geometry | `include_bytes!` in `src-tauri/src/state.rs` | ~13 MB |
 | Interface font, Noto Sans SC | Vite, from `src/assets/fonts/`, via `src/app.css` | ~17 MB |
-| Ten licence notices, as text | `bundle.resources` → `Contents/Resources/licences/` | ~60 KB |
+| SQLite, for the study store | compiled from the amalgamation by `libsqlite3-sys` | ~1.5 MB |
+| Twelve licence notices, as text | `bundle.resources` → `Contents/Resources/licences/` | ~65 KB |
 
 The app makes no network requests at all — there is no HTTP client anywhere in the
 dependency graph — so "everything the reader needs" is a claim that has to hold at
@@ -848,7 +931,12 @@ and the path the bundle copies it to. `tauri.conf.json` copies the same files.
 `src-tauri/tests/licences.rs` fails unless all three agree — in either direction,
 so an uncatalogued file and a missing one are both failures. **Adding a notice
 means editing the catalogue and the bundle config; the test is what stops you
-forgetting the second one.**
+forgetting the second one.** There are twelve since M10 added SQLite and
+`rusqlite`: the app's first third-party *code*, since everything before it was
+data or a font. Note what the test cannot do for you — it compares the catalogue,
+the files and the bundle config with each other, so a dependency nobody
+catalogued is invisible. Adding a crate means reading its licence by hand and
+adding a notice.
 
 Two copies is not redundancy for its own sake. The compiled-in copy is what the
 About screen shows, and it cannot be lost in packaging — the roadmap's warning was
@@ -881,7 +969,7 @@ open "$APP"
 A failure of step 1 or 2 is the class of bug the tests cannot see, so it is worth
 doing after any change to `bundle.resources`, the font path or `vite.config.ts`.
 Step 4 also confirms the compiled-in notices reached the interface: the log line
-`[webview] licences: 10 notices bundled` appears on stderr at startup, and the
+`[webview] licences: 12 notices bundled` appears on stderr at startup, and the
 fourth sidebar entry renders them.
 
 ### Notarisation, if the app is to leave this machine

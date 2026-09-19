@@ -21,3 +21,6 @@ tauri-plugin-dialog = "2"
 serde.workspace = true
 serde_json.workspace = true
 hanzi-core = { path = "../crates/hanzi-core" }
+# The durable study store. Kept out of hanzi-core so the engine stays free of
+# native dependencies and testable without a filesystem.
+hanzi-store = { path = "../crates/hanzi-store" }
