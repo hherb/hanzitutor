@@ -11,6 +11,7 @@
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import WordsPanel from "./lib/WordsPanel.svelte";
+  import { INK_WIDTH } from "./lib/render";
   import type {
     Character,
     DatasetStats,
@@ -444,10 +445,14 @@
         // Tracing a visible guide is graded where the guide actually is;
         // writing from memory should not be punished for sitting slightly off.
         globalFit: mode === "recall",
+        // The width the board painted the strokes with, so the grader's ink
+        // measure compares like with like rather than guessing.
+        inkWidth: INK_WIDTH,
       });
       report = graded;
       void api.log(
         `graded ${character.ch}: ${Math.round(graded.overall)}/100, ` +
+          `ink=${graded.inkScore.toFixed(2)}/${graded.inkCoverage.toFixed(2)}, ` +
           `legible=${graded.legible}, order=${graded.orderCorrect}`,
       );
       await recordProgress(character.ch, graded.overall);
@@ -1196,10 +1201,13 @@
             <div class="empty">
               <h2>How this works</h2>
               <p>
-                The reference strokes are compared with yours in two independent ways:
-                whether each stroke is the right shape and in the right place, and
-                whether they were written in the right order. Writing a legible
-                character in the wrong order is reported as exactly that.
+                Your strokes are compared with the reference on four measures:
+                shape, placement, ink and order — whether each stroke is the right
+                kind of stroke in the right place, whether as much ink went down as
+                the character needs (a stroke traced correctly but drawn far too
+                thin is not legible), and whether they were written in sequence.
+                Writing a legible character in the wrong order is reported as
+                exactly that.
               </p>
               <p class="keys">
                 <kbd>Enter</kbd> check · <kbd>S</kbd> stroke order ·

@@ -3,8 +3,8 @@
 A desktop app for learning to **read and write simplified Chinese characters**.
 You write a character with a mouse, trackpad or stylus, and the app tells you
 whether it was written in the correct stroke order, whether the strokes are the
-right shape and in the right place, and whether the result is legible — all
-offline, with no model downloads and no network access at runtime.
+right shape, in the right place and with enough ink, and whether the result is
+legible — all offline, with no model downloads and no network access at runtime.
 
 Built with **Tauri 2 + Rust** for the engine and **Svelte 5 + TypeScript** for the
 interface. Primary target is macOS; the same code builds for Windows and Linux,
@@ -14,8 +14,8 @@ and the Rust core is written to be reusable from a mobile shell later.
 
 Working end to end. The grading engine, the dataset pipeline, the Tauri command
 layer, the drawing UI, pronunciation, the personal vocabulary list, per-character
-progress with spaced repetition, and the HSK 3.0 **word list** are all implemented
-and tested; 170 automated tests pass. What is not built yet is listed under
+progress with spaced repetition, the HSK 3.0 **word list**, and the **raster ink
+measure** are all implemented and tested; 187 automated tests pass. What is not built yet is listed under
 [Next steps](#next-steps).
 
 ## What it does
@@ -30,8 +30,8 @@ and tested; 170 automated tests pass. What is not built yet is listed under
   write from memory.
 - **Stroke-order animation** — step through the character one stroke at a time.
 - **Grading with specific feedback**, not just a number: which stroke is the
-  wrong shape, which is misplaced, which was drawn back to front, which is
-  missing, and which are out of order.
+  wrong shape, which is misplaced, which was drawn back to front, which has too
+  little ink, which is missing, and which are out of order.
 - **Colour-coded overlay** — your strokes are tinted by verdict, and reference
   shapes are ghosted in red where a stroke should have gone.
 - **Readings and meanings** — pinyin, English gloss, radical, stroke count, HSK
@@ -211,7 +211,7 @@ stroke** and a **centre-line ("median") for every stroke**, both stored in strok
 order. That is enough to grade handwriting as pure geometry — no machine
 learning, no network, no model weights.
 
-Asking "did you write this character correctly?" actually conflates two
+Asking "did you write this character correctly?" actually conflates three
 independent questions, so the engine answers them separately.
 
 ### 1. Did you write the right strokes, in the right places?
@@ -260,18 +260,55 @@ wrong in a way worth recording: a three-stroke character written *backwards* sti
 contains a trivially increasing subsequence of length one, so it scored a
 flattering ⅓.
 
+### 3. Did you put down the right amount of ink?
+
+Shape and placement are both computed from centrelines, and a centreline has no
+width. A stroke that follows exactly the right path in exactly the right place but
+is drawn a third of the width the character needs therefore reads as perfect to
+both of them — the shape score is deliberately scale-invariant, so it cannot see
+width at all, and placement only looks at where the stroke sits and how long it is.
+
+So the engine also rasterises the attempt as **round-capped pen strokes** at the
+width the canvas painted them, and compares the result with the character's own
+ink — the stored SVG stroke outlines the interface already draws as the faint
+guide. Two numbers come out of that:
+
+- **Ink amount** (`inkScore`, per-stroke `ink`) — the attempt's inked area against
+  the area a correct trace at the canvas pen width would put down. It is
+  deliberately blind to *where* the ink went, because that is what placement
+  measures; judging both would count a wobbly hand twice. A correct trace scores
+  1.0, a pen a third of the width about 0.31, and a wildly overshooting stroke
+  the same from the other side. This is the measure behind the `faint` verdict.
+- **Ink coverage** (`inkCoverage`) — how much of the character's own ink was
+  reached at all. This is reported rather than scored: a wobbly but correctly
+  inked stroke genuinely misses part of the outline, and that is a placement
+  fault already covered by the previous measure.
+
+The first attempt at this used intersection-over-union against the outline, which
+is the obvious choice and the wrong one, and `selfcheck` is what showed it: IoU
+falls when a correctly-sized band lands slightly off the guide, so jittering a
+right-width trace by 3% of the box dropped the ratio to 0.47 and marked a sloppy
+hand illegible 96% of the time — from 99% before. Splitting the measure into amount
+and coverage fixed it (back to 99.1%, with the ink fault still caught), and both
+halves are cheap: a grade costs under 1 ms including the rasterisation.
+
 ### Aggregation
 
-All three headline scores — shape, placement and order — are measured across the
-**whole** reference character, with unwritten strokes counting as zero. An
-incomplete attempt is penalised consistently in all three, and a blank canvas
+All four headline scores — shape, placement, ink and order — are measured across
+the **whole** reference character, with unwritten strokes counting as zero. An
+incomplete attempt is penalised consistently in all four, and a blank canvas
 scores 0 rather than collecting easy marks for a flawless ordering of nothing.
-The overall score is `100 × (0.70 × content + 0.30 × order)`, where
-`content = 0.6 × shape + 0.4 × placement`.
+
+The overall score gives each measure an equal quarter:
+`100 × (0.25 × shape + 0.25 × placement + 0.25 × ink + 0.25 × order)`. The weights
+are exact binary fractions, so a flawless attempt sums to exactly 1.0 and scores
+exactly 100 rather than 99.999… — a property the interface's contract test pins.
 
 `legible` and `order_correct` are reported independently, because they are
 independent facts: a character written beautifully in the wrong order is still
 legible, and is reported as legible with the ordering faults called out.
+`legible` requires the shape, placement and ink means to clear their bars; order
+is deliberately not part of it.
 
 ### Tolerances were measured, not guessed
 
@@ -279,24 +316,37 @@ legible, and is reported as legible with the ordering faults called out.
 dataset. Its output on the shipped data:
 
 - **Self-consistency** — grading every character's own reference strokes against
-  itself scores a perfect 100 for **all 7,744** teachable characters. Anything
-  less would mean resampling or normalisation misbehaves on some real stroke.
+  itself scores a perfect 100 for **all 7,744** teachable characters, on all four
+  measures. Anything less would mean resampling, normalisation or the raster
+  measure misbehaves on some real stroke. The ink figure is exactly 1.0 for every
+  one of them, with no `faint` stroke anywhere — which is what makes "perfect"
+  reachable rather than merely close.
 - **Tolerance under a wobbly hand** (reference strokes jittered, then graded):
 
-  | Jitter | Judged legible | Mean score | Shape |
-  | --- | --- | --- | --- |
-  | 0.5% of the box | 100% | 97.6 | 0.96 |
-  | 1.5% | 100% | 92.7 | 0.87 |
-  | 3% | 99.1% | 85.3 | 0.75 |
-  | 5% | 53.7% | 77.1 | 0.61 |
+  | Jitter | Judged legible | Mean score | Shape | Ink |
+  | --- | --- | --- | --- | --- |
+  | 0.5% of the box | 100% | 97.6 | 0.96 | 0.97 |
+  | 1.5% | 100% | 92.4 | 0.87 | 0.91 |
+  | 3% | 99.1% | 84.6 | 0.75 | 0.80 |
+  | 5% | 52.4% | 75.6 | 0.61 | 0.68 |
 
   Since input is a trackpad rather than a stylus, the shape tolerance is set
   deliberately loose so a shaky but correct attempt is never failed for shape
-  alone, and the `overall` score carries the quality gradient instead.
+  alone, and the `overall` score carries the quality gradient instead. The ink
+  measure follows it: a jittered trace keeps its ink *amount* (the band is the
+  same width wherever it wandered) and only loses coverage.
 
 - **Discrimination** — the nearest-wrong pairing overlaps the correct
   distribution heavily (91.9% of correct strokes sit beyond the 5th percentile of
   wrong ones), which is not a defect but the reason placement exists.
+- **What the ink measure can see** — across all 7,744 teachable characters,
+  a correct trace scores 1.0 on ink; a pen a third of the width scores 0.31 and
+  puts every one of them below the legibility bar; a stroke drawn 40% too long
+  costs a little ink (0.97) and a stroke drawn three times too long costs a lot
+  (0.92 on the character mean, `faint` on the stroke itself in 1,774 characters).
+  Overshoot is a proportional fault rather than a cliff, because too much ink is
+  still readable — it is chiefly a placement fault, which is why the position
+  score flags it too.
 
 One bug this found: a single character (黧) has a genuinely tiny 4-unit stroke,
 which a fixed "is this a stray tap?" cutoff discarded, making a correct attempt
@@ -321,6 +371,7 @@ stroke as well as absolute.
 │  VocabularyPanel  your list  │        │  hanzi-core                   │
 │                              │        │    geom   resample, distance  │
 │                              │        │    grade  Hungarian + Kendall │
+│                              │        │    raster pen strokes + ink   │
 │                              │        │    dataset  chars + 9k words  │
 │                              │        │    curriculum  frequency      │
 │                              │        │    vocab    the list          │
@@ -379,7 +430,7 @@ scripts/                    data fetching, cargo env, CLI selection
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 170 tests
+pnpm test             # the whole Rust suite: 187 tests
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
@@ -444,12 +495,11 @@ obligation here that reaches the derived data rather than only the notices — s
 See **[ROADMAP.md](ROADMAP.md)** for what to build next, in priority order, with
 approach notes and acceptance criteria. The headline gaps:
 
-1. **A stricter legibility measure** (raster IoU), which catches errors the
-   centreline comparison cannot: a stroke drawn along the right path but far too
-   thin still passes today.
-2. **Distribution readiness** — licence notices inside the bundle, and CI, before
+1. **Distribution readiness** — licence notices inside the bundle, and CI, before
    the app can leave this machine.
-3. **Pronunciation on Windows and Linux**, so the app is not macOS-only.
+2. **Pronunciation on Windows and Linux**, so the app is not macOS-only.
+3. **Centreline stroke animation** and **input ergonomics** for long strokes on a
+   trackpad — the two small ones that make daily practice nicer.
 
 If you are picking this project up to continue development, read
 **[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the

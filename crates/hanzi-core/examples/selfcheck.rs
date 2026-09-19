@@ -3,20 +3,29 @@
 //! Two questions this answers, which unit tests with hand-made strokes cannot:
 //!
 //! 1. **Self-consistency** — grading a character's own reference strokes against
-//!    itself must score a perfect 100 for *every* character. Anything less means
-//!    resampling, normalisation or the tolerance handling misbehaves on some
-//!    real stroke, for example a very short 点.
+//!    itself must score a perfect 100 for *every* character, on all four
+//!    measures including the raster ink one. Anything less means resampling,
+//!    normalisation or the tolerance handling misbehaves on some real stroke,
+//!    for example a very short 点.
 //! 2. **Tolerance** — a correct but hand-wobbly attempt must still be judged
 //!    legible. This jitters the reference strokes by a controlled amount and
 //!    reports how many characters survive, which is how the shape and placement
 //!    tolerances were tuned.
 //!
+//! It also reports what the ink measure can and cannot see (M4), and how long a
+//! grade takes, because "grading stays interactive" is an acceptance criterion
+//! rather than an aspiration.
+//!
 //! ```text
 //! cargo run --release -p hanzi-core --example selfcheck [-- <artifact>]
 //! ```
 
+use std::time::Instant;
+
 use hanzi_core::geom::{path_length, resample, shape_distance};
-use hanzi_core::{grade, Dataset, GradeOptions, Point};
+use hanzi_core::{
+    grade_with_outlines, Dataset, GradeOptions, Point, Verdict, INK_OK,
+};
 
 /// Deterministic noise, so runs are comparable.
 struct Lcg(u64);
@@ -115,13 +124,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // --- 1. self-consistency ----------------------------------------------
+    //
+    // Graded with the outlines, so the raster ink measure is part of what
+    // "perfect" means here: a character whose own medians do not reach its own
+    // ink would score below 1.0 and show up in the ink column below.
     let mut scores: Vec<f32> = Vec::with_capacity(dataset.len());
+    let mut ink_scores: Vec<f32> = Vec::with_capacity(dataset.len());
     let mut imperfect = Vec::new();
+    let mut faint = Vec::new();
+    let mut below_ink_bar = 0usize;
     for character in dataset.chars() {
-        let report = grade(character.reference_medians(), &character.medians, &options);
+        let report = grade_with_outlines(
+            character.reference_medians(),
+            &character.outlines,
+            &character.medians,
+            &options,
+        );
         scores.push(report.overall);
+        ink_scores.push(report.ink_score);
         if !report.is_perfect() && character.is_teachable() {
             imperfect.push((character.ch, report.overall, report.stray_strokes));
+        }
+        if report.strokes.iter().any(|s| s.verdict == Verdict::Faint) {
+            faint.push(character.ch);
+        }
+        if report.ink_score < INK_OK {
+            below_ink_bar += 1;
         }
     }
     let mut sorted = scores.clone();
@@ -142,6 +170,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (ch, score, stray) in imperfect.iter().take(15) {
         println!("    {ch}  {score:.2}  stray={stray}");
     }
+    let mut ink_sorted = ink_scores.clone();
+    ink_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!(
+        "  ink (M4, 1.0 = as much as a correct trace reaches): min {:.3}  p1 {:.3}  \
+         p50 {:.3}  mean {:.3}",
+        percentile(&ink_sorted, 0.0),
+        percentile(&ink_sorted, 0.01),
+        percentile(&ink_sorted, 0.5),
+        ink_sorted.iter().sum::<f32>() / ink_sorted.len() as f32,
+    );
+    println!(
+        "  a correct trace below the {INK_OK} ink bar: {below_ink_bar}  \
+         <- must be 0, or \"perfect\" is unreachable\n  characters with a Faint stroke: {}  \
+         <- must be 0 for the same reason",
+        faint.len()
+    );
     println!();
 
     // --- 2. tolerance under a wobbly hand ---------------------------------
@@ -157,20 +201,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut rng = Lcg(0x5EED);
         let mut legible = 0usize;
         let (mut total, mut sum) = (0usize, 0.0f32);
-        let (mut shape_sum, mut position_sum) = (0.0f32, 0.0f32);
-        let (mut shape_fail, mut position_fail) = (0usize, 0usize);
+        let (mut shape_sum, mut position_sum, mut ink_sum, mut coverage_sum) =
+            (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let (mut shape_fail, mut position_fail, mut ink_fail) = (0usize, 0usize, 0usize);
         for character in dataset.ranked() {
             let attempt = jitter(&character.medians, sigma, &mut rng);
-            let report = grade(character.reference_medians(), &attempt, &options);
+            let report = grade_with_outlines(
+                character.reference_medians(),
+                &character.outlines,
+                &attempt,
+                &options,
+            );
             total += 1;
             sum += report.overall;
             shape_sum += report.shape_score;
             position_sum += report.position_score;
+            ink_sum += report.ink_score;
+            coverage_sum += report.ink_coverage;
             if report.shape_score < 0.60 {
                 shape_fail += 1;
             }
             if report.position_score < 0.60 {
                 position_fail += 1;
+            }
+            if report.ink_score < INK_OK {
+                ink_fail += 1;
             }
             if report.legible {
                 legible += 1;
@@ -178,13 +233,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let n = total as f32;
         println!(
-            "  {label} legible {:5.1}%  mean {:5.1}  shape {:.2} (fail {:5.1}%)  position {:.2} (fail {:5.1}%)",
+            "  {label} legible {:5.1}%  mean {:5.1}  shape {:.2} (fail {:5.1}%)  \
+             position {:.2} (fail {:5.1}%)  ink {:.2} (fail {:5.1}%)  coverage {:.2}",
             100.0 * legible as f32 / n,
             sum / n,
             shape_sum / n,
             100.0 * shape_fail as f32 / n,
             position_sum / n,
             100.0 * position_fail as f32 / n,
+            ink_sum / n,
+            100.0 * ink_fail as f32 / n,
+            coverage_sum / n,
         );
     }
 
@@ -263,8 +322,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Alternate which end is dense, so both directions are covered.
             .map(|(i, m)| uneven_sampling(m, if i % 2 == 0 { 2.5 } else { 0.4 }, 96))
             .collect();
-        let even = grade(character.reference_medians(), &character.medians, &options);
-        let bunched = grade(character.reference_medians(), &attempt, &options);
+        let even = grade_with_outlines(
+            character.reference_medians(),
+            &character.outlines,
+            &character.medians,
+            &options,
+        );
+        let bunched = grade_with_outlines(
+            character.reference_medians(),
+            &character.outlines,
+            &attempt,
+            &options,
+        );
 
         // The comparison, not the absolute score: sampling with fewer points
         // along a curve cuts corners, which costs a little on its own. What
@@ -290,6 +359,129 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "  strokes whose verdict changed with the sampling: {verdict_changes}  \
          <- must be 0: the geometry is identical"
+    );
+
+    // --- 5. what the ink measure can see (M4) ------------------------------
+    //
+    // The ink measure exists because a centre-line cannot see width. The first
+    // line below is the property that makes it usable at all: a correct trace
+    // must reach 1.0, or the bar would fail characters nobody drew wrong. The
+    // rest is the discrimination it is for — a pen a third of the width, and a
+    // stroke overshooting the character — measured over the whole dataset.
+    println!("\nink measure: correct, a third-width pen, and an overshooting stroke");
+    let (mut correct_ink, mut thin_ink, mut over_ink) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut thin_flagged, mut over_flagged) = (0usize, 0usize);
+    let mut thin_coverage: Vec<f32> = Vec::new();
+    let mut wild_ink: Vec<f32> = Vec::new();
+    let (mut over_faint, mut mild_flagged) = (0usize, 0usize);
+    let thin_options = GradeOptions {
+        ink_width: options.ink_width / 3.0,
+        ..options.clone()
+    };
+    for character in dataset.ranked() {
+        let correct = grade_with_outlines(
+            character.reference_medians(),
+            &character.outlines,
+            &character.medians,
+            &options,
+        );
+        correct_ink.push(correct.ink_score);
+
+        let thin = grade_with_outlines(
+            character.reference_medians(),
+            &character.outlines,
+            &character.medians,
+            &thin_options,
+        );
+        thin_ink.push(thin.ink_score);
+        thin_coverage.push(thin.ink_coverage);
+        if !thin.legible {
+            thin_flagged += 1;
+        }
+
+        // One stroke drawn too long about its own centre, everything else
+        // correct: the overshoot a centre-line forgives. Mild (40%) first, to
+        // show the penalty is proportional rather than a cliff, then wild (3x).
+        for (factor, sink) in [(1.4f32, &mut over_ink), (3.0, &mut wild_ink)] {
+            let mut over = character.medians.clone();
+            if let Some(first) = over.first_mut() {
+                let n = first.len() as f32;
+                let cx = first.iter().map(|p| p.x).sum::<f32>() / n;
+                let cy = first.iter().map(|p| p.y).sum::<f32>() / n;
+                for p in first.iter_mut() {
+                    p.x = cx + (p.x - cx) * factor;
+                    p.y = cy + (p.y - cy) * factor;
+                }
+            }
+            let report = grade_with_outlines(
+                character.reference_medians(),
+                &character.outlines,
+                &over,
+                &options,
+            );
+            sink.push(report.ink_score);
+            if factor > 2.0 {
+                if !report.legible {
+                    over_flagged += 1;
+                }
+                if report.strokes.iter().any(|s| s.verdict == Verdict::Faint) {
+                    over_faint += 1;
+                }
+            } else if !report.legible {
+                mild_flagged += 1;
+            }
+        }
+    }
+    let stats = |label: &str, v: &mut Vec<f32>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "  {label:16} min {:.3}  p5 {:.3}  p50 {:.3}  below {INK_OK}: {}",
+            percentile(v, 0.0),
+            percentile(v, 0.05),
+            percentile(v, 0.5),
+            v.iter().filter(|x| **x < INK_OK).count()
+        );
+    };
+    stats("correct trace", &mut correct_ink);
+    stats("third-width pen", &mut thin_ink);
+    stats("third-width cover", &mut thin_coverage);
+    stats("overshoot 1.4x", &mut over_ink);
+    stats("overshoot 3x", &mut wild_ink);
+    let total = dataset.ranked().count();
+    println!(
+        "  a third-width pen makes {thin_flagged} of {total} characters not legible"
+    );
+    println!(
+        "  overshoot is a proportional fault by design, since too much ink is still \
+         legible: one stroke 40% too long costs a little ink and makes {mild_flagged} \
+         characters not legible, while a stroke 3x too long (which the placement score \
+         also fails) makes {over_flagged}, {over_faint} of them with a Faint stroke"
+    );
+
+    // --- 6. cost ----------------------------------------------------------
+    //
+    // "Grading stays comfortably interactive" is an acceptance criterion, and
+    // the raster measure is the expensive part of it.
+    let widest = dataset
+        .ranked()
+        .max_by_key(|c| c.medians.len())
+        .expect("the course is not empty");
+    let runs = 200u32;
+    let start = Instant::now();
+    for _ in 0..runs {
+        let _ = grade_with_outlines(
+            widest.reference_medians(),
+            &widest.outlines,
+            &widest.medians,
+            &options,
+        );
+    }
+    let per_grade = start.elapsed().as_secs_f64() * 1000.0 / runs as f64;
+    println!(
+        "\ncost: {per_grade:.2} ms per grade on {} ({} strokes, the widest character)  \
+         <- target is under 20 ms",
+        widest.ch,
+        widest.medians.len()
     );
 
     Ok(())

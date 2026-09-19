@@ -32,7 +32,7 @@ ls .cargo-home 2>/dev/null || {
 ./scripts/fetch-data.sh          # ~36 MB upstream, into data/raw/ (gitignored)
 pnpm install
 pnpm run prepare-data            # builds the 13.6 MB artifact (gitignored)
-pnpm test                        # expect 170 passed, 0 failed
+pnpm test                        # expect 187 passed, 0 failed
 pnpm run check:rust && pnpm run check:web
 ```
 
@@ -127,7 +127,8 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 
 | Area | State | Evidence |
 | --- | --- | --- |
-| Grading engine | Done | 29 unit tests; self-consistent on all 7,744 teachable characters |
+| Grading engine | Done | 34 unit tests (geom + grade); self-consistent on all 7,744 teachable characters |
+| Raster ink measure (M4) | Done | 9 rasteriser tests + 8 grading tests; a third-width pen fails all 7,744 characters, a correct trace scores exactly 1.000 on every one |
 | Dataset pipeline | Done | 9,574 characters, 13 MB artifact |
 | IPC surface | Done | contract tests asserting exact JSON key sets |
 | Drawing canvas | Done, human-confirmed | trace + recall modes, colour-coded feedback |
@@ -153,9 +154,17 @@ HANZI_TUTOR_DATA_DIR="$PWD/.tmp-data" ./.cargo-target/debug/hanzi-tutor 2>&1 \
 # [webview] course cursor: resuming at character 413
 # [webview] character 的: de, 8 strokes
 # [webview] spoke 面
-# [webview] graded 十: 100/100, legible=true, order=true
-# [webview] progress 十: 100/100, due 2026-09-20T09:00:00Z
+# [webview] graded 的: 100/100, ink=1.00/1.00, legible=true, order=true
+# [webview] progress 的: 100/100, due 2026-09-21T01:05:42Z
+# ...and with the pen declared a third of the width, on the same trace:
+# [webview] graded 的: 83/100, ink=0.31/0.34, legible=false, order=true
 ```
+
+The `graded …` line carries both ink figures — the score first, then coverage —
+so the M4 measure can be watched in the field without a debugger. The last three
+lines above are from the M4 run (a fresh data directory, hence the different
+counts); they are the current format, and the two `graded` lines are the same
+trace with the pen declared first at full width and then at a third of it.
 
 `drawable characters` is the word-list counterpart of the course load: 9,574
 characters have stroke geometry (against 7,744 with a frequency rank). The
@@ -177,6 +186,7 @@ will hide everything and you will conclude the frontend never started.
 ```
 crates/hanzi-core/          grading engine. No Tauri, no UI, no platform code.
   src/geom.rs               resampling, normalisation, distances, similarity fit
+  src/raster.rs             stroke ink: scanline fill, pen bands, amount/coverage
   src/grade.rs              Hungarian pairing, order analysis, verdicts, scoring
   src/dataset.rs            Character + Word models, word search, artifact loading
   src/curriculum.rs         frequency list -> lessons
@@ -221,8 +231,8 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
    *exact set* of keys, because a mismatch fails **silently** — the UI just shows
    blanks. Change Rust and TypeScript together; let the test catch you.
 
-3. **All three scores are measured across the whole reference character**, with
-   unwritten strokes counting as zero (`grade.rs`, step 7). Do not "fix" this into
+3. **All four scores are measured across the whole reference character**, with
+   unwritten strokes counting as zero (`grade.rs`, step 8). Do not "fix" this into
    a mean over only the strokes that were written: that reintroduces a bug where a
    blank canvas scored 30/100 and writing half a character scored 62.
 
@@ -343,12 +353,46 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
     It falls back to splitting the text as typed while the set is still loading,
     so a practice session started in the first milliseconds still works.
 
+20. **Ink is measured as *amount*, not intersection-over-union.** `raster.rs`
+    rasterises the attempt at the width the canvas actually painted it with, and
+    the reference as the filled stroke outline. The headline ink score is the
+    attempt's **area** against what a correct trace at the nominal pen width
+    (`INK_WIDTH`) would put down; `inkCoverage` separately reports how much of the
+    outline was reached. IoU against the outline was tried and is wrong — it falls
+    when a correctly-sized band lands slightly off the guide, which is a
+    *placement* fault `position_score` already owns. Measured: IoU at 3% jitter
+    drops a right-width trace to 0.47 and marked 96% of sloppy-but-correct
+    attempts illegible, against 1% before; area keeps that row at 99.1% while
+    still failing a third-width pen on all 7,744 characters. Do not "simplify"
+    either half back into IoU. Two consequences to preserve: the ink score is
+    blind to *where* the ink went (by design), and `legible` is gated on ink
+    amount but **not** on coverage, because coverage would double-count the
+    wobble again. The module docs in `raster.rs` carry the full argument.
+
+21. **`GradeOptions.ink_width` is the width the ink was drawn with, and
+    `INK_WIDTH` is the width a correct trace is judged against — they are not the
+    same number.** If the baseline band were rendered at the attempt's own width
+    the comparison would cancel and no pen could ever be judged too thin. The
+    baseline takes `INK_WIDTH.max(attempt width)`, so a fatter pen is never
+    punished. `src/lib/render.ts`'s `INK_WIDTH` and the Rust constant are the same
+    value and the interface sends its own through `inkWidth`; if they drift, every
+    correct trace is flagged `faint`, which is loud rather than silent but is
+    still a bug. Changing the canvas pen width means changing both.
+
+22. **The ink measure's weight in `overall` is a first guess.** Shape, placement,
+    ink and order each carry `0.25`, and the fractions are exact binary numbers so
+    a flawless attempt sums to exactly `1.0` and scores exactly `100` — the IPC
+    contract test asserts `overall == 100.0`, so keep them dyadic. The equal split
+    is what stops a character drawn with a third of its ink reading "Excellent"
+    (92 before M4, 85 after); it is a judgement, not a measurement, and the
+    attempt log the roadmap keeps asking for is what should tune it.
+
 ## 5. The verification loop
 
 Run before every commit:
 
 ```bash
-pnpm test           # 170 tests: engine + store + data pipeline units, IPC contract, speech
+pnpm test           # 187 tests: engine + store + data pipeline units, IPC contract, speech
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
@@ -365,34 +409,57 @@ pnpm run selfcheck
 ```
 
 It reports self-consistency (must be a perfect 100 for *every* teachable
-character), tolerance under jitter, shape-metric discrimination, and robustness
-to how the pointer sampled the stroke. It has found four real bugs already: the
-stray-tap cutoff, the blank-canvas scoring, the order metric, and the
-sample-mean placement metric. Treat a regression in its output as a failing test.
+character, on all four measures), tolerance under jitter, shape-metric
+discrimination, robustness to how the pointer sampled the stroke, what the ink
+measure can see, and the cost of a grade. It has found five real bugs already: the
+stray-tap cutoff, the blank-canvas scoring, the order metric, the sample-mean
+placement metric, and — in M4 — the attempt at measuring ink with
+intersection-over-union, which the tolerance table exposed by dropping a sloppy
+hand from 99% legible to 4%. Treat a regression in its output as a failing test.
 
-The two checks to read first, and what "healthy" looks like:
+The checks to read first, and what "healthy" looks like:
 
 ```
   0 of 7744 teachable characters are not perfect
-  worst overall drop 1.77  worst stroke placement drop 0.137 (覷 stroke 4)
+  ink (M4, 1.0 = as much as a correct trace reaches): min 1.000  ...  mean 1.000
+  a correct trace below the 0.6 ink bar: 0  <- must be 0
+  characters with a Faint stroke: 0  <- must be 0
+  normal  sigma=15   legible 100.0%  ...
+  sloppy  sigma=30   legible  99.1%  ...
+  worst overall drop 1.75  worst stroke placement drop 0.137 (覷 stroke 4)
   strokes whose verdict changed with the sampling: 0  <- must be 0
+  third-width pen  min 0.295  ...  below 0.6: 7744  <- every character
+  cost: 0.8 ms per grade on 鱻 (33 strokes)  <- target is under 20 ms
 ```
 
-That last line is a hard invariant, not a statistic. If sampling alone changes a
-verdict, placement is being measured from the sample mean again and the number
-explodes into the thousands.
+The `0` on the verdict line is a hard invariant, not a statistic. If sampling
+alone changes a verdict, placement is being measured from the sample mean again
+and the number explodes into the thousands.
+
+The ink lines are the M4 tripwires. `a correct trace below the ink bar` and
+`characters with a Faint stroke` must both be **0** — a correct trace is
+normalised to score exactly 1.000 on ink by construction, and the moment that
+stops being true, "perfect" is unreachable for some character and the bar is
+wrong. `third-width pen ... below 0.6: 7744` is the measure actually working. The
+tolerance rows `sigma=15` and `sigma=30` must stay at 100% and 99.1%: if they
+collapse again, the ink measure has started double-counting placement (which is
+what IoU did) rather than measuring ink.
 
 `selfcheck` is also the tripwire for milestone M2: it must be **byte-identical**
 before and after a scheduling change, because scheduling interprets the score and
 must never alter it. Extracting the grade bands into `Grade::from_score` was
 checked that way. M3 was checked the same way for a different reason: it changed
-the artifact (a new payload struct, 9,443 words added), and every figure above —
-including the `0` on the last line — is unchanged, which is what proves the word
-list touched no geometry. (The placement fix above *did* move the tolerance table
-slightly — `normal sigma=15` position mean 0.93 → 0.91 — because the global fit
-now weights each stroke equally instead of by sample count. Legibility at 1.5%
-and 3% jitter is unchanged at 100% and 99.1%, which is the property that
-matters.)
+the artifact (a new payload struct, 9,443 words added), and every figure — the
+self-consistency 0 included — is unchanged, which is what proves the word list
+touched no geometry.
+
+M4 is the first milestone that was *allowed* to move these numbers, because it
+changed grading on purpose. What it moved: the self-consistency scores stay
+exactly 100 and the verdict-change count stays 0; the tolerance table's mean score
+drops a few points (shape/placement/order lost weight to ink) and `sigma=50`
+legibility went 53.2% → 52.4% because the ink bar now fails 8% of very rough
+attempts. `sigma=15` and `sigma=30` legibility are unchanged. If you touch the
+rasteriser or the weights, re-read that table rather than assuming.
 
 **If you touched the scheduler**, the numbers to hold still are in
 `progress.rs`'s tests, which pin every interval and due date outright: a failure
@@ -414,6 +481,13 @@ downstream of them is covered by the IPC tests, which drive
   blocked: AppleScript window inspection and `System Events` keystrokes both fail
   with `A privilege violation occurred`, needing Accessibility rather than Screen
   Recording. Anything that clicks, types or scrolls needs the human.
+- **You can still screenshot a graded panel without drawing.** Because the board
+  cannot be driven, feedback-panel changes look unverifiable — but `pnpm run dev`
+  serves the frontend over HMR, so a two-line temporary seed in `loadCharacter`
+  (grade `next.medians` and call `check()`) renders a real report for a capture,
+  and reverting is instant. M4's panel, its advice lines and the `faint` colour
+  were confirmed that way, and the seeded 100/100 and 83/100 runs reproduce the
+  `graded …` log lines quoted in §2. Take the seed out again before committing.
 - **A stroke has to end where the pointer was released.** `handleUp` in
   `PracticeCanvas.svelte` appends the `pointerup` position before committing the
   stroke. Without that, a quick flick whose only sample arrives with the release
@@ -501,6 +575,17 @@ downstream of them is covered by the IPC tests, which drive
   `fetch-data && prepare-data` before it compiles. That is documented and the
   failure is a clear message, but it does mean CI needs a data step. If that
   becomes annoying, commit the 13 MB artifact instead.
+- **The ink measure is proven, but half of it cannot fire yet.** The canvas paints
+  every stroke at one fixed width, so nothing a learner does on a trackpad can put
+  down *less* ink than `INK_WIDTH` and the `faint` verdict is unreachable in daily
+  use; what M4 does catch today is overshoot and short strokes. The width half
+  becomes live when input can report a real pen width — a stylus, or the
+  velocity-thickened brush M8 calls "cosmetic only", which stops being true now
+  that this measure exists. Whichever comes first wants real attempts to re-tune
+  `INK_OK` against.
+- **The four headline weights are a judgement, not a measurement.** An equal
+  quarter each, chosen so a third-inked character cannot read "Excellent". The
+  honest way to set them is the attempt log below, on real handwriting.
 - **Shape tolerance is tuned on synthetic jitter**, not on real learners. It wants
   revisiting once there are real attempts to look at — ideally by logging
   attempts and re-running the distribution analysis in `selfcheck`.

@@ -34,6 +34,7 @@ pub mod dataset;
 pub mod geom;
 pub mod grade;
 pub mod progress;
+mod raster;
 pub mod time;
 pub mod vocab;
 
@@ -41,8 +42,10 @@ pub use curriculum::{build_lessons, lesson_at, Lesson};
 pub use dataset::{Artifact, Character, CharacterHint, Dataset, TextLookup, Word};
 pub use geom::Point;
 pub use grade::{
-    grade, FitInfo, Grade, GradeOptions, GradeReport, StrokeVerdict, Verdict,
+    grade, grade_with_outlines, FitInfo, Grade, GradeOptions, GradeReport, StrokeVerdict,
+    Verdict, INK_OK,
 };
+pub use raster::INK_WIDTH;
 pub use progress::{
     build_queue, Attempt, CardState, CardView, CursorStore, CursorView, ProgressError,
     ProgressStore, ProgressView, Rating, ReviewItem, ReviewSource, ReviewView, Scheduler,

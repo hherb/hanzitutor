@@ -17,8 +17,15 @@ import type { Character, GradeReport, Point, Verdict } from "./types";
 export const BOX = 1024;
 /** Font-space y of the top edge of the character box. */
 const FONT_TOP_Y = 900;
-/** Stroke width of the user's ink, in design units. */
-const INK_WIDTH = 36;
+/**
+ * Stroke width of the user's ink, in design units.
+ *
+ * This is also the width the grader is told to rasterise the attempt at, so the
+ * ink measure compares what was drawn with what a correct trace would put down.
+ * `INK_WIDTH` in `crates/hanzi-core/src/raster.rs` is the same number; the
+ * attempt carries it explicitly so the two cannot drift apart silently.
+ */
+export const INK_WIDTH = 36;
 
 const INK = "#1f2937";
 const GHOST = "#e6ebf2";
@@ -36,6 +43,7 @@ export const VERDICT_COLOUR: Record<Verdict, string> = {
   wrong_direction: "#7c3aed",
   position_off: "#c2410c",
   shape_off: "#be123c",
+  faint: "#0e7490",
   missing: "#64748b",
 };
 
@@ -45,6 +53,7 @@ export const VERDICT_LABEL: Record<Verdict, string> = {
   position_off: "Misplaced",
   wrong_direction: "Drawn backwards",
   out_of_order: "Out of order",
+  faint: "Too little ink",
   missing: "Not written",
 };
 

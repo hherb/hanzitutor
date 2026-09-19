@@ -16,7 +16,7 @@ See [`HANDOVER.md`](HANDOVER.md) for how to build, test and verify; see
 | M1 | Personal vocabulary list | Track and drill your own lesson material | M | **done** |
 | M2 | Per-character progress + spaced repetition | Practice history still does not persist | M | **done** |
 | M3 | Words and sentences | Single characters are not reading | L | **done** |
-| M4 | Raster legibility (IoU) | Catches errors centrelines cannot | M | not started |
+| M4 | Raster legibility (IoU) | Catches errors centrelines cannot | M | **done** |
 | M5 | Distribution readiness | Licence notices and signed bundles | M | not started |
 | M6 | Pronunciation on Windows/Linux | macOS-only today | S | not started |
 | M7 | Centreline stroke animation | Nicer, more accurate "show me" | S | not started |
@@ -198,36 +198,65 @@ Deliberately left out, and why:
 
 ## M4 — Raster legibility (IoU)
 
-**Why.** Legibility is currently judged from stroke centrelines. That cannot see
-how much ink you actually put down, so a stroke that follows the right path but is
-drawn far too thin, or that overshoots wildly, still scores well. Overlapping
-strokes and gaps are likewise invisible.
+**Status: done.**
 
-**Approach.**
+Grading now also measures the ink, not only the path. `hanzi-core/src/raster.rs`
+holds a small pure-Rust rasteriser (no new dependency), `grade.rs` folds the
+result into every `GradeReport`, and the feedback panel shows it.
 
-- Rasterise the user's strokes: draw the polylines with the pen width into an
-  offscreen bitmap. A small pure-Rust scanline rasteriser is enough — the drawing
-  is just thick line segments with round caps.
-- Rasterise the reference: fill the stored SVG outline paths. This needs a path
-  rasteriser; `tiny-skia` plus `usvg`, or `lyon` for tessellation, are the
-  candidates. Budget for a new dependency here.
-- Compare with intersection-over-union, plus a coverage check for areas of the
-  reference that received no ink at all (the "you never drew that part" signal).
-- Combine with the existing scores rather than replacing them: centrelines judge
-  *form and order*, rasterisation judges *ink*. Keep `GradeReport`'s existing
-  fields and add the raster measure alongside, so no UI breaks.
-- Watch performance: rasterising at 256x256 is plenty and keeps a grade in the
-  low milliseconds.
+What shipped:
 
-**Acceptance criteria.**
+- **A scanline rasteriser for both sides.** The attempt is drawn as round-capped
+  pen strokes at the width the canvas paints them with — `INK_WIDTH` in
+  `src/lib/render.ts`, passed through `GradeOptions.inkWidth` so the two cannot
+  drift apart. The reference is the stored stroke outline, filled — the same SVG
+  paths the interface draws as the faint guide. 256 cells across the box (4
+  design units each) is plenty, and a grade costs **0.8 ms** including both,
+  against a budget of 20.
+- **Two measures, because one conflated two things.** *Ink amount* — the
+  attempt's inked area against what a correct trace at the canvas pen width would
+  put down — is the headline (`inkScore`, and `ink` on every stroke). It is blind
+  to where the ink went on purpose: placement is graded separately, and judging
+  it twice is a double-counted fault. *Coverage* — how much of the character's own
+  ink was reached — is reported (`inkCoverage`) as the "you never drew that part"
+  signal, and deliberately not scored.
+- **A `faint` verdict.** The right stroke in the right place with too little ink
+  is now named, coloured and explained, where before it was indistinguishable
+  from a perfect stroke.
+- **The headline score has four equal quarters**, `0.25` each for shape,
+  placement, ink and order, all exact binary fractions so a flawless attempt still
+  sums to exactly 100. Before this, a character drawn with a third of its ink
+  scored 92 and read "Excellent"; it now scores 85 and is not legible.
+- **`selfcheck` reports it, and it is what tuned the bars.** Self-consistency is
+  still 100 for all 7,744 teachable characters, with an ink score of exactly 1.000
+  and no faint stroke anywhere — that is what keeps "perfect" reachable. A pen a
+  third of the width scores 0.31 and puts all 7,744 below the bar; a stroke drawn
+  three times too long is faint on 1,774 characters.
 
-- A stroke drawn along the correct path but roughly a third of the correct width
-  scores below the legibility bar, while the same stroke at the correct width
-  passes.
-- A perfect attempt still scores 100, and `pnpm run selfcheck` remains perfect on
-  all 7,744 characters **using the raster measure too**.
-- Grading stays comfortably interactive (target under ~20 ms per attempt).
-- The new measure is exposed per stroke, so the UI can explain it.
+Deliberately not as originally planned, and why:
+
+- **Not intersection-over-union.** IoU against the outline was the plan and it is
+  wrong, measurably: a perfect trace tops out near 0.7 against a calligraphic
+  glyph, so "perfect" would be unreachable; and worse, IoU also falls when a
+  correctly-sized band lands slightly off the guide. Jittering a right-width trace
+  by 3% of the box dropped the ratio to 0.47 and marked **96%** of sloppy but
+  correct attempts illegible, against 1% before. Splitting it into area (amount)
+  and coverage restores the tolerance table to 99.1% at 3% jitter while still
+  failing a third-width pen on every character. The measurement is in
+  `selfcheck`'s tolerance table and the reasoning is in `raster.rs`'s module docs.
+- **No new dependency.** `tiny-skia`, `lyon` and `usvg` were the candidates, but
+  the dataset's outlines use only absolute `M`, `L`, `Q`, `C` and `Z` in a single
+  simple closed subpath, so a scanline fill is about eighty lines and the pen is
+  an exact distance-to-segment test. Nothing is gained by 20 transitive crates.
+- **The thin-stroke case is not reachable from today's trackpad.** The canvas
+  paints every stroke at one fixed width, so a learner cannot put down less ink
+  than that; the width discrimination is proven by tests and over the whole
+  dataset, and it starts to bite the moment input can report a real pen width — a
+  stylus, or M8's velocity-based brush. What M4 *does* catch in daily use is
+  overshoot and short strokes, proportionally, and it is visible in the score.
+- **Coverage does not gate legibility.** It would have cost 5% of the 3%-jitter
+  tolerance row for nothing, since the outline a wobbling stroke misses is a
+  placement fault the position score already owns.
 
 ---
 
@@ -395,7 +424,17 @@ Small, independently shippable, roughly in value order:
 
 Recorded honestly, because they bound how much the current scores mean:
 
-- **Legibility is centreline-only** (see M4). Thin or overshooting strokes pass.
+- **Ink width cannot vary yet** (M4). The measure is in place and proven, but the
+  canvas paints every stroke at one fixed width, so a learner cannot put down
+  *less* ink than that and the `faint` verdict cannot fire from a trackpad. What
+  the measure catches today is overshoot and short strokes; a stylus that reports
+  real width, or M8's velocity-thickened brush, is what makes the width half of it
+  live. Do not mistake "the measure works" for "the case happens".
+- **The ink weight is a first guess.** Shape, placement, ink and order each carry
+  a quarter of the headline score, chosen for symmetry and to stop a third-inked
+  character reading "Excellent" rather than from any data. Like the shape
+  tolerance, it wants real attempts to tune against — the same attempt log the
+  cross-cutting item asks for.
 - **An isolated character has no context, so a polyphonic one may be read wrong.**
   着 on its own is read whichever way the synthesiser prefers. M3 fixed this for
   words — the word carries the reading, and 着急 is `zháojí` — but a single

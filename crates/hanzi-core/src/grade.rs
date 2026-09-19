@@ -3,8 +3,9 @@
 //! # How grading works
 //!
 //! The reference data gives one centre-line ("median") per stroke, in the
-//! correct stroke order. An attempt is a list of polylines recorded from the
-//! canvas. Grading separates two questions that are easy to confuse:
+//! correct stroke order, plus the outline of the stroke's ink. An attempt is a
+//! list of polylines recorded from the canvas. Grading separates three questions
+//! that are easy to confuse:
 //!
 //! 1. **Did you write the right strokes, in the right places?** — solved as an
 //!    assignment problem. Every attempt stroke is scored against every
@@ -20,19 +21,26 @@
 //!    inversion count (Kendall tau), which is smooth: one adjacent swap in a
 //!    ten-stroke character costs about 2%, while writing a character
 //!    completely backwards scores zero.
+//! 3. **Did you put down the right amount of ink?** — centre-lines say where a
+//!    stroke went and nothing about how much paper it covered, so a trace that
+//!    follows the right path but is drawn far too thin, or that overshoots
+//!    wildly, is invisible to the two measures above. Each matched pair is also
+//!    compared as raster ink, against the stroke outline the interface draws as
+//!    the guide; see [`crate::raster`] for why that number is normalised.
 //!
-//! All three headline scores — shape, placement and order — are measured across
-//! the whole reference character, so a missing stroke is penalised everywhere it
-//! should be and a blank canvas scores zero rather than collecting easy marks
-//! for a flawless ordering of nothing.
+//! All four headline scores — shape, placement, order and ink — are measured
+//! across the whole reference character, so a missing stroke is penalised
+//! everywhere it should be and a blank canvas scores zero rather than collecting
+//! easy marks for a flawless ordering of nothing.
 //!
-//! Separating the two means a character written beautifully but in the wrong
+//! Separating them means a character written beautifully but in the wrong
 //! order still reports as legible, with the order faults called out
 //! individually — which is exactly the feedback a learner needs.
 
 use serde::{Deserialize, Serialize};
 
 use crate::geom::{self, Point};
+use crate::raster::{Ink, INK_WIDTH};
 
 /// Normalised shape distance at which the shape score reaches zero.
 ///
@@ -58,6 +66,27 @@ const W_POSITION: f64 = 0.40;
 /// Below these per-stroke scores a stroke is reported as faulty.
 const SHAPE_OK: f32 = 0.60;
 const POSITION_OK: f32 = 0.60;
+/// Per-stroke ink agreement (see [`crate::raster`]) below which a stroke is
+/// reported as too faint, and at which the character stops being legible.
+pub const INK_OK: f32 = 0.60;
+
+/// Weights of the four headline measures in the 0..=100 score.
+///
+/// Equal, and exact binary fractions, so a flawless attempt sums to exactly
+/// `1.0` and scores exactly `100` rather than `99.999…` — which the interface's
+/// contract test pins. Shape, placement, order and ink answer four independent
+/// questions ("is the stroke the right shape", "is it in the right place", "was
+/// it drawn in the right sequence", "is there ink on the paper"), and M4 exists
+/// because the fourth was previously worth nothing at all. A character written
+/// with a third of the ink it needs is not an "excellent" attempt, and with a
+/// token weight of `1/8` it still scored 92; an equal share puts it at 85 and
+/// in the "good" band, alongside the "not yet legible" badge the threshold
+/// measures raise. The selfcheck tolerance table was re-measured when this
+/// changed; see `ROADMAP.md` M4 and `HANDOVER.md`.
+const HEADLINE_SHAPE: f32 = 0.25;
+const HEADLINE_POSITION: f32 = 0.25;
+const HEADLINE_ORDER: f32 = 0.25;
+const HEADLINE_INK: f32 = 0.25;
 
 /// Tunables for a grading run.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,6 +103,21 @@ pub struct GradeOptions {
     /// memory on a trackpad. Trace mode turns this off so that drifting off the
     /// guide is penalised.
     pub global_fit: bool,
+    /// Width, in design units out of 1024, of the ink the attempt was **actually
+    /// drawn with**. The interface passes the width it painted the stroke with,
+    /// so the ink measure compares like with like; [`INK_WIDTH`] is the canvas
+    /// default and the width a correct trace is measured against. A device that
+    /// reports real pen width (a stylus, or a velocity-thickened brush) sets this
+    /// per attempt and a stroke put down with too little ink is then caught.
+    ///
+    /// Defaulted on deserialisation: an older frontend that does not send the
+    /// field gets the canvas default rather than a hard failure.
+    #[serde(default = "default_ink_width")]
+    pub ink_width: f32,
+}
+
+fn default_ink_width() -> f32 {
+    INK_WIDTH
 }
 
 impl Default for GradeOptions {
@@ -82,6 +126,7 @@ impl Default for GradeOptions {
             resample_k: 16,
             min_stroke_len: 12.0,
             global_fit: true,
+            ink_width: INK_WIDTH,
         }
     }
 }
@@ -110,6 +155,11 @@ pub enum Verdict {
     WrongDirection,
     /// Correct stroke, written at the wrong point in the sequence.
     OutOfOrder,
+    /// The right stroke in the right place, but not enough ink: the path is
+    /// there and the ink is not. Only the raster measure can see this — the
+    /// shape score is scale-invariant and the placement score does not look at
+    /// width at all.
+    Faint,
     /// Never written.
     Missing,
 }
@@ -169,6 +219,11 @@ pub struct StrokeVerdict {
     pub verdict: Verdict,
     pub shape: f32,
     pub position: f32,
+    /// How much of this stroke's ink the attempt put down, `0..=1`, with `1.0`
+    /// being what a correct trace reaches at the attempt's pen width. `0.0` when
+    /// the stroke was never written. This is the only measure that can see a
+    /// stroke drawn too thin.
+    pub ink: f32,
     /// Combined quality of this stroke, 0..=1.
     pub score: f32,
 }
@@ -189,6 +244,15 @@ pub struct GradeReport {
     pub assignment: Vec<Option<usize>>,
     pub shape_score: f32,
     pub position_score: f32,
+    /// How much of the character's ink was put down, `0..=1`, averaged over the
+    /// reference strokes with anything unwritten counting zero. `1.0` means
+    /// every stroke reached as much of the outline as a correct trace at the
+    /// nominal pen width can. See [`crate::raster`].
+    pub ink_score: f32,
+    /// How much of the ink a correct trace would touch that the attempt touched,
+    /// `0..=1`. This is the "you never drew that part" signal: overshooting ink
+    /// costs [`GradeReport::ink_score`] but leaves coverage alone.
+    pub ink_coverage: f32,
     /// How much of the character was written in the correct order, 0..=1.
     /// `1.0` requires every stroke to be present *and* perfectly sequenced.
     pub order_score: f32,
@@ -264,8 +328,39 @@ fn position_score(points: &[Point], reference: &[Point]) -> f32 {
 ///
 /// Both the reference medians and the attempt are expected in display space
 /// (origin top-left, y growing downwards, box `0..=1024`); see [`crate::geom`].
+///
+/// This is the outline-free entry point: the ink measure falls back to comparing
+/// the attempt against the reference *medians* stroked at the attempt's pen
+/// width, which is the most a centre-line-only reference can say. Pass the
+/// character's outline paths to [`grade_with_outlines`] to measure ink against
+/// the real glyph.
 pub fn grade(
     reference_medians: &[Vec<Point>],
+    attempt: &[Vec<Point>],
+    options: &GradeOptions,
+) -> GradeReport {
+    grade_inner(reference_medians, None, attempt, options)
+}
+
+/// Grade `attempt` against a reference character's medians *and* its ink.
+///
+/// `reference_outlines` are the stored SVG outline paths, in font space, one per
+/// stroke in stroke order — the same paths the interface fills as the faint
+/// guide. They are what lets the ink measure see a stroke that was drawn far too
+/// thin or that overshoots the character; with no outline, that part of the
+/// report degrades to the medians-only comparison instead of failing.
+pub fn grade_with_outlines(
+    reference_medians: &[Vec<Point>],
+    reference_outlines: &[String],
+    attempt: &[Vec<Point>],
+    options: &GradeOptions,
+) -> GradeReport {
+    grade_inner(reference_medians, Some(reference_outlines), attempt, options)
+}
+
+fn grade_inner(
+    reference_medians: &[Vec<Point>],
+    reference_outlines: Option<&[String]>,
     attempt: &[Vec<Point>],
     options: &GradeOptions,
 ) -> GradeReport {
@@ -351,7 +446,17 @@ pub fn grade(
         out_of_order[j] = order_flags[pos];
     }
 
-    // 6. Assemble per-stroke feedback.
+    // 6. Ink, on the final pairing and after any fitting, so a character drawn
+    // correctly but smaller than the box is judged on where it ended up.
+    let ink = ink_scores(
+        reference_medians,
+        reference_outlines,
+        &kept,
+        &user_of_ref,
+        options.ink_width,
+    );
+
+    // 7. Assemble per-stroke feedback.
     let mut strokes = Vec::with_capacity(n_ref);
     for j in 0..n_ref {
         let Some(i) = user_of_ref[j] else {
@@ -361,11 +466,16 @@ pub fn grade(
                 verdict: Verdict::Missing,
                 shape: 0.0,
                 position: 0.0,
+                ink: 0.0,
                 score: 0.0,
             });
             continue;
         };
         let m = metrics[i][j].expect("matched pairs were scored");
+        // Faint is judged last of all: a stroke that is also the wrong shape, in
+        // the wrong place, backwards or out of order has a more useful thing to
+        // say about it than "not enough ink", and only the ink measure can see
+        // the case where everything else is right.
         let verdict = if m.shape < SHAPE_OK {
             Verdict::ShapeOff
         } else if m.position < POSITION_OK {
@@ -374,6 +484,8 @@ pub fn grade(
             Verdict::WrongDirection
         } else if out_of_order[j] {
             Verdict::OutOfOrder
+        } else if ink.per_stroke[j] < INK_OK {
+            Verdict::Faint
         } else {
             Verdict::Correct
         };
@@ -383,16 +495,17 @@ pub fn grade(
             verdict,
             shape: m.shape,
             position: m.position,
+            ink: ink.per_stroke[j],
             score: 0.5 * m.shape + 0.5 * m.position,
         });
     }
 
-    // 7. Aggregate. Every score is measured across the *whole* reference
+    // 8. Aggregate. Every score is measured across the *whole* reference
     // character, with unwritten strokes counting as zero. An incomplete attempt
-    // is therefore penalised consistently in shape, placement and order, and a
-    // blank canvas scores nothing at all. Measuring order only over the strokes
-    // that were written would let "I wrote one stroke correctly" or even "I
-    // wrote nothing" collect full marks for stroke order.
+    // is therefore penalised consistently in shape, placement, ink and order,
+    // and a blank canvas scores nothing at all. Measuring order only over the
+    // strokes that were written would let "I wrote one stroke correctly" or even
+    // "I wrote nothing" collect full marks for stroke order.
     let denom = n_ref.max(1) as f32;
     let matched = strokes.iter().filter(|s| s.user_index.is_some()).count();
     let coverage = if n_ref == 0 {
@@ -402,9 +515,14 @@ pub fn grade(
     };
     let shape_score = strokes.iter().map(|s| s.shape).sum::<f32>() / denom;
     let position_score = strokes.iter().map(|s| s.position).sum::<f32>() / denom;
+    let ink_score = ink.score;
     let order_score = coverage * ordered_score;
-    let content = 0.6 * shape_score + 0.4 * position_score;
-    let overall = (100.0 * (0.70 * content + 0.30 * order_score)).clamp(0.0, 100.0);
+    let overall = (100.0
+        * (HEADLINE_SHAPE * shape_score
+            + HEADLINE_POSITION * position_score
+            + HEADLINE_ORDER * order_score
+            + HEADLINE_INK * ink_score))
+        .clamp(0.0, 100.0);
     let grade = Grade::from_score(overall);
 
     GradeReport {
@@ -414,18 +532,111 @@ pub fn grade(
         count_ok: n_user == n_ref,
         shape_score,
         position_score,
+        ink_score,
+        ink_coverage: ink.coverage,
         order_score,
         overall,
+        // Ink is part of legibility, not a separate badge: a character written
+        // with far too little ink — or scribbled over with far too much — is not
+        // legible however well its path was traced. A correct trace scores 1.0,
+        // so this cannot fail an attempt the centre-line measures already
+        // accepted. Coverage is deliberately *not* a gate: the parts of the
+        // glyph a wobbling but correctly-inked stroke misses are a placement
+        // fault, already measured above, and gating on them too cost 5% of the
+        // "sloppy" tolerance row for nothing.
         legible: n_ref > 0
             && n_user == n_ref
             && shape_score >= 0.60
-            && position_score >= 0.60,
+            && position_score >= 0.60
+            && ink_score >= INK_OK,
         order_correct: n_user == n_ref && order_score >= 0.999,
         grade,
         first_error: strokes.iter().find(|s| s.verdict.is_error()).map(|s| s.ref_index),
         strokes,
         assignment,
         fit: fit_info,
+    }
+}
+
+/// How the attempt's ink compares with the character's own ink.
+struct InkScores {
+    /// Mean ink-amount agreement over the reference strokes, `0..=1`, unwritten
+    /// strokes counting zero. `1.0` is what a correct trace scores.
+    score: f32,
+    /// Fraction of the ink a correct trace touches that the attempt touched.
+    coverage: f32,
+    /// Agreement for each reference stroke, in reference order.
+    per_stroke: Vec<f32>,
+}
+
+/// Measure the attempt's ink against the reference character's ink.
+///
+/// Two questions, both asked per reference stroke and averaged over all of them:
+///
+/// * **How much ink?** The attempt's ink area against the area a correct trace
+///   at the nominal pen width ([`INK_WIDTH`]) would put down. This is the
+///   measure a centre-line cannot make: a pen a third of the width reads about
+///   `0.33`, and a wild overshoot reads the same from the other side. It is
+///   deliberately blind to *where* the ink went, because placement is graded
+///   separately and counting it twice is what makes a wobbly hand illegible.
+/// * **Coverage?** How much of the glyph's own ink the attempt reached, from the
+///   stored outlines — the "you never drew that part" signal.
+///
+/// The baseline width is the wider of the nominal pen and the attempt's reported
+/// width, so a device that honestly draws fatter than the canvas is not punished
+/// for it; only too *little* ink is a fault.
+fn ink_scores(
+    reference_medians: &[Vec<Point>],
+    reference_outlines: Option<&[String]>,
+    kept: &[Kept],
+    user_of_ref: &[Option<usize>],
+    width: f32,
+) -> InkScores {
+    let n_ref = reference_medians.len();
+    let ideal_width = INK_WIDTH.max(width);
+    let mut per_stroke = vec![0.0f32; n_ref];
+    let mut reference_all = Ink::empty();
+    let mut ideal_all = Ink::empty();
+    let mut attempt_all = Ink::empty();
+
+    for j in 0..n_ref {
+        // What a correct trace of this stroke would put down.
+        let ideal = Ink::from_strokes(std::slice::from_ref(&reference_medians[j]), ideal_width);
+        let outline = reference_outlines
+            .and_then(|outlines| outlines.get(j))
+            .map(|path| Ink::from_outlines(&[path.as_str()]))
+            .filter(|ink| !ink.is_empty());
+        // With no usable outline the stroke's own band *is* the glyph ink, which
+        // is what a centre-line-only reference can honestly say.
+        let reference = outline.unwrap_or_else(|| ideal.clone());
+
+        let attempt = match user_of_ref[j] {
+            Some(i) => Ink::from_strokes(std::slice::from_ref(&kept[i].points), width),
+            None => Ink::empty(),
+        };
+        per_stroke[j] = if attempt.is_empty() {
+            0.0
+        } else {
+            attempt.amount_agreement(&ideal)
+        };
+
+        reference_all.or_with(&reference);
+        ideal_all.or_with(&ideal);
+        attempt_all.or_with(&attempt);
+    }
+
+    let coverable = ideal_all.intersection_count(&reference_all);
+    let covered = attempt_all.intersection_count(&reference_all);
+    let coverage = if coverable == 0 {
+        1.0
+    } else {
+        (covered as f32 / coverable as f32).min(1.0)
+    };
+
+    InkScores {
+        score: per_stroke.iter().sum::<f32>() / n_ref.max(1) as f32,
+        coverage,
+        per_stroke,
     }
 }
 
@@ -1063,5 +1274,193 @@ mod tests {
         assert_eq!(report.strokes[0].verdict, Verdict::Correct);
         assert_eq!(report.strokes[1].verdict, Verdict::OutOfOrder);
         assert_eq!(report.strokes[2].verdict, Verdict::OutOfOrder);
+    }
+
+    // ---- raster ink --------------------------------------------------------
+
+    /// A filled rectangle in display space, as SVG path data in font space.
+    ///
+    /// The stored outlines are font space (y up); the grader and the canvas are
+    /// display space (y down), which is the flip `Point::from_font` applies.
+    fn ink_rect(x0: f32, y0: f32, x1: f32, y1: f32) -> String {
+        let (top, bottom) = (900.0 - y0, 900.0 - y1);
+        format!("M {x0} {top} L {x1} {top} L {x1} {bottom} L {x0} {bottom} Z")
+    }
+
+    /// 十 with real ink: two 46-unit bars drawn around the stroke medians.
+    fn shi_with_ink() -> (Vec<Vec<Point>>, Vec<String>) {
+        let outlines = vec![
+            ink_rect(120.0, 377.0, 900.0, 423.0), // 横
+            ink_rect(489.0, 120.0, 535.0, 900.0), // 丨
+        ];
+        (shi_reference(), outlines)
+    }
+
+    /// Grade with the pen width a third of the canvas's.
+    fn third_width_options() -> GradeOptions {
+        GradeOptions {
+            ink_width: GradeOptions::default().ink_width / 3.0,
+            ..GradeOptions::default()
+        }
+    }
+
+    #[test]
+    fn a_perfect_trace_puts_down_exactly_the_ink_it_should() {
+        let (medians, outlines) = shi_with_ink();
+        // At the nominal pen width, whatever mode grading is in, a correct trace
+        // reaches everything a correct trace can reach: the score is normalised
+        // against exactly that. This is what keeps "perfect" reachable for every
+        // character and every font weight.
+        for options in [GradeOptions::default(), GradeOptions::tracing()] {
+            let report = grade_with_outlines(&medians, &outlines, &medians, &options);
+            assert_eq!(report.ink_score, 1.0, "pen width {}", options.ink_width);
+            assert_eq!(report.ink_coverage, 1.0);
+            assert!(report.strokes.iter().all(|s| s.verdict == Verdict::Correct));
+            assert!(report.strokes.iter().all(|s| s.ink == 1.0));
+            assert!(report.is_perfect(), "{report:#?}");
+        }
+
+        // A pen *thinner* than the canvas draws with is a real difference, so
+        // the same correct path no longer reaches the ink the guide shows.
+        let thin = grade_with_outlines(&medians, &outlines, &medians, &third_width_options());
+        assert!(thin.ink_score < INK_OK);
+    }
+
+    #[test]
+    fn a_perfect_attempt_scores_exactly_one_hundred() {
+        // Not "about 100": the four weights are exact binary fractions and a
+        // correct trace scores 1.0 on all four, so the sum is exactly 1.0. The
+        // interface's contract test asserts this too, and a rounding change here
+        // would silently make "100/100" read 99.
+        let reference = shi_reference();
+        let report = grade(&reference, &reference, &GradeOptions::default());
+        assert_eq!(report.overall, 100.0);
+        assert_eq!(report.grade, Grade::Excellent);
+    }
+
+    #[test]
+    fn a_third_of_the_ink_falls_below_the_legibility_bar() {
+        let (medians, outlines) = shi_with_ink();
+        let full = grade_with_outlines(&medians, &outlines, &medians, &GradeOptions::default());
+        let thin = grade_with_outlines(&medians, &outlines, &medians, &third_width_options());
+
+        // The same stroke at the correct width passes.
+        assert!(full.legible);
+        assert!(full.strokes.iter().all(|s| s.ink >= INK_OK));
+
+        // A third of the width puts every stroke below the bar, and the
+        // character is no longer legible.
+        for stroke in &thin.strokes {
+            assert!(
+                stroke.ink < INK_OK,
+                "stroke {} scored {:.2} at a third width",
+                stroke.ref_index + 1,
+                stroke.ink
+            );
+            assert_eq!(stroke.verdict, Verdict::Faint);
+        }
+        assert!(thin.ink_score < INK_OK, "ink score {}", thin.ink_score);
+        assert!(!thin.legible, "{thin:#?}");
+        assert!(!thin.is_perfect());
+
+        // Nothing else noticed: the path, the placement and the order were
+        // perfect in both attempts, which is exactly why the ink measure exists.
+        assert_eq!(thin.shape_score, full.shape_score);
+        assert_eq!(thin.position_score, full.position_score);
+        assert_eq!(thin.order_score, full.order_score);
+        assert!(thin.overall < full.overall);
+        // ...and a character with a third of its ink is not an "excellent"
+        // attempt, which is why ink carries a full quarter of the score.
+        assert!(thin.overall < 92.0, "overall {}", thin.overall);
+    }
+
+    #[test]
+    fn a_thin_pen_is_caught_without_an_outline_too() {
+        // The medians-only entry point has no glyph ink to compare against, but
+        // it can still tell a thin pen from the width the canvas draws with.
+        let reference = shi_reference();
+        let report = grade(&reference, &reference, &third_width_options());
+        assert!(report.strokes.iter().all(|s| s.verdict == Verdict::Faint));
+        assert!(!report.legible);
+        assert!(grade(&reference, &reference, &GradeOptions::default()).legible);
+    }
+
+    #[test]
+    fn overshooting_adds_ink_outside_the_character_without_covering_less() {
+        let (medians, outlines) = shi_with_ink();
+        // Tracing mode, so the global fit does not absorb a stroke that sticks
+        // out of the character — that fit is deliberate and tested elsewhere.
+        let options = GradeOptions::tracing();
+        // The horizontal stroke drawn straight through the character and well
+        // out the other side; the vertical one untouched.
+        let overshoot = vec![line((0.0, 400.0), (1024.0, 400.0), 5), medians[1].clone()];
+        let straight = grade_with_outlines(&medians, &outlines, &medians, &options);
+        let report = grade_with_outlines(&medians, &outlines, &overshoot, &options);
+
+        assert!(
+            report.strokes[0].ink < straight.strokes[0].ink,
+            "overshooting ink scored {:.2}, a correct stroke {:.2}",
+            report.strokes[0].ink,
+            straight.strokes[0].ink
+        );
+        // The fault is extra ink, not missing ink, so coverage is untouched and
+        // the untouched stroke is unaffected.
+        assert_eq!(report.ink_coverage, 1.0);
+        assert_eq!(report.strokes[1].ink, 1.0);
+    }
+
+    #[test]
+    fn ink_survives_a_reasonably_placed_attempt() {
+        // A hand-wobbly trace must not be failed by the ink measure: the band is
+        // the same width wherever the stroke wandered, so the score dips — the
+        // ink really did miss the guide by a few units — but stays well clear of
+        // the bar.
+        let (medians, outlines) = shi_with_ink();
+        let wobble: Vec<Vec<Point>> = medians
+            .iter()
+            .map(|s| {
+                s.iter()
+                    .enumerate()
+                    .map(|(i, p)| Point::new(p.x + (i % 3) as f32 * 6.0 - 6.0, p.y))
+                    .collect()
+            })
+            .collect();
+        let report = grade_with_outlines(&medians, &outlines, &wobble, &GradeOptions::default());
+        assert!(
+            report.ink_score > INK_OK + 0.15,
+            "ink {} on a six-unit wobble",
+            report.ink_score
+        );
+        assert!(report.ink_score < 1.0, "a wobble must not read as perfect");
+        assert!(report.legible, "{report:#?}");
+    }
+
+    #[test]
+    fn a_missing_outline_falls_back_instead_of_failing() {
+        // An unparseable outline must not make a correct attempt unscoreable.
+        let reference = shi_reference();
+        let outlines = vec!["not a path".to_string(), "".to_string()];
+        let report =
+            grade_with_outlines(&reference, &outlines, &reference, &GradeOptions::default());
+        assert_eq!(report.ink_score, 1.0);
+        assert_eq!(report.ink_coverage, 1.0);
+        assert!(report.legible);
+        assert_eq!(report.overall, 100.0);
+    }
+
+    #[test]
+    fn ink_counts_nothing_for_a_stroke_that_was_never_written() {
+        let (medians, outlines) = shi_with_ink();
+        let report = grade_with_outlines(
+            &medians,
+            &outlines,
+            &medians[..1],
+            &GradeOptions::default(),
+        );
+        assert_eq!(report.strokes[1].verdict, Verdict::Missing);
+        assert_eq!(report.strokes[1].ink, 0.0);
+        // Half the character's ink is missing, so half the ink score.
+        assert!((report.ink_score - 0.5).abs() < 1e-6, "{}", report.ink_score);
+        assert!((report.ink_coverage - 0.5).abs() < 0.15, "{}", report.ink_coverage);
     }
 }

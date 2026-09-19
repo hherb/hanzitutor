@@ -5,8 +5,8 @@
 //! testable without opening a window — see `tests/ipc_contract.rs`.
 
 use hanzi_core::{
-    build_lessons, grade, Character, CursorView, GradeOptions, GradeReport, Lesson, Point,
-    ProgressView, ReviewView, TextLookup, VocabView, Word,
+    build_lessons, grade_with_outlines, Character, CursorView, GradeOptions, GradeReport, Lesson,
+    Point, ProgressView, ReviewView, TextLookup, VocabView, Word,
 };
 use serde::Serialize;
 use tauri::State;
@@ -105,6 +105,10 @@ impl AppState {
 
     /// Grade a handwritten attempt. `strokes` are in display space (origin
     /// top-left, y downwards, within a 1024x1024 box), in drawing order.
+    ///
+    /// The character's own stroke outlines go in too, so the ink measure
+    /// compares against the ink the guide shows rather than only against the
+    /// centre-line. See [`hanzi_core::grade_with_outlines`].
     pub fn grade(
         &self,
         ch: char,
@@ -115,7 +119,12 @@ impl AppState {
             .dataset
             .get(ch)
             .ok_or_else(|| format!("'{ch}' is not in the character dataset"))?;
-        Ok(grade(character.reference_medians(), strokes, options))
+        Ok(grade_with_outlines(
+            character.reference_medians(),
+            &character.outlines,
+            strokes,
+            options,
+        ))
     }
 }
 

@@ -17,6 +17,7 @@ export type Verdict =
   | "position_off"
   | "wrong_direction"
   | "out_of_order"
+  | "faint"
   | "missing";
 
 export type Grade = "excellent" | "good" | "fair" | "poor";
@@ -28,6 +29,12 @@ export interface StrokeVerdict {
   verdict: Verdict;
   shape: number;
   position: number;
+  /**
+   * How much of the ink a correct stroke needs that this one put down, 0..1.
+   * The only measure that can see a stroke drawn too thin: the shape score is
+   * scale-invariant, so it cannot see width at all.
+   */
+  ink: number;
   score: number;
 }
 
@@ -47,6 +54,20 @@ export interface GradeReport {
   assignment: (number | null)[];
   shapeScore: number;
   positionScore: number;
+  /**
+   * How much ink was put down, 0..1, averaged over the character's strokes with
+   * anything unwritten counting zero. 1 means every stroke laid down as much ink
+   * as a correct trace at the canvas pen width; about 0.33 means a pen a third
+   * of that width.
+   */
+  inkScore: number;
+  /**
+   * How much of the character's own ink was reached, 0..1 — the "you never drew
+   * that part" signal. Reported rather than scored: a wobbly but correctly inked
+   * stroke also misses part of the outline, and that is a placement fault the
+   * position score already covers.
+   */
+  inkCoverage: number;
   orderScore: number;
   overall: number;
   legible: boolean;
@@ -133,6 +154,12 @@ export interface GradeOptions {
   resampleK: number;
   minStrokeLen: number;
   globalFit: boolean;
+  /**
+   * Width, in design units, of the ink the canvas paints the attempt with. The
+   * grader rasterises the strokes at this width, so it must be the width the
+   * board actually drew them with.
+   */
+  inkWidth: number;
 }
 
 // ---- personal vocabulary list ---------------------------------------------

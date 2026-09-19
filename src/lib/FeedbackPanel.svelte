@@ -18,10 +18,11 @@
 
   const percent = (value: number) => Math.round(value * 100);
 
-  /** The three independent measures, kept typed as an array of records. */
+  /** The four independent measures, kept typed as an array of records. */
   const metrics = $derived([
     { label: "Shape", value: report.shapeScore },
     { label: "Placement", value: report.positionScore },
+    { label: "Ink", value: report.inkScore },
     { label: "Order", value: report.orderScore },
   ]);
 
@@ -86,6 +87,28 @@
     if (order.length > 0) {
       notes.push(
         `Stroke ${order.join(", ")} ${order.length === 1 ? "is" : "are"} out of order.`,
+      );
+    }
+
+    // The ink measure's own fault, and the only one the other three cannot see:
+    // the path and the placement are right, there is simply not enough ink. It
+    // is reported after the path faults, which are the more useful thing to fix
+    // first.
+    const faint = list("faint");
+    if (faint.length > 0) {
+      notes.push(
+        `Stroke ${faint.join(", ")} ${faint.length === 1 ? "has" : "have"} too little ink — ` +
+          `the path is right, but the stroke is far thinner than the character needs.`,
+      );
+    }
+
+    // Coverage is how much of the character's own ink was reached. It is not
+    // part of the score (a wobbly stroke misses some of the outline without
+    // being wrong), so it is only worth mentioning when it is badly short.
+    if (report.inkCoverage < 0.6 && report.countOk) {
+      notes.push(
+        `Your strokes reached only ${percent(report.inkCoverage)}% of the ink this ` +
+          `character is made of — some strokes are much shorter or thinner than they should be.`,
       );
     }
 
@@ -162,7 +185,7 @@
             </span>
             <span class="verdict-name">{VERDICT_LABEL[stroke.verdict]}</span>
             <span class="scores">
-              shape {percent(stroke.shape)}% · place {percent(stroke.position)}%
+              shape {percent(stroke.shape)}% · place {percent(stroke.position)}% · ink {percent(stroke.ink)}%
             </span>
           </li>
         {/each}

@@ -211,6 +211,8 @@ fn report_serialises_with_camel_case_fields_and_snake_case_verdicts() {
             "assignment",
             "shapeScore",
             "positionScore",
+            "inkScore",
+            "inkCoverage",
             "orderScore",
             "overall",
             "legible",
@@ -229,6 +231,7 @@ fn report_serialises_with_camel_case_fields_and_snake_case_verdicts() {
             "verdict",
             "shape",
             "position",
+            "ink",
             "score",
         ],
     );
@@ -291,6 +294,18 @@ fn grade_options_accept_camel_case_from_the_frontend() {
     assert_eq!(parsed.resample_k, 16);
     assert_eq!(parsed.min_stroke_len, 12.0);
     assert!(!parsed.global_fit);
+    // Options sent without a pen width predate the raster measure; they get the
+    // canvas default rather than a deserialisation failure.
+    assert_eq!(parsed.ink_width, hanzi_core::INK_WIDTH);
+
+    let explicit: GradeOptions = serde_json::from_value(serde_json::json!({
+        "resampleK": 16,
+        "minStrokeLen": 12,
+        "globalFit": true,
+        "inkWidth": 20.0,
+    }))
+    .expect("the pen width is part of the contract");
+    assert_eq!(explicit.ink_width, 20.0);
 }
 
 #[test]
