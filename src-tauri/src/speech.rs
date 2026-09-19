@@ -1,7 +1,11 @@
 //! Pronunciation, through the operating system's own speech synthesiser.
 //!
 //! Nothing is downloaded and nothing leaves the machine. On macOS this drives
-//! `say`, which ships with the system and already knows how to read Chinese.
+//! `say`, which ships with the system and already knows how to read Chinese. On
+//! iOS it speaks through `AVSpeechSynthesizer` **in process**, because there is
+//! no `say` binary there and the app sandbox would refuse to spawn one anyway.
+//! Both backends pick a voice with the same rule ([`pick_voice`]), so the
+//! mainland-Mandarin preference is one decision rather than two.
 //!
 //! The **character** is spoken rather than its pinyin: `say` has a Chinese
 //! lexicon, so handing it 汉 produces the Mandarin reading, whereas handing an
@@ -10,12 +14,30 @@
 //! so it is safe to offer in recall mode — hearing the sound and producing the
 //! glyph is exactly the skill being trained.
 
-// `Child` is the stored handle on every platform; the two that start a process
-// are only used by the macOS backend below.
-use std::process::Child;
+// The macOS backend drives a process, so that is where the process types live.
 #[cfg(target_os = "macos")]
-use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::process::{Child, Command, Stdio};
+#[cfg(not(target_os = "ios"))]
+use std::sync::Mutex;
+use std::sync::OnceLock;
+
+// The iOS backend speaks in process. AVFoundation's objects are not `Send`, so
+// they are created and used on the main thread and never stored in `Speaker`
+// (which is shared): see `with_main`.
+#[cfg(target_os = "ios")]
+use std::cell::RefCell;
+#[cfg(target_os = "ios")]
+use dispatch2::DispatchQueue;
+#[cfg(target_os = "ios")]
+use objc2::rc::Retained;
+#[cfg(target_os = "ios")]
+use objc2::MainThreadMarker;
+#[cfg(target_os = "ios")]
+use objc2_avf_audio::{
+    AVSpeechBoundary, AVSpeechSynthesisVoice, AVSpeechSynthesizer, AVSpeechUtterance,
+};
+#[cfg(target_os = "ios")]
+use objc2_foundation::NSString;
 
 /// A voice as reported by `say -v '?'`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,12 +59,23 @@ const VOICE_OVERRIDE: &str = "HANZI_TUTOR_VOICE";
 /// The longest string that will be handed to the synthesiser.
 const MAX_UTTERANCE: usize = 64;
 
+/// What "the utterance in flight" is on this platform.
+///
+/// macOS holds the `say` process so that killing it stops the speech. iOS holds
+/// nothing here — its synthesiser is not `Send` and so cannot live in the shared
+/// [`Speaker`]; it lives on the main thread instead (see [`with_main`]).
+#[cfg(target_os = "macos")]
+type Utterance = Child;
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+type Utterance = ();
+
 /// Pronunciation, with at most one utterance in flight.
 #[derive(Default)]
 pub struct Speaker {
-    /// The running `say` process, kept so a new utterance can cut off the last
-    /// one instead of talking over it.
-    current: Mutex<Option<Child>>,
+    /// The utterance in flight, kept so a new one can cut off the last instead
+    /// of talking over it.
+    #[cfg(not(target_os = "ios"))]
+    current: Mutex<Option<Utterance>>,
     /// Resolved on first use: enumerating voices takes about a second, which is
     /// too slow to pay at startup. `AppState` warms it on a background thread.
     voice: OnceLock<Option<Voice>>,
@@ -99,28 +132,45 @@ impl Speaker {
             Ok(())
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "ios")]
         {
-            // Only macOS is implemented so far. Returning a clear error beats
-            // shelling out to something that has not been verified.
+            speak_on_main(text, &voice.name)
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        {
+            // Windows and Linux are the remaining backends (M6). Returning a
+            // clear error beats shelling out to something unverified.
             let _ = voice;
             Err(
                 "pronunciation is not implemented on this platform yet; \
-                 it currently uses the macOS speech synthesiser"
+                 it uses the system synthesiser on macOS and iOS"
                     .into(),
             )
         }
     }
 
-    /// Stop the current utterance, if any, and reap the process.
+    /// Stop the current utterance, if any.
+    ///
+    /// On macOS that means killing the `say` process and reaping it; on iOS,
+    /// asking the synthesiser to stop — it keeps its own queue, and dropping it
+    /// would leave the queue speaking with nothing able to stop it.
     pub fn stop(&self) {
-        let mut slot = self.lock();
-        if let Some(mut child) = slot.take() {
-            // A child that already finished makes `kill` fail harmlessly; the
-            // `wait` afterwards is what actually reaps it.
-            let _ = child.kill();
-            let _ = child.wait();
+        #[cfg(target_os = "macos")]
+        {
+            let mut slot = self.lock();
+            if let Some(mut child) = slot.take() {
+                // A child that already finished makes `kill` fail harmlessly;
+                // the `wait` afterwards is what actually reaps it.
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
+        #[cfg(target_os = "ios")]
+        // Cutting off a queued utterance cannot be a no-op: the synthesiser
+        // would finish it in its own time, which is the one thing "stop" may not
+        // do. See `stop_on_main`.
+        stop_on_main();
     }
 
     #[cfg(target_os = "macos")]
@@ -129,10 +179,99 @@ impl Speaker {
     }
 
     /// Take the lock, ignoring poisoning: a panic while holding it cannot leave
-    /// the child handle in a state that matters.
-    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Child>> {
+    /// the utterance handle in a state that matters.
+    #[cfg(not(target_os = "ios"))]
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Utterance>> {
         self.current.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+#[cfg(target_os = "ios")]
+thread_local! {
+    /// The synthesiser, on the only thread allowed to touch it.
+    ///
+    /// A `thread_local` rather than a field or a global because that is what
+    /// makes "main thread only" structural instead of a promise: the value is
+    /// created by the thread that uses it, and the newtype machinery that keeps
+    /// AVFoundation objects out of `Send` structs never has to be worked around.
+    /// Everything that reaches it goes through [`with_main`].
+    static SYNTHESIZER: RefCell<Option<Retained<AVSpeechSynthesizer>>> =
+        const { RefCell::new(None) };
+}
+
+/// Run `work` on the main thread and wait for its result.
+///
+/// Only the main thread may use AVFoundation's objects, and Tauri commands do
+/// not promise which thread they arrive on, so every call goes through here. On
+/// the main thread already it runs inline — dispatching synchronously to the
+/// queue you are standing on is a deadlock, and the round trip buys nothing.
+#[cfg(target_os = "ios")]
+fn with_main<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+    if MainThreadMarker::new().is_some() {
+        return work();
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    DispatchQueue::main().exec_async(move || {
+        let _ = sender.send(work());
+    });
+    receiver
+        .recv()
+        .expect("the main thread dropped the speech work without running it")
+}
+
+/// Speak `text` in the voice called `name`, on the main thread.
+#[cfg(target_os = "ios")]
+fn speak_on_main(text: &str, name: &str) -> Result<(), String> {
+    let text = text.to_string();
+    let name = name.to_string();
+    with_main(move || {
+        let utterance = utterance_for(&text, &name)?;
+        SYNTHESIZER.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let synthesizer = slot.get_or_insert_with(|| {
+                // SAFETY: on the main thread, and the object is kept in this
+                // thread's `SYNTHESIZER`, so it outlives the utterance.
+                unsafe { AVSpeechSynthesizer::new() }
+            });
+            // SAFETY: as above.
+            unsafe { synthesizer.speakUtterance(&utterance) };
+            Ok(())
+        })
+    })
+}
+
+/// Stop whatever is being spoken, on the main thread.
+#[cfg(target_os = "ios")]
+fn stop_on_main() {
+    with_main(|| {
+        SYNTHESIZER.with(|slot| {
+            if let Some(synthesizer) = slot.borrow().as_ref() {
+                // SAFETY: on the main thread, and the object is older than this
+                // borrow.
+                unsafe { synthesizer.stopSpeakingAtBoundary(AVSpeechBoundary::Immediate) };
+            }
+        });
+    });
+}
+
+/// An utterance for `text`, spoken in the voice called `name`.
+///
+/// The voice is looked up by name each time rather than held as an object: the
+/// resolved [`Voice`] is platform-neutral — a name and a locale, so the status
+/// line reads the same on both systems — and the alternative, an identifier
+/// smuggled through `locale`, would make that field a lie.
+#[cfg(target_os = "ios")]
+fn utterance_for(text: &str, name: &str) -> Result<Retained<AVSpeechUtterance>, String> {
+    let string = NSString::from_str(text);
+    // SAFETY: on the main thread (see `with_main`).
+    let utterance = unsafe { AVSpeechUtterance::speechUtteranceWithString(&string) };
+    let voices = unsafe { AVSpeechSynthesisVoice::speechVoices() };
+    let wanted = voices
+        .iter()
+        .find(|voice| base_name(&unsafe { voice.name() }.to_string()).eq_ignore_ascii_case(name))
+        .ok_or_else(|| format!("the voice {name:?} is no longer available on this device"))?;
+    unsafe { utterance.setVoice(Some(&wanted)) };
+    Ok(utterance)
 }
 
 impl Drop for Speaker {
@@ -142,10 +281,19 @@ impl Drop for Speaker {
 }
 
 fn no_voice_message() -> String {
-    "no Chinese voice is installed, so pronunciation is unavailable. \
-     Add one in System Settings → Accessibility → Spoken Content → \
-     System Voice → Manage Voices, or set HANZI_TUTOR_VOICE to a voice name."
-        .to_string()
+    // The path through Settings differs enough between the two systems to be
+    // worth getting right: telling someone on a phone to open "System Settings"
+    // sends them looking for a window that does not exist.
+    #[cfg(target_os = "ios")]
+    const WHERE: &str = "Settings → Accessibility → Spoken Content → Voices";
+    #[cfg(not(target_os = "ios"))]
+    const WHERE: &str =
+        "System Settings → Accessibility → Spoken Content → System Voice → Manage Voices";
+
+    format!(
+        "no Chinese voice is installed, so pronunciation is unavailable. \
+         Add one in {WHERE}, or set {VOICE_OVERRIDE} to a voice name."
+    )
 }
 
 /// Pick the voice to use, honouring [`VOICE_OVERRIDE`] first.
@@ -181,7 +329,29 @@ fn list_voices() -> Result<Vec<Voice>, String> {
     Ok(parse_voices(&text))
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Enumerate the installed voices through `AVSpeechSynthesizer`.
+///
+/// iOS reports a BCP-47 tag (`zh-CN`) where macOS reports `zh_CN`; `pick_voice`
+/// normalises the separator, so the same mainland preference holds on both.
+#[cfg(target_os = "ios")]
+fn list_voices() -> Result<Vec<Voice>, String> {
+    // Only `Voice` — two `String`s — crosses back out of the main thread; the
+    // `NSArray` of voices does not leave it.
+    Ok(with_main(|| {
+        // SAFETY: on the main thread (see `with_main`).
+        let voices = unsafe { AVSpeechSynthesisVoice::speechVoices() };
+        voices
+            .iter()
+            .map(|voice| Voice {
+                // SAFETY: as above.
+                name: unsafe { voice.name() }.to_string(),
+                locale: unsafe { voice.language() }.to_string(),
+            })
+            .collect::<Vec<Voice>>()
+    }))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn list_voices() -> Result<Vec<Voice>, String> {
     Ok(Vec::new())
 }
@@ -359,6 +529,49 @@ Sinji               zh_HK    # 你好！我叫善怡。
             .collect::<Vec<_>>();
         assert!(pick_voice(&no_chinese).is_none());
         assert!(pick_voice(&[]).is_none());
+    }
+
+    /// The voices iOS actually reports, captured from the simulator's log: 65
+    /// voices installed, of which these are the Chinese ones.
+    ///
+    /// Genuine names rather than tidy ones because that is exactly what went
+    /// wrong on macOS: a fixture of neat names passed while the real list
+    /// (`Tingting (Chinese (China mainland))`) never matched the preference, and
+    /// the app quietly used another voice.
+    const IOS_VOICES: &[(&str, &str)] = &[
+        ("Daniel", "en-GB"),
+        ("Tingting", "zh-CN"),
+        ("Sinji", "zh-HK"),
+        ("Meijia", "zh-TW"),
+    ];
+
+    #[test]
+    fn picks_the_mainland_voice_from_the_ios_voice_list() {
+        let voices: Vec<Voice> = IOS_VOICES
+            .iter()
+            .map(|(name, locale)| Voice {
+                name: (*name).to_string(),
+                locale: (*locale).to_string(),
+            })
+            .collect();
+        let picked = pick_voice(&voices).expect("iOS ships a Mandarin voice");
+        assert_eq!(picked.name, "Tingting");
+        assert_eq!(picked.locale, "zh-CN");
+    }
+
+    #[test]
+    fn a_device_with_no_chinese_voice_is_reported_rather_than_guessed() {
+        // Nothing Chinese installed: the interface disables pronunciation and
+        // explains, rather than reading Chinese in an English voice.
+        let voices: Vec<Voice> = IOS_VOICES[..1]
+            .iter()
+            .map(|(name, locale)| Voice {
+                name: (*name).to_string(),
+                locale: (*locale).to_string(),
+            })
+            .collect();
+        assert_eq!(pick_voice(&voices), None);
+        assert!(no_voice_message().contains("no Chinese voice"));
     }
 
     #[test]

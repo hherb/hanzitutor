@@ -584,10 +584,16 @@ iPhone is carried when the iPad is not, and practice on it is the point.
   is a toolchain/Tauri-version question rather than a change here, and it is
   recorded with the evidence in `HANDOVER.md` §6. Until it is resolved, a device
   build is a debug build, which is fine for practice and not for distribution.
-- **Pronunciation.** `speech.rs` is still macOS-only, so on iOS the control is
-  disabled and the app says why — honest, but it is one of M9's acceptance
-  criteria. It wants `AVSpeechSynthesizer` in-process, which is the same backend
-  the macOS sandbox case in §7 needs, so the two should be designed together.
+- **Pronunciation — done.** `speech.rs` now has an iOS backend that speaks
+  through `AVSpeechSynthesizer` in process, so the "Hear it" control is live
+  rather than disabled. It shares the voice-selection rule with the macOS
+  backend, so mainland Mandarin is preferred on both — and on iOS that turns out
+  to be the same voice name, `Tingting`. Verified on the simulator (65 voices
+  installed, three Chinese, `Tingting (zh-CN)` chosen; speak, stop a live
+  synthesizer, and speak again all logged as succeeding) and confirmed by ear:
+  the character 的 was heard. The two AVFoundation constraints are recorded in
+  `HANDOVER.md` §6 — the objects are not `Send`, so the work goes to the main
+  thread, and there is deliberately no audio-session override.
 - **Android**, which nothing here has touched.
 
 **Approach.**
@@ -787,7 +793,14 @@ Recorded honestly, because they bound how much the current scores mean:
   starting empty, so the failure is loud; but there is no backup, no export of the
   schedule, and no "open the folder" affordance. A corrupt database is a support
   question with no good answer yet.
-- **Pronunciation is macOS-only.**
+- **Rust crate licences are not individually catalogued.** The notice catalogue
+  covers the bundled *data*, the interface font and SQLite; the several hundred
+  Rust crates in the dependency graph — Tauri's own, and now the `objc2`
+  bindings for AVFAudio — are MIT/Apache-2.0 and are not listed one by one. If
+  the app is ever distributed widely, that is a sweep worth doing rather than a
+  gap to discover during one; it is recorded here because this milestone added
+  to that set.
+- **Pronunciation is macOS and iOS only.**
 - **No CI builds the bundle** (see M5), and **the App Sandbox has never been
   tested — where the speech backend probably does not survive it.** A Mac App
   Store build must be sandboxed, and `src/speech.rs` pronounces by spawning

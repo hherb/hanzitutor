@@ -144,7 +144,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Drawing canvas | Done, human-confirmed | trace + recall modes, colour-coded feedback |
 | Stroke-order animation (M7) | Done | pen sweeps each centre-line, the outline revealed behind it; band width measured per stroke; confirmed by window capture |
 | Input ergonomics (M8) | Done, human-confirmed | click-to-draw beside the corrections switch, on by default where there is a hover and remembered once chosen; both paths produce identical geometry; driven with synthetic pointer events, and the trackpad behaviour confirmed by hand |
-| Pronunciation | Done on macOS | 9 tests; human-confirmed speaking |
+| Pronunciation | Done on macOS and iOS | 11 tests; the iOS voice list is pinned from the simulator's log; human-confirmed hearing 的 on both |
 | Personal vocabulary list | Done | 27 store unit tests; persistence tested through the state layer |
 | iOS app (M9) | Runs on a physical iPhone, human-confirmed | the Rust side cross-compiles unchanged; phone layout verified by simulator screenshot; the scene-lifecycle crash and the black screen behind it are recorded in §6 |
 | Durable study store (M10) | Done | one `hanzi.db`; the old JSON imported once and left byte-identical; the attempt log past the 20 a card shows; WAL, and an uncommitted write leaves nothing |
@@ -755,6 +755,22 @@ downstream of them is covered by the IPC tests, which drive
   runtimes, and `xcrun devicectl` is what distinguishes hardware ("available,
   paired") from the `simulated` column. The one real phone is `HHIP1`, an
   iPhone14,3.
+- **AVFoundation objects are not `Send`, so iOS speech runs on the main thread.**
+  `Retained<AVSpeechSynthesizer>` cannot live in `Speaker` — Tauri requires the
+  shared state to be `Send + Sync`, and objc2 marks these classes main-thread-only
+  by default — so the synthesiser lives in a `thread_local` on the main thread and
+  every call goes through `with_main`, which runs inline when it is already there
+  (dispatching synchronously to the queue you are standing on is a deadlock) and
+  otherwise hops the queue and waits on a channel. Only plain data (`Vec<Voice>`,
+  a `Result`) crosses back. On iOS the `Utterance` field does not exist at all:
+  the macOS backend holds a `say` process, iOS holds nothing, which is why the
+  struct has a `#[cfg]` on that field.
+- **iOS speech deliberately does not touch the audio session.** Forcing
+  `AVAudioSession` to `.playback` would make pronunciation audible with the
+  ringer switch silenced, and would also interrupt whatever the learner is
+  listening to. An app that reads a character aloud is not a media app, so the
+  silent switch is respected; if pronunciation ever seems mute on a phone, that
+  switch is the first thing to check.
 - **iOS 26 and 27 kill an app that has not adopted the scene life cycle — and it
   looks like nothing at all.** On the phone the app showed a black flash, closed,
   and printed nothing to its own log; the only evidence was a crash report
@@ -1040,6 +1056,10 @@ downstream of them is covered by the IPC tests, which drive
   session, or put a build on TestFlight and try *hear it* there. If `say` is
   refused, the macOS backend needs `AVSpeechSynthesizer` in-process — the same
   shape M9 needs for iOS, so settle it before writing M6's three backends. A third
+  option — and now there is a fourth thing to know: **the iOS backend is the
+  shape that fix would take.** `speech.rs` already speaks through
+  `AVSpeechSynthesizer` in process on iOS, so the macOS sandbox case is that same
+  backend behind a `cfg`, not a new design. A third
   option removes the question: the pre-rendered audio pack in
   `docs/research/ASR_TTS_CLAUDE_RESEARCH.md` §4.4 takes synthesis off the runtime
   path for the bundled curriculum and is the only one of the three that is

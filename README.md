@@ -9,10 +9,10 @@ legible — all offline, with no model downloads and no network access at runtim
 Built with **Tauri 2 + Rust** for the engine and **Svelte 5 + TypeScript** for the
 interface. Primary target is macOS; the same code builds for Windows and Linux,
 and it builds for iOS today — it runs on the iPhone simulator and on a physical
-iPhone, with a phone layout made for practice rather than for fitting.
-Pronunciation on iOS and a release (rather than debug) device build are the next
-steps (see [ROADMAP.md](ROADMAP.md) M9). The Rust core has no platform code at
-all, which is why that cost nothing.
+iPhone, with a phone layout made for practice rather than for fitting, and it
+speaks there through the system's own synthesiser. A release (rather than debug)
+device build and Android are the next steps (see [ROADMAP.md](ROADMAP.md) M9).
+The Rust core has no platform code at all, which is why that cost nothing.
 
 ## Status
 
@@ -140,12 +140,13 @@ pnpm run install:cli   # installs a matching tauri-cli into .cargo-tools/
 
 ### Pronunciation
 
-Speaking a character uses the operating system's own synthesiser — on macOS,
-`say` — so nothing is downloaded and no audio leaves the machine. The voice is
-chosen automatically: mainland Mandarin (`zh_CN`) is preferred and, within that,
-the long-standing `Tingting` voice, with other Chinese locales as fallbacks. If
-no Chinese voice is installed the control is disabled with an explanation rather
-than reading the character aloud in English.
+Speaking a character uses the operating system's own synthesiser — `say` on
+macOS, `AVSpeechSynthesizer` in process on iOS — so nothing is downloaded and no
+audio leaves the machine. The voice is chosen automatically: mainland Mandarin
+(`zh_CN`) is preferred and, within that, the long-standing `Tingting` voice,
+with other Chinese locales as fallbacks. If no Chinese voice is installed the
+control is disabled with an explanation rather than reading the character aloud
+in English.
 
 The **character** is spoken rather than its pinyin: `say` has a Chinese lexicon,
 so 汉 is read correctly, whereas an English-trained voice handed `hàn` would be

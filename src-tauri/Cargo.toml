@@ -35,3 +35,17 @@ hanzi-core = { path = "../crates/hanzi-core" }
 # The durable study store. Kept out of hanzi-core so the engine stays free of
 # native dependencies and testable without a filesystem.
 hanzi-store = { path = "../crates/hanzi-store" }
+
+# Pronunciation on iOS goes through AVSpeechSynthesizer, in-process: there is no
+# `say` binary there, and the app sandbox would refuse to spawn one anyway.
+# `objc2` is already in the dependency tree through Tauri; this is the framework
+# bindings for the one framework this project needs itself. `AVSpeechSynthesizer`
+# lives in AVFAudio, which is the `objc2-avf-audio` crate rather than
+# `objc2-av-foundation` (that one depends on this).
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-avf-audio = "0.3"
+# AVFoundation's objects are not `Send`, so speaking happens on the main thread
+# and this is how the work gets there.
+dispatch2 = "0.3"
