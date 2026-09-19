@@ -11,9 +11,12 @@ import type {
   Lesson,
   LicenceNotice,
   Point,
+  MicrophoneStatus,
   ProgressView,
   ReviewView,
   SettingsView,
+  ToneResult,
+  ToneTarget,
   TextLookup,
   VocabOutcome,
   VocabView,
@@ -172,3 +175,36 @@ export const appInfo = () => invoke<AppInfo>("app_info");
  * resource directory, so this cannot come back empty on a packaged build.
  */
 export const licenceNotices = () => invoke<LicenceNotice[]>("licence_notices");
+
+// ---- tone practice ---------------------------------------------------------
+
+/**
+ * The tones to practise for a character or word, or `null` when nothing can
+ * score it.
+ *
+ * Takes the text rather than one character, so a word is scored as a word — which
+ * is what makes tone sandhi work, since it happens between the syllables of a
+ * word. `null` covers text the dataset does not know, more than a few syllables,
+ * and anything with no judgeable tone. Disable the control on `null` rather than
+ * offering a recording that would always come back unjudged.
+ */
+export const toneTarget = (text: string) => invoke<ToneTarget | null>("tone_target", { text });
+
+/** Whether the microphone can be used, and at what rate. */
+export const microphoneStatus = () => invoke<MicrophoneStatus>("microphone_status");
+
+/**
+ * Begin listening. Resolves once the device is actually open, so a failure to
+ * open it arrives here rather than as silence.
+ */
+export const listenStart = () => invoke<void>("listen_start");
+
+/**
+ * Stop listening and score what was heard against the tones of `text`.
+ *
+ * `text` is what was on screen while the learner spoke; the tones are derived
+ * from it by the Rust side rather than sent from here, so the recording cannot be
+ * scored against a sequence the interface invented. The detail sentence is worded
+ * by the Rust side too; show it as it comes back.
+ */
+export const listenStop = (text: string) => invoke<ToneResult>("listen_stop", { text });

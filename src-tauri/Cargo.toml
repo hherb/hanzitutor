@@ -35,6 +35,7 @@ hanzi-core = { path = "../crates/hanzi-core" }
 # The durable study store. Kept out of hanzi-core so the engine stays free of
 # native dependencies and testable without a filesystem.
 hanzi-store = { path = "../crates/hanzi-store" }
+cpal = "0.18"
 
 # Pronunciation on iOS goes through AVSpeechSynthesizer, in-process: there is no
 # `say` binary there, and the app sandbox would refuse to spawn one anyway.

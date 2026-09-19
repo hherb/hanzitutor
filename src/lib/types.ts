@@ -362,3 +362,108 @@ export interface LicenceNotice {
   bundlePath: string;
   text: string;
 }
+
+// ---- tone practice ---------------------------------------------------------
+
+/** How a spoken syllable was judged. */
+export type ToneVerdict = "match" | "off_target" | "uncertain";
+
+/**
+ * The result of scoring one spoken syllable.
+ *
+ * `contour` and `reference` are both on the same 0..1 scale — low pitch at 0 —
+ * so they can be drawn over each other as two lines. `reference` is the expected
+ * tone's canonical shape and is always present; `contour` is empty when nothing
+ * could be heard, which is the only case where there is no learner's line to
+ * draw.
+ *
+ * `score` is 0..100 on the same scale as a handwriting score, and `grade` is the
+ * same band, so a tone and a stroke can be styled alike.
+ */
+export interface ToneAttempt {
+  expectedTone: number;
+  /** The tone the contour looks most like, or null when there was no contour. */
+  heardTone: number | null;
+  score: number;
+  grade: Grade;
+  verdict: ToneVerdict;
+  /** One plain sentence, worded by the Rust side. Show this, do not reword it. */
+  detail: string;
+  contour: number[];
+  reference: number[];
+  medianHz: number;
+  rangeSemitones: number;
+  voicedMs: number;
+  spanMs: number;
+}
+
+/**
+ * One syllable of a word, with the tone to score it against.
+ *
+ * `citation` is what a dictionary prints and `spoken` is what is actually said:
+ * they differ when tone sandhi applies, which is why both are sent. 你好 is
+ * `3 + 3` in a dictionary and `2 + 3` out loud.
+ */
+export interface TargetSyllable {
+  ch: string;
+  /** The reading as a dictionary writes it, tone mark included. */
+  reading: string;
+  citation: number;
+  spoken: number;
+}
+
+/** The tones a character or word should be practised with. */
+export interface ToneTarget {
+  syllables: TargetSyllable[];
+  /** True when sandhi changed a tone, so the interface can say why. */
+  sandhiApplied: boolean;
+  detail: string;
+}
+
+/** One syllable's worth of a scored utterance. */
+export interface ToneSyllableResult extends TargetSyllable {
+  /** Which syllable this is, counting from 1. */
+  position: number;
+  attempt: ToneAttempt;
+}
+
+/**
+ * A scored character or word.
+ *
+ * `syllables` always has one entry per syllable of the target, whatever was
+ * heard, so the interface can pair them with the characters without guessing.
+ */
+export interface ToneResult {
+  syllables: ToneSyllableResult[];
+  verdict: ToneVerdict;
+  /** Mean of the scoreable syllables, 0..100; 0 when none could be scored. */
+  score: number;
+  grade: Grade;
+  /** One plain sentence, worded by the Rust side. Style it; do not reword it. */
+  detail: string;
+  sandhiApplied: boolean;
+  /**
+   * Where the syllables were divided, in ms **from the start of speech**.
+   * Empty for a single syllable. Same baseline as `voicedMs`, so a boundary can
+   * be read against it — the recording itself starts whenever the button was
+   * pressed, which is mostly the learner's own pause.
+   */
+  boundariesMs: number[];
+  voicedMs: number;
+  spanMs: number;
+  medianHz: number;
+}
+
+/**
+ * Whether the microphone can be used.
+ *
+ * `available` cannot see a *denied permission*: the system still hands out a
+ * device and the stream then delivers silence. That shows up as a tone attempt
+ * with no contour, which is reported as "I could not hear enough voice".
+ */
+export interface MicrophoneStatus {
+  available: boolean;
+  device: string | null;
+  sampleRate: number;
+  detail: string;
+}

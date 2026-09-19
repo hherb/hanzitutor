@@ -4,7 +4,9 @@ A desktop app for learning to **read and write simplified Chinese characters**.
 You write a character with a mouse, trackpad or stylus, and the app tells you
 whether it was written in the correct stroke order, whether the strokes are the
 right shape, in the right place and with enough ink, and whether the result is
-legible — all offline, with no model downloads and no network access at runtime.
+legible. Hold a button and **say** the character, and it tells you whether your
+tone was right — all offline, with no model downloads and no network access at
+runtime.
 
 Built with **Tauri 2 + Rust** for the engine and **Svelte 5 + TypeScript** for the
 interface. Primary target is macOS; the same code builds for Windows and Linux,
@@ -18,9 +20,10 @@ The Rust core has no platform code at all, which is why that cost nothing.
 
 Working end to end. The grading engine, the dataset pipeline, the Tauri command
 layer, the drawing UI, pronunciation, the personal vocabulary list, per-character
-progress with spaced repetition, the HSK 3.0 **word list**, and the **raster ink
-measure** and the **durable study store** are all implemented and tested; 228
-automated tests pass. What is not built yet is listed under
+progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
+measure**, the **durable study store** and **tone practice** — for characters
+*and words* — are all implemented and tested; 281 automated tests pass. What is
+not built yet is listed under
 [Next steps](#next-steps).
 
 ## What it does
@@ -53,6 +56,21 @@ automated tests pass. What is not built yet is listed under
   level and frequency rank, plus the etymology mnemonic where one exists.
 - **Pronunciation** — hear any character or word through the system's own speech
   synthesiser. Nothing is downloaded and nothing leaves the machine.
+- **Tone practice** — hold a button, say a character *or a whole word*, and see
+  whether the tones were right. Your pitch is drawn as a curve against the shape
+  each tone asks for — one chart per syllable, so a word tells you *which*
+  syllable went wrong — with an honest "not sure" when there was not enough voice
+  to judge. This is the one error handwriting cannot see: 妈 written perfectly and
+  said as `má` is a different word.
+  Words are scored as words, which matters more than it sounds. Mandarin tone
+  changes inside a word, so 你好 is spoken `níhǎo` — tone 2 then tone 3 — even
+  though a dictionary lists `nǐhǎo`. Scoring you against the dictionary would mark
+  correct speech wrong, so the app applies the sandhi rules and tells you when it
+  has. There is **no speech model** behind any of this: tone is a pitch contour, so
+  it is measured rather than recognised, which is why it works offline with
+  nothing to download. You already know the character and its reading; only *how*
+  it was said is in question. See
+  [How tone scoring works](#how-tone-scoring-works).
 - **Your own vocabulary list** — record the characters and words from your own
   lessons, file them under your own group names, and drill exactly those. A
   character fills in its pinyin and meaning automatically; so does a word, from
@@ -436,6 +454,136 @@ which a fixed "is this a stray tap?" cutoff discarded, making a correct attempt
 impossible to score. The cutoff is now relative to the character's own shortest
 stroke as well as absolute.
 
+## How tone scoring works
+
+Tone practice answers a different question from a speech recogniser, and the
+difference is the reason it needs no model.
+
+### A recogniser is built to hide the error you are looking for
+
+A Chinese ASR model carries a strong language-model prior. Say `shì` where `sì`
+was wanted and a good one will often still emit the character you were aiming for,
+because that is what the context makes likely. **It is designed to be robust to
+exactly the mistakes a learner makes.** Comparing its output to the target would
+therefore under-report errors, and would do so most for the learner who needs the
+feedback most. Mandarin tone is also simply not in the text: it is an F0 contour,
+and no transcript contains it.
+
+The target is known, so *what* was said does not need recognising. Only *how* does.
+That is a measurement, not a classification problem, and it is why this works
+offline: `docs/research/ASR_TTS_CLAUDE_RESEARCH.md` §6 is the full argument, and
+recognising text is a separate and much heavier milestone (M12).
+
+### The pipeline
+
+Five stages, all in `crates/hanzi-core/src/tone.rs` except the first:
+
+1. **Capture** (`src-tauri/src/capture.rs`) — `cpal` opens the microphone when you
+   press, downmixes to mono, and closes it when you release. The buffer lives in
+   memory for the length of one utterance and is then dropped; nothing is written
+   to disk and nothing is sent anywhere.
+2. **Resample** to 16 kHz, and run **YIN** over 40 ms frames for the fundamental.
+   YIN rather than autocorrelation because autocorrelation's octave errors are
+   precisely the failure that would ruin a tone score.
+3. **Split into syllables** (for a word) — the recording is divided before any of
+   it is scored. Boundaries are chosen by a shortest-path search over the frame
+   costs, in which an *unvoiced* frame is free: the consonant between two
+   syllables — the `x` of `xuéxí`, the `h` of `nǐhǎo` — is exactly where a
+   listener hears the break. The search also enforces a minimum syllable length,
+   so the boundaries cannot all pile into one gap. When the recording is too short
+   to hold the syllables asked for, nothing is scored rather than something being
+   scored wrongly.
+4. **Contour** — for each syllable, discard frames too quiet relative to that
+   syllable's own peak, interpolate across gaps in the *log* of F0, and convert to
+   semitones relative to its own median. A syllable with too little voice in it is
+   refused here rather than scored.
+5. **Normalise and compare** — each contour and each of the four canonical tone
+   shapes are scaled to unit RMS, and compared with **dynamic time warping**, so
+   that a dip which sits early or late in the syllable is not penalised. The
+   warping is what makes the comparison about shape.
+6. **Judge** — `match`, `off_target`, or `uncertain`, per syllable and then
+   overall. The score is a 0–100 number on the *same scale and the same bands as a
+   handwriting score*, so a tone and a stroke mean the same thing when they say
+   "good".
+
+The four shapes come from the classical five-level scale — tone 1 `55`, tone 2
+`35`, tone 3 `214`, tone 4 `51` — with one level taken as two semitones. The
+target tones are read out of the pinyin the dataset already carries, which is why
+no grapheme-to-phoneme work was needed: splitting a word's reading into syllables
+is a rule (`n`, `ng` and `r` are the only codas, and CC-CEDICT writes an
+apostrophe at every ambiguous boundary), and the result is checked against the
+number of characters, so a reading the rule gets wrong is refused rather than
+mis-aligned against the recording.
+
+### Tone sandhi, which is why words are scored as words
+
+Mandarin tones change inside a word, and a dictionary lists the tones of
+characters, not of words:
+
+| Written | Dictionary | Spoken |
+| --- | --- | --- |
+| 你好 | `3 + 3` | `2 + 3` |
+| 不是 | `4 + 4` | `2 + 4` |
+| 一起 | `1 + 3` | `4 + 3` |
+| 一天 | `1 + 1` | `4 + 1` |
+
+Scoring a learner against the dictionary column would mark correct speech wrong,
+which is the failure the research warns about. So the three rules that matter are
+applied — a third tone before a third tone becomes second, 不 becomes second
+before a fourth tone, and 一 becomes second before a fourth tone and fourth
+otherwise — and **both readings are reported**, so a learner who sees "tone 2"
+for 你 is told that it is not what their dictionary prints. That is also why tone
+practice takes the whole text rather than one character: sandhi happens *between*
+the syllables of a word and cannot be seen one character at a time.
+
+### Why the comparison is about shape, not height
+
+This is the one design decision worth understanding, because it is where a
+plausible implementation goes wrong.
+
+Comparison is made after removing each contour's mean, so it is about *direction*
+— flat, rising, dipping, falling — and not about how high the voice sat. Two
+reasons. The first is that a single syllable carries no speaker reference, so
+absolute height cannot be normalised anyway. The second is more subtle and was
+caught by a test: with the amplitude left in, a falling contour sat closer to a
+**rising** template than to a level one, because time warping could slide the fall
+onto its own mirror image while tone 2's shape is genuinely only half as tall as
+tone 4's. Normalising removes that, and a rise and a fall are then as far apart as
+they should be.
+
+Two consequences follow honestly from it:
+
+- **Amplitude is not scored.** A tone 4 that falls one semitone scores as well as
+  one that falls eight. The alternative — scoring depth on a single syllable —
+  flagged correct speech as wrong, which is the worse error for a tutor. The
+  measured movement is shown in semitones so you can see it.
+- **Tone 1 and a flat tone 3 are not distinguishable** from one syllable, because
+  the speaker's register is unknown. A flat contour is accepted for both, and the
+  panel says so in words rather than pretending otherwise.
+
+The interface shows a plain sentence for every verdict, worded by the Rust side so
+there is one place the judgement is expressed, and draws your curve over the
+expected shape — the same principle as the stroke panel, which explains *why*
+rather than only how much.
+
+### What it deliberately does not do
+
+- **No phone-level diagnosis.** There is no forced alignment and no
+  goodness-of-pronunciation score; that needs Kaldi-style machinery, which is a
+  much larger undertaking. The interface must not imply otherwise. In particular
+  the app can say *which syllable* was wrong, not which sound in it.
+- **Nothing longer than a word.** Up to four syllables. A sentence's syllables run
+  together with no consonant to cut at, so the boundaries cannot be found from
+  energy alone, and it is refused rather than divided into four pieces and scored
+  as though the pieces were words.
+- **No neutral tone.** It is short and its pitch is set by the syllable before it,
+  so it is reported but not scored. A word containing one is still judged on its
+  other syllables, which is why 妈妈 works.
+- **Segmentation is a heuristic and it is the weakest part.** It is tested against
+  synthesised words whose boundary is known by construction, not yet against real
+  multi-syllable speech. The panel reports where the app decided to split, so a
+  wrong split is visible rather than mysterious.
+
 ## Architecture
 
 ```
@@ -606,9 +754,11 @@ besides the app itself:
 | --- | --- | --- |
 | Characters, words, stroke geometry | `include_bytes!` in `src-tauri/src/state.rs` | ~13 MB |
 | The interface, including the Noto Sans SC font | Tauri embeds `frontendDist` into the executable | ~18 MB |
-| Twelve licence notices, as plain text | `bundle.resources` → `Contents/Resources/licences/` | ~65 KB |
+| SQLite, for the study store | compiled from the amalgamation by `libsqlite3-sys` | ~1.5 MB |
+| Microphone capture, `cpal` | compiled in; CoreAudio on macOS | ~100 KB |
+| Thirteen licence notices, as plain text | `bundle.resources` → `Contents/Resources/licences/` | ~75 KB |
 
-So the executable is about 35 MB and `Contents/Resources/` holds only the icon
+So the executable is about 36 MB and `Contents/Resources/` holds only the icon
 and the notices. The notices are **also** compiled into the binary, which is why
 the About screen cannot come up blank in a packaged build: the loose files are
 for a redistributor who wants to read them without launching the app. Both copies
@@ -620,14 +770,26 @@ that breaks only in the packaged app:
 
 ```bash
 APP=".cargo-target/release/bundle/macos/Hanzi Tutor.app"
-ls "$APP/Contents/Resources/licences"       # ten files, named in src-tauri/src/licences.rs
-ls -lh "$APP/Contents/MacOS/hanzi-tutor"    # ~35 MB: the data and the font are in here
+ls "$APP/Contents/Resources/licences"       # thirteen files, named in src-tauri/src/licences.rs
+ls -lh "$APP/Contents/MacOS/hanzi-tutor"    # ~36 MB: the data and the font are in here
 codesign -dv --verbose=4 "$APP" 2>&1 | grep -E "Authority|TeamIdentifier"
 open "$APP"                                 # then look at About and licences
 ```
 
+Two things about tone practice are worth checking in a **signed** build, because
+both fail silently rather than loudly. A missing `NSMicrophoneUsageDescription`
+gets the app killed the first time it asks for the microphone, and a missing
+`com.apple.security.device.audio-input` entitlement leaves capture returning
+silence — which looks exactly like a microphone that is simply not hearing
+anything. Both are wired up now; these are the commands that prove it in a build:
+
+```bash
+/usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription" "$APP/Contents/Info.plist"
+codesign -d --entitlements - "$APP" 2>/dev/null | grep audio-input
+```
+
 The tests in `src-tauri/tests/licences.rs` are what keep the catalogue, the files
-on disk and the bundle config in step; the four commands above are the part they
+on disk and the bundle config in step; the commands above are the part they
 cannot cover.
 
 ### Notarisation
@@ -653,10 +815,10 @@ dependencies (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3
 
 Hanzi Tutor's own source code is licensed under the **GNU Affero General Public
 License, version 3** (see [`LICENSE`](LICENSE)). It bundles third-party **data**,
-one third-party **font**, and — since the study store became a database — one
-third-party **library**: SQLite, compiled in from the vendored amalgamation.
-Every one of them carries a notice obligation. See
-**[LICENSES.md](LICENSES.md)**.
+one third-party **font**, and two third-party **libraries** compiled into the
+binary: SQLite, from the vendored amalgamation, which holds the study database;
+and `cpal`, Apache-2.0, which opens the microphone for tone practice. Every one
+of them carries a notice obligation. See **[LICENSES.md](LICENSES.md)**.
 
 | Bundled | Source | Licence |
 | --- | --- | --- |
@@ -668,6 +830,7 @@ Every one of them carries a notice obligation. See
 | Interface font, Noto Sans SC | noto-cjk / Google Fonts | SIL OFL 1.1 |
 | The study database engine, SQLite 3.45.0 | sqlite.org, via `libsqlite3-sys` | Public domain |
 | The SQLite bindings, `rusqlite` | rusqlite | MIT |
+| Microphone capture, `cpal` | RustAudio/cpal | Apache-2.0 |
 
 The generated artifact **is committed** (about 13 MB), so a clone and a CI run
 need no data step; `./scripts/fetch-data.sh` followed by `pnpm run prepare-data`
@@ -689,8 +852,14 @@ or by clicking. The headline gaps are now:
 
 1. **Pronunciation on Windows and Linux**, so the app is not macOS-only.
 2. **Mobile shells**, since a touchscreen with a stylus is the right input device.
-3. **The durable study store** (SQLite) and the unbounded attempt log it exists
-   for, which is also what the grading tolerances want tuned against.
+3. **Tone practice against real voices.** Characters and words both work and are
+   confirmed by hand; what is untuned is the *scoring constants*, which are still a
+   judgement that has never been fitted to a real recording (ROADMAP M11).
+4. **Recognising *what* was said** (M12). This needs a ~155 MB Mandarin ASR model,
+   which cannot be bundled. The project owner has settled the question: a download
+   is acceptable **provided it is optional, user-triggered, and installed from the
+   settings screen**, with the app working exactly as it does today for anyone who
+   declines. Nothing is built yet; ROADMAP M12 records the constraints.
 
 If you are picking this project up to continue development, read
 **[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the

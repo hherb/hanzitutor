@@ -5,12 +5,14 @@
 //! testable without opening a window — see `tests/ipc_contract.rs`.
 
 use hanzi_core::{
-    build_lessons, grade_with_outlines, Character, CursorView, GradeOptions, GradeReport, Lesson,
-    Point, ProgressView, ReviewView, SettingsView, TextLookup, VocabView, Word,
+    build_lessons, grade_with_outlines, tone::ToneAttempt, Character, CursorView, GradeOptions,
+    GradeReport, Grade, Lesson, Point, ProgressView, ReviewView, SettingsView, TextLookup,
+    ToneVerdict, ToneTarget, VocabView, Word,
 };
 use serde::Serialize;
 use tauri::State;
 
+use crate::capture::MicrophoneStatus;
 use crate::licences::{AppInfo, LicenceNotice};
 use crate::state::{AppState, ProgressState, VocabState};
 
@@ -203,6 +205,113 @@ pub fn stop_speaking(state: State<'_, AppState>) {
 #[tauri::command]
 pub fn speech_status(state: State<'_, AppState>) -> Option<String> {
     state.speech.status()
+}
+
+// ---- tone practice ---------------------------------------------------------
+
+/// One syllable's worth of a scored utterance.
+///
+/// The character and its reading travel with the judgement so that the interface
+/// can label each syllable of a word without holding any pinyin rules of its own.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToneSyllableResult {
+    /// Which syllable this is, counting from 1.
+    pub position: usize,
+    pub ch: char,
+    /// The reading as a dictionary writes it, tone mark included, e.g. `"nǐ"`.
+    pub reading: String,
+    /// The tone the dictionary gives this syllable, before sandhi.
+    pub citation: u8,
+    /// The tone actually spoken in this word, which is what was scored.
+    pub spoken: u8,
+    pub attempt: ToneAttempt,
+}
+
+/// A scored character or word, as the interface reads it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToneResult {
+    /// One entry per syllable, in the order they were spoken, always the same
+    /// length as the target's syllables.
+    pub syllables: Vec<ToneSyllableResult>,
+    pub verdict: ToneVerdict,
+    /// Mean of the scores of the syllables that could be scored; `0` when none
+    /// could. On the same 0..=100 scale and the same bands as a handwriting
+    /// score.
+    pub score: f32,
+    pub grade: Grade,
+    /// One plain sentence, worded by the Rust side. The interface styles this; it
+    /// does not reword it, so a judgement is expressed in exactly one place.
+    pub detail: String,
+    /// True when tone sandhi changed the tones, so that the interface can explain
+    /// why it is not asking for the tone a dictionary prints.
+    pub sandhi_applied: bool,
+    /// Where the syllables were divided, in milliseconds **from the start of
+    /// speech**. Same baseline as `voiced_ms`; empty for a single syllable.
+    pub boundaries_ms: Vec<u32>,
+    pub voiced_ms: u32,
+    pub span_ms: u32,
+    pub median_hz: f32,
+}
+
+/// The tones a character or word should be practised with, or `None` when there
+/// is nothing this can score.
+///
+/// Takes the **text** rather than one character, so that a word is scored as a
+/// word — which is what makes tone sandhi work, since it happens between the
+/// syllables of a word (你好 is spoken 2 + 3, not the dictionary's 3 + 3).
+///
+/// `None` covers text the dataset does not fully know, a reading that will not
+/// divide into one syllable per character, more than a few syllables, and
+/// anything with no tone that can be judged at all. The interface disables the
+/// control on `None` rather than offering a recording it would then refuse.
+///
+/// The reading is resolved here rather than in the frontend so that the rules —
+/// which diacritic means which tone, what counts as one syllable, when sandhi
+/// applies — live in one place, next to the code that scores against them.
+#[tauri::command]
+pub fn tone_target(state: State<'_, AppState>, text: String) -> Option<ToneTarget> {
+    state.tone_target(&text)
+}
+
+/// Whether the microphone can be used, and at what rate.
+///
+/// A denied permission cannot be seen from here — the operating system still
+/// hands out a device, and the stream then delivers silence — so this reports
+/// what it found and says what silence would mean.
+#[tauri::command]
+pub fn microphone_status(state: State<'_, AppState>) -> MicrophoneStatus {
+    state.capture.status()
+}
+
+/// Begin listening. Resolves once the device is actually open, so a failure is
+/// reported to the caller rather than swallowed in the audio thread.
+#[tauri::command]
+pub fn listen_start(state: State<'_, AppState>) -> Result<(), String> {
+    state.capture.start()
+}
+
+/// Stop listening and score what was heard against the tones of `text`.
+///
+/// The text is what was on screen while the learner spoke, and the tones are
+/// derived from it here rather than being sent by the frontend: that keeps one
+/// source of truth, and it means the recording cannot be scored against a
+/// sequence the interface made up.
+///
+/// The recorder is stopped **before** the text is resolved. If the text turned
+/// out not to be scorable, returning early with the microphone still open would
+/// leave it recording until the app was quit.
+#[tauri::command]
+pub fn listen_stop(state: State<'_, AppState>, text: String) -> Result<ToneResult, String> {
+    let recording = state.capture.stop()?;
+    match state.tone_target(&text) {
+        Some(target) => Ok(state.score_tones(&recording, &target)),
+        None => Err(format!(
+            "There is no tone sequence to score {text} against. Practise a single character \
+             or a short word."
+        )),
+    }
 }
 
 // ---- Personal vocabulary list ---------------------------------------------

@@ -10,10 +10,13 @@ use hanzi_core::{
     build_lessons, build_queue, now_iso8601, CursorStore, CursorView, Dataset, ProgressStore,
     ProgressView, ReviewView, SettingsStore, SettingsView, VocabStore, VocabView,
 };
+use hanzi_core::pinyin::{tone_target as build_tone_target, ToneTarget};
+use hanzi_core::tone::analyze;
 use hanzi_store::Db;
 use tauri::{AppHandle, Manager};
 
-use crate::commands::LESSON_SIZE;
+use crate::capture::{Recorder, Recording};
+use crate::commands::{ToneResult, ToneSyllableResult, LESSON_SIZE};
 use crate::speech::Speaker;
 
 /// The compact artifact produced by `hanzi-core`'s `prepare-data` binary.
@@ -22,6 +25,15 @@ use crate::speech::Speaker;
 /// bundled apps behave identically, with no resource-path resolution to get
 /// wrong. It is about 13 MB compressed.
 const ARTIFACT: &[u8] = include_bytes!("../../crates/hanzi-core/data/hanzi.bin.gz");
+
+/// Longest text tone practice will score, in syllables.
+///
+/// A word, not a sentence. Four covers every HSK word, and the limit is here
+/// because the syllable boundaries of a whole sentence cannot be found reliably
+/// from energy alone — several syllables run together with no consonant between
+/// them. Refusing past this is more honest than dividing a sentence into four
+/// pieces and scoring the pieces as though they were words.
+const MAX_TONE_SYLLABLES: usize = 4;
 
 /// Overrides where study data is stored, as an environment variable.
 ///
@@ -283,6 +295,9 @@ pub struct AppState {
     pub dataset: Dataset,
     /// Shared with a warm-up thread, so it is behind an `Arc`.
     pub speech: Arc<Speaker>,
+    /// The microphone. Opened only while the learner is holding the button, so
+    /// this holds nothing but the slot a recording lives in — see `capture.rs`.
+    pub capture: Recorder,
     /// Behind a mutex because every mutation is read-modify-write and must be
     /// persisted as a whole document.
     pub vocab: Mutex<VocabState>,
@@ -355,6 +370,7 @@ impl AppState {
         Ok(Self {
             dataset,
             speech,
+            capture: Recorder::default(),
             course,
             vocab: Mutex::new(vocab),
             progress: Mutex::new(progress),
@@ -382,6 +398,105 @@ impl AppState {
     /// Lock the settings, tolerating a poisoned mutex.
     pub fn lock_settings(&self) -> MutexGuard<'_, SettingsState> {
         self.settings.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The tones to practise for one character or word, or `None` when nothing
+    /// here can score it.
+    ///
+    /// Works from the text, not from a single character, so that a word is scored
+    /// as the word it is — which is the point, because tone sandhi happens
+    /// *between* the syllables of a word and cannot be seen one character at a
+    /// time. 你好 is the example that matters: the dictionary says tone 3 + tone
+    /// 3, and it is spoken 2 + 3.
+    ///
+    /// The reading comes from the dictionary's **whole-word** entry when there is
+    /// one, because that is what resolves a polyphone — 着急 is `zháojí`, where
+    /// the isolated 着 has no context to pick a reading from. Failing that, and
+    /// for single characters, each character's own first reading is used, which
+    /// is the same choice `lookup_text` makes and matches what the course
+    /// teaches.
+    ///
+    /// `None` for anything longer than [`MAX_TONE_SYLLABLES`], for text the
+    /// dataset does not fully know, and for a reading that cannot be divided into
+    /// one syllable per character. The interface disables the control on `None`
+    /// rather than offering a recording it would then have to refuse.
+    pub fn tone_target(&self, text: &str) -> Option<ToneTarget> {
+        let characters: Vec<char> = text.chars().collect();
+        if characters.is_empty() || characters.len() > MAX_TONE_SYLLABLES {
+            return None;
+        }
+
+        if characters.len() > 1 {
+            if let Some(word) = self.dataset.word(text) {
+                if let Some(target) = build_tone_target(text, &word.pinyin) {
+                    return Some(target);
+                }
+            }
+        }
+
+        let mut readings = Vec::with_capacity(characters.len());
+        for ch in &characters {
+            let character = self.dataset.get(*ch)?;
+            readings.push(character.pinyin.first()?.clone());
+        }
+        // Joined the way pinyin separates syllables by hand, so that `xi` + `an`
+        // cannot be read back as the single syllable `xian`.
+        build_tone_target(text, &readings.join("'"))
+    }
+
+    /// Score one recording against the tones that were asked for.
+    ///
+    /// The two things added here rather than inside the analyser are facts about
+    /// the *recording* and the *word*, not about the pitch: the analyser is
+    /// handed samples and tones and cannot know that they are the first ten
+    /// seconds of a longer utterance, nor that the tones it was given were
+    /// themselves changed by sandhi.
+    pub fn score_tones(&self, recording: &Recording, target: &ToneTarget) -> ToneResult {
+        let report = analyze(&recording.samples, recording.sample_rate, &target.spoken());
+
+        // Both sides are one entry per syllable in the same order, so the zip
+        // pairs the goal for a syllable with the judgement of it. A mismatch is
+        // impossible by construction — `analyze` returns one entry per tone asked
+        // for — but zip degrades to the shorter side rather than panicking if a
+        // future change breaks that.
+        let syllables: Vec<ToneSyllableResult> = target
+            .syllables
+            .iter()
+            .zip(report.syllables.iter())
+            .map(|(goal, scored)| ToneSyllableResult {
+                position: scored.position,
+                ch: goal.ch,
+                reading: goal.reading.clone(),
+                citation: goal.citation,
+                spoken: goal.spoken,
+                attempt: scored.attempt.clone(),
+            })
+            .collect();
+
+        let mut detail = report.detail.clone();
+        if target.sandhi_applied {
+            detail.push(' ');
+            detail.push_str(&target.detail);
+        }
+        if recording.truncated {
+            detail.push_str(&format!(
+                " (The recording hit the {}-second limit, so only the start was scored.)",
+                crate::capture::MAX_RECORD_SECS
+            ));
+        }
+
+        ToneResult {
+            syllables,
+            verdict: report.verdict,
+            score: report.score,
+            grade: report.grade,
+            detail,
+            sandhi_applied: target.sandhi_applied,
+            boundaries_ms: report.boundaries_ms,
+            voiced_ms: report.voiced_ms,
+            span_ms: report.span_ms,
+            median_hz: report.median_hz,
+        }
     }
 
     /// Choose how a stroke is drawn, or `None` for the device's own default.

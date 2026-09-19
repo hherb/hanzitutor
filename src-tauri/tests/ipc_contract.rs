@@ -1128,3 +1128,273 @@ fn the_licence_notices_reach_the_interface_with_their_full_text() {
         notices.len()
     );
 }
+
+// ---- tone practice ---------------------------------------------------------
+
+/// Every character of a target has a reading and a tone, single or word.
+///
+/// This is what decides whether the interface offers the microphone at all, so a
+/// wrong answer here is either a dead control or a missing one.
+#[test]
+fn a_single_character_targets_the_tone_of_its_reading() {
+    let state = state();
+
+    // 妈 mā, 麻 má, 马 mǎ, 骂 mà — one of each tone, all in the dataset.
+    for (ch, tone) in [("妈", 1u8), ("麻", 2), ("马", 3), ("骂", 4)] {
+        let target = state
+            .tone_target(ch)
+            .unwrap_or_else(|| panic!("{ch} should be scorable"));
+        assert_eq!(target.syllables.len(), 1, "{ch} is one syllable");
+        assert_eq!(target.spoken(), vec![tone], "{ch}");
+        // One syllable cannot undergo sandhi, so the two must agree.
+        assert_eq!(target.syllables[0].citation, tone, "{ch}");
+        assert!(!target.sandhi_applied, "{ch}");
+        assert_eq!(target.syllables[0].ch.to_string(), ch);
+    }
+}
+
+/// A word is scored as a word, with the tones it is actually spoken with.
+///
+/// This is the whole reason the target is built from the text rather than from
+/// one character: 你好 is `3 + 3` in a dictionary and `2 + 3` out loud.
+#[test]
+fn a_word_target_applies_tone_sandhi() {
+    let state = state();
+
+    let nihao = state.tone_target("你好").expect("你好 is a word");
+    assert_eq!(nihao.syllables.len(), 2);
+    assert_eq!(
+        nihao.syllables.iter().map(|s| s.citation).collect::<Vec<_>>(),
+        vec![3, 3],
+        "the dictionary tones"
+    );
+    assert_eq!(nihao.spoken(), vec![2, 3], "the tones actually spoken");
+    assert!(nihao.sandhi_applied);
+    assert_eq!(nihao.syllables[0].ch, '你');
+    assert_eq!(nihao.syllables[1].ch, '好');
+    assert!(nihao.detail.contains("2 + 3"), "{}", nihao.detail);
+
+    // A word with nothing to change says so.
+    let xuexi = state.tone_target("学习").expect("学习 is a word");
+    assert_eq!(xuexi.spoken(), vec![2, 2]);
+    assert!(!xuexi.sandhi_applied);
+
+    // 一 changes with what follows it, which needs the characters, not just the
+    // tones — so this is also a check that the characters reach the rule.
+    assert_eq!(
+        state.tone_target("一个").map(|t| t.spoken()),
+        Some(vec![2, 4]),
+        "一 before a fourth tone"
+    );
+    assert_eq!(
+        state.tone_target("一起").map(|t| t.spoken()),
+        Some(vec![4, 3]),
+        "一 before a third tone"
+    );
+    // 不 likewise.
+    assert_eq!(state.tone_target("不是").map(|t| t.spoken()), Some(vec![2, 4]));
+}
+
+/// The things tone practice must decline rather than guess at.
+#[test]
+fn a_target_is_refused_when_it_could_not_be_scored() {
+    let state = state();
+
+    // 的 is the neutral tone: real, common, and not something a one-syllable
+    // exercise can judge.
+    assert!(state.tone_target("的").is_none());
+
+    // Not in the dataset at all.
+    assert!(state.tone_target("€").is_none());
+    assert!(state.tone_target("").is_none());
+
+    // Longer than a word. A sentence's syllable boundaries cannot be found from
+    // energy alone, so it is refused rather than divided and half-scored.
+    assert!(state.tone_target("我很好你好吗").is_none());
+
+    // A word the dataset does not have as a word still works from its
+    // characters, which is what makes a user's own vocabulary usable.
+    let composed = state.tone_target("妈麻");
+    assert!(composed.is_some(), "character readings should compose");
+    assert_eq!(composed.unwrap().spoken(), vec![1, 2]);
+}
+
+/// Every offered target must be one the analyser can judge, or the button leads
+/// to "I could not judge that" every time.
+#[test]
+fn every_offered_target_has_something_to_score() {
+    let state = state();
+    for text in ["妈", "你好", "学习", "一个", "一起", "不是", "妈妈", "朋友们"] {
+        if let Some(target) = state.tone_target(text) {
+            assert!(
+                target.scorable() > 0,
+                "{text} was offered with nothing scoreable"
+            );
+            for syllable in &target.syllables {
+                assert!(
+                    (1..=5).contains(&syllable.spoken),
+                    "{text}: tone {} is not a tone",
+                    syllable.spoken
+                );
+                assert!(!syllable.reading.is_empty(), "{text}: no reading");
+            }
+        }
+    }
+}
+
+/// The shape of a target, as the TypeScript client reads it.
+#[test]
+fn a_tone_target_serialises_with_camel_case_fields() {
+    let state = state();
+    let target = state.tone_target("你好").expect("你好 is a word");
+    let json = serde_json::to_value(&target).unwrap();
+    expect_keys(&json, &["syllables", "sandhiApplied", "detail"]);
+    expect_keys(
+        &json["syllables"][0],
+        &["ch", "reading", "citation", "spoken"],
+    );
+    assert_eq!(json["sandhiApplied"], true);
+    assert_eq!(json["syllables"][0]["ch"], "你");
+}
+
+/// The shape of a scored word, as the TypeScript client reads it.
+///
+/// The analyser is handed silence, so this asserts the *message shape*: the
+/// concordant cases are covered by `hanzi-core`'s own tests, which can synthesise
+/// a spoken word. What is locked here is that a failed judgement still carries
+/// every field, and still carries one entry per syllable — the interface renders
+/// `uncertain` from the same object it renders a score from.
+#[test]
+fn a_tone_result_carries_one_entry_per_syllable() {
+    let state = state();
+    let target = state.tone_target("你好").expect("你好 is a word");
+    let quiet = vec![0.0f32; 16_000];
+    let result = state.score_tones(
+        &hanzi_tutor_lib::Recording {
+            samples: quiet,
+            sample_rate: 16_000,
+            device: "test".into(),
+            truncated: false,
+        },
+        &target,
+    );
+
+    let json = serde_json::to_value(&result).unwrap();
+    expect_keys(
+        &json,
+        &[
+            "syllables",
+            "verdict",
+            "score",
+            "grade",
+            "detail",
+            "sandhiApplied",
+            "boundariesMs",
+            "voicedMs",
+            "spanMs",
+            "medianHz",
+        ],
+    );
+    // One entry per syllable of the word, each with its character and reading, so
+    // the interface can label a chart without holding pinyin rules of its own.
+    assert_eq!(json["syllables"].as_array().unwrap().len(), 2);
+    expect_keys(
+        &json["syllables"][0],
+        &[
+            "position",
+            "ch",
+            "reading",
+            "citation",
+            "spoken",
+            "attempt",
+        ],
+    );
+    assert_eq!(json["syllables"][0]["ch"], "你");
+    assert_eq!(json["syllables"][0]["spoken"], 2, "after sandhi");
+    assert_eq!(json["syllables"][0]["citation"], 3);
+
+    // Nothing was heard, so it says so rather than scoring.
+    assert_eq!(json["verdict"], "uncertain");
+    assert_eq!(json["grade"], "poor");
+    assert_eq!(json["score"], 0.0);
+    assert!(json["detail"].as_str().unwrap().contains("could not hear"));
+    // The sandhi sentence is appended, because a learner seeing "tone 2" for 你
+    // needs to know why it is not the tone their dictionary prints.
+    assert!(
+        json["detail"].as_str().unwrap().contains("2 + 3"),
+        "{}",
+        json["detail"]
+    );
+
+    // The reference contour is always present, one per syllable, so the interface
+    // can draw the expected shape whether or not there is a learner's line.
+    for syllable in json["syllables"].as_array().unwrap() {
+        assert_eq!(syllable["attempt"]["reference"].as_array().unwrap().len(), 12);
+        assert!(syllable["attempt"]["contour"].as_array().unwrap().is_empty());
+    }
+}
+
+/// A single character's result is the same object with one syllable.
+///
+/// The single-character path and the word path share the analyser, so this is a
+/// check that the shape did not diverge rather than a check of the scoring.
+#[test]
+fn a_single_character_result_has_one_syllable_and_no_boundaries() {
+    let state = state();
+    let target = state.tone_target("妈").expect("妈 is scorable");
+    let quiet = vec![0.0f32; 16_000];
+    let result = state.score_tones(
+        &hanzi_tutor_lib::Recording {
+            samples: quiet,
+            sample_rate: 16_000,
+            device: "test".into(),
+            truncated: false,
+        },
+        &target,
+    );
+    assert_eq!(result.syllables.len(), 1);
+    assert!(result.boundaries_ms.is_empty(), "one syllable has no boundary");
+    assert!(!result.sandhi_applied);
+    assert!(result.detail.contains("could not hear"), "{}", result.detail);
+}
+
+/// A microphone report is always a complete object, device or no device.
+#[test]
+fn a_microphone_status_is_always_answerable() {
+    let status = hanzi_tutor_lib::Recorder::default().status();
+    let json = serde_json::to_value(&status).unwrap();
+    expect_keys(&json, &["available", "device", "sampleRate", "detail"]);
+    assert!(!json["detail"].as_str().unwrap().is_empty());
+    if !json["available"].as_bool().unwrap() {
+        assert!(json["device"].is_null());
+        assert_eq!(json["sampleRate"], 0);
+    }
+}
+
+/// Scoring a recording keeps the analyser's verdict and adds the cap warning.
+#[test]
+fn a_truncated_recording_says_so_in_the_detail() {
+    let state = state();
+    let target = state.tone_target("妈").expect("妈 is scorable");
+    let recording = hanzi_tutor_lib::Recording {
+        samples: vec![0.0; 16_000],
+        sample_rate: 16_000,
+        device: "test".into(),
+        truncated: true,
+    };
+    let result = state.score_tones(&recording, &target);
+    assert!(
+        result.detail.contains("10-second limit"),
+        "a capped recording must say it was capped: {}",
+        result.detail
+    );
+
+    let whole = hanzi_tutor_lib::Recording {
+        truncated: false,
+        ..recording
+    };
+    assert!(
+        !state.score_tones(&whole, &target).detail.contains("limit"),
+        "an uncapped recording must not claim it was capped"
+    );
+}

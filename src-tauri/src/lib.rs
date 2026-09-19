@@ -5,11 +5,13 @@
 
 mod commands;
 pub mod licences;
+mod capture;
 mod speech;
 mod state;
 
 pub use commands::{LevelCount, VocabOutcome, WordSearchView};
 pub use licences::{AppInfo, LicenceNotice};
+pub use capture::{MicrophoneStatus, Recorder, Recording};
 pub use state::{
     AppState, CursorState, Persisted, ProgressState, SettingsState, VocabState, REVIEW_LIMIT,
 };
@@ -62,6 +64,10 @@ pub fn run() {
             commands::speak,
             commands::stop_speaking,
             commands::speech_status,
+            commands::tone_target,
+            commands::microphone_status,
+            commands::listen_start,
+            commands::listen_stop,
             commands::lookup_text,
             commands::vocabulary,
             commands::vocab_add,

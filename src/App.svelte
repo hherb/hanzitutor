@@ -11,6 +11,7 @@
   import LessonSidebar from "./lib/LessonSidebar.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
+  import TonePanel from "./lib/TonePanel.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import WordsPanel from "./lib/WordsPanel.svelte";
   import { INK_WIDTH, polylineLength } from "./lib/render";
@@ -27,6 +28,9 @@
     ProgressView,
     ReviewView,
     SettingsView,
+    MicrophoneStatus,
+    ToneResult,
+    ToneTarget,
     VocabEntry,
     VocabView,
     Word,
@@ -133,6 +137,32 @@
    * when the system has no Chinese voice, `undefined` while still resolving.
    */
   let voice = $state<string | null | undefined>(undefined);
+
+  // ---- tone practice --------------------------------------------------------
+  /**
+   * The microphone, once known.
+   *
+   * `undefined` while it is being resolved, and `null` when the question itself
+   * failed. The control is offered only when `available` is true, so a machine
+   * with no microphone gets a disabled button with a reason rather than a button
+   * that silently records nothing.
+   */
+  let microphone = $state<MicrophoneStatus | null | undefined>(undefined);
+  /**
+   * What the tones should be, or `null` when nothing can score this text — more
+   * than a word, the neutral tone only, or not in the dataset.
+   */
+  let toneTarget = $state<ToneTarget | null>(null);
+  /** The last judgement, or `null` before anything has been said. */
+  let toneResult = $state<ToneResult | null>(null);
+  /** True between pressing and releasing the button. */
+  let listening = $state(false);
+  /** True while the device is opening or the recording is being scored. */
+  let toneBusy = $state(false);
+  /** Why the last attempt could not even be recorded. */
+  let toneError = $state<string | null>(null);
+  /** The text captured when the button went down, which is what gets judged. */
+  let scoredText = $state("");
 
   let view = $state<View>("course");
 
@@ -248,6 +278,16 @@
   const currentItem = $derived(
     source === "course" ? null : (queue[queueCursor] ?? null),
   );
+  /**
+   * The text tone practice is scoring — a character, or a whole word.
+   *
+   * A word is scored as a word, not character by character, because tone sandhi
+   * happens *between* the syllables of a word: 你好 is spoken 2 + 3 where the
+   * dictionary has 3 + 3 for each character alone. It is the same text the "Hear
+   * it" button speaks, so the two controls always agree about what is on the
+   * board.
+   */
+  const toneText = $derived(currentItem?.text ?? character?.ch ?? "");
   /** Code-point split, matching Rust's `chars()`. */
   const entryCharacters = $derived(
     currentItem
@@ -419,6 +459,19 @@
         voice = null;
       });
 
+    // Tone practice needs a microphone, and asking is cheap. It is resolved
+    // once: whether the machine has one does not change while the app runs.
+    void api
+      .microphoneStatus()
+      .then((status) => {
+        microphone = status;
+        void api.log(`microphone: ${status.detail}`);
+      })
+      .catch((cause) => {
+        microphone = null;
+        void api.log(`could not ask about the microphone: ${cause}`);
+      });
+
     // A character answered badly comes back within the minute, so "due" is not
     // a one-off computed at startup: give the badge a slow heartbeat.
     const reviewTimer = setInterval(() => {
@@ -467,6 +520,85 @@
     if (!next || character?.ch === next) return;
     void loadCharacter(next, charCursor);
   });
+
+  // Follow what is being practised: ask which tones it should be judged against.
+  // Both the pending result and any recording in flight belong to the *previous*
+  // text, so they are dropped rather than shown against the new one — a tone
+  // score next to the wrong word is worse than no score.
+  $effect(() => {
+    const text = toneText;
+    toneResult = null;
+    toneError = null;
+    if (!text) {
+      toneTarget = null;
+      return;
+    }
+    let current = true;
+    void api
+      .toneTarget(text)
+      .then((target) => {
+        if (current) toneTarget = target;
+        void api.log(
+          target
+            ? `tone target ${text}: ${target.syllables.map((s) => s.spoken).join("+")}` +
+                (target.sandhiApplied ? " (after sandhi)" : "")
+            : `tone target ${text}: not scorable`,
+        );
+      })
+      .catch(() => {
+        if (current) toneTarget = null;
+      });
+    return () => {
+      current = false;
+    };
+  });
+
+  /**
+   * Press to talk.
+   *
+   * The device is opened on press, before the learner has started speaking, so
+   * the recording includes the whole syllable rather than losing its onset to
+   * the device's start-up. A press that never releases is capped in Rust.
+   */
+  async function startListening() {
+    if (toneTarget === null || listening || toneBusy) return;
+    toneError = null;
+    toneResult = null;
+    scoredText = toneText;
+    toneBusy = true;
+    try {
+      await api.listenStart();
+      listening = true;
+    } catch (cause) {
+      toneError = String(cause);
+    } finally {
+      toneBusy = false;
+    }
+  }
+
+  /**
+   * Release to be judged.
+   *
+   * `scoredText` is captured on press, so the judgement is against the text that
+   * was on screen when the learner started speaking rather than whatever the
+   * board has moved on to.
+   */
+  async function stopListening() {
+    if (!listening) return;
+    listening = false;
+    toneBusy = true;
+    // The text is frozen for the duration of the attempt: the Rust side derives
+    // the tones from it, so what is scored is what was on screen when the learner
+    // pressed, even if the board advanced while they were speaking.
+    const text = scoredText;
+    try {
+      toneResult = await api.listenStop(text);
+    } catch (cause) {
+      toneError = String(cause);
+    } finally {
+      toneBusy = false;
+    }
+  }
 
   /**
    * Remember where in the course the reader is.
@@ -1536,6 +1668,41 @@
               <span aria-hidden="true">🔊</span> Hear it
             </button>
 
+            <!-- Push to talk. Held, not clicked: the microphone is open only
+                 between press and release, so the system's recording indicator
+                 is lit only while the learner is deliberately speaking. -->
+            <button
+              class="say"
+              class:listening
+              onpointerdown={(event) => {
+                event.preventDefault();
+                void startListening();
+              }}
+              onpointerup={() => void stopListening()}
+              onpointerleave={() => void stopListening()}
+              onpointercancel={() => void stopListening()}
+              disabled={toneTarget === null || !microphone?.available || toneBusy}
+              title={microphone === undefined
+                ? "Looking for a microphone…"
+                : microphone === null || !microphone.available
+                  ? (microphone?.detail ?? "No microphone is available")
+                  : toneTarget === null
+                    ? "There are no tones to practise here — too long to score, or nothing in it has a judgeable tone"
+                    : `Hold and say ${toneText} — ${toneTarget.syllables
+                        .map((s) => `tone ${s.spoken}`)
+                        .join(", ")}${toneTarget.sandhiApplied ? " as it is spoken in this word" : ""}`}
+            >
+              <span aria-hidden="true">{listening ? "●" : "🎤"}</span>
+              <!-- Name the text rather than saying "it": on a phone there is no
+                   tooltip, so a generic label leaves the learner guessing what
+                   the microphone is listening for. -->
+              {listening
+                ? "Listening…"
+                : toneTarget
+                  ? `Hold to say ${toneText}`
+                  : "Hold to say it"}
+            </button>
+
             <button
               onclick={toggleStrokeOrder}
               disabled={strokeTotal === 0}
@@ -1634,6 +1801,16 @@
         </section>
 
         <aside class="feedback">
+          <!-- Tone feedback sits above the handwriting report rather than
+               inside it: the two are judged independently, and a spoken
+               syllable has no strokes to report on. -->
+          {#if toneError}
+            <p class="tone-error">{toneError}</p>
+          {/if}
+          {#if toneResult}
+            <TonePanel result={toneResult} />
+          {/if}
+
           {#if report}
             <FeedbackPanel {report} />
           {:else}
@@ -1889,6 +2066,30 @@
   }
   .controls button.speak span[aria-hidden] {
     margin-right: 3px;
+  }
+
+  /* Push to talk. Green while the microphone is open, so "am I being recorded
+     right now?" is answerable at a glance without reading the label. */
+  .controls button.say span[aria-hidden] {
+    margin-right: 3px;
+  }
+  .controls button.say.listening {
+    background: #2f6f4f;
+    border-color: #2f6f4f;
+    color: #fff;
+  }
+  .tone-error {
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    border: 1px solid #e3bdb4;
+    border-radius: 10px;
+    background: #fdf1ee;
+    color: #7a2a1c;
+    font-size: 0.9rem;
+    line-height: 1.45;
+  }
+  .feedback > :global(.tone) {
+    margin-bottom: 12px;
   }
   .spacer {
     flex: 1;

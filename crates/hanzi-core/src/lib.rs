@@ -33,15 +33,18 @@ pub mod curriculum;
 pub mod dataset;
 pub mod geom;
 pub mod grade;
+pub mod pinyin;
 pub mod progress;
 mod raster;
 pub mod settings;
 pub mod time;
+pub mod tone;
 pub mod vocab;
 
 pub use curriculum::{build_lessons, lesson_at, Lesson};
 pub use dataset::{Artifact, Character, CharacterHint, Dataset, TextLookup, Word};
 pub use geom::Point;
+pub use pinyin::{spoken_tones, syllables, tone_from_pinyin, tone_target, Syllable, ToneTarget};
 pub use grade::{
     grade, grade_with_outlines, FitInfo, Grade, GradeOptions, GradeReport, StrokeVerdict,
     Verdict, INK_OK,
@@ -54,4 +57,8 @@ pub use progress::{
 };
 pub use settings::{Settings, SettingsError, SettingsSink, SettingsStore, SettingsView};
 pub use time::{iso8601_from_unix, now_iso8601, parse_iso8601};
+pub use tone::{
+    analyze, analyze_tone, tone_name, tone_template, SyllableReport, ToneAttempt, ToneReport,
+    ToneVerdict,
+};
 pub use vocab::{Entry, ImportSummary, VocabError, VocabSink, VocabStore, VocabView};

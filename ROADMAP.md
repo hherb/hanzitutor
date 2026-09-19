@@ -23,6 +23,8 @@ See [`HANDOVER.md`](HANDOVER.md) for how to build, test and verify; see
 | M8 | Input ergonomics | Long strokes on a trackpad | S | **done** |
 | M9 | Mobile shells | A stylus is the right input device | L | **in progress (iOS)** |
 | M10 | Durable study store (SQLite) | The JSON format caps the attempt log the grading work needs | M | **done** |
+| M11 | Tone practice (speech recognition, model-free) | Tone is the error handwriting cannot see, and it needs no model | L | **done** |
+| M12 | Speech recognition: text (optional download) | Recognise *what* was said, which needs a ~155 MB model the user installs from settings | L | not started, **unblocked** |
 
 ---
 
@@ -857,6 +859,206 @@ Recorded honestly, because they bound how much the current scores mean:
   `cargo tree --target aarch64-apple-darwin -e normal | grep glib`, which returns
   nothing.
 
+---
+
+## M11 — Tone practice (speech recognition, model-free)
+
+**Status: done, for characters and words. Recognising the *text* is M12.**
+
+**Why.** Stroke grading cannot see the most common beginner error in Mandarin,
+which is the tone. A learner can write 妈 perfectly and say it as `má`. Tone is an
+F0 contour, and a contour is not something a recogniser's text output contains —
+so the useful half of "speech recognition for a language tutor" needs no model at
+all. That is the argument in
+[`docs/research/ASR_TTS_CLAUDE_RESEARCH.md`](docs/research/ASR_TTS_CLAUDE_RESEARCH.md)
+§6, and this milestone is that half.
+
+The app's promise is that it downloads nothing and never touches the network, and
+this milestone keeps it. There are no model weights here, no inference runtime and
+no new build-time binary fetch. The one new dependency is `cpal`, to open the
+microphone.
+
+**What shipped.**
+
+- `crates/hanzi-core/src/tone.rs` — pitch tracking and tone scoring, pure and
+  dependency-free. YIN for F0 (de Cheveigné & Kawahara, 2002), written here rather
+  than taken as a crate so that the one piece of signal processing in the project
+  is owned and testable; a log-F0 contour over the voiced span; dynamic time
+  warping against the four canonical tone shapes of the five-level scale.
+- `tone_from_pinyin` in the same module reads the tone out of the pinyin the
+  dataset **already carries**, which is why no grapheme-to-phoneme work was
+  needed at all — the asymmetry §2 of the research says to exploit.
+- `crates/hanzi-core/src/pinyin.rs` — splitting a **word's** reading into
+  syllables, and tone sandhi. The dataset stores a word's reading run together
+  (`学习` → `"xuéxí"`), so scoring a word needs it taken apart; the splitter is a
+  rule rather than a 400-entry syllable table, and the caller checks the result
+  against the character count, so a reading it gets wrong is refused rather than
+  mis-aligned against the recording.
+- **Tone sandhi**, which is what makes words correct rather than merely possible.
+  The dictionary reads 你好 as tone 3 + tone 3 and nobody says that: it is spoken
+  2 + 3. Scoring against the dictionary tones would flag correct speech as wrong,
+  so the three rules that matter are applied — third-before-third, 不 before a
+  fourth tone, and 一 before anything else — and both readings are reported, so a
+  learner seeming "tone 2" is told why it is not what their dictionary prints.
+- **Syllable segmentation**, so one recording can be scored as a whole word. The
+  boundaries come from a shortest-path search over the frame costs in which an
+  *unvoiced* frame is free: the consonant between two syllables is exactly where a
+  listener hears the break. The shortest segment allowed is the least voice a
+  syllable needs to be judged, and when the span cannot hold the syllables asked
+  for, nothing is scored rather than something being scored wrongly.
+- `src-tauri/src/capture.rs` — `cpal` capture, downmixed to mono, opened on
+  button-press and dropped on release. Short, because the interesting part is the
+  analyser.
+- Four commands. `tone_target` and `listen_stop` both take the **text** being
+  practised rather than a single character, so a word is scored as a word and the
+  tones are derived in Rust rather than sent from the interface.
+- `src/lib/TonePanel.svelte` — the learner's contour drawn over the expected
+  shape, which is the part that teaches. The wording of the judgement comes from
+  Rust; the panel only styles it.
+- A push-to-talk control on the practice screen, disabled with a reason when
+  there is no microphone or no scorable tone.
+
+**What is not in this milestone.**
+
+- **Recognising text.** "You said `sì` where `shì` was wanted" needs a Mandarin
+  ASR model. That is M12, and it is where the 155 MB download belongs.
+- **Longer than a word.** Up to four syllables. A sentence's syllables run
+  together with no consonant to cut at, so the boundaries cannot be found from
+  energy alone; it is refused rather than divided into four pieces and scored as
+  though the pieces were words.
+- **The neutral tone.** Short, and pitched by the syllable before it, so it is
+  carried in the target and reported but not scored. A word containing one is
+  still judged on its other syllables, which is why 妈妈 works.
+- **Tone sandhi beyond the three rules.** The half-third-tone realisation in
+  running speech is not modelled, and neither is the optional sandhi of 一 in
+  very casual speech.
+
+**Known limits, stated rather than hidden.**
+
+- **Segmentation is a heuristic, and it is the weak point.** Energy and voicing
+  gaps find the boundary for `xuéxí` and `nǐhǎo` — the consonant is unvoiced and
+  unmistakable — but two syllables that run together have no such gap, and the
+  search then cuts at the quietest frame, which may be the wrong one. It is tested
+  against synthesised words whose boundary is known by construction, and **not yet
+  against real multi-syllable speech**. `boundariesMs` is reported to the
+  interface for exactly this reason: a learner told the wrong syllable was wrong
+  needs to be able to see where the app thought the split was.
+
+- **Amplitude is not scored.** The comparison is normalised to unit RMS, so a
+  tone 4 that falls one semitone scores as well as one that falls eight. That is
+  deliberate — the alternative flagged correct speech as wrong — and the panel
+  shows the measured movement in semitones so the learner can see it. A separate
+  "too shallow" band is the obvious refinement once there are real recordings to
+  calibrate against.
+- **Tone 1 and a flat tone 3 cannot be told apart** from one syllable, because the
+  speaker's register is not known. A flat contour is accepted for both, and the
+  panel says so in words. Under-claiming is the right failure here.
+- **A denied microphone permission looks like silence.** macOS hands out a device
+  either way, so `microphone_status` cannot report it, and the attempt comes back
+  as "I could not hear enough voice to judge" rather than as a wrong tone.
+- **The score constants are calibrated against synthetic contours**, not real
+  voices — `SCORE_DECAY_ST`, `FLAT_ST` and `DECIDE_MARGIN` in `tone.rs`. They are
+  named, documented and in one place precisely so real recordings can move them.
+
+**Acceptance criteria.**
+
+- [x] A synthetic syllable of each tone is scored against its own tone and against
+      the other three, with the verdict asserted — including silence, a click, and
+      a shape that matches no tone at all.
+- [x] A synthesised two- and three-syllable word is split at the known consonant
+      between its syllables (asserted within 25 ms), each syllable is scored
+      separately, and the summary names the syllable that was wrong.
+- [x] Tone sandhi is applied and both readings are reported, checked across all
+      three rules.
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` is clean and the
+      whole workspace suite passes.
+- [x] The microphone opens, records at the device rate and stops, verified
+      against real hardware (`cargo test -p hanzi-tutor --lib -- --ignored`).
+- [x] The licence catalogue, the `licences/` directory and the bundle config agree
+      about the new notice.
+- [x] **A human says a syllable into the running app and gets a sensible score.**
+      Confirmed by hand. This is the criterion a machine cannot check, and it is
+      what the whole engine was waiting on.
+- [x] **A human says a multi-syllable word and the split lands on the right
+      syllables.** Confirmed by hand on 不对: both tones scored, the sandhi
+      sentence explained the `2 + 4`, and the split came out mid-word.
+      **It also found a display bug on the first try** — the boundary was reported
+      from the start of the *recording* rather than the start of *speech*, so the
+      panel read "Split at 1463 ms" beside "Voiced 308 ms". The split was right
+      and the number was inexplicable, which is worse than a wrong number because
+      it discredits a correct result. Both are now measured from the first voiced
+      frame, and a test asserts every boundary falls inside the voiced span.
+- [ ] The constants re-tuned against a handful of real recordings, from at least
+      two voices.
+---
+
+## M12 — Speech recognition: text
+
+**Status: not started, and now unblocked.** The product decision below has been
+taken: a download is acceptable **provided it is optional and installed by the
+user from the settings screen**. Nothing here changes the app's behaviour until
+the user asks for it.
+
+**Why.** M11 judges *how* something was said. It cannot say *what* was said, and
+there is no non-neural substitute for that — you cannot pre-render a learner's
+voice. Recognising the syllable would let the app distinguish "you said the wrong
+tone" from "you said the wrong word", which is the difference between a tone
+exercise and a pronunciation exercise.
+
+**Approach.** Per
+[`docs/research/ASR_TTS_CLAUDE_RESEARCH.md`](docs/research/ASR_TTS_CLAUDE_RESEARCH.md)
+§5 and §7, which is the research for exactly this:
+
+- `sherpa-onnx` (Apache-2.0) with `sherpa-onnx-sense-voice-...-int8-2024-07-17`,
+  ~155 MB download / 228 MB on disk. **Not** Whisper: `whisper-tiny` is about 67%
+  CER on Mandarin and `whisper-base` about 51%, against SenseVoice's ~8%, and the
+  small Whisper models are the ones a Rust developer finds first.
+- Compare transcripts as **pinyin, not characters**, which collapses the
+  homophones that make character comparison useless for a single syllable. The
+  character→pinyin mapping is already in the dataset.
+- `sherpa-onnx-sys` downloads a prebuilt native library during `cargo build`
+  unless `SHERPA_ONNX_LIB_DIR` points at a vendored copy. For a repository whose
+  data comes from a reviewed fetch script and whose notices are pinned three ways,
+  pulling an unpinned binary during compilation is a real change in posture:
+  vendor and pin it, or the build is not reproducible.
+
+**The decision, and the constraints it implies.**
+
+A 155 MB model cannot be bundled, so it must be downloaded on demand, which breaks
+the README's flat "no model downloads and no network access at runtime".
+**Decided: permitted, provided the download is optional, user-triggered, and
+shipped through the settings screen.** That is a much narrower change than it
+sounds, and the constraints are the real design work:
+
+- **Nothing degrades when the model is absent.** Tone practice — the feature that
+  exists today — must keep working with no model, no network and no prompt. The
+  app must never ask for the download on its own.
+- **The settings screen states what would be downloaded**, from where, at what
+  size and under which licence, and that it is the only thing in the app that
+  touches the network.
+- **The download is verified** — a checksum, and a retryable failure path — and
+  cached in the application data directory.
+- **Declining is a first-class state**, not a nag. It must be possible to use the
+  app for years and never see this.
+- **The README's promise is restated rather than deleted**: the app downloads
+  nothing *unless you ask it to*, and everything the bundled curriculum teaches
+  continues to need nothing.
+
+**Acceptance criteria.**
+
+- The README and `LICENSES.md` state exactly what is downloaded, from where, at
+  what size and under which licence, and the model tarball's own `LICENSE` is read
+  and recorded rather than assumed.
+- With the model absent the app behaves exactly as it does today: tone practice
+  works, text recognition is unavailable, and nothing prompts unless asked.
+- Recognising a recorded syllable returns its pinyin, and a deliberate
+  wrong-syllable recording comes back as a different syllable.
+- The hotwords/contextual-biasing API is **not** pointed at the expected answer.
+  It biases decoding toward the target, which is the right tool for rare
+  vocabulary and the wrong one for assessment.
+
+---
+
 ## Explicitly out of scope
 
 To keep the project honest about what it is:
@@ -868,5 +1070,7 @@ To keep the project honest about what it is:
   simplified-only, which was the original requirement.
 - **Cloud accounts, syncing, social features.** The whole value of this app is
   that it is offline and private.
-- **Speech recognition for tones.** A different problem from handwriting, and the
-  system TTS already covers the output side.
+- **Speech recognition for tones is no longer out of scope** — it is M11 and it
+  has shipped, for characters and words, with no model. Recognising *text* is
+  M12: permitted as an optional, user-installed download, and out of scope until
+  somebody builds it. The system TTS already covers the output side.

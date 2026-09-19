@@ -12,10 +12,12 @@ time: the dataset is compiled into the executable and the notices are compiled
 in beside it, with plain-text copies in the bundle's `Resources/licences/`. This
 document is the human-readable record of that arrangement.
 
-One of the entries below is **code rather than data** — SQLite, the engine behind
-the study database — so it is the first third-party library compiled into the
-binary. It is public domain, which is why it adds no conditions, but it is
-recorded here rather than left implicit.
+One of the entries below is **code rather than data**. There are in fact three,
+and they are the only third-party libraries compiled into the binary: SQLite and
+its `rusqlite` bindings, which hold the study database, and `cpal`, which opens
+the microphone for tone practice. The rest is data or a font. Each is recorded
+here rather than left implicit, and none of them adds a condition beyond its own
+notice.
 
 ## What is bundled
 
@@ -30,6 +32,7 @@ recorded here rather than left implicit.
 | Interface font, Noto Sans SC | [noto-cjk](https://github.com/notofonts/noto-cjk) / [Google Fonts](https://fonts.google.com/noto/specimen/Noto+Sans+SC) | SIL OFL 1.1 |
 | Study database engine, SQLite 3.45.0 | [sqlite.org](https://sqlite.org/), vendored by `libsqlite3-sys` | Public domain |
 | SQLite bindings, `rusqlite` | [rusqlite](https://github.com/rusqlite/rusqlite) | MIT |
+| Audio capture, `cpal` | [cpal](https://github.com/RustAudio/cpal) | Apache-2.0 |
 
 The first six rows are compacted by `prepare-data` into one generated artifact,
 `crates/hanzi-core/data/hanzi.bin.gz`, which `src-tauri/src/state.rs` embeds with
@@ -132,6 +135,29 @@ Neither adds a condition to redistribution beyond the MIT notice, and the databa
 holds study data rather than content — nothing from SQLite is redistributed with
 the dataset.
 
+### cpal — <https://github.com/RustAudio/cpal>
+
+Tone practice records a single spoken syllable and scores its pitch contour. The
+capture is `cpal`, a cross-platform audio I/O crate under **Apache-2.0**, whose
+notice ships as [`licences/Apache-2.0.txt`](licences/Apache-2.0.txt). Apache-2.0
+combines into AGPL-3.0, which is what this project is under, so there is no
+conflict; the notice travels because Apache-2.0 requires it.
+
+On macOS and iOS `cpal` drives CoreAudio through `coreaudio-rs`, which is
+MIT/Apache-2.0. The crate also carries Linux (ALSA), Windows (WASAPI/ASIO) and
+Android (AAudio/OpenSL) backends; they are compiled only for those targets and
+are not part of a macOS build. **No audio is written to disk and none leaves the
+machine**: the buffer lives in memory for one utterance, is scored, and is
+dropped. This is the only part of the app that takes input from a microphone, and
+the device is open only while the learner is holding the button.
+
+The app's own pitch tracking, tone templates and scoring are **not** third-party
+code — they are in `crates/hanzi-core/src/tone.rs` under this project's licence —
+so no model weights and no speech-recognition library are involved. That is a
+deliberate boundary, argued in
+[`docs/research/ASR_TTS_CLAUDE_RESEARCH.md`](docs/research/ASR_TTS_CLAUDE_RESEARCH.md)
+§6, and it is what keeps the app's "no downloads, no network" promise intact.
+
 ### Noto Sans SC — <https://github.com/notofonts/noto-cjk>
 
 The interface font is licensed under the **SIL Open Font License 1.1**, which
@@ -155,7 +181,7 @@ font's reserved name is `Source`, not `Noto`, so no rename is required.
    ls "$APP/Contents/Resources/licences"
    ```
 
-   That directory must hold all twelve files named in `src-tauri/src/licences.rs`.
+   That directory must hold all thirteen files named in `src-tauri/src/licences.rs`.
    The in-app screen works even if it does not — the text is compiled in — but a
    redistributor who wants to read the notices out of the bundle would be stuck.
 3. Serve the CC-CEDICT definitions under CC BY-SA 4.0 if you redistribute them,

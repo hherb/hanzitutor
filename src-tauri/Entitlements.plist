@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the macOS bundle, applied when Tauri signs it. Referenced by
+  `bundle.macOS.entitlements` in `tauri.conf.json`.
+
+  ## Why this file exists at all
+
+  Under the hardened runtime — which notarisation requires, and which a
+  Developer ID build gets — a process cannot open the microphone unless it says
+  so here, whatever `NSMicrophoneUsageDescription` in `Info.plist` says. The two
+  are not alternatives: the plist key is what the *user* is asked, and this
+  entitlement is what the *kernel* permits. The failure mode when only the plist
+  is present is the quiet one this project has already been bitten by in another
+  form: everything works in `tauri dev` and in an unsigned build, then capture
+  returns silence in the signed, notarised bundle.
+
+  ## What is deliberately absent
+
+  `com.apple.security.app-sandbox` is **not** here. Sandboxing the app is a
+  separate decision that has not been taken, and taking it silently as part of a
+  microphone change would be the wrong way round: HANDOVER.md records that the
+  App Store path is untested and that the sandbox is expected to break the
+  `say`-based macOS pronunciation backend, which is a real problem to solve
+  rather than a flag to flip. When that work happens, this file is where the
+  sandbox entitlement belongs, and `com.apple.security.device.audio-input` below
+  is already the one capture will need once it is sandboxed.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

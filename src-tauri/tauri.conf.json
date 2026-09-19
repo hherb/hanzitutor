@@ -44,10 +44,12 @@
       "../licences/CC-BY-SA-4.0.txt": "licences/CC-BY-SA-4.0.txt",
       "../licences/OFL-1.1.txt": "licences/OFL-1.1.txt",
       "../licences/SQLite-Public-Domain.txt": "licences/SQLite-Public-Domain.txt",
-      "../licences/MIT-rusqlite.txt": "licences/MIT-rusqlite.txt"
+      "../licences/MIT-rusqlite.txt": "licences/MIT-rusqlite.txt",
+      "../licences/Apache-2.0.txt": "licences/Apache-2.0.txt"
     },
     "macOS": {
       "minimumSystemVersion": "11.0",
+      "entitlements": "Entitlements.plist",
       "dmg": {
         "windowSize": { "width": 660, "height": 400 },
         "appPosition": { "x": 180, "y": 170 },

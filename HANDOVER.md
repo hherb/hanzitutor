@@ -148,6 +148,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Personal vocabulary list | Done | 27 store unit tests; persistence tested through the state layer |
 | iOS app (M9) | Runs on a physical iPhone, human-confirmed | the Rust side cross-compiles unchanged; phone layout verified by simulator screenshot; the scene-lifecycle crash and the black screen behind it are recorded in §6 |
 | Durable study store (M10) | Done | one `hanzi.db`; the old JSON imported once and left byte-identical; the attempt log past the 20 a card shows; WAL, and an uncommitted write leaves nothing |
+| Tone practice, model-free (M11) | Done, human-confirmed for characters **and words** | 16 `pinyin.rs` tests (syllable splitting, tone reading, sandhi) + 25 `tone.rs` tests (YIN, contours, DTW, segmentation, scoring) + the IPC contract; the device open/record/stop path verified against real hardware (§6); a human confirmed tone hearing and a multi-syllable word (不对, both tones, sandhi explained) |
 | Per-character progress, SRS | Done | 30 store/scheduler unit tests; record → relaunch → due-date cycle tested through the state layer |
 | HSK 3.0 word list | Done | 9,443 words in the artifact; every one drawable character by character, checked against the shipped dataset |
 | Word search and browsing | Done | by character, reading (tones/spacing/`ü` folded) or meaning; exact-beats-prefix ranking proven in tests |
@@ -212,6 +213,13 @@ crates/hanzi-core/          grading engine. No Tauri, no UI, no platform code.
   src/settings.rs           the learner's settings: Settings, SettingsSink, and
                             the tri-state (None = nobody has chosen)
   src/progress.rs           per-character cards, SM-2 scheduling, review queue
+  src/tone.rs               YIN pitch tracking, tone contours, syllable
+                            segmentation, DTW scoring. Pure DSP: samples in,
+                            numbers out, so the scoring is testable against
+                            synthetic contours and synthetic words (see §9)
+  src/pinyin.rs             splitting a word's reading into syllables, reading a
+                            tone off a diacritic, and tone sandhi. Reading rules
+                            rather than signal processing
   src/time.rs               ISO-8601 formatting, parsing, date arithmetic
   src/bin/prepare_data.rs   upstream data -> compact artifact (feature = "prepare")
   examples/selfcheck.rs     whole-dataset measurement and tolerance tuning
@@ -229,9 +237,17 @@ src-tauri/
   src/state.rs              embedded dataset, speech warm-up, the three stores
                             (all three opened over the one database)
   src/licences.rs           the catalogue of notices that ship; see §8
+  src/capture.rs            microphone capture (cpal): open on press, dropped on
+                            release. The stream lives on its own thread because
+                            cpal::Stream is not Send on every backend
   src/speech.rs             macOS `say` backend, voice selection
   tests/ipc_contract.rs     locks the JSON contract the UI reads
   tests/licences.rs         pins the notices, the version and the bundle config
+  Info.plist                NSMicrophoneUsageDescription, merged over the
+                            generated plist at build time
+  Info.ios.plist            the scene manifest, plus the same microphone string
+  Entitlements.plist        com.apple.security.device.audio-input. Without it a
+                            hardened-runtime build captures silence; see §6
 src/
   App.svelte                shell: modes, navigation, keyboard, state ownership,
                             and the stroke-order animation's clock
@@ -241,6 +257,8 @@ src/
   lib/render.ts             canvas painting, the stroke-order sweep,
                             font<->display transforms, colours
   lib/FeedbackPanel.svelte  report -> readable advice
+  lib/TonePanel.svelte      the learner's pitch contour drawn over the expected
+                            tone shape, with the verdict Rust worded
   lib/WordsPanel.svelte     the HSK word list: search, browse, practise
   lib/LicencesPanel.svelte  About and licences: the notices, with their texts
   lib/LessonSidebar.svelte  course, list and word navigation, progress marks
@@ -976,14 +994,44 @@ downstream of them is covered by the IPC tests, which drive
   will be signed as *them* unless they set `APPLE_SIGNING_IDENTITY` — and on a
   machine with no certificate it falls back to ad-hoc, which still launches
   locally. `pnpm run build:unsigned` skips the wrapper entirely.
+- **A microphone needs two things, and only one of them is obvious.** A signed,
+  hardened-runtime build cannot open the microphone without
+  `com.apple.security.device.audio-input` in `src-tauri/Entitlements.plist`, and
+  the *user* is asked by `NSMicrophoneUsageDescription` in `src-tauri/Info.plist`.
+  They are not alternatives: the plist key is the prompt, the entitlement is the
+  kernel's permission. **The failure is silent and looks identical in both
+  cases** — capture opens, streams, and delivers zeros, which the analyser reports
+  as "I could not hear enough voice". Worse, it works in `tauri dev` and in an
+  unsigned build and then stops working once signed, so check the two commands in
+  `README.md` ("What is inside the bundle") on any build someone is going to run.
+  Note that a plain `tauri build` without `build-release.sh` is only
+  *linker-signed* and never applies the entitlements at all — that is not a
+  failure of the config, it is the signing step not having run. Verify with
+  `codesign -d --entitlements - "$APP"`, which prints the dictionary when it is
+  right and nothing when the file was not applied.
+- **A terminal cannot be granted the microphone the way an app can**, and on this
+  machine it has not been. So `cargo test -- --ignored` records silence here while
+  the packaged app works, and **no test in this repository has ever heard a human
+  voice**. Do not read a passing ignored test as proof that capture works; read
+  the peak level it prints. See §9.
 
 ## 7. Open decisions
 
-- **Distribution** — settled by M5. The notices ship inside the bundle and are
-  surfaced from the About and licences screen, with the whole arrangement
-  described in §8 and the reasoning in `ROADMAP.md` M5. What is deliberately left
-  open is **notarisation**, which needs Apple credentials and uploads the build;
-  it is an operator step, documented in `README.md`, not a gap in the app.
+- **Speech recognition of *text* (M12) — the product decision is taken, the code is
+  not written.** Tone practice needs no model and shipped without one. Recognising
+  *what* was said is different: every usable Mandarin recogniser is a neural model
+  of ~155 MB (`sherpa-onnx` + SenseVoice), which cannot be bundled.
+  **Decided by the project owner: a download is acceptable provided it is optional,
+  user-triggered, and installed from the settings screen.** The app must keep
+  working exactly as it does today for anyone who declines — no prompt, no nag, no
+  degradation. The full set of constraints is in ROADMAP M12, and the model choice,
+  packaging and licensing research is in
+  `docs/research/ASR_TTS_CLAUDE_RESEARCH.md` §5, §7 and §9. **Until that is built,
+  the app makes no HTTP request at all**, which is asserted in §2 and checked with
+  `cargo tree`; whoever adds the download is the one who restates the README's
+  promise as "nothing is downloaded unless you ask", and adds the model's own
+  licence notice the way `cpal`'s was added.
+
 - **Committing the artifact** — settled the other way, deliberately. The 13 MB
   artifact and the 17 MB interface font are both committed, so a clone and a CI
   run go straight from `pnpm install` to a build with no download. The cost is
@@ -1229,3 +1277,158 @@ build Apple has not seen, not a defect.
   as text rather than links, because opening one would need the opener plugin and
   a new permission, and would contradict the app's "nothing leaves the machine"
   promise for no gain — the full licence texts are already bundled.
+
+## 9. Tone practice (M11) — what to know before touching it
+
+Tone practice records one utterance — a character or a whole word — and scores its
+pitch contour against the tones asked for. It is **not** speech recognition:
+nothing is transcribed, there is no model, and nothing is downloaded. ROADMAP M11
+is the scope, M12 is the part that would need a model; §6 of
+`docs/research/ASR_TTS_CLAUDE_RESEARCH.md` is the argument.
+
+### Two modules, and the seam between them
+
+| Module | What it owns | Why there |
+| --- | --- | --- |
+| `crates/hanzi-core/src/pinyin.rs` | Splitting a reading into syllables, reading a tone off a diacritic, and **tone sandhi** | It is reading rules, not signal processing. It is also the half M12 reuses whatever happens to the audio side |
+| `crates/hanzi-core/src/tone.rs` | YIN, contours, syllable segmentation, DTW, scoring | Pure DSP: samples in, numbers out |
+
+`tone.rs` knows nothing about pinyin and `pinyin.rs` knows nothing about audio.
+The app joins them: `AppState::tone_target` builds a `ToneTarget` (characters,
+readings, citation tones, spoken tones) and `AppState::score_tones` zips it against
+a `ToneReport` (one judgement per syllable). **Both sides are one entry per
+syllable in the same order** — that invariant is what lets the interface label each
+chart, and `analyze` guarantees it by returning one entry per tone asked for,
+whatever it heard.
+
+### Words are the reason sandhi exists here
+
+The dataset stores a **character's** reading as a list (`好` → `["hǎo", "hào"]`)
+but a **word's** reading run together (`学习` → `"xuéxí"`). So a word needs the
+reading taken apart before anything can be scored, and it needs the tones
+*colloquially* rather than as a dictionary prints them: 你好 is `3 + 3` in a
+dictionary and `2 + 3` out loud. Scoring the dictionary tones would mark correct
+speech wrong.
+
+Three rules are applied (`pinyin::spoken_tones`): third-before-third, 不 before a
+fourth tone, and 一 before anything else. Both readings are reported, and the
+interface shows "tone 2 (dictionary 3)" so a learner is never told their
+dictionary is wrong. Rules 2 and 3 are about *which character* it is, not which
+tone, which is why the function takes the characters as well as the tones.
+
+**Do not "simplify" this by scoring character by character.** Sandhi is a
+word-level phenomenon; a per-character loop cannot see it, and that was the whole
+reason words were out of scope until now.
+
+### The first thing to do: hear it with a real voice
+
+The engine is tested against synthetic contours whose true F0 is known by
+construction, which is the only way to test a pitch tracker — but **no human
+recording has ever been through it**. The development environment's terminal has
+no microphone permission, so every capture there comes back silent (§6). Until
+someone speaks into the running app, the score constants are unvalidated.
+
+Characters and words are **human-confirmed** — 不对 was the first word tried, and
+it scored both tones with the sandhi explained. What is still untuned is the
+*scoring constants*, which have never been fitted to a real voice, and
+segmentation's behaviour on words that run together (see the limits below).
+
+### A timing bug to not repeat
+
+The first hand test found a display bug worth recording, because it is the kind
+that makes a working result look broken. Syllable boundaries were reported as
+offsets from the **start of the recording**, while `voiced_ms` is a *duration*.
+Since the learner holds the button before speaking, the panel showed
+`Split at 1463 ms` beside `Voiced 308 ms` — impossible-looking, though the split
+was in the right place. **Anything measured in time here is measured from the
+first voiced frame**, and the test
+`a_word_never_scores_more_syllables_than_it_was_asked_for` asserts every boundary
+falls inside the voiced span, so the two cannot drift apart again. If you add a
+new timing field, give it the same baseline.
+
+Two ways in. Through the app: hold **Hold to say it** on the practice screen and
+release. Or from a terminal, which also prints the contour statistics:
+
+```bash
+./scripts/with-cargo-env.sh cargo test -p hanzi-tutor --lib -- --ignored --nocapture \
+  records_from_the_real_microphone
+```
+
+That test opens the device, records 1.5 s and prints the peak level, the median
+pitch and the verdict. **A peak level of `0.0000` means the terminal has no
+microphone permission**, not that the code is broken — the app bundle is a
+separate process with its own grant, so it can work there while this does not.
+Say a syllable while it runs and check that the verdict is sensible.
+
+### The four numbers that are judgement, not measurement
+
+All in `crates/hanzi-core/src/tone.rs`, all named and documented, and all
+calibrated against synthetic contours:
+
+| Constant | What it is |
+| --- | --- |
+| `SCORE_DECAY_ST` | How fast the score falls off with shape distance. A wrong tone currently scores in the 20s–50s and a match in the 90s |
+| `FLAT_ST` | Below this peak-to-peak span, in semitones, a contour is "level" |
+| `DECIDE_MARGIN` | How much closer one tone must be before the difference is called real rather than "uncertain" |
+| `FLAT_MATCH_SCORE` / `FLAT_OFF_TARGET_SCORE` | What a level contour scores, since a level tone is settled by a rule rather than by a distance |
+
+Two more, for the word path:
+
+| Constant | What it is |
+| --- | --- |
+| `VOICED_CUT_PENALTY` | What it costs to put a syllable boundary inside voiced speech. Larger than any plausible RMS, so a boundary prefers an unvoiced frame — which is where a consonant is, and where a listener hears the break |
+| `MIN_SYLLABLE_FRAMES` | Shortest segment the splitter will make. Tied to `MIN_VOICED_FRAMES`, because a shorter segment could not hold enough voice to be judged |
+
+Re-tune these only against real recordings, and say in the commit what they were
+tuned against.
+
+### Three decisions that look wrong and are deliberate
+
+1. **The comparison is about shape, not height.** Each contour's mean is removed
+   before comparison, so tone 1 (high level) and a level tone 3 are
+   indistinguishable from one syllable — the speaker's register is not knowable.
+   A flat contour is therefore *accepted* for both tones 1 and 3, with wording
+   that says so. This under-claims on purpose. Without the mean removal there is a
+   worse bug, which a test now pins: a falling contour scores closer to a
+   **rising** template than to a level one, because time warping can slide a fall
+   onto its own mirror while tone 2's shape is half as tall as tone 4's.
+2. **Amplitude is not scored.** Contours are normalised to unit RMS before the
+   distance is taken, so a shallow tone 4 scores as well as a deep one. The
+   measured span is reported in `rangeSemitones` and the panel shows it. Scoring
+   depth on one syllable flagged correct speech as wrong, which is the worse
+   error.
+3. **A level contour is not scored by distance at all.** Normalising a near-flat
+   contour to unit RMS amplifies its own measurement noise into what looks like a
+   large movement, so a *correct* level tone would score badly for having been
+   measured imperfectly. It is settled by `FLAT_ST` and given a fixed score.
+
+### Things that will surprise you
+
+- **`cpal::Stream` is not `Send` on every backend**, so it cannot live in Tauri's
+  shared state. `capture.rs` owns one thread per recording and only plain data
+  crosses back. Do not "simplify" this by storing the stream in `AppState`.
+- **The microphone is opened and closed per utterance**, deliberately. It costs
+  tens of milliseconds and it means the system's recording indicator is lit only
+  while the learner is holding the button. A latency complaint and a privacy
+  property are the same line of code here.
+- **`Recording` must stay `Debug`**, because `Recorder::stop()`'s error path uses
+  `unwrap_err()`. That only fails in the `--lib` test target, so `cargo check`
+  will not catch its removal.
+- **A neutral-tone syllable is carried but never scored.** It appears in the
+  target and in the result, and `ToneReport::finish` excludes it from the
+  aggregate so that 妈妈 is still judged on 妈. A target where *nothing* is
+  scorable (的 on its own) is refused entirely, which is what disables the button.
+- **Segmentation will cut where you did not mean it to.** Two syllables that run
+  together with no consonant between them — a vowel-initial second syllable — have
+  no unvoiced frame to cut at, and the search falls back to the quietest frame,
+  which may be wrong. This is why `boundariesMs` is reported to the interface: it
+  is the difference between a learner seeing a puzzling score and seeing that the
+  app mis-heard where the syllables were. Anything that improves this should
+  improve it *here*, and the tests to extend are the `say_word` ones.
+- **A `ToneResult` must always carry one entry per syllable of the target.** The
+  interface zips them positionally against the characters and readings. `analyze`
+  guarantees the length; if a change ever breaks that, the IPC test
+  `a_tone_result_carries_one_entry_per_syllable` is what should catch it.
+- **The verdict words live in Rust, not in the panel.** `TonePanel.svelte` styles
+  `detail`; it must not reword it, or the same judgement will be expressed in two
+  places that drift.

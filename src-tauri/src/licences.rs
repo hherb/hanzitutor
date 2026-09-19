@@ -223,6 +223,23 @@ pub const NOTICES: &[LicenceNotice] = &[
         bundle_path: "licences/MIT-rusqlite.txt",
         text: include_str!("../../licences/MIT-rusqlite.txt"),
     },
+    LicenceNotice {
+        id: "cpal",
+        title: "cpal — cross-platform audio capture",
+        licence: "Apache-2.0",
+        source: "https://github.com/RustAudio/cpal",
+        covers: "Opening the microphone for tone practice, and reading the audio \
+                 buffers it delivers. This is the app's only input-audio \
+                 dependency. On macOS and iOS it drives CoreAudio through \
+                 coreaudio-rs (MIT/Apache-2.0); the Linux, Windows and Android \
+                 backends in the same crate are not compiled into the macOS \
+                 build. Holding the button opens the device and releasing it \
+                 closes it again, so no audio is captured between utterances and \
+                 none is ever written to disk.",
+        file: "licences/Apache-2.0.txt",
+        bundle_path: "licences/Apache-2.0.txt",
+        text: include_str!("../../licences/Apache-2.0.txt"),
+    },
 ];
 
 /// The notices the Licences screen shows, in catalogue order.
