@@ -715,6 +715,21 @@ downstream of them is covered by the IPC tests, which drive
   with no `[webview]` lines — only `[data]` and `[speech]` — unless Vite is up.
   Use `pnpm run dev` to look at the app, or the binary inside a built `.app` to
   test the packaged path. This is not a broken build, and it wasted an hour once.
+- **The Rust side already cross-compiles for iOS.** `cargo check -p hanzi-tutor
+  --target aarch64-apple-ios` succeeds unchanged — engine, bundled SQLite, Tauri
+  and all — which is worth knowing before estimating M9. It emits three dead-code
+  warnings in `speech.rs` (the `Command`/`Stdio` imports, `hold`, and
+  `parse_voices`; the macOS-only pieces are not gated tightly enough), and clippy
+  with `-D warnings` would fail on them, so that is the first thing to tidy.
+- **An iOS build cannot finish inside this file sandbox.** The same check gets all
+  the way through the dependency graph and then dies in Tauri's Swift glue:
+  `swift-rs` builds `tauri/mobile/ios-api` with `swift build`, which wants the
+  swiftpm caches under `~/Library` and applies its *own* nested sandbox, both of
+  which workspace-write refuses — `sandbox_apply: Operation not permitted`, the
+  same wall `scripts/probe-app-sandbox.sh` documents in §7. It is the environment
+  rather than the code: with a wider sandbox the check finishes in 20 s. Expect
+  `tauri ios init`, `ios dev` and `xcodebuild` to need the same, since they write
+  to `~/Library/Developer` and the CocoaPods caches.
 - **The study data is a database, so "look at your data" means `sqlite3`.** The
   tables are `progress_card`, `attempt` (every attempt, ever), `vocab_entry`,
   `vocab_group`, `course_cursor` and `meta`. `hanzi.db-wal` and `hanzi.db-shm`
