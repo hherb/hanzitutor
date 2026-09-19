@@ -496,10 +496,13 @@ stroke of four points; the click sequence produced nothing at the release, then
 the same four points at the second press, **byte-identical to the drag stroke**;
 Escape left zero strokes; Backspace with one stroke already committed left one;
 and switching the mode mid-draft committed exactly one. The board was captured
-with the click-drawn stroke on it and the switch checked. What that does not
-prove is the operating system's own delivery of hover moves — the one part that
-needs a human at the trackpad, and the reason this is recorded as verified by
-hand rather than by a test.
+with the click-drawn stroke on it and the switch checked.
+
+What synthetic events cannot prove is the operating system's own delivery of
+hover moves, so the last step was a human at the trackpad: the author confirmed
+it, in their words, as *"much better UX with the click then draw then click to end
+on the trackpad"* — which is the acceptance criterion this milestone was written
+for, and the one thing about it that no test in this repository can establish.
 
 Deliberately not done, and why:
 

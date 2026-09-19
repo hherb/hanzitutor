@@ -143,7 +143,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | IPC surface | Done | contract tests asserting exact JSON key sets |
 | Drawing canvas | Done, human-confirmed | trace + recall modes, colour-coded feedback |
 | Stroke-order animation (M7) | Done | pen sweeps each centre-line, the outline revealed behind it; band width measured per stroke; confirmed by window capture |
-| Input ergonomics (M8) | Done | click-to-draw mode beside the corrections switch; both paths produce identical geometry; the handlers were driven with synthetic pointer events |
+| Input ergonomics (M8) | Done, human-confirmed | click-to-draw mode beside the corrections switch; both paths produce identical geometry; driven with synthetic pointer events, and the trackpad behaviour confirmed by hand |
 | Pronunciation | Done on macOS | 9 tests; human-confirmed speaking |
 | Personal vocabulary list | Done | 27 store unit tests; persistence tested through the state layer |
 | Durable study store (M10) | Done | one `hanzi.db`; the old JSON imported once and left byte-identical; the attempt log past the 20 a card shows; WAL, and an uncommitted write leaves nothing |
@@ -656,6 +656,10 @@ downstream of them is covered by the IPC tests, which drive
   cases were checked — the same geometry from both modes, Escape, Backspace,
   `pointercancel` and a mid-draft mode switch — and it is worth reaching for
   before declaring any input change unverifiable. Take the seed out afterwards.
+  Synthetic events still do not prove that the *platform* delivers hover moves
+  the way the handlers assume, so the last step is a human at the trackpad:
+  click-to-draw was confirmed that way after M8 landed, and that confirmation is
+  what the §2 row means by "human-confirmed".
 - **A stroke has to end where the pointer was released.** `handleUp` in
   `PracticeCanvas.svelte` appends the `pointerup` position before committing the
   stroke. Without that, a quick flick whose only sample arrives with the release
