@@ -8,10 +8,11 @@ legible — all offline, with no model downloads and no network access at runtim
 
 Built with **Tauri 2 + Rust** for the engine and **Svelte 5 + TypeScript** for the
 interface. Primary target is macOS; the same code builds for Windows and Linux,
-and it builds for iOS today — it runs on the iPhone simulator with a phone layout
-made for practice, and the physical-device build and iOS pronunciation are the
-next steps (see [ROADMAP.md](ROADMAP.md) M9). The Rust core has no platform code
-at all, which is why that cost nothing.
+and it builds for iOS today — it runs on the iPhone simulator and installs on a
+physical iPhone, with a phone layout made for practice rather than for fitting.
+Pronunciation on iOS and a release (rather than debug) device build are the next
+steps (see [ROADMAP.md](ROADMAP.md) M9). The Rust core has no platform code at
+all, which is why that cost nothing.
 
 ## Status
 

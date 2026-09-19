@@ -7,9 +7,20 @@ license.workspace = true
 
 # A library target keeps the door open for mobile bundles later; the desktop
 # binary is a thin wrapper around it.
+#
+# `staticlib` is what iOS links (the Xcode project's "Build Rust Code" phase
+# copies it in as `libapp.a`), `rlib` is what the desktop binary links against,
+# and `cdylib` — which Tauri's template includes for Android's `.so` — is
+# deliberately **not** built. On a device build its link fails with
+# `symbol(s) not found for architecture arm64` for every Tauri Swift symbol
+# (`_run_plugin_command`, `_register_plugin`, …): the dylib link is handed the
+# Swift search paths but not the `-lTauri` flags, and cargo treats the failure as
+# fatal and never reaches the Xcode step. Nothing on iOS or macOS reads the
+# dylib. **Android work (the other half of M9) needs it back**, and the link
+# flags will have to be looked at then.
 [lib]
 name = "hanzi_tutor_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["staticlib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

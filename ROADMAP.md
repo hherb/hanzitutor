@@ -567,11 +567,19 @@ iPhone is carried when the iPad is not, and practice on it is the point.
 
 **What is left.**
 
-- **The physical device.** The build path is ready (the team is `X5DWXB4283`) and
-  the phone is connected, but a device build needs a provisioning profile, which
-  needs the Apple account signed in to Xcode. That is a human step. The run is
-  then `tauri ios dev "HHIP1" --host <lan-address>` with the dev server exposed
-  (`TAURI_DEV_HOST`, which `vite.config.ts` now honours).
+- **The physical device — installed, and one check short.** A debug device build
+  signs with the team (`X5DWXB4283`, from the environment), exports an IPA, and
+  installs onto the connected iPhone with `devicectl`; it has been installed and
+  it launches. What is *not* established from here is what it looks like on the
+  device: this setup cannot screenshot a physical iPhone, and the app's console
+  did not come back through `devicectl --console`. Somebody has to say what they
+  see on the screen, and that is the difference between "installed" and "verified
+  on a device" for M9's acceptance criteria.
+- **iOS release builds.** `ios build` in release fails to link Tauri's Swift glue
+  because the release Swift product keeps those symbols local; debug links. This
+  is a toolchain/Tauri-version question rather than a change here, and it is
+  recorded with the evidence in `HANDOVER.md` §6. Until it is resolved, a device
+  build is a debug build, which is fine for practice and not for distribution.
 - **Pronunciation.** `speech.rs` is still macOS-only, so on iOS the control is
   disabled and the app says why — honest, but it is one of M9's acceptance
   criteria. It wants `AVSpeechSynthesizer` in-process, which is the same backend

@@ -754,6 +754,40 @@ downstream of them is covered by the IPC tests, which drive
   runtimes, and `xcrun devicectl` is what distinguishes hardware ("available,
   paired") from the `simulated` column. The one real phone is `HHIP1`, an
   iPhone14,3.
+- **A device run is `ios build` + `devicectl`, and the phone must be unlocked.**
+  `tauri ios build --debug --target aarch64 --ci` produces an **IPA**
+  (`src-tauri/gen/apple/build/arm64/Hanzi Tutor.ipa`), not a loose bundle:
+  unzip it and install `Payload/Hanzi Tutor.app` with
+  `xcrun devicectl device install app --device <udid> <app>`, then
+  `xcrun devicectl device process launch --device <udid> com.hanzitutor.app`.
+  A locked phone refuses the launch with `Unable to launch … because the device
+  was not, or could not be, unlocked` — the only step here that needs a human.
+  `idevicescreenshot` (libimobiledevice) reports "No device found" for this
+  iPhone, so **screenshots of the physical device are not available** from here;
+  `devicectl … --console` is the intended channel for the app's own log lines,
+  though it did not forward Rust's stderr on this setup. Ask the person holding
+  the phone what they see — that is the honest check, and it is what M9's device
+  criterion rests on.
+- **iOS *release* builds do not link; debug does.** `ios build` without `--debug`
+  fails at the app link with `symbol(s) not found for architecture arm64` for
+  every Tauri Swift entry point (`_run_plugin_command`, `_register_plugin`,
+  `_on_webview_created`, `_log_stdout`, `_init_plugin_dialog`). The cause is
+  visible in the archives: in `Products/Release-iphoneos/libTauri.a` those
+  symbols are **local** (`t`), where `Products/Debug-iphoneos/libTauri.a` exports
+  them (`T`), so the Rust staticlib can only bundle them in a debug build. That
+  wants a Tauri or Swift toolchain version, not a change here; until then a
+  device build is `--debug`.
+- **`crate-type` deliberately has no `cdylib`.** Tauri's template includes it for
+  Android, but cargo builds it for iOS too, where its link fails the same way
+  (Swift search paths are passed, `-lTauri` is not) and cargo treats that as fatal
+  before Xcode ever runs. iOS links the `staticlib`; Android will need `cdylib`
+  back.
+- **The team ID belongs in the environment, not in a committed file.**
+  `APPLE_DEVELOPMENT_TEAM=X5DWXB4283` on the build command is enough for
+  `-allowProvisioningUpdates` to provision the app. Xcode will write
+  `DEVELOPMENT_TEAM` into the generated `project.pbxproj` when it does; that line
+  is **not** committed, for the same reason the macOS signing identity is not in
+  `tauri.conf.json`.
 - **A build produced by `tauri ios build` embeds the frontend; it does not use
   the dev server.** So a layout change is not a hot reload — it needs
   `vite:build` (which `ios build` runs) *and* a Rust rebuild to re-embed, which
