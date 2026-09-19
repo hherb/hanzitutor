@@ -141,6 +141,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Dataset pipeline | Done | 9,574 characters, 13 MB artifact |
 | IPC surface | Done | contract tests asserting exact JSON key sets |
 | Drawing canvas | Done, human-confirmed | trace + recall modes, colour-coded feedback |
+| Stroke-order animation (M7) | Done | pen sweeps each centre-line, the outline revealed behind it; band width measured per stroke; confirmed by window capture |
 | Pronunciation | Done on macOS | 9 tests; human-confirmed speaking |
 | Personal vocabulary list | Done | 27 store unit tests; persistence tested through the state layer |
 | Per-character progress, SRS | Done | 30 store/scheduler unit tests; record → relaunch → due-date cycle tested through the state layer |
@@ -216,10 +217,12 @@ src-tauri/
   tests/ipc_contract.rs     locks the JSON contract the UI reads
   tests/licences.rs         pins the notices, the version and the bundle config
 src/
-  App.svelte                shell: modes, navigation, keyboard, state ownership
+  App.svelte                shell: modes, navigation, keyboard, state ownership,
+                            and the stroke-order animation's clock
   lib/PracticeCanvas.svelte pointer capture, coalesced sampling, display space
   lib/CharacterThumb.svelte one small picture of one character's attempt
-  lib/render.ts             canvas painting, font<->display transforms, colours
+  lib/render.ts             canvas painting, the stroke-order sweep,
+                            font<->display transforms, colours
   lib/FeedbackPanel.svelte  report -> readable advice
   lib/WordsPanel.svelte     the HSK word list: search, browse, practise
   lib/LicencesPanel.svelte  About and licences: the notices, with their texts
@@ -526,6 +529,12 @@ legibility went 53.2% → 52.4% because the ink bar now fails 8% of very rough
 attempts. `sigma=15` and `sigma=30` legibility are unchanged. If you touch the
 rasteriser or the weights, re-read that table rather than assuming.
 
+M7 changed no Rust at all — it is the canvas and the state above it — so
+`selfcheck` must come out **byte-identical**, and it does: 0 of 7,744 not perfect,
+0 verdict changes under resampling, the same tolerance rows. Reading it is still
+worth the minute, because it is the cheapest proof that an interface change did
+not reach into the grader.
+
 **If you touched the scheduler**, the numbers to hold still are in
 `progress.rs`'s tests, which pin every interval and due date outright: a failure
 is due in 60 s, and passes at 12 h / 1 d / 2 d rising to 1 d / 6 d / `interval ×
@@ -553,6 +562,24 @@ downstream of them is covered by the IPC tests, which drive
   and reverting is instant. M4's panel, its advice lines and the `faint` colour
   were confirmed that way, and the seeded 100/100 and 83/100 runs reproduce the
   `graded …` log lines quoted in §2. Take the seed out again before committing.
+  **M7's stroke-order animation needs the same trick** and is otherwise
+  unreachable: `setTimeout(() => void playStrokeOrder(), 1500)` in
+  `loadCharacter`, then capture the window every ~0.3 s for a few seconds. A
+  capture runs slower than the animation, so expect a handful of frames per
+  stroke — enough to see a stroke half-revealed with the pen at its head. Logging
+  a line per stroke (`TEMP play stroke i/n`) is what showed the stop and
+  navigate-away paths really do end the loop rather than leaving a timer behind.
+- **The stroke-order sweep is a clip, not a fade, and the band's width comes from
+  the outline.** `drawSweptStroke` in `render.ts` fills the outline clipped to
+  the band the pen has covered. Make the band a constant and you get one of two
+  failures, both visible immediately: too narrow and the outline's edges arrive
+  in disconnected fragments that look like a rendering fault; wide enough for the
+  widest stroke and a short 点 flashes in whole. So `strokeRadii` measures each
+  stroke's half-width once per character by walking outward from its centre-line
+  with `ctx.isPointInPath` and caches it. The trap inside that: `isPointInPath`
+  takes its point in *canvas* coordinates while the path is transformed by the
+  current matrix, so the measurement clears the transform and works in font space
+  at 1:1 — measuring under the drawing transform silently reports nonsense.
 - **A stroke has to end where the pointer was released.** `handleUp` in
   `PracticeCanvas.svelte` appends the `pointerup` position before committing the
   stroke. Without that, a quick flick whose only sample arrives with the release

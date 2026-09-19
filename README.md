@@ -28,7 +28,10 @@ measure** are all implemented and tested; 202 automated tests pass. What is not 
 - **Two practice modes.** *Trace* puts a faint copy of the character on the board
   to follow. *Recall* shows only the pinyin and meaning, and grades what you
   write from memory.
-- **Stroke-order animation** — step through the character one stroke at a time.
+- **Stroke-order animation** — a pen walks each stroke's centre-line and the
+  outline appears behind it, so the direction a stroke is written in is shown and
+  not only the order the strokes come in. It can be stopped at any point, and
+  starting to write ends it for you.
 - **Grading with specific feedback**, not just a number: which stroke is the
   wrong shape, which is misplaced, which was drawn back to front, which has too
   little ink, which is missing, and which are out of order.
@@ -449,7 +452,7 @@ src-tauri/                  Tauri shell
   tests/ipc_contract.rs     locks the JSON contract the UI reads
 src/lib/                    Svelte components
   PracticeCanvas.svelte     pointer capture, stroke recording
-  render.ts                 canvas painting, verdict colours
+  render.ts                 canvas painting, the stroke-order sweep, verdict colours
   WordsPanel.svelte         the HSK word list: search, browse, practise
   VocabularyPanel.svelte    the vocabulary list: add, group, export, import
   LessonSidebar.svelte      course, list and word navigation, progress marks
@@ -603,12 +606,15 @@ derived data rather than only the notices — see [`LICENSES.md`](LICENSES.md).
 See **[ROADMAP.md](ROADMAP.md)** for what to build next, in priority order, with
 approach notes and acceptance criteria. Distribution is done — the notices ship
 in the bundle, the data and font need no download, and CI runs the suite on every
-push, so the headline gaps are now:
+push — and so is the stroke-order animation, which now draws each stroke along its
+centre-line rather than switching strokes on one at a time. The headline gaps are
+now:
 
 1. **Pronunciation on Windows and Linux**, so the app is not macOS-only.
-2. **Centreline stroke animation** and **input ergonomics** for long strokes on a
-   trackpad — the two small ones that make daily practice nicer.
-3. **Mobile shells**, since a touchscreen with a stylus is the right input device.
+2. **Input ergonomics** for long strokes on a trackpad — the small one that makes
+   daily practice nicer.
+3. **Mobile shells**, since a touchscreen with a stylus is the right input device,
+   and **the durable study store** that an unbounded attempt log needs.
 
 If you are picking this project up to continue development, read
 **[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the

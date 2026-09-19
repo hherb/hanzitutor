@@ -19,7 +19,7 @@ See [`HANDOVER.md`](HANDOVER.md) for how to build, test and verify; see
 | M4 | Raster legibility (IoU) | Catches errors centrelines cannot | M | **done** |
 | M5 | Distribution readiness | Licence notices and signed bundles | M | **done** |
 | M6 | Pronunciation on Windows/Linux | macOS-only today | S | not started |
-| M7 | Centreline stroke animation | Nicer, more accurate "show me" | S | not started |
+| M7 | Centreline stroke animation | Nicer, more accurate "show me" | S | **done** |
 | M8 | Input ergonomics | Long strokes on a trackpad | S | not started |
 | M9 | Mobile shells | A stylus is the right input device | L | not started |
 | M10 | Durable study store (SQLite) | The JSON format caps the attempt log the grading work needs | M | not started |
@@ -384,26 +384,70 @@ off the runtime path for everything the app itself teaches.
 
 ## M7 — Centreline stroke animation
 
-**Why.** "Show stroke order" currently reveals strokes cumulatively, which shows
-*which* strokes but not *how* each is drawn. The reference centrelines are already
-in the dataset, so animating a pen along them is cheap and much better teaching.
+**Status: done.**
 
-**Approach.**
+"Show stroke order" now *writes* the character instead of switching it on a
+stroke at a time: a pen travels along each stroke's centre-line and the stroke's
+outline appears behind it, so *how* a stroke is drawn is visible and not only
+*which* strokes there are. The drawing is in `src/lib/render.ts` (`Sweep`,
+`sweptBand`, `strokeRadii`), the clock is in `src/App.svelte`
+(`playStrokeOrder`, `strokeTimeline`), and `PracticeCanvas.svelte` passes the
+pen's position through to each frame.
 
-- For each stroke, walk a pen along its median over time, revealing the outline
-  progressively — clip the outline fill to the region already swept.
-- In canvas, `ctx.save()` / `ctx.clip()` with a polygon covering the swept part,
-  or an offscreen buffer where the stroke is drawn and then masked. The median
-  points are already in display space, so the sweep is direct.
-- Keep it skippable and cancellable; it runs on a `playToken` guard today, which
-  is the right pattern to keep.
+What shipped:
 
-**Acceptance criteria.**
+- **The outline is clipped to the swept region, not faded in.** A pen walks the
+  centre-line by arc length — never by sample index, because the samples are not
+  evenly spaced — and the stroke's outline is filled, clipped to the band the pen
+  has covered. The band is one path: a disc at every centre-line point the pen has
+  passed, and a quad joining consecutive ones, which union under the non-zero
+  winding rule. The stroke is filled whole the instant the sweep completes, so
+  the last frame is the true outline rather than the band's leftovers.
+- **The band's width is measured from the stroke, not guessed.** It has to cover
+  the stroke's full width or the outline's edges arrive late in disconnected
+  fragments, which looks like a rendering fault; and a constant wide enough for
+  the widest stroke flashes a short 点 in whole, which is the popping this
+  milestone exists to remove. So each stroke's half-width is measured once, on
+  the first frame of its first animation, by walking outward from points along its
+  centre-line with `ctx.isPointInPath` until the outline is left, and cached per
+  character. Measured across the shipped data (87,609 strokes), an outline point
+  sits 34.8 units from its centre-line at the median, 55.0 at the 90th
+  percentile, 85.7 at the 99th and 274 at the worst — a range no single constant
+  covers.
+- **The pace follows the stroke, and the whole character is bounded.** Each stroke
+  takes a bounded time proportional to its centre-line's length (a 点 is not a
+  blink, a 捺 is not a wait), with a short pen-lift between strokes; the timeline
+  is then scaled once so that even 囊 finishes inside seven seconds.
+- **Stopping is a real cancel.** The button is a toggle — "Show stroke order" /
+  "Stop" — and `S` toggles too. Navigating to another character, switching mode,
+  clearing the board, or simply starting to write all end the animation at the
+  end of the stroke the pen is on. Cancellation is one token checked after every
+  `await`, and the loop is driven by animation frames rather than a timer, so
+  nothing is left running when it stops.
+- **Nothing runs while it is idle.** The width measurement is lazy and cached;
+  with no pen on the board there is no timer, no frame loop and no work in the
+  paint path beyond what the board already did.
 
-- The animation visibly traces each stroke rather than popping it in.
-- Cancelling (navigating away, pressing the button again) stops cleanly with no
-  runaway timers.
-- No measurable cost when the animation is not running.
+Verified by capturing the app's own window: a stroke half-revealed with the pen
+at its head and the ink contiguous behind it — 的 with its 白 written and its 勺
+still to come, and, in a run that stepped through the course, 在 and 我. Drawing
+cannot be automated here (HANDOVER §6), so the animation was started from a
+temporary seed in the same function the button calls; the log showed exactly one
+start per seed, a clean stop mid-animation, and no further strokes after a stop
+or a navigation.
+
+Deliberately not as originally planned, and why:
+
+- **The sweep is not a clip against the outline's own arc length.** Revealing the
+  outline progressively along *its* contour would trace the shape's edge rather
+  than the stroke's path, which teaches nothing about direction. Clipping against
+  the swept centre-line is what shows the pen going the right way.
+- **The whole character is not revealed faintly underneath.** In trace mode the
+  guide is on the board anyway and the animation replaces it; drawing it under the
+  sweep as well would hide the very thing the animation is demonstrating.
+- **There is no speed control.** One pace, proportional to each stroke, bounded
+  for a whole character. A learner who wants to go slower has the step-through
+  button and the ghost.
 
 ---
 
@@ -638,6 +682,17 @@ Recorded honestly, because they bound how much the current scores mean:
 - **The course is frequency-ordered only.** It starts at 的 (8 strokes), which is
   right for reading but a demanding first character to *write*. A hand-ordered or
   stroke-count-ascending mode may suit a beginner better.
+- **The stroke-order animation has no automated test.** Drawing cannot be driven
+  from here (HANDOVER §6), and the frontend has no test runner at all, so the
+  sweep was checked by capturing the app's own window rather than by asserting
+  anything: `pnpm test` and `check:web` cover it only as far as it type-checks.
+  The pure geometry behind it — `prefixAt`, `sampleAlong`, `strokeRadii` in
+  `render.ts` — is the obvious first thing a `vitest` run should pin, since it is
+  arithmetic over arrays and needs no canvas.
+- **The sweep uses one band radius per stroke**, taken from its widest point, so a
+  strongly tapered stroke starts revealing a little ahead of the pen at its thin
+  end. The alternative is a radius per centre-line segment; it is only visible on
+  a slow capture, so it waits for a reason to exist.
 - **One dependency advisory is accepted, not fixed.** Dependabot reports a
   moderate advisory against `glib` 0.18.5 — unsoundness in the `Iterator` and
   `DoubleEndedIterator` impls for `glib::VariantStrIter` — fixed in `glib` 0.20.0.

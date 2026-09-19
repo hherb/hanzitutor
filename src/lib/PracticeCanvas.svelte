@@ -8,6 +8,7 @@
    * before leaving this component, which is the space the Rust grader expects.
    */
   import { BOX, drawScene } from "./render";
+  import type { Sweep } from "./render";
   import type { Character, GradeReport, Point } from "./types";
 
   interface Props {
@@ -17,6 +18,8 @@
     ghostCount: number;
     ghostStyle: "faint" | "highlight";
     showCorrections: boolean;
+    /** Where the stroke-order pen is, or null when nothing is animating. */
+    sweep: Sweep | null;
     disabled?: boolean;
     onStroke: (stroke: Point[]) => void;
   }
@@ -28,6 +31,7 @@
     ghostCount,
     ghostStyle,
     showCorrections,
+    sweep,
     disabled = false,
     onStroke,
   }: Props = $props();
@@ -84,6 +88,7 @@
       current,
       report,
       showCorrections,
+      sweep,
     });
   }
 
@@ -95,6 +100,7 @@
     void ghostCount;
     void ghostStyle;
     void showCorrections;
+    void sweep;
     void side;
     void dpr;
     repaint();

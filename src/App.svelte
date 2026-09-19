@@ -13,7 +13,8 @@
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import WordsPanel from "./lib/WordsPanel.svelte";
-  import { INK_WIDTH } from "./lib/render";
+  import { INK_WIDTH, polylineLength } from "./lib/render";
+  import type { Sweep } from "./lib/render";
   import type {
     AppInfo,
     Character,
@@ -49,6 +50,9 @@
   const EMPTY_SLOT: SlotState = { strokes: [], report: null };
 
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  /** Resolve on the next animation frame, so the pen is paced by the display. */
+  const nextFrame = () =>
+    new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
   let stats = $state<DatasetStats | null>(null);
   let lessons = $state<Lesson[]>([]);
@@ -166,6 +170,13 @@
   let revealed = $state(0);
   /** True while the stroke-order animation runs. */
   let playing = $state(false);
+  /**
+   * Where the stroke-order pen is: which reference stroke, and how far along it.
+   *
+   * `revealed` counts the strokes already finished, so the two together say how
+   * much of the character is drawn. Null whenever no pen is on the board.
+   */
+  let sweep = $state<Sweep | null>(null);
   let playToken = 0;
 
   const allCharacters = $derived(lessons.flatMap((lesson) => lesson.characters));
@@ -368,7 +379,7 @@
       } else if (event.key === "ArrowLeft") {
         navigate(-1);
       } else if (event.key.toLowerCase() === "s") {
-        void playStrokeOrder();
+        toggleStrokeOrder();
       } else if (event.key.toLowerCase() === "h") {
         void hear();
       }
@@ -460,6 +471,7 @@
     report = null;
     revealed = 0;
     playing = false;
+    sweep = null;
     playToken += 1;
     // Don't let the previous character keep talking over the next one.
     void api.stopSpeaking();
@@ -571,6 +583,9 @@
   }
 
   function addStroke(stroke: Point[]) {
+    // A learner who starts writing has stopped watching: end the animation
+    // rather than drawing over a pen that is still travelling.
+    stopStrokeOrder();
     strokes = [...strokes, stroke];
     // The old verdict no longer describes what is on the board.
     report = null;
@@ -590,6 +605,9 @@
 
   async function check() {
     if (!character || strokes.length === 0 || grading) return;
+    // A report is about the board as it stands, so the guide stops growing the
+    // moment it is asked for.
+    stopStrokeOrder();
     grading = true;
     error = null;
     try {
@@ -673,21 +691,105 @@
     }
   }
 
+  /** Milliseconds of pen travel per design unit of centre-line. */
+  const MS_PER_UNIT = 1.0;
+  /** Bounds on one stroke, so a 点 is not a blink and a 捺 is not a wait. */
+  const MIN_STROKE_MS = 100;
+  const MAX_STROKE_MS = 520;
+  /** Pause between strokes, so the lift and the next pen-down are visible. */
+  const BETWEEN_STROKES_MS = 110;
+  /** However many strokes a character has, animating it takes at most this. */
+  const MAX_TOTAL_MS = 7000;
+
+  /**
+   * How long each stroke takes, and the pause after it.
+   *
+   * Built as a whole timeline rather than a per-stroke delay because the total
+   * has to be bounded: a length-proportional pace alone would animate 囊 (22
+   * strokes) for far longer than anyone will watch. Everything is scaled by the
+   * same factor once the natural total is known, so the character keeps its
+   * rhythm — the long strokes still take longer than the short ones.
+   */
+  function strokeTimeline(
+    medians: Point[][],
+    total: number,
+  ): { duration: number; pause: number }[] {
+    const steps = Array.from({ length: total }, (_, i) => ({
+      duration: Math.min(
+        MAX_STROKE_MS,
+        Math.max(MIN_STROKE_MS, polylineLength(medians[i] ?? []) * MS_PER_UNIT),
+      ),
+      pause: BETWEEN_STROKES_MS,
+    }));
+    const natural = steps.reduce((sum, step) => sum + step.duration + step.pause, 0);
+    const scale = natural > MAX_TOTAL_MS ? MAX_TOTAL_MS / natural : 1;
+    return steps.map((step) => ({
+      duration: step.duration * scale,
+      pause: step.pause * scale,
+    }));
+  }
+
+  /**
+   * Animate the character being written, one stroke at a time.
+   *
+   * A pen walks along each stroke's centre-line and the stroke's outline is
+   * revealed behind it, so *how* each stroke is drawn is visible rather than
+   * only *which* strokes there are. The pen's pace is the stroke's own length,
+   * so a long sweeping stroke takes longer than a 点, and the whole character is
+   * squeezed into [`MAX_TOTAL_MS`] however many strokes it has — 囊 has 22 and
+   * should not take half a minute.
+   *
+   * The loop is driven by animation frames rather than a timer, and every await
+   * is followed by a check of `playToken`: that token is the only cancellation
+   * mechanism, so navigating away, stopping the animation or resetting the board
+   * ends it at the next frame with nothing left running.
+   */
   async function playStrokeOrder() {
     const total = strokeTotal;
     if (total === 0 || playing) return;
     const token = ++playToken;
+    const timeline = strokeTimeline(character?.medians ?? [], total);
     playing = true;
     revealed = 0;
-    // Quick enough for a 20-stroke character, slow enough to follow.
-    const step = Math.max(170, 900 - total * 30);
-    for (let i = 1; i <= total; i++) {
-      if (token !== playToken) return;
+    sweep = null;
+    for (let i = 0; i < total; i++) {
+      const { duration, pause } = timeline[i];
+      const started = performance.now();
       revealed = i;
-      await sleep(step);
+      for (;;) {
+        const elapsed = (performance.now() - started) / duration;
+        const progress = Math.min(1, elapsed);
+        sweep = { index: i, progress };
+        if (progress >= 1) break;
+        await nextFrame();
+        if (token !== playToken) return;
+      }
+      // The pen lifts: the stroke is whole now, so it is filled rather than
+      // being left half-swept under a pen that has moved on.
+      sweep = null;
+      revealed = i + 1;
+      if (pause > 0) {
+        await sleep(pause);
+        if (token !== playToken) return;
+      }
     }
-    if (token !== playToken) return;
     playing = false;
+  }
+
+  /** Stop the animation where it stands, at the end of the current stroke. */
+  function stopStrokeOrder() {
+    if (!playing) return;
+    // A half-swept stroke with no pen on it reads as a rendering fault, so a
+    // stop finishes the stroke the pen is on rather than freezing mid-stroke.
+    if (sweep) revealed = sweep.index + 1;
+    sweep = null;
+    playing = false;
+    playToken += 1;
+  }
+
+  function toggleStrokeOrder() {
+    if (playing) stopStrokeOrder();
+    else void playStrokeOrder();
   }
 
   // ---- personal vocabulary list -------------------------------------------
@@ -1242,6 +1344,7 @@
             {ghostCount}
             {ghostStyle}
             {showCorrections}
+            {sweep}
             onStroke={addStroke}
           />
 
@@ -1294,8 +1397,14 @@
               <span aria-hidden="true">🔊</span> Hear it
             </button>
 
-            <button onclick={playStrokeOrder} disabled={playing || strokeTotal === 0}>
-              {playing ? "Playing…" : "Show stroke order"}
+            <button
+              onclick={toggleStrokeOrder}
+              disabled={strokeTotal === 0}
+              title={playing
+                ? "Stop the animation where it is"
+                : "Watch the character written, one stroke at a time (S)"}
+            >
+              {playing ? "Stop" : "Show stroke order"}
             </button>
             <button onclick={undo} disabled={strokes.length === 0}>Undo</button>
             <button onclick={reset} disabled={strokes.length === 0}>Clear</button>
