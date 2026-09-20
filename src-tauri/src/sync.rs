@@ -394,9 +394,74 @@ fn platform_store() -> Box<dyn TokenStore> {
     {
         Box::new(Keychain)
     }
-    #[cfg(not(target_vendor = "apple"))]
+    #[cfg(target_os = "android")]
+    {
+        Box::new(AndroidKeystore)
+    }
+    #[cfg(not(any(target_vendor = "apple", target_os = "android")))]
     {
         Box::new(NoSecureStore)
+    }
+}
+
+/// Android's keystore, reached through the Kotlin plugin.
+///
+/// Android has no keychain of the Apple kind: its keystore holds *keys*, not
+/// secrets, so the Kotlin side generates an AES-256-GCM key inside it and keeps
+/// only the ciphertext. That is a real protection — the key material never leaves
+/// the device's secure hardware where there is any, and the file on disk is
+/// useless without it — but nothing asks the learner for anything, so this reports
+/// itself as [`Protection::KeychainOnly`] rather than claiming a user-presence
+/// prompt it does not show. Requiring one means a `BiometricPrompt` with the cipher
+/// as its `CryptoObject`, which needs `androidx.biometric`; see the Kotlin side.
+#[cfg(target_os = "android")]
+struct AndroidKeystore;
+
+/// What `loadSecret` answers: the token, or no field at all.
+///
+/// An absent field rather than a null one, because `JSObject` is a `JSONObject` and
+/// `put(key, null)` *removes* the mapping — so a null would arrive as an absent
+/// field by a route nobody could read from the code.
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct StoredSecret {
+    #[serde(default)]
+    secret: Option<String>,
+}
+
+#[cfg(target_os = "android")]
+impl TokenStore for AndroidKeystore {
+    fn available(&self) -> bool {
+        true
+    }
+
+    fn protection(&self) -> Protection {
+        Protection::KeychainOnly
+    }
+
+    fn load(&self) -> Result<Option<Account>, String> {
+        let answer: StoredSecret = crate::platform::call("loadSecret", ())?;
+        match answer.secret {
+            None => Ok(None),
+            Some(text) => serde_json::from_str(&text)
+                .map(Some)
+                .map_err(|e| format!("the stored Dropbox sign-in could not be read: {e}")),
+        }
+    }
+
+    fn save(&self, account: &Account) -> Result<(), String> {
+        let text = serde_json::to_string(account)
+            .map_err(|e| format!("the Dropbox sign-in could not be encoded: {e}"))?;
+        crate::platform::call::<serde_json::Value>(
+            "saveSecret",
+            serde_json::json!({ "secret": text }),
+        )?;
+        Ok(())
+    }
+
+    fn clear(&self) -> Result<(), String> {
+        crate::platform::call::<serde_json::Value>("clearSecret", ())?;
+        Ok(())
     }
 }
 
@@ -620,10 +685,10 @@ impl TokenStore for Keychain {
 ///
 /// Not a stub waiting to be filled in with a file: see the module note. A refusal is
 /// a bug report; a plaintext credential is a vulnerability nobody notices.
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
 struct NoSecureStore;
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
 impl TokenStore for NoSecureStore {
     fn available(&self) -> bool {
         false

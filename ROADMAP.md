@@ -1471,6 +1471,23 @@ new upstream project for four endpoints:
   learner rather than leave them to infer it from a prompt. Only the
   missing-entitlement refusal falls back; any other failure is reported, because a
   second attempt would only fail more quietly.
+- **Android keeps the sign-in in its keystore, which is a different shape of thing.**
+  There is no keychain of the Apple kind there: the Android keystore holds *keys*,
+  not secrets. So the Kotlin side generates an AES-256-GCM key inside it — never
+  exportable, in secure hardware where there is any — and writes only the ciphertext,
+  to the app's own preferences. The file on disk is useless without the device. What
+  it deliberately is **not** yet is a fingerprint request: that means showing a
+  `BiometricPrompt` with the cipher as its `CryptoObject`, which needs
+  `androidx.biometric`, a dependency this app does not carry. So Android reports
+  `keychainOnly`, which is exactly what it is — the same honest label the Mac's
+  unsigned development build gets. `WryActivity` extends `AppCompatActivity`, so it
+  is already a `FragmentActivity`, which is the one structural thing a biometric
+  prompt needs.
+- **An undecryptable blob is forgotten rather than reported.** That is what a restored
+  backup looks like on Android: the preferences come back and the keystore key does
+  not, because the key is bound to the device. An undecryptable token is worth nothing
+  to anybody, and failing would leave a learner staring at an error they cannot act on
+  when the useful thing is to be told they are not connected and offered Connect.
 
 Eleven tests in `crates/hanzi-sync/tests/dropbox.rs`, all against an in-memory
 Dropbox that answers the same four request shapes. The one that matters most is the
@@ -1544,9 +1561,15 @@ saying what the last sync did. Four things about it are deliberate:
   ask for it, and this is the first code in the app that sends study data anywhere.
 
 **What is not built.** Syncing at launch or on foreground rather than only on
-demand; the baseline for a card whose log does not go back to its first attempt; and
-the vocabulary and cursor shards — which means a vocabulary list added on one device
-does not appear on the other yet, though a *schedule* does.
+demand; the baseline for a card whose log does not go back to its first attempt; the
+vocabulary and cursor shards — which means a vocabulary list added on one device does
+not appear on the other yet, though a *schedule* does; and a fingerprint prompt on
+Android, which needs `androidx.biometric` and so is its own change. One thing is
+**not** verified against a real account anywhere: the AES round trip on Android,
+because it only runs once a learner completes an authorization there. What is
+verified on the device is that the store is reachable and the flow starts — the
+settings screen offers Connect, and pressing it opens Dropbox's own consent page
+titled "link with HanziTutor".
 
 **Why.** Practice happens on whichever device is at hand — the laptop at a desk,
 the phone on a train — and a schedule that exists on only one of them is a

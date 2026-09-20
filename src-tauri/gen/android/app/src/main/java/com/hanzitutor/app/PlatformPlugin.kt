@@ -29,6 +29,7 @@
 package com.hanzitutor.app
 
 import android.app.Activity
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
@@ -38,8 +39,11 @@ import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.util.Base64
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import app.tauri.annotation.Command
@@ -51,14 +55,25 @@ import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.io.File
 import java.io.FileOutputStream
+import java.security.KeyStore
 import java.util.Locale
 import java.util.UUID
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
 /** The arguments of `speak`. */
 @InvokeArg
 class SpeakArgs {
     lateinit var text: String
     var voice: String? = null
+}
+
+/** The arguments of `saveSecret`. */
+@InvokeArg
+class SaveSecretArgs {
+    lateinit var secret: String
 }
 
 @TauriPlugin
@@ -522,6 +537,153 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
         invoke.resolve(result)
     }
 
+    // ---- the Dropbox sign-in -----------------------------------------------
+
+    /**
+     * Keep the Dropbox refresh token where copying a file does not give it away.
+     *
+     * The token is long-lived and is the whole of this app's access to a
+     * learner's Dropbox, so it does not belong in the study database — an
+     * ordinary file in an ordinary directory that backup tools copy around.
+     * Android has no keychain of the Apple kind; what it has is the **keystore**,
+     * which holds *keys*, not secrets. So the shape here is: an AES-256-GCM key
+     * generated inside the keystore, never exportable, used to encrypt the token,
+     * with only the ciphertext written to preferences. The key material lives in
+     * the device's secure hardware where there is any, and the file on disk is
+     * useless without this device.
+     *
+     * **What this deliberately is not, yet.** The key is created without
+     * `setUserAuthenticationRequired`, so nothing asks the learner for a
+     * fingerprint before the app reads the token back. macOS and iOS do ask,
+     * because their keychains have a per-item access control that a prompt
+     * attaches to. Requiring authentication here means showing a `BiometricPrompt`
+     * with the cipher as its `CryptoObject`, which needs `androidx.biometric` —
+     * a dependency this app does not carry — and it belongs in its own change
+     * rather than smuggled into this one. So the Rust side reports this store as
+     * `keychainOnly`, which is exactly what it is: encrypted at rest, released to
+     * this app without asking anybody. That is the same honest label the Mac's
+     * unsigned development build gets.
+     *
+     * **Why the ciphertext is what is written.** `apply()` rather than `commit()`:
+     * the write is to this app's own preferences and a lost race with process
+     * death costs one reconnect, while blocking the main thread — which is where
+     * mobile plugin commands run — costs the frame the learner is looking at.
+     */
+    @Command
+    fun saveSecret(invoke: Invoke) {
+        val args = invoke.parseArgs(SaveSecretArgs::class.java)
+        try {
+            val cipher = Cipher.getInstance(SECRET_TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey())
+            val encrypted = cipher.doFinal(args.secret.toByteArray(Charsets.UTF_8))
+            // The IV is generated per encryption and is not secret; it has to be
+            // kept, because GCM cannot decrypt without it.
+            val blob = encode(cipher.iv) + ":" + encode(encrypted)
+            preferences().edit().putString(SECRET_ENTRY, blob).apply()
+            invoke.resolve(JSObject())
+        } catch (problem: Exception) {
+            invoke.reject(
+                "the Android keystore would not store the Dropbox sign-in: ${problem.message}"
+            )
+        }
+    }
+
+    /**
+     * Read the sign-in back, or answer without one.
+     *
+     * An absent key in the answer means "nothing is stored", which is the state a
+     * device nobody has connected is in. That is spelled as an *omitted* field
+     * rather than a null one on purpose: `JSObject` is a `JSONObject`, and
+     * `put(key, null)` removes the mapping instead of writing a null, so an
+     * explicit null would arrive as the same absent field by a route nobody could
+     * read from the code.
+     *
+     * A blob that cannot be decrypted is **forgotten rather than reported**, and
+     * that is a decision rather than laziness. It is what a restored backup looks
+     * like: the preferences came back and the keystore key did not, because the
+     * key is bound to the device. An undecryptable token is worth nothing to
+     * anybody, and failing here would leave a learner looking at an error they
+     * cannot act on, when the useful thing is to be told they are not connected
+     * and offered Connect.
+     */
+    @Command
+    fun loadSecret(invoke: Invoke) {
+        val result = JSObject()
+        val blob = preferences().getString(SECRET_ENTRY, null)
+        if (blob != null) {
+            val secret = try {
+                decrypt(blob)
+            } catch (problem: Exception) {
+                preferences().edit().remove(SECRET_ENTRY).apply()
+                null
+            }
+            if (secret != null) {
+                result.put("secret", secret)
+            }
+        }
+        invoke.resolve(result)
+    }
+
+    /** Forget the sign-in, and the key that encrypted it. */
+    @Command
+    fun clearSecret(invoke: Invoke) {
+        preferences().edit().remove(SECRET_ENTRY).apply()
+        try {
+            KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.deleteEntry(SECRET_KEY_ALIAS)
+        } catch (problem: Exception) {
+            // A keystore with no key in it is the ordinary case for a device that
+            // never stored one, and not a failure worth reporting.
+        }
+        invoke.resolve(JSObject())
+    }
+
+    /** This app's own preferences, where the encrypted blob lives. */
+    private fun preferences() =
+        activity.getSharedPreferences(SECRET_PREFERENCES, Context.MODE_PRIVATE)
+
+    /**
+     * The AES key used for the sign-in, created inside the keystore on first use.
+     *
+     * `AndroidKeyStore` is a *provider*, not a file: `KeyStore.getInstance` and
+     * `load(null)` reach the hardware-backed store, and the private material never
+     * leaves it. The key is generated once and kept — regenerating it would make
+     * every stored token undecryptable, which is precisely the situation the
+     * `loadSecret` note above handles.
+     */
+    private fun secretKey(): SecretKey {
+        val store = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        val existing = store.getEntry(SECRET_KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
+        if (existing != null) {
+            return existing.secretKey
+        }
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+        generator.init(
+            KeyGenParameterSpec.Builder(
+                SECRET_KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .build()
+        )
+        return generator.generateKey()
+    }
+
+    /** Decrypt a stored blob, or null when it is not shaped like one. */
+    private fun decrypt(blob: String): String? {
+        val parts = blob.split(":")
+        if (parts.size != 2) return null
+        val iv = Base64.decode(parts[0], Base64.NO_WRAP)
+        val encrypted = Base64.decode(parts[1], Base64.NO_WRAP)
+        val cipher = Cipher.getInstance(SECRET_TRANSFORMATION)
+        cipher.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(SECRET_TAG_BITS, iv))
+        return String(cipher.doFinal(encrypted), Charsets.UTF_8)
+    }
+
+    /** Base64 without line wrapping, which would corrupt a blob split on `:`. */
+    private fun encode(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
+
     /**
      * Run [work] with the synthesiser, starting it on first use.
      *
@@ -758,5 +920,23 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
          * while being cut off there is reported as truncation.
          */
         const val MAX_RECORD_SECONDS = 30
+
+        /** Where the sign-in is kept, and under what name. */
+        const val SECRET_PREFERENCES = "hanzi-sync"
+        const val SECRET_ENTRY = "dropbox"
+
+        /**
+         * The keystore the AES key is generated in, and the alias it is filed
+         * under. `AndroidKeyStore` is a provider name, spelled the same on every
+         * device.
+         */
+        const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        const val SECRET_KEY_ALIAS = "hanzi-tutor-sync"
+
+        /** AES-GCM, which authenticates as well as encrypts. */
+        const val SECRET_TRANSFORMATION = "AES/GCM/NoPadding"
+
+        /** GCM's authentication tag, in bits. 128 is the only size to use. */
+        const val SECRET_TAG_BITS = 128
     }
 }
