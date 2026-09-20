@@ -74,6 +74,36 @@
   }
 
   const showSummary = $derived(result.syllables.length > 1);
+
+  /**
+   * True when a recogniser heard every syllable that was asked for.
+   *
+   * Only meaningful when `sameCount` — a transcription with the wrong number of
+   * syllables cannot be read as "all of them matched", whatever the pairwise
+   * comparison says.
+   */
+  const heardAllMatched = $derived(
+    result.heard !== null &&
+      result.heard.sameCount &&
+      result.heard.syllables.length > 0 &&
+      result.heard.matched === result.heard.syllables.length,
+  );
+
+  /**
+   * What to call the recognition, in words.
+   *
+   * Deliberately about *syllables* and never about pronunciation. A recogniser
+   * repairs a learner's errors toward the likely word — that is what its language
+   * model is for — so a match here is not praise and must not read as any. The
+   * sentence under it, worded in Rust, says the same thing at length.
+   */
+  const heardLabel = $derived.by(() => {
+    if (result.heard === null) return "";
+    const many = result.heard.syllables.length > 1;
+    return heardAllMatched
+      ? `heard the ${many ? "syllables" : "syllable"} asked for`
+      : `heard ${many ? "different syllables" : "a different syllable"}`;
+  });
 </script>
 
 <section class="tone" class:uncertain={result.verdict === "uncertain"}>
@@ -88,6 +118,45 @@
   </header>
 
   <p class="detail">{result.detail}</p>
+
+  <!-- What was said, when a speech model is installed. Absent entirely
+       otherwise: no empty box and no hint that something is missing, because
+       most learners will never install one and the panel they had before is
+       still complete. -->
+  {#if result.heard}
+    <div class="words" class:off={!heardAllMatched}>
+      <div class="words-head">
+        <span class="words-tag">Recognised</span>
+        {#if result.heard.text}
+          <span class="words-glyphs" lang="zh-Hans">{result.heard.text}</span>
+        {/if}
+        {#if result.heard.base}
+          <span class="words-base">{result.heard.base}</span>
+        {/if}
+        <span class="badge" class:good={heardAllMatched} class:uncertain={!heardAllMatched}>
+          {heardLabel}
+        </span>
+      </div>
+      {#if result.heard.syllables.length > 0}
+        <ul class="words-syllables">
+          {#each result.heard.syllables as syllable, index (index)}
+            <li class:ok={syllable.matches}>
+              <span class="plain">{syllable.base}</span>
+              {#if !syllable.matches}
+                <span class="wanted">wanted {syllable.wanted}</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <p class="words-detail">{result.heard.detail}</p>
+    </div>
+  {:else if result.heardError}
+    <p class="words-error">
+      The syllables could not be recognised this time: {result.heardError} The tone
+      above was measured from the pitch and is unaffected.
+    </p>
+  {/if}
 
   <div class="syllables">
     {#each result.syllables as syllable (syllable.position)}
@@ -225,6 +294,92 @@
     margin: 0.5rem 0 0.6rem;
     line-height: 1.45;
     font-size: 0.9rem;
+  }
+
+  /* ---- What was recognised ------------------------------------------------
+     Set apart from the charts below it, because it is a different kind of claim:
+     the charts are a measurement of the voice, and this is a transcription that
+     can be wrong in ways the learner did not cause. */
+  .words {
+    margin: 0 0 0.7rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--line, #d8d2c4);
+    border-left: 3px solid #2f6f4f;
+    border-radius: 6px;
+    background: #fbfaf4;
+  }
+  .words.off {
+    border-left-color: #a8402c;
+  }
+  .words-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.45rem;
+  }
+  .words-tag {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted, #6b6455);
+  }
+  .words-glyphs {
+    font-size: 1.3rem;
+    line-height: 1.1;
+    color: var(--ink, #2c2a24);
+  }
+  /* No tone marks anywhere in this block: the transcription says which syllables
+     were heard, and a dictionary tone attached to a character would be a claim
+     about the voice that this cannot support. See the `Heard` type. */
+  .words-base {
+    font-size: 0.85rem;
+    color: var(--muted, #6b6455);
+    letter-spacing: 0.02em;
+  }
+  .words-head .badge {
+    margin-left: auto;
+  }
+  .words-syllables {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin: 0.4rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .words-syllables li {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    background: #f4e6e1;
+    font-size: 0.78rem;
+  }
+  .words-syllables li.ok {
+    background: #e3efe0;
+  }
+  .plain {
+    font-weight: 600;
+  }
+  .wanted {
+    color: #7a2a1c;
+    font-size: 0.72rem;
+  }
+  .words-detail {
+    margin: 0.45rem 0 0;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    color: var(--muted, #6b6455);
+  }
+  .words-error {
+    margin: 0 0 0.7rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: 6px;
+    background: #fdf3f0;
+    color: #7a2a1c;
+    font-size: 0.78rem;
+    line-height: 1.45;
   }
 
   /* One chart per syllable, wrapping when the window is narrow. */

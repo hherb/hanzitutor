@@ -1,12 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- No INTERNET here on purpose. This app downloads nothing and makes no
-         network requests at runtime, so the released build does not ask for the
-         permission at all — which makes "it works offline" a claim anyone can
-         check on the artifact rather than a promise. Development builds do need
-         it, because `tauri android dev` loads the interface from a development
-         server on the host; that is declared in `src/debug/AndroidManifest.xml`
-         and merged in for debug builds only. -->
+    <!-- The app makes exactly one kind of network request, and only because the
+         learner asked for it: the optional speech-recognition model, downloaded
+         from the settings screen. It is 163 MB, so it cannot be bundled, and it
+         is the only reason this permission is here.
+
+         It used to be declared for debug builds only, which made "it works
+         offline" a claim anyone could check on the artifact with
+         `aapt2 dump permissions`. That is no longer true, and pretending
+         otherwise would mean shipping a settings button that always fails — so
+         the permission is declared and the claim was restated rather than
+         quietly dropped. What has *not* changed: nothing is ever sent, nothing
+         is collected, and no request happens unless this download is started.
+         See LICENSES.md and ROADMAP.md M12. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Tone practice records the learner's own voice, for as long as they hold
          the button. It is asked for at runtime on the first launch (see

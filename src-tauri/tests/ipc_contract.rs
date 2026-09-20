@@ -757,6 +757,52 @@ fn cursor_serialises_with_camel_case_fields() {
 }
 
 #[test]
+fn the_asr_status_serialises_with_camel_case_fields() {
+    // The settings screen renders a download from this and nothing else, so its
+    // keys are the contract: `downloadBytes` and `unpackedBytes` are what it shows
+    // *before* anybody agrees to the download, and `downloaded` is what it turns
+    // into a progress bar once somebody has.
+    let state = state();
+    let json = serde_json::to_value(state.asr.status()).unwrap();
+    expect_keys(
+        &json,
+        &[
+            "state",
+            "installed",
+            "model",
+            "url",
+            "licence",
+            "licenceUrl",
+            "downloadBytes",
+            "unpackedBytes",
+            "downloaded",
+            "path",
+            "error",
+            "detail",
+        ],
+    );
+
+    // A test has no data directory, so nothing can be installed — which is also
+    // the state the app ships in, and the one the screen has to render first.
+    assert_eq!(json["state"], serde_json::json!("absent"));
+    assert_eq!(json["installed"], serde_json::json!(false));
+    // The description of a download nobody has agreed to is present anyway: the
+    // screen has to be able to state the address, the size and the licence before
+    // the button is pressed, not after.
+    assert!(
+        json["url"].as_str().unwrap().starts_with("https://"),
+        "the download address must be stated up front: {}",
+        json["url"]
+    );
+    assert!(json["downloadBytes"].as_u64().unwrap() > 0);
+    assert!(
+        json["unpackedBytes"].as_u64().unwrap() > json["downloadBytes"].as_u64().unwrap(),
+        "the model is larger unpacked than compressed, and the screen says both"
+    );
+    assert!(!json["licence"].as_str().unwrap().is_empty());
+}
+
+#[test]
 fn settings_serialise_with_camel_case_fields() {
     let mut store = hanzi_core::SettingsStore::in_memory();
     assert!(store.set_click_to_draw(Some(true)));
@@ -1434,7 +1480,26 @@ fn a_tone_result_carries_one_entry_per_syllable() {
             "voicedMs",
             "spanMs",
             "medianHz",
+            "heard",
+            "heardError",
         ],
+    );
+
+    // The two recognition keys are part of the contract even when there is
+    // nothing to put in them: the interface reads `heard` on every attempt to
+    // decide whether to draw the second half of the panel, and a *missing* key
+    // would read as `undefined` and a `null` as "no model installed" — two
+    // different things that would look identical on screen. Both are asserted
+    // here, with no model installed, which is the state every fresh install is in.
+    assert!(
+        json["heard"].is_null(),
+        "no model is installed in a test, so `heard` must be null, not missing: {}",
+        json["heard"]
+    );
+    assert!(
+        json["heardError"].is_null(),
+        "nothing failed, so `heardError` must be null: {}",
+        json["heardError"]
     );
     // One entry per syllable of the word, each with its character and reading, so
     // the interface can label a chart without holding pinyin rules of its own.

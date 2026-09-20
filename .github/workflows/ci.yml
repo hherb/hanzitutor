@@ -55,6 +55,15 @@ jobs:
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
 
+      # The one build input cargo does not obtain for itself. `sherpa-onnx-sys`
+      # would otherwise download a prebuilt native archive from GitHub during
+      # `cargo build`; this fetches it against a pinned digest instead. It is an
+      # explicit step rather than something `with-cargo-env.sh` triggers, because
+      # a build that silently falls back to the crate's own download is exactly
+      # the thing the pinning exists to prevent.
+      - name: Fetch the pinned speech library
+        run: pnpm run fetch-sherpa
+
       # Enables hanzi-core's `prepare` feature, so the data-pipeline parsing is
       # covered by the same run as everything else.
       - name: Test

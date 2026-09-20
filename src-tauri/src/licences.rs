@@ -240,6 +240,40 @@ pub const NOTICES: &[LicenceNotice] = &[
         bundle_path: "licences/Apache-2.0.txt",
         text: include_str!("../../licences/Apache-2.0.txt"),
     },
+    LicenceNotice {
+        id: "sherpa-onnx",
+        title: "sherpa-onnx — speech recognition engine",
+        licence: "Apache-2.0",
+        source: "https://github.com/k2-fsa/sherpa-onnx",
+        covers: "Running the speech model, and the feature extraction, decoding \
+                 and tokenisation around it. This is the app's largest native \
+                 dependency: a prebuilt library archive, pinned by digest in \
+                 scripts/fetch-sherpa.sh, is linked into the binary. It is only \
+                 ever *used* when a learner has installed a model — which this \
+                 app does not redistribute; see LICENSES.md for the model's own \
+                 terms. The archive vendors several further libraries (ONNX \
+                 Runtime, kaldi-native-fbank, kissfft, ssentencepiece and \
+                 others); LICENSES.md records each one, and that espeak-ng — the \
+                 one component of the archive under a copyleft licence — is not \
+                 linked, because only the recognition path is used and not the \
+                 speech synthesiser.",
+        file: "licences/Apache-2.0.txt",
+        bundle_path: "licences/Apache-2.0.txt",
+        text: include_str!("../../licences/Apache-2.0.txt"),
+    },
+    LicenceNotice {
+        id: "onnxruntime",
+        title: "ONNX Runtime — model inference",
+        licence: "MIT",
+        source: "https://github.com/microsoft/onnxruntime",
+        covers: "Executing the speech model. It is not a dependency of this \
+                 project directly: it arrives inside the sherpa-onnx native \
+                 archive, statically linked, which is why its notice has to \
+                 travel with the app rather than with a crate.",
+        file: "licences/MIT-onnxruntime.txt",
+        bundle_path: "licences/MIT-onnxruntime.txt",
+        text: include_str!("../../licences/MIT-onnxruntime.txt"),
+    },
 ];
 
 /// The notices the Licences screen shows, in catalogue order.

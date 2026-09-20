@@ -5,7 +5,14 @@ a character with a mouse, trackpad, finger or stylus, and it tells you whether i
 was written in the correct stroke order, whether the strokes are the right shape,
 in the right place and with enough ink, and whether the result is legible. Hold a
 button and **say** the character, and it tells you whether your tone was right —
-all offline, with no model downloads and no network access at runtime.
+by measuring the pitch of your voice, which needs no model and works with no
+network at all.
+
+There is one optional exception to that. Recognising *which* syllable you said,
+rather than how you said it, needs a speech model, and a Chinese one worth using
+is 163 MB. So it is **not** bundled: it is downloaded once, from the settings
+screen, only if you press the button, and the screen tells you the address, the
+size and the licence before you do. Everything the course teaches needs nothing.
 
 Built with **Tauri 2 + Rust** for the engine and **Svelte 5 + TypeScript** for the
 interface. The same code builds for **macOS, Windows, Linux, iOS and Android**;
@@ -55,7 +62,8 @@ yet is listed under [Next steps](#next-steps).
   or Backspace abandons an unfinished stroke. Both modes put down identical
   geometry, so the grade does not depend on which one you used. On a trackpad or
   with a mouse, click-to-draw is what you get to begin with; a touch or pen device
-  still starts on dragging. Flip the switch and your choice is remembered.
+  still starts on dragging. It is set in *Settings* — deliberately not on the
+  board — and your choice is remembered.
 - **Stroke-order animation** — a pen walks each stroke's centre-line and the
   outline appears behind it, so the direction a stroke is written in is shown and
   not only the order the strokes come in. It can be stopped at any point, and
@@ -89,6 +97,16 @@ yet is listed under [Next steps](#next-steps).
   nothing to download. You already know the character and its reading; only *how*
   it was said is in question. See
   [How tone scoring works](#how-tone-scoring-works).
+- **Recognising *what* you said, optionally.** Tone scoring tells you a tone was
+  wrong; it cannot tell you that you said 是 when the word was 四, because `shì`
+  and `sì` can score identically on pitch. That needs a speech model, so it is the
+  one feature that is not in the bundle — install it from the settings screen and
+  a recording is also read as syllables, reported as plain pinyin beside the tone
+  verdict: *heard `shi` where `si` was asked for*. It is honest about its limits:
+  a recogniser's language model repairs a learner's mistakes toward the likely
+  word, so this says which syllables were heard and never claims your
+  pronunciation was good. See
+  [Recognising what was said](#recognising-what-was-said).
 - **Your own vocabulary list** — record the characters and words from your own
   lessons, file them under your own group names, and drill exactly those. A
   character fills in its pinyin and meaning automatically; so does a word, from
@@ -128,10 +146,12 @@ yet is listed under [Next steps](#next-steps).
   which is what a fresh install has and what lets a trackpad get click-to-draw
   while a stylus gets dragging without anybody deciding.
 - **About and licences.** The fifth screen in the sidebar names the app's own
-  licence and shows the full text of every third-party licence its data and font
-  are under, with what each source contributes and where the notice sits inside
-  the bundle. Nothing on it is fetched, and nothing it names is downloaded: it is
-  the receipt for the claims in [Data and licences](#data-and-licences).
+  licence and shows the full text of every third-party licence its data, font and
+  compiled-in code are under, with what each source contributes and where the
+  notice sits inside the bundle. It also records the terms of the optional speech
+  model, which this app points at rather than ships. Nothing on it is fetched, and
+  none of the notices depend on a download: it is the receipt for the claims in
+  [Data and licences](#data-and-licences).
 
 ## Quick start
 
@@ -140,15 +160,28 @@ line tools.
 
 ```bash
 pnpm install
+pnpm run fetch-sherpa       # unpacks the pinned speech library (see below)
 pnpm run dev                # launches the app
 ```
 
-There is no data step. The ~13 MB dataset artifact, the interface font and every
-licence notice are committed, so a clone builds and runs offline from the first
-command — and CI needs no download either. (The 33 MB of upstream text in
-`data/raw/` and the build output are still gitignored for size; neither is needed
-to build. `./scripts/fetch-data.sh` followed by `pnpm run prepare-data` restores
-them, and is only wanted when changing the data pipeline.)
+Everything the *course* needs is committed: the ~13 MB dataset artifact, the
+interface font and every licence notice, so nothing about the app's own content is
+fetched. `fetch-sherpa` is the one exception, and it is a build input rather than
+app data — the native code for the speech engine. Cargo would otherwise download
+it during `cargo build` against no recorded checksum, so this fetches it instead
+against a pinned SHA-256, into `.sherpa-onnx/` (gitignored, about 20 MB). It
+refuses a platform whose digest has not been recorded rather than trusting
+whatever the network returns; the script's header says how to add one.
+
+The **model** that engine runs is separate again, and is not part of the build at
+all: it is downloaded at run time by the learner, from the settings screen, and
+only if they ask for it. A clone with no model behaves exactly as this app did
+before speech recognition existed.
+
+The 33 MB of upstream text in `data/raw/` and the build output are gitignored for
+size; neither is needed to build. `./scripts/fetch-data.sh` followed by
+`pnpm run prepare-data` restores them, and is only wanted when changing the data
+pipeline.
 
 `pnpm run dev` runs Vite and the Tauri CLI together. `pnpm run build` produces a
 signed `.app` and `.dmg` — see [Shipping a build](#shipping-a-build).
@@ -540,9 +573,11 @@ feedback most. Mandarin tone is also simply not in the text: it is an F0 contour
 and no transcript contains it.
 
 The target is known, so *what* was said does not need recognising. Only *how* does.
-That is a measurement, not a classification problem, and it is why this works
-offline: `docs/research/ASR_TTS_CLAUDE_RESEARCH.md` §6 is the full argument, and
-recognising text is a separate and much heavier milestone (M12).
+That is a measurement, not a classification problem, and it is why this works with
+no model and no network: `docs/research/ASR_TTS_CLAUDE_RESEARCH.md` §6 is the full
+argument. Recognising the text is the separate, much heavier half — it is
+[Recognising what was said](#recognising-what-was-said) above, it is optional, and
+it changes nothing here.
 
 ### The pipeline
 
@@ -658,6 +693,74 @@ rather than only how much.
   multi-syllable speech. The panel reports where the app decided to split, so a
   wrong split is visible rather than mysterious.
 
+## Recognising what was said
+
+Tone scoring answers *how* you said something. It cannot answer *what* you said,
+and that gap is real: 四 (`sì`) and 是 (`shì`) can produce almost the same pitch
+contour, so a learner who says the wrong word can be told their tone was fine and
+never learn that they said the wrong word. There is no non-neural substitute —
+you cannot pre-render a learner's voice — so this is the one feature that needs
+model weights.
+
+**It is optional, and it is the only thing in the app that touches the network.**
+Nothing else changes when it is absent: tone practice works, the panel looks
+exactly as it always has, and nothing ever prompts. Install it from
+**Settings → Recognising what was said**, where the address, the download size
+(163 MB), the on-disk size (241 MB) and the licence are all stated *before* the
+button is pressed. The download is checked against a pinned SHA-256, cached in the
+application data directory, and can be removed again from the same screen.
+
+| | |
+| --- | --- |
+| Model | `SenseVoiceSmall`, int8, as published for `sherpa-onnx` |
+| Engine | [`sherpa-onnx`](https://github.com/k2-fsa/sherpa-onnx) 1.13.8 (Apache-2.0), with ONNX Runtime (MIT) |
+| Weights | [FunASR Model Open Source License Agreement v1.1](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE) — not redistributed by this app, see [LICENSES.md](LICENSES.md) |
+| Recognition | Mandarin, pinned to `zh`, no inverse text normalisation |
+
+### Why not Whisper
+
+The crate a Rust developer finds first is `whisper-rs`, and for Chinese at a
+size that fits a desktop it is the wrong tool. Published Mandarin character error
+rates put `whisper-tiny` near 67% and `whisper-base` near 51%, against about 8%
+for the model used here. Both are far worse than useless for single syllables,
+which are also a *harder* regime than the meeting audio those benchmarks use.
+`sherpa-onnx` is the toolkit's own crate, and its non-autoregressive models decode
+in one forward pass. The full argument, with measurements, is in
+[`docs/research/ASR_TTS_CLAUDE_RESEARCH.md`](docs/research/ASR_TTS_CLAUDE_RESEARCH.md)
+§5.
+
+### What it is honest about
+
+This is where a pronunciation tutor usually starts lying to the learner, so three
+things are deliberate rather than incidental:
+
+- **The transcript is not a pronunciation score, and is never shown as one.** A
+  Chinese recogniser carries a strong language-model prior and is built to be
+  robust to exactly the errors a learner makes: say `shì` where `sì` was wanted and
+  it will often still emit the expected character, because that is what the context
+  makes likely. It therefore *under*-reports errors, and worst for the learners who
+  need telling most. The panel says which syllables were heard and says plainly
+  that this is a transcription, not a judgement.
+- **No contextual biasing.** `sherpa-onnx` can be pointed at a hotwords file, and
+  pointing it at the answer would bias decoding *toward the target* — the right
+  tool for transcribing rare vocabulary and precisely the wrong one for assessment.
+  Nothing in this app sets one.
+- **No tone marks on a transcript.** The comparison is between readings with the
+  tone stripped (`shi` against `si`), never between characters. Comparing
+  characters would call a homophone a mistake, and comparing *tones* out of a
+  transcript would be reporting a dictionary's tone rather than the learner's —
+  the tone comes from the pitch contour and from nowhere else.
+
+### What it does not do
+
+- **No phone-level diagnosis.** There is no forced alignment and no
+  goodness-of-pronunciation score, so it cannot say *which sound* was wrong. It
+  works at the syllable. The UI does not imply otherwise.
+- **Single syllables are the hardest case, not the easiest.** Isolated syllables
+  are unusual input for a recogniser, so a learner may occasionally be told a
+  correct syllable was wrong. That is the safe direction to be wrong in, and the
+  tone verdict is unaffected either way.
+
 ## Architecture
 
 ```
@@ -698,6 +801,11 @@ the whole webview-facing surface testable without opening a window.
 The store is a crate of its own for the same reason: `hanzi-core` decides *what* to
 remember and this decides *where*, behind a trait the engine defines, so SQL never
 enters the engine and the engine's tests never need a database.
+
+The speech path sits alongside: `capture.rs` opens the microphone for the length of
+one held button, `hanzi-core`'s `tone.rs` measures the pitch of what it caught, and
+`asr.rs` runs the optional recognition model. Only `asr.rs` ever opens a socket, and
+only after somebody has pressed the install button.
 
 ### Coordinate systems
 
@@ -765,7 +873,7 @@ store/                      the Play listing: copy, answers, icon, artwork
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 302 tests
+pnpm test             # the whole Rust suite: 318 tests
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
@@ -775,6 +883,24 @@ pnpm run check:rust   # clippy, warnings denied
 `pnpm test` enables hanzi-core's `prepare` feature so that the data pipeline's
 parsing — which upstream fields are trusted, and how a word's reading is chosen —
 is covered by the same run as everything else.
+
+Four tests are `#[ignore]`d because they need something a test run cannot arrange
+— a microphone, or a 163 MB download. They are the ones worth running by hand
+after touching that area:
+
+```bash
+# The microphone, for real. Say a syllable while it runs.
+cargo test -p hanzi-tutor --lib -- --ignored --nocapture records_from_the_real_microphone
+
+# Recognition and resampling, against the model's own Chinese test recording.
+HANZI_ASR_MODEL_DIR=/path/to/sherpa-onnx-sense-voice-…-int8-2024-07-17 \
+  cargo test -p hanzi-tutor --lib -- --ignored --nocapture recognises
+
+# The whole install path over the real network: fetch, verify the pinned digest,
+# unpack, recognise, remove. This is the only test that checks the digest against
+# what GitHub actually serves, so run it when bumping the model.
+cargo test -p hanzi-tutor --lib -- --ignored --nocapture downloads_verifies
+```
 
 The tests that earned their place:
 
@@ -793,6 +919,17 @@ The tests that earned their place:
   names (`Tingting`) passed while the real list (`Tingting (Chinese (China
   mainland))`) never matched the preference, so the app silently used a
   different voice;
+- the recognition tests assert the **safe** direction and the **awkward** cases:
+  that a homophone transcribed as the other character is still the right syllable
+  (是 against 事) while a genuinely different syllable is not (是 against 四), that
+  a transcript which cannot be divided one-syllable-per-character is *refused*
+  rather than compared out of step, and that taking a recording up to 48 kHz and
+  letting the recogniser bring it back down does not change a single syllable —
+  which is the test that would catch a resampler that aliases the sibilants;
+- the tag stripper has a test for an **unterminated** tag, and it failed the first
+  time it ran: the implementation swallowed the rest of the transcription, which
+  would have reported a syllable as missing that the learner really said. The
+  implementation was fixed rather than the expectation;
 - the scheduler tests pin every interval and due date, and a second `Scheduler`
   implementation is exercised to prove the policy really is swappable;
 - persistence is tested through the **state layer** and the real file names as
@@ -855,8 +992,8 @@ by hand, because a release build's webview is not debuggable (HANDOVER §6).
 
 ### What is inside the bundle
 
-Everything. There is nothing to download on first run and nothing to install
-besides the app itself:
+Everything the course teaches. Nothing is downloaded on first run and nothing has
+to be installed besides the app itself:
 
 | Part | How it gets in | Size |
 | --- | --- | --- |
@@ -864,22 +1001,30 @@ besides the app itself:
 | The interface, including the Noto Sans SC font | Tauri embeds `frontendDist` into the executable | ~18 MB |
 | SQLite, for the study store | compiled from the amalgamation by `libsqlite3-sys` | ~1.5 MB |
 | Microphone capture, `cpal` | compiled in; CoreAudio on macOS | ~100 KB |
-| Thirteen licence notices, as plain text | `bundle.resources` → `Contents/Resources/licences/` | ~75 KB |
+| Speech recognition, `sherpa-onnx` + ONNX Runtime | linked in from the pinned native archive | ~26 MB |
+| Fourteen licence notices, as plain text | `bundle.resources` → `Contents/Resources/licences/` | ~75 KB |
 
-So the executable is about 36 MB and `Contents/Resources/` holds only the icon
-and the notices. The notices are **also** compiled into the binary, which is why
-the About screen cannot come up blank in a packaged build: the loose files are
-for a redistributor who wants to read them without launching the app. Both copies
-come from the same source file at build time, and a test requires them to agree,
-so they cannot drift.
+So the executable is about 62 MB — it was about 36 MB before the speech engine,
+which is the largest single addition the app has ever taken on. The engine is
+present whether or not a model is installed: it is the *weights* that are
+downloaded, not the code that runs them. The notices are **also** compiled into
+the binary, which is why the About screen cannot come up blank in a packaged
+build: the loose files are for a redistributor who wants to read them without
+launching the app. Both copies come from the same source file at build time, and a
+test requires them to agree, so they cannot drift.
+
+**None of that includes the speech model.** It is 163 MB compressed, 241 MB
+unpacked, lives in the application data directory rather than the bundle, and is
+fetched only if the learner asks for it — so the bundle stays self-contained and a
+fresh install is exactly as offline as it always was.
 
 Check the copies survived a build — a resource path is exactly the kind of thing
 that breaks only in the packaged app:
 
 ```bash
 APP=".cargo-target/release/bundle/macos/Hanzi Tutor.app"
-ls "$APP/Contents/Resources/licences"       # thirteen files, named in src-tauri/src/licences.rs
-ls -lh "$APP/Contents/MacOS/hanzi-tutor"    # ~36 MB: the data and the font are in here
+ls "$APP/Contents/Resources/licences"       # fourteen files, named in src-tauri/src/licences.rs
+ls -lh "$APP/Contents/MacOS/hanzi-tutor"    # ~62 MB: the data, the font and the engine are in here
 codesign -dv --verbose=4 "$APP" 2>&1 | grep -E "Authority|TeamIdentifier"
 open "$APP"                                 # then look at About and licences
 ```
@@ -923,11 +1068,13 @@ dependencies (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3
 
 Hanzi Tutor's own source code is licensed under the **GNU Affero General Public
 License, version 3** (see [`LICENSE`](LICENSE)). It bundles third-party **data**,
-one third-party **font**, and two third-party **libraries** compiled into the
+one third-party **font**, and the third-party **libraries** compiled into the
 binary: SQLite, from the vendored amalgamation, which holds the study database;
-and `cpal`, Apache-2.0, which opens the microphone for tone practice. (Android
-adds no dependency for that: it uses the platform's own `AudioRecord`.) Every one
-of them carries a notice obligation. See **[LICENSES.md](LICENSES.md)**.
+`cpal`, Apache-2.0, which opens the microphone for tone practice (Android adds no
+dependency for that — it uses the platform's own `AudioRecord`); and the speech
+recognition stack, `sherpa-onnx` (Apache-2.0) with ONNX Runtime (MIT), which is
+compiled in but only *used* once a model has been installed. Every one of them
+carries a notice obligation. See **[LICENSES.md](LICENSES.md)**.
 
 | Bundled | Source | Licence |
 | --- | --- | --- |
@@ -940,6 +1087,15 @@ of them carries a notice obligation. See **[LICENSES.md](LICENSES.md)**.
 | The study database engine, SQLite 3.45.0 | sqlite.org, via `libsqlite3-sys` | Public domain |
 | The SQLite bindings, `rusqlite` | rusqlite | MIT |
 | Microphone capture, `cpal` | RustAudio/cpal | Apache-2.0 |
+| Speech recognition engine, `sherpa-onnx` | k2-fsa/sherpa-onnx | Apache-2.0 |
+| Model inference, ONNX Runtime | microsoft/onnxruntime | MIT |
+
+**Not bundled, and deliberately so:** the speech **model**. It is 163 MB, the app
+points at its publisher rather than redistributing it, and the learner downloads
+it from the settings screen. Its terms are a separate agreement from the toolkit's
+— and are *not* a free licence, which is a finding rather than a detail; both are
+recorded in [LICENSES.md](LICENSES.md) and in [M12 of the
+roadmap](ROADMAP.md#m12--speech-recognition-text).
 
 The generated artifact **is committed** (about 13 MB), so a clone and a CI run
 need no data step; `./scripts/fetch-data.sh` followed by `pnpm run prepare-data`

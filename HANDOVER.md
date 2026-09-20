@@ -170,7 +170,7 @@ HANZI_TUTOR_DATA_DIR="$PWD/.tmp-data" ./.cargo-target/debug/hanzi-tutor 2>&1 \
 # [webview] review queue: 2 due, 2 in this session
 # [webview] drawable characters: 9574
 # [webview] speech: using Tingting (Chinese (China mainland)) (zh_CN)
-# [webview] licences: 12 notices bundled
+# [webview] licences: 14 notices bundled
 # [webview] course cursor: resuming at character 413
 # [webview] character 的: de, 8 strokes
 # [webview] spoke 面
@@ -512,6 +512,32 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
     drop the 21st attempt of a burst. Do not "simplify" that into a whole-document
     save — a whole-document save is the ceiling the database exists to remove.
 
+26. **The speech engine's native library is pinned by digest, and the build must
+    not fetch it.** `sherpa-onnx-sys` downloads a prebuilt archive from GitHub
+    during `cargo build` unless `SHERPA_ONNX_LIB_DIR` is set. Left alone, a build
+    acquires an unreviewed binary over the network, which is the opposite of what
+    the rest of this repository does with its inputs. So
+    `scripts/fetch-sherpa.sh` fetches it against a **recorded SHA-256** and
+    **refuses** a platform whose digest has not been recorded, and
+    `scripts/with-cargo-env.sh` points `SHERPA_ONNX_LIB_DIR` at the result. Do not
+    "simplify" that away, and do not let a fallback to the crate's own download
+    creep in — a build that silently tolerates an unpinned binary is the failure.
+    CI runs the fetch as its own step, which is why the env var is only set when
+    the unpacked library is really there: set to a missing path the crate fails
+    with a *worse* error than the one it gives when it simply fetches.
+27. **Tone practice never depends on the speech model, and the transcript is never
+    a pronunciation score.** Two rules that protect the same thing from opposite
+    sides. `asr.rs` holds the only code in the app that opens a socket, and it runs
+    only because somebody pressed the install button; with no model installed
+    `Asr::recognize` returns `Ok(None)`, the panel draws exactly what it always
+    drew, and nothing prompts. That is not a fallback to be tidied up — it is the
+    state the app ships in. And a recogniser's language model is built to repair
+    the very errors a learner makes, so its output must never be presented as
+    praise: compare transcripts as **readings with the tone stripped**
+    (`pinyin::heard_against`), never as characters, never with tone marks, and
+    never with a hotwords file pointed at the expected answer. The tone comes from
+    the pitch contour and from nowhere else.
+
 ## 5. The verification loop
 
 Run before every commit:
@@ -648,6 +674,25 @@ downstream of them is covered by the IPC tests, which drive
   stroke — enough to see a stroke half-revealed with the pen at its head. Logging
   a line per stroke (`TEMP play stroke i/n`) is what showed the stop and
   navigate-away paths really do end the loop rather than leaving a timer behind.
+- **A phone-width layout can be checked without a phone, a Tauri window, or
+  Screen Recording.** `invoke` is the whole of the boundary `src/lib/api.ts`
+  crosses, so a scratch HTML entry that defines
+  `window.__TAURI_INTERNALS__.invoke` with canned answers mounts the real
+  `App.svelte` with the real CSS in a plain browser:
+  `./node_modules/.bin/vite --port 1420 --strictPort`, then open it. Take the
+  character's `outlines` and `medians` from `data/raw/graphics.txt` for the one
+  character you want on the board (`medians` are font-space, so flip with
+  `900 - y`) rather than committing a fixture: `data/raw/` is gitignored on
+  purpose, and a copy of LGPL geometry in a tracked mock is a second source of
+  truth for data the artifact already carries. Drive a headless Chrome over the
+  DevTools Protocol (`--remote-debugging-port`, `Emulation.setDeviceMetricsOverride`,
+  `Page.captureScreenshot`) to capture at a chosen device pixel ratio —
+  `--screenshot` cannot set one, and the ratio is the whole question when the
+  check is "does a row of icons fit a 390 px phone at 3x". That measurement is
+  what says the control row is two lines on a phone, one on a 1280 px window and
+  four at 820 px, where the board column is squeezed to 135 px by the two-column
+  layout above the 760 px breakpoint (a pre-existing squeeze, not the row's
+  fault — the icons wrap inside it far more cheaply than words did).
 - **The stroke-order sweep is a clip, not a fade, and the band's width comes from
   the outline.** `drawSweptStroke` in `render.ts` fills the outline clipped to
   the band the pen has covered. Make the band a constant and you get one of two
@@ -1204,12 +1249,25 @@ downstream of them is covered by the IPC tests, which drive
   has no socket in a release build. Verify the release by installing it,
   screenshotting, and driving it with `adb shell input` — which is what caught
   the difference between "it built" and "it works".
-- **`INTERNET` is scoped to the debug source set.** The app downloads nothing and
-  makes no requests at runtime, so the released manifest does not declare the
-  permission at all — `aapt2 dump permissions` on the signed APK shows only
-  `RECORD_AUDIO`, which makes "works offline" checkable by anyone holding the
-  artifact. Debug builds keep it in `app/src/debug/AndroidManifest.xml` because
-  `tauri android dev` loads the interface from a development server.
+- **`INTERNET` is now declared for release, and that reversed a deliberate
+  property.** It used to be scoped to `app/src/debug/AndroidManifest.xml`, so the
+  released manifest declared only `RECORD_AUDIO` and `aapt2 dump permissions` made
+  "works offline" checkable on the artifact. M12's optional model download is a
+  runtime request, so the permission moved into the main manifest; the debug copy
+  is now redundant and kept only because `tauri android init` regenerates it.
+  **The privacy policy and the Play listing were restated at the same time** —
+  `docs/privacy-policy.md` and `store/listing.md` both used to say "no network
+  requests at all", and a listing that says that while the app offers a 163 MB
+  download is a mismatch Play's Data safety declaration would catch. The substance
+  is unchanged: nothing is collected, nothing is uploaded, and the request happens
+  only when the learner presses the button. If a future change removes the
+  download, put the permission back in the debug source set and restore the
+  claims rather than leaving both stale.
+- **The model download is unverified on Android.** It is exercised end to end on
+  macOS (`asr::tests::downloads_verifies_and_installs_the_model`), but no Android
+  release build was run here, and the permission change above is exactly the sort
+  of thing that only shows up on a device. Install a signed release APK and press
+  *Download and install* once before trusting it.
 - **Play needs more than an AAB.** Because the app asks for the microphone, the
   listing requires a published privacy policy and a Data safety declaration, and
   the answers have to match what the app really does. `docs/privacy-policy.md`
@@ -1276,25 +1334,37 @@ downstream of them is covered by the IPC tests, which drive
   the page to ask again, and the page also re-asks whenever it comes back to the
   foreground, which is what catching a permission granted from the system
   settings looks like.
-- **On a phone there is no tooltip, so a disabled control has to say why.** This
-  cost a round of confusion: `Hold to say it` was greyed out and read as a
-  microphone fault, when in fact the microphone was fine and **的** simply has no
-  judgeable tone — it is a neutral-tone particle, and `tone_target` returns
-  `None` for it. The button now labels itself `No tone to score` or
-  `No microphone` rather than `Hold to say it`. A separate explanatory paragraph
-  was tried first and rejected: it wrapped to its own row and pushed the rest of
-  the controls off the screen.
+- **On a phone there is no tooltip, so a control that cannot be used has to say
+  why somewhere the learner will look.** This cost a round of confusion: the
+  microphone button was greyed out and read as a microphone fault, when in fact
+  the microphone was fine and **的** simply has no judgeable tone — it is a
+  neutral-tone particle, and `tone_target` returns `None` for it. The button then
+  spelled the reason out in its own label (`No tone to score` / `No microphone`).
+  **The control row is icons now** — four wrapped rows of labelled buttons left a
+  phone no room for the board, so each control is a glyph with its word in
+  `title` and `aria-label`, and on a phone the *reason* is carried by the
+  sentence under the row, the same `.hint` that already explains a missing voice.
+  `sayBlocked` in `App.svelte` is the one expression the tooltip, the accessible
+  name and the hint all read, so the three cannot drift. A **separate**
+  explanatory paragraph is still the wrong answer — it wraps to its own row and
+  pushes the rest of the controls off the screen — which is why the reason rides
+  on a line that was already there. The same care is needed for anything new in
+  the row: an icon with no word is unusable on a phone unless the state it is in
+  is visible in the glyph or explained below it.
 
 - **Push-to-talk has three ways to stop itself, and the third is not obvious.**
-  The button moved out from under the finger (the label narrows on press *and*
-  clearing the previous judgement removed the panel above it), `touch-action` let
-  the browser claim the touch for a scroll, and — the one that survived both
-  fixes — **Android's long-press selection gesture takes the pointer at 555 ms**
-  and sends `pointercancel`. The button now captures the pointer, keeps a
-  `min-width`, leaves the previous judgement on screen, sets `touch-action: none`
-  and `user-select: none`, and swallows `contextmenu`, which is what the practice
-  board had been doing all along. §9 has the measurements and the event log that
-  found it.
+  The button moved out from under the finger (clearing the previous judgement
+  removed the panel above it and pulled the row up), `touch-action` let the
+  browser claim the touch for a scroll, and — the one that survived both fixes —
+  **Android's long-press selection gesture takes the pointer at 555 ms** and
+  sends `pointercancel`. The button now captures the pointer, leaves the previous
+  judgement on screen, sets `touch-action: none` and `user-select: none`, and
+  swallows `contextmenu`, which is what the practice board had been doing all
+  along. §9 has the measurements and the event log that found it. One of the
+  three causes is now structurally impossible: the label that used to narrow to
+  "Listening…" on press is gone, and the button is a fixed-size mouth glyph. The
+  panel above it can still appear and vanish, so the pointer capture and the
+  untouched previous judgement stay.
 - **`cpal`'s Android input does not work; `AudioRecord` does.** Capture is
   per-platform for that reason — `cpal` elsewhere, Kotlin's `AudioRecord` on
   Android — and §9 has the AAudio log, the five-source probe and the three
@@ -1537,7 +1607,7 @@ open "$APP"
 A failure of step 1 or 2 is the class of bug the tests cannot see, so it is worth
 doing after any change to `bundle.resources`, the font path or `vite.config.ts`.
 Step 4 also confirms the compiled-in notices reached the interface: the log line
-`[webview] licences: 12 notices bundled` appears on stderr at startup, and the
+`[webview] licences: 14 notices bundled` appears on stderr at startup, and the
 fourth sidebar entry renders them.
 
 ### Releasing it
@@ -1825,12 +1895,14 @@ Three separate things made holding the button stop the recording, and only the
 first was obvious. All three are fixed; the second and third are the ones to
 remember, because both look like a broken microphone.
 
-1. **The button moved out from under the finger.** The label narrows to
-   "Listening…" on press, and `startListening` cleared the previous judgement,
+1. **The button moved out from under the finger.** At the time, the label narrowed
+   to "Listening…" on press, and `startListening` cleared the previous judgement,
    which removed the tone panel and pulled every control below it upwards. Either
    one fires `pointerleave`, and `pointerleave` was wired to `stopListening`.
-   Fixed with `setPointerCapture`, a `min-width` so the label cannot reflow the
-   row, and by leaving the previous judgement on screen while listening.
+   Fixed with `setPointerCapture`, by leaving the previous judgement on screen
+   while listening, and at the time a `min-width` so the label could not reflow
+   the row. The label is gone now — the button is a mouth glyph of a fixed size —
+   so that half of the cause cannot come back; the panel above it still can.
 2. **`touch-action`.** A finger held on a button inside a scrolling page is a
    gesture the browser wants: it takes the pointer for a scroll and sends
    `pointercancel`. `touch-action: none` on the button settles that.

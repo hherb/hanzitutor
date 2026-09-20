@@ -10,11 +10,14 @@ use hanzi_core::{
     build_lessons, build_queue, now_iso8601, BoardSize, CursorStore, CursorView, Dataset, Pace,
     ProgressStore, ProgressView, ReviewView, SettingsStore, SettingsView, VocabStore, VocabView,
 };
-use hanzi_core::pinyin::{tone_target as build_tone_target, ToneTarget};
+use hanzi_core::pinyin::{
+    heard_against, tone_target as build_tone_target, Heard, ToneTarget,
+};
 use hanzi_core::tone::analyze;
 use hanzi_store::Db;
 use tauri::{AppHandle, Manager};
 
+use crate::asr::Asr;
 use crate::capture::{Recorder, Recording};
 use crate::commands::{ToneResult, ToneSyllableResult, VoiceOption, VoicesView, LESSON_SIZE};
 use crate::speech::Speaker;
@@ -313,6 +316,12 @@ pub struct AppState {
     /// The microphone. Opened only while the learner is holding the button, so
     /// this holds nothing but the slot a recording lives in — see `capture.rs`.
     pub capture: Recorder,
+    /// Speech recognition, when the learner has installed the model.
+    ///
+    /// Holds nothing until it is asked for something: no model is loaded, no
+    /// file opened and no socket touched until the settings screen installs one.
+    /// See `asr.rs`.
+    pub asr: Asr,
     /// Behind a mutex because every mutation is read-modify-write and must be
     /// persisted as a whole document.
     pub vocab: Mutex<VocabState>,
@@ -410,6 +419,7 @@ impl AppState {
             dataset,
             speech,
             capture: Recorder::default(),
+            asr: Asr::new(data_dir.as_deref()),
             course,
             vocab: Mutex::new(vocab),
             progress: Mutex::new(progress),
@@ -493,6 +503,37 @@ impl AppState {
         build_tone_target(text, &readings.join("'"))
     }
 
+    /// Read a recording as syllables, when a recognition model is installed.
+    ///
+    /// `Ok(None)` whenever no model is installed — the state every fresh install
+    /// is in, and not a failure. `Err` only when a model *is* installed and could
+    /// not be used, which the panel reports beside the tone score rather than
+    /// instead of it. Tone practice is the feature this app has always had, and
+    /// it must not become hostage to a 228 MB file.
+    ///
+    /// The transcription's reading is resolved the same way a target's is: from
+    /// the dictionary's **whole-word** entry when there is one, because that is
+    /// what picks the right reading for a polyphone, and from the characters
+    /// otherwise. It is then read against the target by
+    /// [`hanzi_core::pinyin::heard_against`], which is where the comparison rules
+    /// — readings rather than characters, tone set aside — live and are tested.
+    pub fn recognize(
+        &self,
+        recording: &Recording,
+        target: &ToneTarget,
+    ) -> Result<Option<Heard>, String> {
+        let Some(text) = self.asr.recognize(&recording.samples, recording.sample_rate)? else {
+            return Ok(None);
+        };
+        if text.is_empty() {
+            // The model was asked and heard nothing it could write down. That is
+            // a real answer about the recording, not a missing one.
+            return Ok(Some(heard_against("", "", target)));
+        }
+        let reading = self.dataset.lookup_text(&text).pinyin;
+        Ok(Some(heard_against(&text, &reading, target)))
+    }
+
     /// Score one recording against the tones that were asked for.
     ///
     /// The two things added here rather than inside the analyser are facts about
@@ -500,6 +541,11 @@ impl AppState {
     /// handed samples and tones and cannot know that they are the first ten
     /// seconds of a longer utterance, nor that the tones it was given were
     /// themselves changed by sandhi.
+    ///
+    /// Recognition, when a model is installed, is folded in here rather than
+    /// being a second command: it is the same recording and the same target, and
+    /// stopping the microphone twice for one utterance would be two chances to
+    /// lose it.
     pub fn score_tones(&self, recording: &Recording, target: &ToneTarget) -> ToneResult {
         let report = analyze(&recording.samples, recording.sample_rate, &target.spoken());
 
@@ -534,6 +580,14 @@ impl AppState {
             ));
         }
 
+        // What was said, as opposed to how. `None` with no model installed —
+        // which is not a failure — and an error only when a model is installed
+        // and could not be used, in which case the tone score above still stands.
+        let (heard, heard_error) = match self.recognize(recording, target) {
+            Ok(heard) => (heard, None),
+            Err(message) => (None, Some(message)),
+        };
+
         ToneResult {
             syllables,
             verdict: report.verdict,
@@ -545,6 +599,8 @@ impl AppState {
             voiced_ms: report.voiced_ms,
             span_ms: report.span_ms,
             median_hz: report.median_hz,
+            heard,
+            heard_error,
         }
     }
 

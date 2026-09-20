@@ -23,7 +23,15 @@
    * automatic answer could be named.
    */
   import * as api from "./api";
-  import type { BoardSize, Pace, SettingsPatch, SettingsView, VoicesView } from "./types";
+  import type {
+    AsrStatus,
+    BoardSize,
+    Pace,
+    SettingsPatch,
+    SettingsView,
+    VoicesView,
+  } from "./types";
+  import { onMount } from "svelte";
 
   interface Props {
     /** The learner's settings, as the backend has them. */
@@ -102,6 +110,87 @@
   }
 
   const clickToDrawLabel = $derived(deviceWantsClickToDraw ? "click to draw" : "drag");
+
+  // ---- Speech recognition ---------------------------------------------------
+  //
+  // The one control on this screen with consequences outside the machine: the
+  // model is 163 MB and fetching it is the app's only network access. So the row
+  // says what would be downloaded, from where, how large and under which licence
+  // *before* the button is pressed, and the button is the only thing that starts
+  // it. Nothing here runs on its own, and a learner who never presses it never
+  // sees a prompt.
+
+  /** The backend's answer, or `null` until the first one arrives. */
+  let asr = $state<AsrStatus | null>(null);
+  /** True while a press is in flight, so the button cannot be double-pressed. */
+  let asrBusy = $state(false);
+  /** Set when the screen could not even ask, or the press was refused. */
+  let asrError = $state<string | null>(null);
+
+  async function refreshAsr() {
+    try {
+      asr = await api.asrStatus();
+    } catch (cause) {
+      asrError = `Could not ask about the recognition model: ${cause}`;
+    }
+  }
+
+  onMount(() => void refreshAsr());
+
+  /**
+   * Follow a download while one is running.
+   *
+   * The download happens on its own thread and reports progress through
+   * `asr_status`, so this polls rather than waiting on an event — there are no
+   * events in this app, and one command that answers "where has it got to" is
+   * less machinery than adding them for one feature. The effect re-runs when the
+   * state changes and the cleanup stops the timer, so nothing polls once the
+   * download has finished or failed.
+   */
+  $effect(() => {
+    if (asr?.state !== "downloading") return;
+    const timer = setInterval(() => void refreshAsr(), 400);
+    return () => clearInterval(timer);
+  });
+
+  async function installModel() {
+    asrBusy = true;
+    asrError = null;
+    try {
+      // Resolves when the download has *started*; the effect above takes over
+      // from there.
+      await api.asrInstall();
+      await refreshAsr();
+    } catch (cause) {
+      asrError = `The model could not be fetched: ${cause}`;
+    } finally {
+      asrBusy = false;
+    }
+  }
+
+  async function removeModel() {
+    asrBusy = true;
+    asrError = null;
+    try {
+      asr = await api.asrRemove();
+    } catch (cause) {
+      asrError = `The model could not be removed: ${cause}`;
+    } finally {
+      asrBusy = false;
+    }
+  }
+
+  /** A byte count as whole megabytes, rounded up — never under-reported. */
+  function mb(bytes: number): string {
+    return `${Math.ceil(bytes / 1_000_000)} MB`;
+  }
+
+  /** How far along a download is, 0..100. */
+  const asrPercent = $derived(
+    asr && asr.downloadBytes > 0
+      ? Math.min(100, Math.round((asr.downloaded / asr.downloadBytes) * 100))
+      : 0,
+  );
 </script>
 
 <section class="panel">
@@ -162,8 +251,9 @@
             Chosen by you; this machine would have picked
             <strong>{clickToDrawLabel}</strong>.
           {/if}
-          The quick switch is also on the board's control row, where it is
-          reachable mid-practice.
+          This screen is the only place it is set. The board's control row is
+          icons only, and a preference that changes how the board is held is not
+          one to reach for mid-stroke.
         </span>
       </div>
     </div>
@@ -173,9 +263,10 @@
       <div class="what">
         <span class="name" id="set-pace">Stroke order speed</span>
         <span class="why">
-          How fast the character is written when you press <em>Show stroke
-          order</em>. A long stroke still takes longer than a short one, at every
-          speed — the whole animation is scaled, not each stroke cut short.
+          How fast the character is written when you press the stroke-order
+          button on the board — the pencil beside the 1, 2, 3. A long stroke
+          still takes longer than a short one, at every speed — the whole
+          animation is scaled, not each stroke cut short.
         </span>
       </div>
       <div class="how">
@@ -303,6 +394,65 @@
         {/if}
         {#if speechError}
           <p class="warning">{speechError}</p>
+        {/if}
+      </div>
+    </div>
+
+    <!-- Recognising what was said ---------------------------------------- -->
+    <div class="row">
+      <div class="what">
+        <span class="name" id="set-asr">Recognising what was said</span>
+        <span class="why">
+          Tone practice judges <em>how</em> you said something, from the pitch, and
+          needs no model at all — it is what this app has always done, and it keeps
+          working whatever this is set to. Recognising <em>which</em> syllable you
+          said is a different problem, with no model-free answer: a learner's own
+          voice cannot be pre-recorded. That needs a speech model, and this app does
+          not ship one. Fetching it is the only thing in this app that ever touches
+          the network, and it happens only if you press the button beside this.
+        </span>
+      </div>
+      <div class="how">
+        {#if asr === null}
+          <span class="status">Asking whether a recognition model is installed…</span>
+        {:else}
+          {#if asr.state === "downloading"}
+            <div
+              class="progress"
+              role="progressbar"
+              aria-valuenow={asrPercent}
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-label="Downloading the speech recognition model"
+            >
+              <div class="bar" style="width: {asrPercent}%"></div>
+            </div>
+          {:else}
+            <div class="voicerow">
+              {#if asr.installed}
+                <button class="try" onclick={() => void removeModel()} disabled={asrBusy}>
+                  {asrBusy ? "Removing…" : "Remove the model"}
+                </button>
+              {:else}
+                <button class="try" onclick={() => void installModel()} disabled={asrBusy}>
+                  {asrBusy ? "Starting…" : "Download and install"}
+                </button>
+              {/if}
+            </div>
+          {/if}
+
+          <span class="status">{asr.detail}</span>
+          <span class="status fine">
+            From <code>{asr.url}</code> — {mb(asr.downloadBytes)} to fetch, about
+            {mb(asr.unpackedBytes)} once unpacked
+            {#if asr.path}, into <code>{asr.path}</code>{/if}. The weights are under
+            the <strong>{asr.licence}</strong>; they are not redistributed with this
+            app, they are fetched from that address for you, and the terms are at
+            <code>{asr.licenceUrl}</code>.
+          </span>
+        {/if}
+        {#if asrError}
+          <p class="warning">{asrError}</p>
         {/if}
       </div>
     </div>
@@ -454,6 +604,23 @@
     cursor: default;
   }
 
+  /* A download of 163 MB takes minutes, so "working" and "hung" have to look
+     different. The bar is the honest width of what has arrived; the percentage
+     is repeated in words beside it, because a bar alone cannot be read. */
+  .progress {
+    height: 8px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .bar {
+    height: 100%;
+    background: var(--accent);
+    /* Short, so a poll every 400 ms reads as movement rather than as a jump. */
+    transition: width 300ms linear;
+  }
+
   .status {
     font-size: 0.75rem;
     line-height: 1.5;
@@ -468,6 +635,10 @@
   code {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.94em;
+    /* The model's download and licence addresses are long and have no spaces in
+       them. Without this a single "word" widens the control column and squeezes
+       the explanation next to it. */
+    overflow-wrap: anywhere;
   }
 
   .footnote {

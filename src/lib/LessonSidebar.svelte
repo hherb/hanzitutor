@@ -252,8 +252,8 @@
       </li>
     </ul>
     <p class="footnote">
-      Add characters from the practice screen with <em>Add to my list</em>, or add
-      words directly in the panel.
+      Add characters from the practice screen with the <em>+</em> beside the
+      character's name, or add words directly in the panel.
     </p>
   {:else if view === "settings"}
     <div class="about">

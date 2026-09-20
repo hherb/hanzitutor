@@ -18,6 +18,13 @@ debug
 __pycache__/
 *.py[cod]
 
+# The sherpa-onnx native library that `src-tauri` links against, unpacked by
+# scripts/fetch-sherpa.sh and pinned there by digest. About 20 MB of prebuilt
+# objects — a build input, not source, so re-fetch rather than commit it. The
+# model it recognises with is not here either: that is downloaded at run time,
+# only when the learner asks, and lives in the application data directory.
+.sherpa-onnx/
+
 # --- Frontend ------------------------------------------------------------
 node_modules/
 dist/

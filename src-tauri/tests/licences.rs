@@ -177,6 +177,40 @@ fn the_required_licences_are_present_and_are_the_real_texts() {
             "the {id} notice does not contain {marker:?}"
         );
     }
+
+    // Speech recognition added two more compiled-in libraries, and both arrive
+    // through a prebuilt native archive rather than through a crate, so cargo
+    // will not notice if their notices go missing. They are checked here for the
+    // same reason SQLite is: the absence of a notice is a licence breach that no
+    // compiler can see. `onnxruntime` is the one that matters most, because it is
+    // linked in from inside the sherpa-onnx archive and there is no crate
+    // dependency pointing at it at all.
+    for (id, marker) in [
+        ("sherpa-onnx", "Apache License"),
+        ("onnxruntime", "Microsoft Corporation"),
+    ] {
+        let notice = NOTICES
+            .iter()
+            .find(|n| n.id == id)
+            .unwrap_or_else(|| panic!("the {id} notice is missing; present: {ids:?}"));
+        assert!(
+            notice.text.contains(marker),
+            "the {id} notice does not contain {marker:?}"
+        );
+        assert!(
+            notice.text.len() > 500,
+            "the {} notice is only {} bytes — that is a stub, not a licence",
+            notice.id,
+            notice.text.len()
+        );
+        // Both are *compiled in*, so their text has to be readable out of the
+        // bundle by a redistributor who never launches the app.
+        assert!(
+            notice.bundle_path.starts_with("licences/"),
+            "the {} notice must travel in the bundle, not only in the binary",
+            notice.id
+        );
+    }
 }
 
 #[test]

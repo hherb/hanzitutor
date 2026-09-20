@@ -49,11 +49,17 @@ WHAT IT DOES
 
 OFFLINE, AND PRIVATE BY DESIGN
 
-Everything is in the app: the character set, the stroke data, the word list and
-the font. There is nothing to download and no account to create. The app makes
-no network requests at all — the released build does not even request the
-INTERNET permission — and no analytics, advertising or crash reporting is
-built in.
+Everything the course teaches is in the app: the character set, the stroke data,
+the word list and the font. There is nothing to download on first run and no
+account to create. No analytics, advertising or crash reporting is built in, and
+nothing about you ever leaves the device.
+
+There is one optional download, and it is the only network request the app can
+make: an on-device speech model, about 163 MB, that recognises *which* syllables
+you said rather than only how your tone sounded. It is fetched from the settings
+screen, only if you press the button there, after being told the address, the
+size and the licence. Decline it and nothing changes — tone practice, pronunciation
+and the whole course work with no model and no network.
 
 Your practice history and vocabulary list are stored on your device, in the
 app's own private storage, and never leave it. You can export them to a file

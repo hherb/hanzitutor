@@ -6,12 +6,13 @@
 
 use hanzi_core::{
     build_lessons, grade_with_outlines, tone::ToneAttempt, BoardSize, Character, CursorView,
-    GradeOptions, GradeReport, Grade, Lesson, Pace, Point, ProgressView, ReviewView, SettingsView,
-    TextLookup, ToneVerdict, ToneTarget, VocabView, Word,
+    GradeOptions, GradeReport, Grade, Heard, Lesson, Pace, Point, ProgressView, ReviewView,
+    SettingsView, TextLookup, ToneVerdict, ToneTarget, VocabView, Word,
 };
 use serde::Serialize;
 use tauri::State;
 
+use crate::asr::AsrStatus;
 use crate::capture::MicrophoneStatus;
 use crate::licences::{AppInfo, LicenceNotice};
 use crate::state::{AppState, ProgressState, VocabState};
@@ -299,6 +300,19 @@ pub struct ToneResult {
     pub voiced_ms: u32,
     pub span_ms: u32,
     pub median_hz: f32,
+    /// What a recognition model heard, when one is installed.
+    ///
+    /// `None` whenever no model is installed, which is how the app ships — so a
+    /// learner who never installs one sees exactly the panel they always have,
+    /// with no empty box and no prompt. See `asr.rs` for why the model is
+    /// optional at all.
+    pub heard: Option<Heard>,
+    /// Why recognition failed, when a model *is* installed and could not be used.
+    ///
+    /// Carried beside the tone score rather than instead of it: the pitch was
+    /// measured perfectly well, and losing that because a 228 MB file went
+    /// missing would be the wrong way round.
+    pub heard_error: Option<String>,
 }
 
 /// The tones a character or word should be practised with, or `None` when there
@@ -446,6 +460,41 @@ pub fn listen_stop(state: State<'_, AppState>, text: String) -> Result<ToneResul
              or a short word."
         )),
     }
+}
+
+// ---- Speech recognition (ROADMAP.md M12) ----------------------------------
+
+/// Whether a recognition model is installed, and how to describe one that is not.
+///
+/// Always answers, whatever the state: the settings screen has to be able to tell
+/// a learner what *would* be downloaded — from where, how large, under which
+/// licence — before they have agreed to any of it. This is also how the progress
+/// of a download is read, which is why it takes no arguments and does no work.
+#[tauri::command]
+pub fn asr_status(state: State<'_, AppState>) -> AsrStatus {
+    state.asr.status()
+}
+
+/// Fetch, verify and unpack the recognition model.
+///
+/// **The one thing in this app that touches the network, and only because a
+/// learner pressed it.** Resolves as soon as the download has started rather than
+/// when it finishes, so the interface is not held for the minutes a 163 MB
+/// transfer takes; the outcome and the progress come back through
+/// [`asr_status`], which the settings screen polls.
+#[tauri::command]
+pub fn asr_install(state: State<'_, AppState>) -> Result<(), String> {
+    state.asr.install()
+}
+
+/// Delete the recognition model, and report the resulting state.
+///
+/// Returns the new status so the screen has one thing to render rather than two
+/// calls that could disagree.
+#[tauri::command]
+pub fn asr_remove(state: State<'_, AppState>) -> Result<AsrStatus, String> {
+    state.asr.remove()?;
+    Ok(state.asr.status())
 }
 
 // ---- Personal vocabulary list ---------------------------------------------

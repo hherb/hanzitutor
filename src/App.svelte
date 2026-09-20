@@ -8,6 +8,7 @@
   import * as api from "./lib/api";
   import CharacterThumb from "./lib/CharacterThumb.svelte";
   import FeedbackPanel from "./lib/FeedbackPanel.svelte";
+  import Icon from "./lib/Icon.svelte";
   import LessonSidebar from "./lib/LessonSidebar.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
@@ -355,6 +356,40 @@
    * board.
    */
   const toneText = $derived(currentItem?.text ?? character?.ch ?? "");
+  /**
+   * What the microphone button offers to score, when there is anything to score.
+   *
+   * The syllables are named rather than left to "it": on a phone there is no
+   * tooltip, so a button that only says "hold to say" leaves the learner
+   * guessing what the microphone is listening for.
+   */
+  const sayPrompt = $derived(
+    toneTarget === null
+      ? ""
+      : `Hold and say ${toneText} — ${toneTarget.syllables
+          .map((s) => (s.spoken === 5 ? "neutral" : `tone ${s.spoken}`))
+          .join(", ")}${toneTarget.sandhiApplied ? " as it is spoken in this word" : ""}`,
+  );
+  /**
+   * Why the microphone button cannot be used, or `null` when it can.
+   *
+   * One expression, said in three places, so they cannot drift apart: the
+   * button's tooltip, its accessible name, and the hint under the row. The hint
+   * is what carries the reason on a phone, where an icon has no room for the
+   * sentence the old text label used to spell out and there is no hover to put
+   * a tooltip on. Two reasons are worth telling apart: 的 is a neutral-tone
+   * particle with nothing to score, which is not the learner's fault and not
+   * fixable, whereas a missing microphone is.
+   */
+  const sayBlocked = $derived(
+    microphone === undefined
+      ? "Looking for a microphone…"
+      : microphone === null || !microphone.available
+        ? (microphone?.detail ?? "No microphone is available")
+        : toneTarget === null
+          ? "Nothing on this board has a tone to score (too long to score, or a neutral-tone particle like 的)"
+          : null,
+  );
   /** Code-point split, matching Rust's `chars()`. */
   const entryCharacters = $derived(
     currentItem
@@ -958,16 +993,6 @@
     }
   }
 
-  /**
-   * Choose how a stroke is drawn, and remember it.
-   *
-   * The board's quick switch and the settings screen share this, so both paths
-   * write the same value and neither can drift from the other.
-   */
-  async function setClickToDraw(value: boolean) {
-    await updateSettings({ clickToDraw: value });
-  }
-
   /** Forget the click-to-draw choice, so the device decides again. */
   async function clearClickToDraw() {
     const previous = settings;
@@ -1133,6 +1158,18 @@
     if (next === mode) return;
     mode = next;
     reset();
+  }
+
+  /**
+   * Flip between tracing the guide and writing from memory.
+   *
+   * The two are opposites and the control row has one button for them, so this
+   * is the same state change the pair of segments used to make. It is spelled
+   * out rather than inlined into the click handler so the tooltip, the
+   * accessible name and the click cannot disagree about which way round it is.
+   */
+  function toggleMode() {
+    switchMode(mode === "trace" ? "recall" : "trace");
   }
 
   async function check() {
@@ -1873,8 +1910,29 @@
     {:else}
       <header class="meta" class:open={showDetails}>
         {#if currentItem}
-          <div class="glyph" lang="zh-Hans" class:masked={!answerVisible}>
-            {answerVisible ? (entryCharacters[charCursor] ?? "?") : "?"}
+          <!-- The whole entry, not only the character the board is asking for. A
+               word is practised one character at a time, so the box used to show
+               just that character and the learner could not see the word they
+               were part of. Now every character is shown and the one being
+               written is picked out — which is also the answer to "where am I in
+               this word", the question the box was quietly answering before.
+               `--chars` drives the size, so a long entry shrinks to stay in the
+               header instead of pushing the reading off the screen. -->
+          <div
+            class="glyph"
+            lang="zh-Hans"
+            class:masked={!answerVisible}
+            style="--chars: {Math.max(entryCharacters.length, 1)}"
+          >
+            {#if !answerVisible}
+              ?
+            {:else if entryCharacters.length > 1}
+              {#each entryCharacters as ch, i (i)}
+                <span class="glyph-char" class:current={i === charCursor}>{ch}</span>
+              {/each}
+            {:else}
+              {entryCharacters[charCursor] ?? "?"}
+            {/if}
           </div>
           <div class="detail">
             <p class="pinyin">{currentItem.pinyin || character.pinyin.join("  ·  ") || "—"}</p>
@@ -1946,6 +2004,23 @@
             {@render detailFold()}
           </div>
         {/if}
+
+        <!-- Adding the character to your list is a fact about the character, not
+             about the board, so the button belongs on the row that names the
+             character rather than down among the drawing controls. It is drawn
+             only when the character came from the course: from your own list, or
+             from a review of it, it is already in there. -->
+        {#if source === "course"}
+          <button
+            class="icon"
+            onclick={addCurrentToVocabulary}
+            disabled={vocabBusy}
+            aria-label="Add this character to your vocabulary list"
+            title="Add this character to your vocabulary list"
+          >
+            <Icon name="plus" />
+          </button>
+        {/if}
         {@render characterNav()}
       </header>
 
@@ -1991,157 +2066,216 @@
           {/if}
 
           <div class="controls">
-            <div class="segmented" role="group" aria-label="Practice mode">
-              <button class:on={mode === "trace"} onclick={() => switchMode("trace")}>
-                Trace
-              </button>
-              <button class:on={mode === "recall"} onclick={() => switchMode("recall")}>
-                Recall
+            <!-- What the board shows. Trace and recall are opposites, so one
+                 toggle says what the two segments it replaces said, in half the
+                 width: the eye is the answer in sight, the same eye struck
+                 through is the answer hidden. -->
+            <div class="cluster" role="group" aria-label="Board view">
+              <button
+                class="icon"
+                class:on={mode === "recall"}
+                aria-pressed={mode === "recall"}
+                aria-label={mode === "trace"
+                  ? "Trace mode: a faint copy of the character is on the board. Switch to recall"
+                  : "Recall mode: the character is hidden until you check. Switch to trace"}
+                title={mode === "trace"
+                  ? "Trace: a faint copy is on the board to follow. Press for recall, which hides the character until you press ✓. Either way the board is cleared."
+                  : "Recall: the character is hidden until you press ✓. Press for trace, where a faint copy is on the board. Either way the board is cleared."}
+                onclick={toggleMode}
+              >
+                <Icon name={mode === "trace" ? "eye" : "eye-off"} />
               </button>
             </div>
 
-            <button
-              class="speak"
-              onclick={hear}
-              disabled={!character || voice === null}
-              title={voice === undefined
-                ? "Looking for a Chinese voice…"
-                : voice === null
-                  ? "No Chinese voice is installed, so pronunciation is unavailable"
-                  : `Pronounce this character (${voice})`}
-            >
-              <span aria-hidden="true">🔊</span> Hear it
-            </button>
-
-            <!-- Push to talk. Held, not clicked: the microphone is open only
-                 between press and release, so the system's recording indicator
-                 is lit only while the learner is deliberately speaking. -->
-            <button
-              class="say"
-              class:listening
-              onpointerdown={(event) => {
-                event.preventDefault();
-                // Take the pointer, so that every later event for it comes here
-                // wherever the finger travels and however the button reflows.
-                // Without this the browser sends `pointerleave` as soon as the
-                // button moves out from under the finger — which it did, twice
-                // over: the label narrows to "Listening…" on press, and the
-                // result panel above can appear or vanish — and the recording
-                // ended the instant it began. Push-to-talk should survive a
-                // finger that slides, which is why there is no `pointerleave`
-                // handler here at all.
-                event.currentTarget.setPointerCapture(event.pointerId);
-                void startListening();
-              }}
-              onpointerup={(event) => {
-                event.currentTarget.releasePointerCapture(event.pointerId);
-                void stopListening();
-              }}
-              onpointercancel={() => void stopListening()}
-              oncontextmenu={(event) => event.preventDefault()}
-              disabled={toneTarget === null || !microphone?.available || toneBusy}
-              title={microphone === undefined
-                ? "Looking for a microphone…"
-                : microphone === null || !microphone.available
-                  ? (microphone?.detail ?? "No microphone is available")
-                  : toneTarget === null
-                    ? "There are no tones to practise here — too long to score, or nothing in it has a judgeable tone"
-                    : `Hold and say ${toneText} — ${toneTarget.syllables
-                        .map((s) => (s.spoken === 5 ? "neutral" : `tone ${s.spoken}`))
-                        .join(", ")}${toneTarget.sandhiApplied ? " as it is spoken in this word" : ""}`}
-            >
-              <span aria-hidden="true">{listening ? "●" : "🎤"}</span>
-              <!-- Name the text rather than saying "it": on a phone there is no
-                   tooltip, so a generic label leaves the learner guessing what
-                   the microphone is listening for.
-                   A disabled button has to say why it is disabled for the same
-                   reason, and it is the cheapest place to say it — the label is
-                   already dynamic, and a separate note would push the rest of
-                   the controls off the screen. The two reasons are worth
-                   distinguishing: 的 is a neutral-tone particle with nothing to
-                   score, which is not the learner's fault and not fixable,
-                   whereas a missing microphone is. -->
-              {listening
-                ? "Listening…"
-                : microphone === undefined
-                  ? "Looking for a microphone…"
-                  : microphone === null || !microphone.available
-                    ? "No microphone"
-                    : toneTarget
-                      ? `Hold to say ${toneText}`
-                      : "No tone to score"}
-            </button>
-
-            <button
-              onclick={toggleStrokeOrder}
-              disabled={strokeTotal === 0}
-              title={playing
-                ? "Stop the animation where it is"
-                : "Watch the character written, one stroke at a time (S)"}
-            >
-              {playing ? "Stop" : "Show stroke order"}
-            </button>
-            <button onclick={undo} disabled={strokes.length === 0}>Undo</button>
-            <button onclick={reset} disabled={strokes.length === 0}>Clear</button>
-
-            {#if source === "course"}
+            <!-- Sound in and sound out: the character read aloud, and the
+                 learner reading it back. -->
+            <div class="cluster" role="group" aria-label="Pronunciation and speaking">
               <button
-                onclick={addCurrentToVocabulary}
-                disabled={vocabBusy}
-                title="Add this character to your vocabulary list"
+                class="icon"
+                onclick={hear}
+                disabled={!character || voice === null}
+                aria-label="Hear this character pronounced"
+                title={voice === undefined
+                  ? "Looking for a Chinese voice…"
+                  : voice === null
+                    ? "No Chinese voice is installed, so pronunciation is unavailable"
+                    : `Pronounce this character (${voice})`}
               >
-                + Add to my list
+                <Icon name="ear" />
               </button>
-            {:else if source === "vocabulary"}
-              <button onclick={stopPractising}>Back to list</button>
-            {:else if source === "words"}
-              <button onclick={stopPractising}>Back to words</button>
-            {:else}
-              <button onclick={stopReview}>Stop reviewing</button>
+
+              <!-- Push to talk. Held, not clicked: the microphone is open only
+                   between press and release, so the system's recording
+                   indicator is lit only while the learner is deliberately
+                   speaking. -->
+              <button
+                class="icon say"
+                class:listening
+                onpointerdown={(event) => {
+                  event.preventDefault();
+                  // Take the pointer, so that every later event for it comes
+                  // here wherever the finger travels. Without this the browser
+                  // sends `pointerleave` as soon as the button stops being under
+                  // the finger — which it did whenever the result panel above
+                  // appeared or vanished and moved the row — and the recording
+                  // ended the instant it began. Push-to-talk should survive a
+                  // finger that slides, which is why there is no `pointerleave`
+                  // handler here at all.
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  void startListening();
+                }}
+                onpointerup={(event) => {
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                  void stopListening();
+                }}
+                onpointercancel={() => void stopListening()}
+                oncontextmenu={(event) => event.preventDefault()}
+                disabled={toneTarget === null || !microphone?.available || toneBusy}
+                aria-label={listening
+                  ? "Listening — release to score what you said"
+                  : (sayBlocked ?? `Hold to say ${toneText}`)}
+                title={sayBlocked ?? sayPrompt}
+              >
+                <Icon name="mouth" />
+              </button>
+            </div>
+
+            <!-- Ink: watch the character written, take the last stroke back, or
+                 start again. The three gestures on the board itself, in the
+                 order they are reached for. -->
+            <div class="cluster" role="group" aria-label="Writing">
+              <button
+                class="icon"
+                class:on={playing}
+                aria-pressed={playing}
+                onclick={toggleStrokeOrder}
+                disabled={strokeTotal === 0}
+                aria-label={playing
+                  ? "Stop the stroke-order animation"
+                  : "Show the character written stroke by stroke"}
+                title={playing
+                  ? "Stop the animation where it is"
+                  : "Watch the character written, one stroke at a time (S)"}
+              >
+                <Icon name="stroke-order" />
+              </button>
+              <button
+                class="icon"
+                onclick={undo}
+                disabled={strokes.length === 0}
+                aria-label="Undo the last stroke"
+                title="Take the last stroke back (⌫)"
+              >
+                <Icon name="undo" />
+              </button>
+              <button
+                class="icon"
+                onclick={reset}
+                disabled={strokes.length === 0}
+                aria-label="Clear the board"
+                title="Clear every stroke off the board"
+              >
+                <Icon name="trash" />
+              </button>
+            </div>
+
+            <!-- Leaving the board. The course has nothing to leave — the way out
+                 of the course is the sidebar — so this is drawn only where the
+                 practice started from a list of your own. -->
+            {#if source !== "course"}
+              <div class="cluster">
+                {#if source === "vocabulary"}
+                  <button
+                    class="icon"
+                    onclick={stopPractising}
+                    aria-label="Back to your vocabulary list"
+                    title="Back to your vocabulary list"
+                  >
+                    <Icon name="back" />
+                  </button>
+                {:else if source === "words"}
+                  <button
+                    class="icon"
+                    onclick={stopPractising}
+                    aria-label="Back to the word list"
+                    title="Back to the word list"
+                  >
+                    <Icon name="back" />
+                  </button>
+                {:else}
+                  <button
+                    class="icon"
+                    onclick={stopReview}
+                    aria-label="Stop this review session"
+                    title="Stop reviewing — what you have done so far is kept"
+                  >
+                    <Icon name="back" />
+                  </button>
+                {/if}
+              </div>
             {/if}
 
-            <span class="spacer"></span>
+            <!-- How much has been drawn, whether the corrections are marked, and
+                 ✓. The first is the state and the last is the action of the same
+                 judgement, so all three are one group: they wrap to the next line
+                 together rather than leaving the count stranded above the button
+                 it belongs to. Whether corrections show sits beside ✓ because
+                 that is the moment it starts to matter — everything to its left
+                 acts on the attempt before it is graded.
+                 The group is also what takes up the slack on the line it lands
+                 on, which is why there is no separate spacer: it is what holds
+                 the count and ✓ against the right edge, on one line or two. -->
+            <div class="cluster commit">
+              <span class="count" title={report
+                ? `${report.givenStrokes} of ${report.expectedStrokes} strokes were graded; ignored stray marks are not counted`
+                : `${strokes.length} marks drawn, ${strokeTotal} strokes expected`}>
+                {report ? report.givenStrokes : strokes.length} / {strokeTotal}
+              </span>
 
-            <label class="toggle">
-              <input type="checkbox" bind:checked={showCorrections} />
-              corrections
-            </label>
-            <label
-              class="toggle"
-              title={settings.clickToDraw === null
-                ? `Click once to start a stroke and once to finish it, instead of holding the button down. Following this device for now (${deviceWantsClickToDraw ? "a mouse or trackpad, so click to draw" : "a stylus or a finger, so hold and drag"}); flip this to choose for yourself.`
-                : "Click once to start a stroke and once to finish it, instead of holding the button down. Escape or Backspace abandons an unfinished stroke."}
-            >
-              <input
-                type="checkbox"
-                checked={clickToDraw}
-                onchange={(event) => void setClickToDraw(event.currentTarget.checked)}
-              />
-              click to draw
-            </label>
-            <span class="count" title={report
-              ? `${report.givenStrokes} of ${report.expectedStrokes} strokes were graded; ignored stray marks are not counted`
-              : `${strokes.length} marks drawn, ${strokeTotal} strokes expected`}>
-              {report ? report.givenStrokes : strokes.length} / {strokeTotal}
-            </span>
-
-            {#if report && !sessionDone}
-              <button class="primary" onclick={advance}>
-                {source === "course"
-                  ? "Next →"
-                  : charCursor + 1 < entryCharacters.length
-                    ? "Next character →"
-                    : "Finish entry →"}
-              </button>
-            {:else if !sessionDone}
               <button
-                class="primary"
-                onclick={check}
-                disabled={strokes.length === 0 || grading}
+                class="icon"
+                class:on={showCorrections}
+                aria-pressed={showCorrections}
+                aria-label="Mark the corrections on the board"
+                title={showCorrections
+                  ? "The strokes you missed or misplaced are marked on the board, over your own. Press to hide them."
+                  : "Corrections are hidden. Press to mark the strokes you missed or misplaced, over your own."}
+                onclick={() => (showCorrections = !showCorrections)}
               >
-                {grading ? "Checking…" : "Check"}
+                <Icon name="target" />
               </button>
-            {/if}
+
+              {#if report && !sessionDone}
+                <button
+                  class="primary icon"
+                  onclick={advance}
+                  aria-label={source === "course"
+                    ? "Next character"
+                    : charCursor + 1 < entryCharacters.length
+                      ? "Next character of this entry"
+                      : "Finish this entry"}
+                  title={source === "course"
+                    ? "Next character (Enter)"
+                    : charCursor + 1 < entryCharacters.length
+                      ? "Next character of this entry (Enter)"
+                      : "Finish this entry (Enter)"}
+                >
+                  <Icon name="next" />
+                </button>
+              {:else if !sessionDone}
+                <button
+                  class="primary icon"
+                  onclick={check}
+                  disabled={strokes.length === 0 || grading}
+                  aria-label={grading ? "Checking your writing…" : "Check your writing"}
+                  title={grading
+                    ? "Checking your writing…"
+                    : "Check your writing against the character (Enter)"}
+                >
+                  <Icon name="tick" />
+                </button>
+              {/if}
+            </div>
           </div>
 
           {#if statusMessage}
@@ -2150,36 +2284,37 @@
 
           <p class="hint">
             {#if voice === null}
-              No Chinese voice is installed, so the pronunciation button is
-              disabled. Add one in System Settings → Accessibility → Spoken
-              Content → System Voice → Manage Voices.
+              No Chinese voice is installed, so the ear button is disabled. Add
+              one in System Settings → Accessibility → Spoken Content → System
+              Voice → Manage Voices.
+            {:else if sayBlocked !== null && microphone !== undefined}
+              {sayBlocked} — so the mouth button, which scores a spoken tone, is
+              disabled.
             {:else if source !== "course" && entryCharacters.length > 1}
               Write the word one character at a time. Its score is the average
               across its characters, so each one has to be right.
             {:else if source === "review"}
-              This came due for review. Write it from memory, then press Check —
+              This came due for review. Write it from memory, then press ✓ —
               how well you do sets when you see it again.
             {:else if mode === "trace"}
               A faint copy of the character is on the board: trace over it in the
               correct stroke order.
             {:else}
-              Write the character from memory, then press Check. Press S to see the
+              Write the character from memory, then press ✓. Press S to see the
               stroke order.
             {/if}
           </p>
         </section>
 
         <aside class="feedback">
-          <!-- Tone feedback sits above the handwriting report rather than
-               inside it: the two are judged independently, and a spoken
-               syllable has no strokes to report on. -->
-          {#if toneError}
-            <p class="tone-error">{toneError}</p>
-          {/if}
-          {#if toneResult}
-            <TonePanel result={toneResult} />
-          {/if}
-
+          <!-- The handwriting report leads and a scored tone follows it. The two
+               are judged independently — a spoken syllable has no strokes to
+               report on, and a silent attempt has no pitch — but the report is
+               what pressing ✓ is for, and it is read while the learner's own
+               strokes are still in front of them. With the tone panel first, the
+               stroke-by-stroke verdict was pushed below the fold whenever a tone
+               had been scored, which is exactly when comparing your writing with
+               the reference matters most. -->
           {#if report}
             <FeedbackPanel {report} />
           {:else}
@@ -2214,6 +2349,15 @@
                 </div>
               {/if}
             </div>
+          {/if}
+
+          <!-- A tone that was scored, under the report, and the reason one could
+               not be, above the panel it belongs to. -->
+          {#if toneError}
+            <p class="tone-error">{toneError}</p>
+          {/if}
+          {#if toneResult}
+            <TonePanel result={toneResult} />
           {/if}
         </aside>
       </div>
@@ -2256,21 +2400,41 @@
   }
   .glyph {
     flex: none;
-    width: 92px;
+    /* A minimum rather than a fixed width: one character is still the 92px box it
+       always was, and a longer entry grows it along the word — up to the cap in
+       the font size below, after which the characters shrink instead. That keeps
+       a four-character word from being four times as wide as a character, which
+       would push the reading and the meaning out of the header. */
+    min-width: 92px;
     height: 92px;
-    display: grid;
-    place-items: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.04em;
+    padding: 0 10px;
     border: 1px solid var(--line);
     border-radius: 12px;
     background: var(--surface);
     font-family: var(--hanzi-font);
-    font-size: 3.4rem;
+    /* One character keeps its size; several share the available width, so the
+       whole entry stays legible without the box running away. `--chars` is set on
+       the element from the entry's length. */
+    font-size: min(3.4rem, calc(230px / var(--chars, 1)));
     line-height: 1;
     color: var(--muted-strong);
   }
   .glyph.masked {
     color: var(--line);
     font-size: 2.6rem;
+  }
+  /* The character the board is asking for, against the rest of the entry, which
+     is context rather than the task. Weight alone would shift the characters
+     sideways as the cursor moves, so the difference is colour. */
+  .glyph-char {
+    color: var(--muted);
+  }
+  .glyph-char.current {
+    color: var(--muted-strong);
   }
 
   .detail {
@@ -2337,6 +2501,33 @@
   }
   .nav button:disabled {
     opacity: 0.4;
+    cursor: default;
+  }
+  /* The character row's own action — adding the character to your list — drawn
+     like the navigation buttons it sits beside rather than like the board's
+     control row: it belongs to the character, and the row it is on has a
+     different scale. The glyph is sized off the font, as everywhere else. */
+  .meta button.icon {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--muted-strong);
+    font-size: 19px;
+    cursor: pointer;
+  }
+  .meta button.icon:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent-ink);
+  }
+  .meta button.icon:disabled {
+    opacity: 0.45;
     cursor: default;
   }
 
@@ -2427,6 +2618,14 @@
     flex-wrap: wrap;
     gap: 8px;
   }
+  /* A cluster is one flex item, so the row breaks between groups of related
+     controls instead of in the middle of one: undo and clear belong on the same
+     line, and a bare row of ten buttons would happily separate them. */
+  .cluster {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
   .controls button {
     padding: 7px 13px;
     border: 1px solid var(--line);
@@ -2436,6 +2635,18 @@
     font-size: 0.84rem;
     color: var(--muted-strong);
     cursor: pointer;
+  }
+  /* An icon button is square, and the glyph is sized off the font so the phone
+     can draw the same artwork larger without a second copy: `Icon.svelte` is
+     `1em` wide. */
+  .controls button.icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 34px;
+    padding: 0;
+    font-size: 21px;
   }
   .controls button:hover:not(:disabled) {
     border-color: var(--accent);
@@ -2450,36 +2661,37 @@
     border-color: var(--accent);
     color: #fff;
     font-weight: 600;
-    padding-inline: 20px;
   }
   .controls button.primary:hover:not(:disabled) {
     background: var(--accent-ink);
     color: #fff;
   }
-  .controls button.speak span[aria-hidden] {
-    margin-right: 3px;
+  /* A toggle that is on: recall rather than trace, or corrections showing. Tinted
+     rather than filled, so the one solid accent on the row stays the primary
+     action — Check — and "which of these is pressed" is still legible without
+     competing with it. */
+  .controls button.icon.on {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+  }
+  .controls button.primary.icon {
+    width: 46px;
   }
 
-  /* Push to talk. Green while the microphone is open, so "am I being recorded
-     right now?" is answerable at a glance without reading the label. */
-  .controls button.say span[aria-hidden] {
-    margin-right: 3px;
-  }
+  /* Push to talk. Green while the microphone is open, and pulsing, because the
+     word "Listening…" that used to say so is gone: an icon cannot spell out
+     that it is recording, so the colour and the movement have to. */
   .controls button.say {
-    /* Wide enough for the longest label it swaps between, so pressing it does
-       not reflow the row. The label changes to "Listening…" on press, and a
-       button that shrinks under the learner's finger is a button that stops
-       listening to them. */
-    min-width: 11.5rem;
-    justify-content: flex-start;
-    text-align: left;
     /* The page scrolls, and a finger held still on a button inside a scrolling
        page is a gesture the browser wants to claim: it sends `pointercancel`
        once it decides the touch is a scroll, and `pointercancel` ends the
        recording. Saying the button owns its own touches is what stops a held
        press from being cancelled a fraction of a second after it starts — which
        is what "I hold it and it stops immediately" turned out to be, after the
-       layout shift had been ruled out. */
+       layout shift had been ruled out. The layout no longer shifts on press
+       either, now that the label is a fixed-width glyph, but this is what keeps
+       a sliding finger recording. */
     touch-action: none;
     /* And the *other* gesture a held finger starts: a long press on text. At
        about half a second Android takes the pointer for its selection gesture
@@ -2494,9 +2706,21 @@
     background: #2f6f4f;
     border-color: #2f6f4f;
     color: #fff;
+    animation: listening 1.1s ease-in-out infinite;
+  }
+  @keyframes listening {
+    50% {
+      opacity: 0.62;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .controls button.say.listening {
+      animation: none;
+    }
   }
   .tone-error {
-    margin: 0 0 12px;
+    /* Above whatever it explains, which is now the tone panel below it. */
+    margin: 12px 0 0;
     padding: 10px 12px;
     border: 1px solid #e3bdb4;
     border-radius: 10px;
@@ -2505,41 +2729,24 @@
     font-size: 0.9rem;
     line-height: 1.45;
   }
+  /* The tone panel follows the report now, so the gap between the two is above
+     it rather than below. */
   .feedback > :global(.tone) {
-    margin-bottom: 12px;
+    margin-top: 12px;
   }
-  .spacer {
-    flex: 1;
+  /* The last group takes the rest of the line and keeps its own controls at the
+     right edge, whether the row fits on one line or wraps: the count and ✓ are
+     where the eye goes after a stroke, and a fixed place for them is worth more
+     than the few pixels a spacer would leave. `auto` basis rather than `0`, so
+     wrapping still measures the group by what is in it. */
+  .cluster.commit {
+    flex: 1 1 auto;
+    justify-content: flex-end;
   }
   .count {
     font-size: 0.8rem;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
-  }
-  .toggle {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 0.78rem;
-    color: var(--muted);
-    cursor: pointer;
-  }
-
-  .segmented {
-    display: flex;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    overflow: hidden;
-  }
-  .segmented button {
-    border: 0;
-    border-radius: 0;
-    padding: 7px 15px;
-  }
-  .segmented button.on {
-    background: var(--accent);
-    color: #fff;
-    font-weight: 600;
   }
 
   .hint {
@@ -2844,22 +3051,26 @@
       min-height: 0;
     }
 
-    /* Fingers, not a pointer: every control reaches a comfortable target. */
+    /* Fingers, not a pointer: every control reaches a comfortable target, and
+       the glyph grows with it. */
     .controls {
-      gap: 8px;
+      gap: 7px;
+    }
+    .controls .cluster {
+      gap: 7px;
     }
     .controls button {
       min-height: 44px;
       padding: 10px 14px;
       font-size: 0.95rem;
     }
-    .controls .toggle {
-      min-height: 44px;
-      font-size: 0.85rem;
-    }
-    .segmented button {
-      min-height: 44px;
-      padding: 10px 16px;
+    .controls button.icon,
+    .controls button.primary.icon,
+    .controls button.icon.on {
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      font-size: 25px;
     }
     .nav button {
       min-height: 44px;
@@ -2887,10 +3098,18 @@
     .meta {
       gap: 12px;
     }
+    .meta button.icon {
+      width: 44px;
+      height: 44px;
+      font-size: 23px;
+    }
     .glyph {
-      width: 68px;
+      /* `min-width`, matching the base rule: setting `width` here would leave the
+         92px minimum in force and the box would ignore this entirely. */
+      min-width: 68px;
       height: 68px;
-      font-size: 2.4rem;
+      padding: 0 7px;
+      font-size: min(2.4rem, calc(160px / var(--chars, 1)));
       border-radius: 10px;
     }
     .glyph.masked {

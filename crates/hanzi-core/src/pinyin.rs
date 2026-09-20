@@ -386,6 +386,191 @@ fn join_tones(tones: &[u8]) -> String {
         .join(" + ")
 }
 
+// ---------------------------------------------------------------------------
+// What was heard
+// ---------------------------------------------------------------------------
+
+/// A reading with its tone taken off: `nǐ` → `ni`, `nǚ` → `nv`.
+///
+/// This is what a transcription is compared against a target *as*. Two reasons,
+/// and they are different reasons:
+///
+/// - **Comparing characters does not work for single syllables.** 是, 事 and 士
+///   are all `shì`, so a recogniser that transcribed the right sound as the
+///   wrong character would be reported as a wrong syllable. They are the same
+///   sound; that is the whole point of comparing readings.
+/// - **The tone is dropped on purpose**, and not because it does not matter. It
+///   matters more than anything else here — it is `tone.rs`'s entire job. It is
+///   dropped because a recogniser's *reading of a character implies a tone that
+///   the learner may never have produced*: the language model repairs a wrong
+///   tone toward the likely word (research §6.1), so a dictionary tone attached
+///   to a transcribed character is evidence about the language model, not about
+///   the learner's voice. A tone score has to come from F0, and it does
+///   ([`crate::tone`]).
+///
+/// `ü` is kept as its own letter rather than folded into `u`: 女 (`nǚ`) and 努
+/// (`nǔ`) are different syllables, and treating them as the same sound would
+/// call a wrong syllable right — the one outcome worse than saying nothing.
+pub fn base(reading: &str) -> String {
+    reading
+        .chars()
+        .filter_map(|ch| match ch {
+            'a' | 'ā' | 'á' | 'ǎ' | 'à' => Some('a'),
+            'e' | 'ē' | 'é' | 'ě' | 'è' | 'ê' => Some('e'),
+            'i' | 'ī' | 'í' | 'ǐ' | 'ì' => Some('i'),
+            'o' | 'ō' | 'ó' | 'ǒ' | 'ò' => Some('o'),
+            'u' | 'ū' | 'ú' | 'ǔ' | 'ù' => Some('u'),
+            'ü' | 'ǖ' | 'ǘ' | 'ǚ' | 'ǜ' | 'v' => Some('v'),
+            // The syllabic nasals: 嗯 is `ń`, a syllable with no vowel letter.
+            'n' | 'ń' | 'ň' | 'ǹ' => Some('n'),
+            'm' | 'ḿ' => Some('m'),
+            other => other.is_ascii_alphabetic().then(|| other.to_ascii_lowercase()),
+        })
+        .collect()
+}
+
+/// One syllable of a transcription, beside the one the exercise asked for.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeardSyllable {
+    /// The syllable as heard, plain: `shi`. No tone mark — see [`base`].
+    pub base: String,
+    /// The syllable the exercise asked for, the same way: `si`.
+    pub wanted: String,
+    /// True when they are the same sound once the tone is set aside.
+    pub matches: bool,
+}
+
+/// What a speech recogniser made of one recording, read against the target.
+///
+/// ## What this is evidence of, and what it is not
+///
+/// It answers *which syllables were said*, not *how well*. A recogniser carries a
+/// strong language-model prior and is built to be robust to the errors a learner
+/// makes, so it under-reports them — most for the learners who need feedback most
+/// (research §6.1). Read it as: "the app did not hear the syllable you were asked
+/// for", which is a real and useful thing to be told, and never as "your
+/// pronunciation was correct", which it cannot know. The tone is scored from the
+/// pitch, separately, and [`Heard::detail`] says which half is which so no one
+/// has to guess.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Heard {
+    /// What was transcribed, in characters. Empty when nothing was recognised.
+    pub text: String,
+    /// The same, as plain letters with the syllables spaced: `shi shi`.
+    pub base: String,
+    /// One entry per syllable the transcription divided into.
+    pub syllables: Vec<HeardSyllable>,
+    /// How many syllables were the sound asked for.
+    pub matched: usize,
+    /// True when the transcription divided into exactly as many syllables as the
+    /// target has, which is what makes a per-syllable comparison meaningful.
+    pub same_count: bool,
+    /// One plain sentence, worded here so there is one place it is worded.
+    pub detail: String,
+}
+
+impl Heard {
+    /// Everything asked for was heard, syllable for syllable.
+    pub fn all_matched(&self) -> bool {
+        self.same_count && !self.syllables.is_empty() && self.matched == self.syllables.len()
+    }
+}
+
+/// Read a transcription against the target it was meant to be.
+///
+/// `reading` is the transcription's own reading — the word's, from the dataset,
+/// so that a polyphone comes out right, or a reading the caller composed from the
+/// characters. It is taken as a parameter rather than looked up because this
+/// module knows nothing about the dataset, exactly as [`tone_target`] does.
+///
+/// The same alignment rule as [`tone_target`] applies: a reading that does not
+/// divide into one syllable per character is **refused rather than compared out
+/// of step**, because a split this module got wrong would be reported to the
+/// learner as a syllable they mispronounced.
+pub fn heard_against(heard: &str, reading: &str, target: &ToneTarget) -> Heard {
+    let characters: Vec<char> = heard.chars().collect();
+    let list = syllables(reading).unwrap_or_default();
+    let aligned = !characters.is_empty() && list.len() == characters.len();
+
+    let heard_syllables: Vec<String> = if aligned {
+        list.iter().map(|s| base(&s.text)).collect()
+    } else {
+        Vec::new()
+    };
+    let wanted: Vec<String> = target.syllables.iter().map(|s| base(&s.reading)).collect();
+
+    let syllables: Vec<HeardSyllable> = heard_syllables
+        .iter()
+        .zip(wanted.iter())
+        .map(|(base, wanted)| HeardSyllable {
+            base: base.clone(),
+            wanted: wanted.clone(),
+            matches: base == wanted,
+        })
+        .collect();
+    let matched = syllables.iter().filter(|s| s.matches).count();
+    let same_count = aligned && heard_syllables.len() == wanted.len();
+    let base_text = heard_syllables.join(" ");
+    let wanted_text = wanted.join(" ");
+
+    let detail = if heard.trim().is_empty() {
+        "Nothing was recognised in that recording. The tone below is still judged \
+         from the pitch, which does not need a transcription."
+            .to_string()
+    } else if !aligned {
+        format!(
+            "The transcription ({}) could not be divided into one syllable per character, \
+             so it was not read against what was asked for. The tone below is unaffected.",
+            heard.trim()
+        )
+    } else if !same_count {
+        format!(
+            "Heard {base_text} — {} syllable{} where {wanted_text} ({}) was asked for. \
+             The tone below is still judged from the pitch.",
+            wanted.len(),
+            if wanted.len() == 1 { "" } else { "s" },
+            wanted.len(),
+        )
+    } else if matched == syllables.len() {
+        format!(
+            "Heard {base_text}: the syllable{} asked for. What was heard is a transcription, \
+             not a judgement of the tone — the tone below is measured from the pitch.",
+            if syllables.len() == 1 { "" } else { "s" },
+        )
+    } else {
+        let wrong: Vec<String> = syllables
+            .iter()
+            .filter(|s| !s.matches)
+            .map(|s| format!("{} where {} was asked for", s.base, s.wanted))
+            .collect();
+        format!(
+            "Heard {base_text} ({}) — {}. The tone below is measured from the pitch, not \
+             from this transcription.",
+            wrong.join(", "),
+            if matched == 0 {
+                "none of that is the syllable wanted".to_string()
+            } else {
+                format!(
+                    "{} of {} syllables match",
+                    matched,
+                    syllables.len()
+                )
+            }
+        )
+    };
+
+    Heard {
+        text: heard.trim().to_string(),
+        base: base_text,
+        syllables,
+        matched,
+        same_count,
+        detail,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,5 +773,90 @@ mod tests {
         let target = tone_target("一天", "yī'tiān").expect("joined readings still split");
         assert_eq!(target.spoken(), [4, 1]);
         assert_eq!(target.syllables.len(), 2);
+    }
+
+    #[test]
+    fn a_base_reading_drops_the_tone_but_not_the_umlaut() {
+        assert_eq!(base("nǐ"), "ni");
+        assert_eq!(base("hǎo"), "hao");
+        assert_eq!(base("shì"), "shi");
+        assert_eq!(base("de"), "de");
+        // 嗯 is `ń`: a syllable with no vowel letter at all.
+        assert_eq!(base("ń"), "n");
+        // The reason `ü` is not folded into `u`: 女 nǚ and 努 nǔ are different
+        // syllables, and calling them the same sound would call a wrong syllable
+        // right.
+        assert_eq!(base("nǚ"), "nv");
+        assert_eq!(base("nǔ"), "nu");
+        assert_ne!(base("nǚ"), base("nǔ"));
+    }
+
+    #[test]
+    fn hearing_what_was_asked_for_says_so() {
+        let target = tone_target("你好", "nǐhǎo").expect("你好 is a target");
+        let heard = heard_against("你好", "nǐhǎo", &target);
+        assert!(heard.all_matched());
+        assert_eq!(heard.matched, 2);
+        assert_eq!(heard.base, "ni hao");
+        assert_eq!(heard.text, "你好");
+        assert!(heard.same_count);
+        // The wording has to keep the transcription and the tone apart: the
+        // recogniser did not judge the tone and must not be presented as if it
+        // had.
+        assert!(heard.detail.contains("ni hao"), "{}", heard.detail);
+        assert!(heard.detail.contains("not a judgement of the tone"), "{}", heard.detail);
+    }
+
+    #[test]
+    fn a_homophone_is_the_same_syllable_and_a_different_one_is_not() {
+        // 是 and 事 are both `shì`. A recogniser picking the other character has
+        // still heard the right syllable, which is why the comparison is by
+        // reading and not by character — this is the whole reason `heard_against`
+        // exists.
+        let target = tone_target("是", "shì").expect("是 is a target");
+        let homophone = heard_against("事", "shì", &target);
+        assert!(homophone.all_matched(), "{}", homophone.detail);
+        assert_ne!(homophone.text, "是");
+
+        // sì and shì are different syllables, and that is what a learner needs
+        // to be told.
+        let target = tone_target("四", "sì").expect("四 is a target");
+        let wrong = heard_against("是", "shì", &target);
+        assert!(!wrong.all_matched());
+        assert_eq!(wrong.matched, 0);
+        assert_eq!(wrong.syllables[0].base, "shi");
+        assert_eq!(wrong.syllables[0].wanted, "si");
+        assert!(wrong.detail.contains("shi where si was asked for"), "{}", wrong.detail);
+    }
+
+    #[test]
+    fn the_wrong_number_of_syllables_is_reported_rather_than_aligned() {
+        let target = tone_target("你好", "nǐhǎo").expect("你好 is a target");
+        let heard = heard_against("你", "nǐ", &target);
+        assert!(!heard.same_count);
+        assert!(!heard.all_matched());
+        assert!(heard.detail.contains("2 syllables"), "{}", heard.detail);
+        assert!(heard.detail.contains("ni"), "{}", heard.detail);
+    }
+
+    #[test]
+    fn a_transcription_that_cannot_be_split_is_refused() {
+        // Two characters, one syllable: comparing them in order would report a
+        // syllable the learner never said. The same refusal `tone_target` makes.
+        let target = tone_target("你好", "nǐhǎo").expect("你好 is a target");
+        let heard = heard_against("你好", "nǐ", &target);
+        assert!(!heard.same_count);
+        assert!(heard.syllables.is_empty());
+        assert!(heard.detail.contains("could not be divided"), "{}", heard.detail);
+    }
+
+    #[test]
+    fn hearing_nothing_is_said_plainly_and_leaves_the_tone_alone() {
+        let target = tone_target("是", "shì").expect("是 is a target");
+        let heard = heard_against("", "", &target);
+        assert!(!heard.all_matched());
+        assert!(heard.text.is_empty());
+        assert!(heard.detail.contains("Nothing was recognised"), "{}", heard.detail);
+        assert!(heard.detail.contains("tone"), "{}", heard.detail);
     }
 }

@@ -522,6 +522,95 @@ export interface ToneResult {
   voicedMs: number;
   spanMs: number;
   medianHz: number;
+  /**
+   * What a recognition model heard, when one is installed; `null` otherwise.
+   *
+   * `null` is the ordinary case — it is how the app ships, and every learner who
+   * has not installed the model sees it on every attempt. Render nothing at all
+   * for `null`: no empty box, no hint that something is missing, and above all no
+   * prompt to download anything.
+   */
+  heard: Heard | null;
+  /**
+   * Why recognition failed, when a model *is* installed and could not be used.
+   *
+   * Distinct from `heard: null`: the tone score is still good, and this says the
+   * other half of the panel could not be filled in. Show it beside the tone
+   * verdict, not instead of it.
+   */
+  heardError: string | null;
+}
+
+/**
+ * One syllable of a transcription, beside the one the exercise asked for.
+ *
+ * Both readings are **plain letters with the tone mark removed** (`shi`, not
+ * `shì`). That is not a simplification: a recogniser's output implies a tone that
+ * the learner may never have produced — the language model repairs a wrong tone
+ * toward the likely word — so the dictionary tone of a transcribed character is
+ * evidence about the model, not about the voice. The tone comes from the pitch
+ * and from nowhere else. Do not put a tone mark on these.
+ */
+export interface HeardSyllable {
+  /** The syllable as heard: `shi`. */
+  base: string;
+  /** The syllable the exercise asked for: `si`. */
+  wanted: string;
+  /** True when they are the same sound once the tone is set aside. */
+  matches: boolean;
+}
+
+/**
+ * What a speech recogniser made of one recording, read against the target.
+ *
+ * This answers *which syllables were said*, never *how well*. It is a
+ * transcription, and the sentence in `detail` is written by the Rust side to keep
+ * it from being read as a pronunciation score — show that sentence rather than
+ * inventing a shorter one.
+ */
+export interface Heard {
+  /** What was transcribed, in characters. Empty when nothing was recognised. */
+  text: string;
+  /** The same as plain letters with the syllables spaced: `shi shi`. */
+  base: string;
+  syllables: HeardSyllable[];
+  /** How many syllables were the sound asked for. */
+  matched: number;
+  /** True when the transcription had as many syllables as the target. */
+  sameCount: boolean;
+  /** One plain sentence, worded by the Rust side. */
+  detail: string;
+}
+
+/**
+ * Whether a recognition model is installed, and how to describe one that is not.
+ *
+ * This is also how the settings screen follows a download: it carries both the
+ * byte count of the model and how much of it has arrived, so one poll answers
+ * "what is happening" and "how far along is it".
+ */
+export interface AsrStatus {
+  /** `absent` — never asked for; `downloading`; `installed`; `failed`. */
+  state: "absent" | "downloading" | "installed" | "failed";
+  installed: boolean;
+  /** The model's name, always present so the screen can describe it up front. */
+  model: string;
+  /** Where it comes from: the app's only network access. */
+  url: string;
+  licence: string;
+  licenceUrl: string;
+  /** How large the download is, in bytes. */
+  downloadBytes: number;
+  /** How large it becomes once unpacked, in bytes. */
+  unpackedBytes: number;
+  /** Bytes fetched so far, while `state` is `downloading`. */
+  downloaded: number;
+  /** Where it is on disk, once it is anywhere. */
+  path: string | null;
+  /** Why the last attempt failed, when one did. */
+  error: string | null;
+  /** One plain sentence, worded by the Rust side. */
+  detail: string;
 }
 
 /**

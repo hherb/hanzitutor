@@ -6,18 +6,26 @@ several upstream projects under different licences, and all of them require
 their notices to be included with any redistribution. This file records what
 came from where, and what has to travel with it.
 
-Everything described here is **already inside the built app**. There is no
-first-run download, no data step for the reader, and no network access at run
-time: the dataset is compiled into the executable and the notices are compiled
-in beside it, with plain-text copies in the bundle's `Resources/licences/`. This
-document is the human-readable record of that arrangement.
+Everything described in "What is bundled" is **already inside the built app**.
+There is no first-run data step for the reader and no network access while the
+app runs: the dataset is compiled into the executable and the notices are
+compiled in beside it, with plain-text copies in the bundle's
+`Resources/licences/`. This document is the human-readable record of that
+arrangement.
 
-One of the entries below is **code rather than data**. There are in fact three,
-and they are the only third-party libraries compiled into the binary: SQLite and
-its `rusqlite` bindings, which hold the study database, and `cpal`, which opens
-the microphone for tone practice. The rest is data or a font. Each is recorded
-here rather than left implicit, and none of them adds a condition beyond its own
-notice.
+There is exactly **one** exception, and it is not in that table. Recognising what
+a learner *said* — as opposed to how they said it — needs a speech model, and no
+worthwhile Chinese model is small enough to bundle. So that model is an optional
+download the learner starts from the settings screen. This app does not
+redistribute its weights and does not fetch them on anyone's behalf; it shows the
+address, the size and the licence, and downloads only when the button is pressed.
+See "The speech model is downloaded, not shipped" below. The README's promise is
+restated the same way: the app downloads nothing *unless you ask it to*, and
+everything the bundled course teaches still needs nothing.
+
+Some of the entries below are **code rather than data**: SQLite and its `rusqlite`
+bindings, `cpal`, and the speech-recognition stack. Each is recorded here rather
+than left implicit.
 
 ## What is bundled
 
@@ -33,6 +41,8 @@ notice.
 | Study database engine, SQLite 3.45.0 | [sqlite.org](https://sqlite.org/), vendored by `libsqlite3-sys` | Public domain |
 | SQLite bindings, `rusqlite` | [rusqlite](https://github.com/rusqlite/rusqlite) | MIT |
 | Audio capture, `cpal` | [cpal](https://github.com/RustAudio/cpal) | Apache-2.0 |
+| Speech recognition engine, `sherpa-onnx` 1.13.8 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | Apache-2.0 |
+| Model inference, ONNX Runtime | [onnxruntime](https://github.com/microsoft/onnxruntime) | MIT |
 
 The first six rows are compacted by `prepare-data` into one generated artifact,
 `crates/hanzi-core/data/hanzi.bin.gz`, which `src-tauri/src/state.rs` embeds with
@@ -153,10 +163,78 @@ the device is open only while the learner is holding the button.
 
 The app's own pitch tracking, tone templates and scoring are **not** third-party
 code — they are in `crates/hanzi-core/src/tone.rs` under this project's licence —
-so no model weights and no speech-recognition library are involved. That is a
-deliberate boundary, argued in
+so judging *how* something was said involves no model weights and no recognition
+library at all. That is a deliberate boundary, argued in
 [`docs/research/ASR_TTS_CLAUDE_RESEARCH.md`](docs/research/ASR_TTS_CLAUDE_RESEARCH.md)
-§6, and it is what keeps the app's "no downloads, no network" promise intact.
+§6, and it is what keeps tone practice working with no download, no model and no
+network. Recognising *which* syllable was said is the separate feature below, and
+it is optional.
+
+### sherpa-onnx and ONNX Runtime
+
+Recognising what was said runs `sherpa-onnx` 1.13.8 under **Apache-2.0**, with
+**ONNX Runtime** (MIT) executing the model. Both are *compiled into the binary*,
+so both notices travel with it: [`licences/Apache-2.0.txt`](licences/Apache-2.0.txt)
+and [`licences/MIT-onnxruntime.txt`](licences/MIT-onnxruntime.txt). Apache-2.0 and
+MIT both combine into AGPL-3.0, so there is no conflict with this project's own
+licence.
+
+Two things about how they arrive are worth recording, because both are easy to get
+wrong at packaging time:
+
+- **They are not obtained through cargo.** `sherpa-onnx-sys` downloads a prebuilt
+  native archive from GitHub releases *during `cargo build`* unless
+  `SHERPA_ONNX_LIB_DIR` says otherwise. For a repository that fetches its data
+  through a reviewed script and pins its notices three ways, an unpinned binary
+  arriving at compile time is a different posture — so the download happens in
+  [`scripts/fetch-sherpa.sh`](scripts/fetch-sherpa.sh), against a **pinned
+  SHA-256**, and the build only reads what that left behind. The static archive is
+  used, so the app stays one file; a shared build would leave `.dylib`s that a
+  bundled `.app` would have to declare as frameworks or fail to launch.
+- **It vendors more than it names.** The archive statically includes several
+  further libraries — ONNX Runtime, kaldi-native-fbank and the other `kaldi-*`
+  components, kissfft, `ssentencepiece`, `piper_phonemize`, and `espeak-ng`. The
+  linker keeps only what the recognition path reaches. `espeak-ng` is the one
+  component under a copyleft licence (**GPL-3.0-or-later**, compatible with
+  AGPL-3.0 either way) and it is *speech synthesis only*: **it is verified not to
+  be in the linked binary** — `nm` finds none of its symbols and `strings` finds
+  none of its data — because this app recognises and does not synthesise. If a
+  future change starts using sherpa-onnx's TTS, that verification must be redone
+  and espeak-ng's notice added. The remaining components are permissive
+  (Apache-2.0, MIT, BSD-3-Clause).
+
+### The speech model is downloaded, not shipped
+
+`sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17` (SenseVoiceSmall, int8)
+is about **163 MB compressed and 241 MB unpacked**, so it cannot be bundled. It is
+fetched by the learner, from the settings screen, over the app's only network
+call, and cached in the application data directory. Before the button is pressed
+the screen states the address, both sizes, and the licence.
+
+**This app does not redistribute the weights**, so their licence is not this
+project's to comply with in the way the bundled notices are — the learner takes
+them directly from their publisher. It is recorded here anyway, because a
+redistributor should not have to discover it, and because it is *not* a free
+licence in the sense the rest of this file uses:
+
+| | |
+| --- | --- |
+| Model | SenseVoiceSmall, int8, converted for sherpa-onnx |
+| Terms | [FunASR Model Open Source License Agreement v1.1](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE), Alibaba Group |
+| Pointer | the archive's own `LICENSE` is a one-line reference to the FunASR repository |
+| Requires | attribution, and that the model's own names are retained |
+| Notes | the agreement is revisable by its publisher, states that the weights are provided "for reference and learning purposes", and includes a conduct clause whose breach terminates the licence |
+
+The toolkit that runs the model is MIT (`FunASR`'s source) and the model's weights
+are licensed separately — the distinction the research warns about in §9, where
+"a model's licence and its training data's licence can differ". That section did
+**not** evaluate SenseVoice's terms; it recommended the model in §5.3 and left it
+out of the compatibility table. That gap is recorded here rather than papered
+over: the terms are compatible with what this app does (it points at the model
+rather than shipping it, attributes it, and redirects to the upstream text), but
+anyone intending to **redistribute the weights themselves** — in a bundled or
+offline installer, say — must read the agreement first and decide for
+themselves. Nothing here is legal advice.
 
 ### Noto Sans SC — <https://github.com/notofonts/noto-cjk>
 
@@ -181,9 +259,10 @@ font's reserved name is `Source`, not `Noto`, so no rename is required.
    ls "$APP/Contents/Resources/licences"
    ```
 
-   That directory must hold all thirteen files named in `src-tauri/src/licences.rs`.
-   The in-app screen works even if it does not — the text is compiled in — but a
-   redistributor who wants to read the notices out of the bundle would be stuck.
+   That directory must hold all fourteen files named in
+   `src-tauri/src/licences.rs`. The in-app screen works even if it does not — the
+   text is compiled in — but a redistributor who wants to read the notices out of
+   the bundle would be stuck.
 3. Serve the CC-CEDICT definitions under CC BY-SA 4.0 if you redistribute them,
    and keep the statement of what was changed in `licences/CC-CEDICT.txt`
    accurate if you change the data pipeline.
@@ -192,6 +271,25 @@ font's reserved name is `Source`, not `Noto`, so no rename is required.
    licence rather than a copyleft one, but it does carry notice obligations; the
    LGPL has its own conditions on the derived `dictionary.txt`; and CC BY-SA is a
    share-alike licence, which is the one with real consequences for derived data.
+5. **Do not bundle the speech model without reading its terms.** This app fetches
+   it for the learner rather than shipping it, which is why its licence is
+   recorded above rather than satisfied here. An offline installer, a mirror or a
+   pre-seeded cache changes that, and the FunASR model agreement is not a free
+   licence in the sense the rest of this file uses.
+
+## Building from source
+
+A clone needs one build input that is not committed and not obtained by cargo:
+
+```bash
+scripts/fetch-sherpa.sh      # unpacks the pinned sherpa-onnx native library
+```
+
+It records the archive's SHA-256 and refuses a platform whose digest has not been
+recorded, rather than downloading something unverified; the header explains how to
+add one. Without it the crate's own build script would fetch a binary during
+`cargo build`, which is the thing this script exists to prevent. CI runs it as its
+own step.
 
 ## Fonts in the UI
 

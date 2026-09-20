@@ -24,7 +24,7 @@ See [`HANDOVER.md`](HANDOVER.md) for how to build, test and verify; see
 | M9 | Mobile shells | A stylus is the right input device | L | **in progress (iOS + Android)** |
 | M10 | Durable study store (SQLite) | The JSON format caps the attempt log the grading work needs | M | **done** |
 | M11 | Tone practice (speech recognition, model-free) | Tone is the error handwriting cannot see, and it needs no model | L | **done** |
-| M12 | Speech recognition: text (optional download) | Recognise *what* was said, which needs a ~155 MB model the user installs from settings | L | not started, **unblocked** |
+| M12 | Speech recognition: text (optional download) | Recognise *what* was said, which needs a ~155 MB model the user installs from settings | L | **done** |
 
 ---
 
@@ -465,10 +465,15 @@ Deliberately not as originally planned, and why:
 
 Drawing was press-and-drag only, which is awkward on a trackpad: a long stroke
 means holding the button down for a long time. There is now a **click to draw**
-mode beside the *corrections* switch, off by default, in which one click starts a
-stroke, moving the pointer extends it with no button held, and a second click
-ends it. The state machine lives in `src/lib/PracticeCanvas.svelte`; `App.svelte`
-owns the switch.
+mode, off by default, in which one click starts a stroke, moving the pointer
+extends it with no button held, and a second click ends it. The state machine
+lives in `src/lib/PracticeCanvas.svelte`; `App.svelte` owns the setting.
+
+It first shipped as a quick switch on the board's control row, beside the
+*corrections* checkbox. Neither is a labelled control there any more: the row is
+icons only, so that a phone keeps two rows instead of four and the board keeps
+the height it needs, and the preference is set on the settings screen — the one
+place with room for the sentence that explains what the two gestures are.
 
 What shipped:
 
@@ -897,6 +902,14 @@ Recorded honestly, because they bound how much the current scores mean:
   gap to discover during one; it is recorded here because this milestone added
   to that set.
 - **Pronunciation is macOS and iOS only.**
+- **The app's "no network" claim is now conditional, and one place still has to
+  keep saying so.** M12 added a download, so the promise is "nothing unless you ask
+  it to". The README, `LICENSES.md` and the bundle's own description were restated
+  when it shipped; anything else that repeats the flat version is now wrong and
+  should be corrected rather than left to be discovered. In particular, M6's
+  pre-rendered audio pack (§4.4 of the research) would keep its advantage — it
+  needs no download at all — and that remains the cheapest way to finish the
+  output side.
 - **No CI builds the bundle** (see M5), and **the App Sandbox has never been
   tested — where the speech backend probably does not survive it.** A Mac App
   Store build must be sandboxed, and `src/speech.rs` pronounces by spawning
@@ -962,7 +975,8 @@ all. That is the argument in
 §6, and this milestone is that half.
 
 The app's promise is that it downloads nothing and never touches the network, and
-this milestone keeps it. There are no model weights here, no inference runtime and
+this milestone keeps it — and M12, which later narrowed that promise for an
+optional model, left this half untouched. There are no model weights here, no inference runtime and
 no new build-time binary fetch. The one new dependency is `cpal`, to open the
 microphone.
 
@@ -1091,10 +1105,9 @@ microphone.
 
 ## M12 — Speech recognition: text
 
-**Status: not started, and now unblocked.** The product decision below has been
-taken: a download is acceptable **provided it is optional and installed by the
-user from the settings screen**. Nothing here changes the app's behaviour until
-the user asks for it.
+**Status: done.** The optional-download decision below was taken and is now
+implemented: `sherpa-onnx` runs SenseVoiceSmall, the model is installed by the
+learner from the settings screen, and nothing changes until they ask.
 
 **Why.** M11 judges *how* something was said. It cannot say *what* was said, and
 there is no non-neural substitute for that — you cannot pre-render a learner's
@@ -1118,6 +1131,33 @@ exercise and a pronunciation exercise.
   data comes from a reviewed fetch script and whose notices are pinned three ways,
   pulling an unpinned binary during compilation is a real change in posture:
   vendor and pin it, or the build is not reproducible.
+
+**What shipped.**
+
+- `scripts/fetch-sherpa.sh` — unpacks the native library against a **pinned
+  SHA-256** into the gitignored `.sherpa-onnx/`, and **refuses** a platform whose
+  digest has not been recorded rather than downloading something unverified.
+  `scripts/with-cargo-env.sh` points `SHERPA_ONNX_LIB_DIR` at it, so `cargo build`
+  never fetches a binary of its own. Static linking, so the app stays one file; a
+  shared build would leave `.dylib`s that a bundled `.app` would have to declare
+  as frameworks or fail to launch.
+- `src-tauri/src/asr.rs` — the model manifest (address, measured sizes, digest,
+  licence), a download that verifies as it streams and stages its work so an
+  interrupted install leaves the previous state untouched, and the recogniser
+  itself. It is the only module in the app that opens a socket.
+- **The model is pinned by digest too, at run time.** Measured rather than
+  estimated: 163,002,883 bytes compressed, 240,506,435 bytes unpacked, exactly the
+  numbers the settings screen shows before anybody agrees to the download.
+- `crates/hanzi-core/src/pinyin.rs` gained `base` and `heard_against`: the
+  comparison rules — readings rather than characters, tone stripped from both sides
+  — plus the wording, in the module that already owns what a reading is.
+- A settings row that states the address, both sizes and the licence **before** the
+  button, then shows real progress and a retryable failure. Polled rather than
+  event-driven, because the app has no event channel and one command that answers
+  "where has it got to" is less machinery than adding one for a single feature.
+- The tone panel gained a second half: what was recognised, as plain pinyin, with
+  each syllable marked against what was asked for — and nothing at all when no
+  model is installed.
 
 **The decision, and the constraints it implies.**
 
@@ -1143,16 +1183,89 @@ sounds, and the constraints are the real design work:
 
 **Acceptance criteria.**
 
-- The README and `LICENSES.md` state exactly what is downloaded, from where, at
-  what size and under which licence, and the model tarball's own `LICENSE` is read
-  and recorded rather than assumed.
-- With the model absent the app behaves exactly as it does today: tone practice
-  works, text recognition is unavailable, and nothing prompts unless asked.
-- Recognising a recorded syllable returns its pinyin, and a deliberate
-  wrong-syllable recording comes back as a different syllable.
-- The hotwords/contextual-biasing API is **not** pointed at the expected answer.
-  It biases decoding toward the target, which is the right tool for rare
-  vocabulary and the wrong one for assessment.
+- [x] The README and `LICENSES.md` state exactly what is downloaded, from where, at
+      what size and under which licence, and the model tarball's own `LICENSE` is read
+      and recorded rather than assumed. **It was read, and it is not what the
+      research assumed** — see the note below.
+- [x] With the model absent the app behaves exactly as it does today: tone practice
+      works, text recognition is unavailable, and nothing prompts unless asked.
+      `asr::tests::a_fresh_install_has_no_model_and_says_so` asserts it.
+- [x] Recognising a recorded syllable returns its pinyin, and a deliberate
+      wrong-syllable recording comes back as a different syllable. Verified end to
+      end on the model's own `test_wavs/zh.wav` — `开饭时间早上九点至下午五点` —
+      and the homophone rule is asserted in `pinyin.rs`: 是 and 事 are the same
+      syllable, 是 and 四 are not.
+- [x] The hotwords/contextual-biasing API is **not** pointed at the expected answer.
+      It biases decoding toward the target, which is the right tool for rare
+      vocabulary and the wrong one for assessment. No hotwords file is ever set.
+- [x] The whole install path — fetch, verify, unpack, recognise, remove — is
+      exercised by `asr::tests::downloads_verifies_and_installs_the_model`, which
+      is the only test that pins the digest against what GitHub actually serves.
+
+**The licence is not what the research said, and this is the finding to carry
+forward.**
+
+The research's §9 licence table does not list SenseVoice at all: it recommended the
+model in §5.3 and never checked its terms. The tarball's `LICENSE` is a one-line
+pointer to FunASR, and FunASR separates its **MIT toolkit** from its **model
+weights**, which are under the *FunASR Model Open Source License Agreement v1.1*
+(Alibaba Group). That agreement permits use and redistribution but requires
+attribution, states that the weights are provided "for reference and learning
+purposes", is revisable by its publisher, and carries a conduct clause whose breach
+terminates the licence. It is not a free licence in the sense the rest of
+`LICENSES.md` uses.
+
+That is compatible with what this milestone actually does — **the app points at the
+model rather than redistributing it**, which is why the weights are not in
+`licences/` and why the settings screen shows the terms before the download. It
+would **not** be compatible with bundling the weights or shipping a pre-seeded
+cache. Anyone who wants to do that must read the agreement and decide for
+themselves. If a permissively-licensed Chinese model of comparable accuracy
+appears, it should displace this one.
+
+**Known limits, stated rather than hidden.**
+
+- **The recogniser repairs the error being looked for.** Its language model is
+  built to be robust to exactly the mistakes a learner makes, so it under-reports
+  them — worst for the learners who most need telling. This is why the panel says
+  which syllables were heard and never that pronunciation was good, and why no
+  hotwords bias is set.
+- **Syllable-level, not phone-level.** No forced alignment and no
+  goodness-of-pronunciation score exists in this toolkit, so it cannot say which
+  *sound* was wrong. The UI is worded to stay inside that.
+- **Isolated syllables are the hard case**, not the easy one: they are unusual
+  input for a recogniser. A correct syllable may occasionally be reported wrong,
+  which is the safe direction to be wrong in — and the tone verdict is unaffected,
+  since it never consults the transcript.
+- **`use_itn` is off on purpose.** With inverse text normalisation on, 一 comes
+  back as `1`, which cannot be read as a syllable and so cannot be compared.
+- **Only the macOS arm64 native archive is pinned.** The script refuses other
+  platforms rather than fetching them unverified; pinning one is a one-off download
+  and a recorded digest, described in its header.
+- **The static archive vendors more than it names.** ONNX Runtime (MIT) and the
+  `kaldi-*` components (Apache-2.0) are linked and their notices ship; `espeak-ng`
+  (GPL-3.0-or-later, speech synthesis only) is verified *absent* from the binary
+  because only the recognition path is used. A future change that starts using
+  sherpa-onnx's TTS must redo that check and add its notice.
+- **Android's release build now declares `INTERNET`, which reversed a deliberate
+  property.** It used to be scoped to the debug source set so that `aapt2 dump
+  permissions` on a signed APK showed only `RECORD_AUDIO`, making "works offline"
+  checkable on the artifact rather than merely promised. A runtime download cannot
+  work without the permission, so it moved into the main manifest, and the privacy
+  policy and the Play listing were restated in the same change rather than left
+  claiming there are no network requests. Nothing about what the app *collects*
+  changed — it collects nothing and sends nothing — but "no INTERNET permission"
+  is no longer available as evidence, and anyone re-using that argument should
+  know it.
+- **The download was never exercised on Android or iOS.** It is verified end to
+  end on macOS. The permission change above is exactly the class of thing that
+  only shows up on a device, so a signed release APK should have *Download and
+  install* pressed once before this is trusted there.
+- **The linked size was not optimised.** The bundled executable went from about
+  36 MB to about 62 MB — roughly 26 MB of added native code, its largest single
+  increase. Trimming it — building ONNX Runtime without the execution providers
+  this app never uses, for instance — is possible and was not attempted.
+
 
 ---
 
@@ -1168,6 +1281,7 @@ To keep the project honest about what it is:
 - **Cloud accounts, syncing, social features.** The whole value of this app is
   that it is offline and private.
 - **Speech recognition for tones is no longer out of scope** — it is M11 and it
-  has shipped, for characters and words, with no model. Recognising *text* is
-  M12: permitted as an optional, user-installed download, and out of scope until
-  somebody builds it. The system TTS already covers the output side.
+  has shipped, for characters and words, with no model. Recognising *text* was
+  M12 and has now shipped too, as an optional model the learner installs from the
+  settings screen; the app still downloads nothing on its own. The system TTS
+  already covers the output side.

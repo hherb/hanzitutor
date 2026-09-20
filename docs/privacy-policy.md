@@ -9,10 +9,23 @@ short because the app does almost nothing with it.
 ## What is collected
 
 **Nothing.** Hanzi Tutor has no accounts, no analytics, no advertising, no crash
-reporting and no telemetry. It does not transmit any information off the device.
-The app makes no network requests at runtime, and the released Android build
-does not even request the `INTERNET` permission — that permission is granted only
-to development builds, which load their interface from a development server.
+reporting and no telemetry. It does not transmit any information off the device,
+and there is nothing about you for it to transmit.
+
+There is exactly one network request the app can make, and it only happens if you
+ask for it: **Settings → Recognising what was said** offers to download an
+optional speech-recognition model, 163 MB, from its publisher
+(`github.com/k2-fsa/sherpa-onnx` releases). The screen states the address, the
+size and the licence before you press anything, the download is checked against a
+published checksum, and it is the only request in the app. Nothing is uploaded,
+no identifier is sent, the request is a plain file download, and declining is a
+normal state rather than something the app nags about — everything else it does,
+including tone practice and pronunciation, works with no model and no network.
+
+Because that download exists, the released Android build declares the
+`INTERNET` permission. Earlier releases did not, which made "it works offline"
+checkable on the artifact; a build that offers the download but cannot perform it
+would be the worse trade.
 
 ## What is stored, and where
 
@@ -77,9 +90,16 @@ Questions about this policy can be sent to **<!-- TODO: replace before publishin
   page or the project's own site) and that URL given in the Play Console listing.
 
   Check the claims above still hold before publishing:
-    * `grep -rn "reqwest\|ureq\|http" src-tauri/src` should show no outbound
-      requests, and `src-tauri/gen/android/app/src/main/AndroidManifest.xml`
-      should not declare INTERNET.
+    * `grep -rn "ureq\|reqwest" src-tauri/src` finds exactly one module,
+      `src-tauri/src/asr.rs`, and every request in it is gated behind
+      `Asr::install`, which only runs when the settings button is pressed. If a
+      second module appears, this policy needs another paragraph.
+    * `src-tauri/gen/android/app/src/main/AndroidManifest.xml` declares
+      `INTERNET` for that download and nothing else uses it, so the Play Console's
+      Data safety answers stay "no data collected" — a plain file download with no
+      identifier attached is not collection, but say so explicitly in the
+      declaration rather than leaving it implicit.
     * The microphone is opened in `src-tauri/src/capture.rs` only between
-      `Recorder::start` and `Recorder::stop`.
+      `Recorder::start` and `Recorder::stop`, and no recording is written to disk
+      or sent anywhere.
 -->

@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
+  AsrStatus,
   Character,
   CursorView,
   DatasetStats,
@@ -264,3 +265,29 @@ export const listenStart = () => invoke<void>("listen_start");
  * by the Rust side too; show it as it comes back.
  */
 export const listenStop = (text: string) => invoke<ToneResult>("listen_stop", { text });
+
+// ---- speech recognition ----------------------------------------------------
+
+/**
+ * Whether a recognition model is installed, and how to describe one that is not.
+ *
+ * Always answers, so the settings screen can show what *would* be downloaded —
+ * from where, how large, under which licence — before a learner has agreed to any
+ * of it. Poll this while `state` is `downloading`: the download runs on its own
+ * thread and reports progress here rather than through events.
+ */
+export const asrStatus = () => invoke<AsrStatus>("asr_status");
+
+/**
+ * Fetch, verify and unpack the recognition model.
+ *
+ * **The one call in this app that touches the network**, and it only ever happens
+ * because a learner pressed a button. Resolves once the download has *started*,
+ * not when it finishes — follow `asrStatus` for the outcome and the progress.
+ * Nothing else in the app behaves differently while it runs, and nothing calls
+ * this on the learner's behalf.
+ */
+export const asrInstall = () => invoke<void>("asr_install");
+
+/** Delete the recognition model, returning the state that leaves behind. */
+export const asrRemove = () => invoke<AsrStatus>("asr_remove");

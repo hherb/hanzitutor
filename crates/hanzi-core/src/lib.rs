@@ -44,7 +44,10 @@ pub mod vocab;
 pub use curriculum::{build_lessons, lesson_at, Lesson};
 pub use dataset::{Artifact, Character, CharacterHint, Dataset, TextLookup, Word};
 pub use geom::Point;
-pub use pinyin::{spoken_tones, syllables, tone_from_pinyin, tone_target, Syllable, ToneTarget};
+pub use pinyin::{
+    base, heard_against, spoken_tones, syllables, tone_from_pinyin, tone_target, Heard,
+    HeardSyllable, Syllable, ToneTarget,
+};
 pub use grade::{
     grade, grade_with_outlines, FitInfo, Grade, GradeOptions, GradeReport, StrokeVerdict,
     Verdict, INK_OK,

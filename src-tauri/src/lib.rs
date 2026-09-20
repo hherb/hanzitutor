@@ -5,6 +5,7 @@
 
 mod commands;
 pub mod licences;
+mod asr;
 mod capture;
 mod platform;
 mod speech;
@@ -12,6 +13,7 @@ mod state;
 
 pub use commands::{LevelCount, VocabOutcome, VoiceOption, VoicesView, WordSearchView};
 pub use licences::{AppInfo, LicenceNotice};
+pub use asr::{Asr, AsrStatus, InstallState};
 pub use capture::{MicrophoneStatus, Recorder, Recording};
 pub use state::{
     AppState, CursorState, Persisted, ProgressState, SettingsState, VocabState, REVIEW_LIMIT,
@@ -91,6 +93,9 @@ pub fn run() {
             commands::microphone_status,
             commands::listen_start,
             commands::listen_stop,
+            commands::asr_status,
+            commands::asr_install,
+            commands::asr_remove,
             commands::lookup_text,
             commands::vocabulary,
             commands::vocab_add,

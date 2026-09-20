@@ -30,7 +30,7 @@
     "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
     "category": "Education",
     "shortDescription": "Learn to read and write simplified Chinese characters",
-    "longDescription": "An offline app for practising simplified Chinese handwriting. It grades each stroke for shape, placement, ink and order against real stroke geometry, teaches a frequency-ordered course, the HSK 3.0 word list, your own vocabulary and a spaced-repetition review queue, and speaks characters and words with the system's own voice. Everything it needs is in this bundle: it makes no network requests and downloads nothing.",
+    "longDescription": "An offline app for practising simplified Chinese handwriting. It grades each stroke for shape, placement, ink and order against real stroke geometry, teaches a frequency-ordered course, the HSK 3.0 word list, your own vocabulary and a spaced-repetition review queue, scores tone from the pitch of your own voice, and speaks characters and words with the system's own voice. Everything the course teaches is in this bundle and needs no network. There is exactly one thing it can download — an optional speech-recognition model, so that a recording is also read as syllables — and it is fetched only when you ask for it from the settings screen, never on its own.",
     "copyright": "Copyright © Horst Herb and contributors",
     "resources": {
       "../LICENSE": "licences/AGPL-3.0.txt",
@@ -45,7 +45,8 @@
       "../licences/OFL-1.1.txt": "licences/OFL-1.1.txt",
       "../licences/SQLite-Public-Domain.txt": "licences/SQLite-Public-Domain.txt",
       "../licences/MIT-rusqlite.txt": "licences/MIT-rusqlite.txt",
-      "../licences/Apache-2.0.txt": "licences/Apache-2.0.txt"
+      "../licences/Apache-2.0.txt": "licences/Apache-2.0.txt",
+      "../licences/MIT-onnxruntime.txt": "licences/MIT-onnxruntime.txt"
     },
     "android": {
       "minSdkVersion": 26

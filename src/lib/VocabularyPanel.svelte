@@ -341,7 +341,8 @@
   {#if view.entries.length === 0}
     <p class="empty">
       Nothing here yet. Add characters and words as you meet them — from the
-      practice screen with <em>Add to my list</em>, or with the form above.
+      practice screen with the <em>+</em> beside the character's name, or with
+      the form above.
     </p>
   {:else if entriesShown.length === 0}
     <p class="empty">No entries in this group.</p>

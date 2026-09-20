@@ -21,11 +21,15 @@ there is exactly one copy of each to keep current.
 | `OFL-1.1.txt` | Noto Sans SC, the CJK face bundled for the interface | SIL Open Font License 1.1 |
 | `SQLite-Public-Domain.txt` | SQLite, the engine behind the study database — the first piece of third-party *code* in the binary | Public domain |
 | `MIT-rusqlite.txt` | The `rusqlite` bindings, and `libsqlite3-sys` which vendors SQLite | MIT |
+| `Apache-2.0.txt` | `cpal`, which opens the microphone for tone practice, and `sherpa-onnx`, which runs the speech model | Apache-2.0 |
+| `MIT-onnxruntime.txt` | ONNX Runtime, which executes the speech model. It arrives statically linked inside the `sherpa-onnx` native archive rather than as a crate, so nothing in `Cargo.toml` points at it | MIT |
 
 All of these are fetched verbatim by `scripts/fetch-data.sh` (`CC-CEDICT.txt`,
-`SQLite-Public-Domain.txt` and `MIT-rusqlite.txt` are written by hand, since they
-are attribution or provenance notices rather than upstream files — the SQLite one
-quotes the blessing from the source that is compiled in, and the `rusqlite` text
-is copied from that crate's `LICENSE`). They are committed rather than generated,
-so a clone has them without a network round-trip. See
-[`../LICENSES.md`](../LICENSES.md) for the full provenance discussion.
+`SQLite-Public-Domain.txt`, `MIT-rusqlite.txt` and `MIT-onnxruntime.txt` are
+written by hand, since they are attribution or provenance notices rather than
+upstream files — the SQLite one quotes the blessing from the source that is
+compiled in, and the other two are copied from those projects' `LICENSE` files).
+They are committed rather than generated, so a clone has them without a network
+round-trip. The speech **model** that `sherpa-onnx` runs is not here, because it
+is not redistributed: it is downloaded by the learner from its publisher. See
+[`../LICENSES.md`](../LICENSES.md) for both discussions.
