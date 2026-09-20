@@ -111,6 +111,18 @@
   let showHelp = $state(false);
 
   /**
+   * True while the character's details are unfolded.
+   *
+   * Only the phone honours it: there the header keeps the reading and the first
+   * two lines of the meaning, and the strokes, radical, HSK level, frequency,
+   * progress and etymology are one tap away — a phone that spent four lines on
+   * facts it was not asked for had no room left for the board. A wide screen
+   * shows all of it whatever this says, and the control that sets it is not
+   * drawn there at all.
+   */
+  let showDetails = $state(false);
+
+  /**
    * True while the navigation sheet is open.
    *
    * Only meaningful at phone widths, where the sidebar is a fixed sheet over the
@@ -411,6 +423,55 @@
    * to a flag that could outlive it.
    */
   const answerVisible = $derived(mode === "trace" || revealed > 0 || report !== null);
+
+  /**
+   * True while the board is the screen showing.
+   *
+   * The phone's top bar carries the character navigation, which belongs to the
+   * board: on the four list screens there is nothing of the sort to navigate, and
+   * a ← that moved the course cursor behind the settings screen would be a
+   * control acting on something nobody can see. This is the same condition as the
+   * branch order in the markup below, which the type checker needs written as
+   * `!character` to know the board's character exists — keep the two together.
+   */
+  const practising = $derived(
+    !loading &&
+      character !== null &&
+      !(view === "vocabulary" && source !== "vocabulary") &&
+      !(view === "words" && source !== "words") &&
+      view !== "settings" &&
+      view !== "about",
+  );
+
+  /**
+   * What ← and → do, and what the "8 / 7744" between them counts.
+   *
+   * Both sources of characters end in the same two arrows, but they move through
+   * different sequences: the course steps through the whole frequency list, while
+   * a word list, the vocabulary list and a review session step through their own
+   * queue. Which one is live is decided here rather than in the markup, because
+   * the widget is drawn in two places — the phone's top bar and the header beside
+   * the board — and both have to move the same thing.
+   */
+  const nav = $derived(
+    currentItem
+      ? {
+          back: () => moveQueue(-1),
+          forward: () => moveQueue(1),
+          position: queueCursor + 1,
+          total: queue.length,
+          first: queueCursor === 0,
+          last: queueCursor >= queue.length - 1,
+        }
+      : {
+          back: () => move(-1),
+          forward: () => move(1),
+          position: index + 1,
+          total: allCharacters.length,
+          first: index === 0,
+          last: index >= allCharacters.length - 1,
+        },
+  );
 
   const summary = $derived(
     stats
@@ -1644,6 +1705,39 @@
   }
 </script>
 
+<!--
+  ← n / N →. One widget in two places: on a phone it is the top bar's right-hand
+  corner, and on a wide screen it is the header beside the board, where there is
+  room for it next to the meaning. It was drawn twice, once for each branch of
+  the header, which is one copy more than there is behaviour to go round.
+-->
+{#snippet characterNav()}
+  <div class="nav">
+    <button onclick={nav.back} disabled={nav.first} aria-label="Previous">←</button>
+    <span>{nav.position} / {nav.total}</span>
+    <button onclick={nav.forward} disabled={nav.last} aria-label="Next">→</button>
+  </div>
+{/snippet}
+
+<!--
+  The phone's fold for the character's details. Folded, the meaning keeps its
+  first two lines and the strokes, radical, level, frequency, progress and
+  etymology are one tap away; a wide screen has room for all of it and does not
+  draw this at all.
+-->
+{#snippet detailFold()}
+  <button
+    class="fold"
+    type="button"
+    aria-expanded={showDetails}
+    aria-controls="character-details"
+    onclick={() => (showDetails = !showDetails)}
+  >
+    {showDetails ? "Less" : "More"}
+    <span class="chevron" class:open={showDetails} aria-hidden="true">›</span>
+  </button>
+{/snippet}
+
 <div class="app">
   <!--
     The sidebar is a column on a wide screen and a sheet over the board on a
@@ -1697,8 +1791,13 @@
         <span aria-hidden="true">☰</span>
       </button>
       <span class="topbar-title">{appInfo?.name ?? "Hanzi Tutor"}</span>
-      {#if character}
-        <span class="topbar-glyph" lang="zh-Hans">{character.ch}</span>
+      <!-- The character used to be shown here, and in recall mode it gave the
+           answer away the moment the mode was chosen — the one thing the mode
+           exists to withhold. What belongs in this corner is the way to the next
+           character instead, which is also what frees the header below to give
+           the whole width to the meaning. -->
+      {#if practising}
+        {@render characterNav()}
       {/if}
     </div>
 
@@ -1767,9 +1866,12 @@
     {:else if view === "about"}
       <LicencesPanel info={appInfo} notices={licenceList} error={licenceError} />
     {:else if !character}
+      <!-- `practising` above is this condition and the four screens before it
+           written as one; the phone's top bar navigates by that, so the two have
+           to move together. -->
       <p class="status">No character selected.</p>
     {:else}
-      <header class="meta">
+      <header class="meta" class:open={showDetails}>
         {#if currentItem}
           <div class="glyph" lang="zh-Hans" class:masked={!answerVisible}>
             {answerVisible ? (entryCharacters[charCursor] ?? "?") : "?"}
@@ -1777,42 +1879,37 @@
           <div class="detail">
             <p class="pinyin">{currentItem.pinyin || character.pinyin.join("  ·  ") || "—"}</p>
             <p class="meaning">{currentItem.meaning || character.definition || "—"}</p>
-            <ul class="facts">
-              {#if entryCharacters.length > 1}
-                <li>character {charCursor + 1} of {entryCharacters.length}</li>
-              {/if}
-              <li>
-                {source === "review"
-                  ? "review"
-                  : source === "words"
-                    ? "word"
-                    : "entry"} {queueCursor + 1} of {queue.length}
-              </li>
-              <li>{strokeTotal} {strokeTotal === 1 ? "stroke" : "strokes"}</li>
-              {#if activeCard}
+            <div class="details" id="character-details">
+              <ul class="facts">
+                {#if entryCharacters.length > 1}
+                  <li>character {charCursor + 1} of {entryCharacters.length}</li>
+                {/if}
                 <li>
-                  practised {activeCard.attempts}× · best {Math.round(
-                    activeCard.bestScore ?? 0,
-                  )}
+                  {source === "review"
+                    ? "review"
+                    : source === "words"
+                      ? "word"
+                      : "entry"} {queueCursor + 1} of {queue.length}
                 </li>
-                <li class:due={activeCard.dueNow}>
-                  {activeCard.dueNow ? "due for review" : `next review ${dueLabel(activeCard.due)}`}
-                </li>
-              {:else}
-                <li>new character</li>
+                <li>{strokeTotal} {strokeTotal === 1 ? "stroke" : "strokes"}</li>
+                {#if activeCard}
+                  <li>
+                    practised {activeCard.attempts}× · best {Math.round(
+                      activeCard.bestScore ?? 0,
+                    )}
+                  </li>
+                  <li class:due={activeCard.dueNow}>
+                    {activeCard.dueNow ? "due for review" : `next review ${dueLabel(activeCard.due)}`}
+                  </li>
+                {:else}
+                  <li>new character</li>
+                {/if}
+              </ul>
+              {#if answerVisible}
+                <p class="etymology" lang="zh-Hans">{currentItem.text}</p>
               {/if}
-            </ul>
-            {#if answerVisible}
-              <p class="etymology" lang="zh-Hans">{currentItem.text}</p>
-            {/if}
-          </div>
-          <div class="nav">
-            <button onclick={() => moveQueue(-1)} disabled={queueCursor === 0}>←</button>
-            <span>{queueCursor + 1} / {queue.length}</span>
-            <button
-              onclick={() => moveQueue(1)}
-              disabled={queueCursor >= queue.length - 1}>→</button
-            >
+            </div>
+            {@render detailFold()}
           </div>
         {:else}
           <div class="glyph" lang="zh-Hans" class:masked={!answerVisible}>
@@ -1821,38 +1918,35 @@
           <div class="detail">
             <p class="pinyin">{character.pinyin.join("  ·  ") || "—"}</p>
             <p class="meaning">{character.definition || "—"}</p>
-            <ul class="facts">
-              <li>{strokeTotal} {strokeTotal === 1 ? "stroke" : "strokes"}</li>
-              {#if character.radical && character.radical !== "\u0000"}
-                <li>radical <span lang="zh-Hans">{character.radical}</span></li>
+            <div class="details" id="character-details">
+              <ul class="facts">
+                <li>{strokeTotal} {strokeTotal === 1 ? "stroke" : "strokes"}</li>
+                {#if character.radical && character.radical !== "\u0000"}
+                  <li>radical <span lang="zh-Hans">{character.radical}</span></li>
+                {/if}
+                {#if character.hsk > 0}<li>HSK {character.hsk}</li>{/if}
+                {#if character.rank > 0}<li>frequency #{character.rank}</li>{/if}
+                {#if activeCard}
+                  <li>
+                    practised {activeCard.attempts}× · best {Math.round(
+                      activeCard.bestScore ?? 0,
+                    )}
+                  </li>
+                  <li class:due={activeCard.dueNow}>
+                    {activeCard.dueNow ? "due for review" : `next review ${dueLabel(activeCard.due)}`}
+                  </li>
+                {:else}
+                  <li>not practised yet</li>
+                {/if}
+              </ul>
+              {#if answerVisible && character.etymology}
+                <p class="etymology">{character.etymology}</p>
               {/if}
-              {#if character.hsk > 0}<li>HSK {character.hsk}</li>{/if}
-              {#if character.rank > 0}<li>frequency #{character.rank}</li>{/if}
-              {#if activeCard}
-                <li>
-                  practised {activeCard.attempts}× · best {Math.round(
-                    activeCard.bestScore ?? 0,
-                  )}
-                </li>
-                <li class:due={activeCard.dueNow}>
-                  {activeCard.dueNow ? "due for review" : `next review ${dueLabel(activeCard.due)}`}
-                </li>
-              {:else}
-                <li>not practised yet</li>
-              {/if}
-            </ul>
-            {#if answerVisible && character.etymology}
-              <p class="etymology">{character.etymology}</p>
-            {/if}
-          </div>
-          <div class="nav">
-            <button onclick={() => move(-1)} disabled={index === 0}>←</button>
-            <span>{index + 1} / {allCharacters.length}</span>
-            <button onclick={() => move(1)} disabled={index >= allCharacters.length - 1}>
-              →
-            </button>
+            </div>
+            {@render detailFold()}
           </div>
         {/if}
+        {@render characterNav()}
       </header>
 
       <div class="workspace">
@@ -2233,6 +2327,13 @@
     cursor: pointer;
     font-size: 0.9rem;
     color: var(--muted-strong);
+  }
+  /* The character's details fold only where the room is short. A wide screen
+     shows the meaning, the facts and the etymology in full and has no button to
+     fold them away; everything that makes this a phone control — its size, the
+     chevron, and the two rules that do the folding — is in the phone block. */
+  .fold {
+    display: none;
   }
   .nav button:disabled {
     opacity: 0.4;
@@ -2615,11 +2716,52 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .topbar-glyph {
+
+    /* The character navigation moves up here on a phone: beside the meaning it
+       took a third of the header's width, and this corner is where the character
+       itself used to be — which in recall mode was the answer, shown. */
+    .topbar .nav {
       flex: none;
-      font-family: var(--hanzi-font);
-      font-size: 1.5rem;
-      color: var(--muted-strong);
+    }
+
+    /* The character's details fold away. Folded, the header keeps the reading and
+       the first two lines of the meaning; the strokes, radical, level, frequency,
+       progress and etymology wait behind the button. */
+    .fold {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 44px;
+      padding: 0;
+      border: 0;
+      background: none;
+      font: inherit;
+      font-size: 0.82rem;
+      font-weight: 650;
+      color: var(--accent-ink);
+      cursor: pointer;
+    }
+    .fold .chevron {
+      color: var(--muted);
+      transition: transform 0.15s ease;
+    }
+    .fold .chevron.open {
+      transform: rotate(90deg);
+    }
+    .meta:not(.open) .meaning {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      overflow: hidden;
+    }
+    .meta:not(.open) .details {
+      display: none;
+    }
+    /* The navigation is one widget drawn in two rows: the top bar carries it on a
+       phone, and the header carries it beside the meaning on a wide screen. */
+    .meta .nav {
+      display: none;
     }
 
     /* The navigation sheet. */

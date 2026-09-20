@@ -729,6 +729,22 @@ downstream of them is covered by the IPC tests, which drive
   scrollbar the report brings with it takes its width out of the board and the
   square quietly shrinks by ~15 px. The board's *size* is deliberately still a
   fit to the window — what it must not do is change because a report appeared.
+- **The phone's top bar carries the navigation, never the character.** It held the
+  character's own glyph, which in recall mode is exactly the answer the mode
+  exists to withhold, printed in the corner of the screen. The header beside the
+  meaning held the `← n / N →` widget, which on a 390 px screen took a third of the
+  width the meaning had. The widget is now drawn once — as a `characterNav()`
+  snippet — in two rows, the top bar on a phone and the header on a wide screen,
+  and both move whatever `nav` in the script says is live (the course, or a list,
+  word or review queue). `practising` decides whether the top bar draws it at all;
+  it is the branch order of the markup written as one condition, and the type
+  checker needs that order written as `!character` in the markup, so the two have
+  to be changed together. The character's details fold there too (`.meta.open`,
+  `showDetails`): folded, the meaning keeps two lines through `-webkit-line-clamp`
+  and the strokes, radical, level, frequency, progress and etymology sit inside
+  `#character-details` behind a More button that a wide screen never draws.
+  Checked at 390×844 in the app's own window — one width-based media query, so iOS
+  and Android are the same layout.
 - **macOS voice names carry a locale qualifier**: `Tingting (Chinese (China
   mainland))`, not `Tingting`. Compare `base_name()`. A fixture with tidy names
   passed while the real list never matched, so the app quietly used another voice.
