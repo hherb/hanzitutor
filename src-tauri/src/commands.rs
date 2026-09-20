@@ -216,6 +216,13 @@ pub struct VoiceOption {
     /// The locale, e.g. `zh_CN`. Shown beside the name because it is the only
     /// thing that tells two similarly named Chinese voices apart.
     pub locale: String,
+    /// Whether this voice needs a network connection to speak.
+    ///
+    /// Never true on macOS or iOS, where every voice the system lists is local.
+    /// On Android it is the difference between a voice that works on a train and
+    /// one that does not, which is worth saying before the learner picks it
+    /// rather than after.
+    pub network: bool,
 }
 
 /// The Chinese voices this machine offers, and the one actually in use.
@@ -322,6 +329,94 @@ pub fn tone_target(state: State<'_, AppState>, text: String) -> Option<ToneTarge
 #[tauri::command]
 pub fn microphone_status(state: State<'_, AppState>) -> MicrophoneStatus {
     state.capture.status()
+}
+
+/// The window's system bar insets, in CSS pixels.
+///
+/// The page cannot measure these for itself. `env(safe-area-inset-*)` in an
+/// Android WebView reports the **display cutout**, not the status bar, so on a
+/// device with a notch or punch-hole it happens to be right and on one with a
+/// plain bezel — an emulator, say — it is zero and the header is drawn
+/// underneath the clock. Android knows the real answer, so this asks it.
+/// Everywhere else the answer is zero, which leaves the CSS `env()` values in
+/// charge on iOS exactly as before.
+#[derive(Debug, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Insets {
+    pub top: f64,
+    pub bottom: f64,
+    pub left: f64,
+    pub right: f64,
+}
+
+#[tauri::command]
+pub fn android_insets() -> Result<Insets, String> {
+    #[cfg(target_os = "android")]
+    {
+        crate::platform::call("insets", ())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(Insets {
+            top: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+            right: 0.0,
+        })
+    }
+}
+
+/// What the platform's speech system is actually doing.
+///
+/// Only Android fills this in, and every field is something that has caused
+/// silence on a real phone: no engine, an engine with no Chinese voice, a voice
+/// whose data was never downloaded, a network voice with no network. Asking the
+/// synthesiser directly is the only way to tell those apart — from the outside
+/// they all look like "the button did nothing".
+#[derive(Debug, Default, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeechReport {
+    /// The voice now in use, by the platform's own name.
+    pub engine: String,
+    /// Every synthesiser installed, and its label.
+    pub engines: String,
+    /// What the system considers the default synthesiser.
+    pub default_engine: String,
+    /// The locale of the voice now in use, as a BCP-47 tag.
+    pub locale: String,
+    /// Whether that voice needs a network connection to speak.
+    pub network_required: bool,
+    /// How many Chinese voices the engine offers.
+    pub chinese_voices: usize,
+    /// How many of those can actually be spoken with.
+    ///
+    /// Android's engine advertises voices whose data has never been downloaded
+    /// and marks them as not installed; they can be selected and then produce
+    /// either an error or nothing at all. This is the count that matters, and it
+    /// is not the same as `chinese_voices`.
+    pub chinese_installed: usize,
+    /// Each Chinese voice as the engine describes it — name, locale, whether it
+    /// needs a network, whether its data is installed — in one line, because its
+    /// whole purpose is to be read in a log.
+    pub chinese_list: String,
+    /// Whether the engine can speak Mandarin at all, in words.
+    pub chinese_available: String,
+    /// Why the last utterance failed, or empty when it did not.
+    pub last_problem: String,
+}
+
+#[tauri::command]
+pub fn speech_report() -> Result<SpeechReport, String> {
+    #[cfg(target_os = "android")]
+    {
+        crate::platform::call("speechReport", ())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        // Every other platform's speech is reachable from Rust directly, so
+        // there is nothing hidden to report.
+        Ok(SpeechReport::default())
+    }
 }
 
 /// Begin listening. Resolves once the device is actually open, so a failure is

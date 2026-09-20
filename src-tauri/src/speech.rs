@@ -23,7 +23,6 @@
 // The macOS backend drives a process, so that is where the process types live.
 #[cfg(target_os = "macos")]
 use std::process::{Child, Command, Stdio};
-#[cfg(not(target_os = "ios"))]
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
@@ -49,11 +48,36 @@ use objc2_avf_audio::{
 #[cfg(target_os = "ios")]
 use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 
-/// A voice as reported by `say -v '?'`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A voice as the platform reports it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Voice {
     pub name: String,
     pub locale: String,
+    /// Whether speaking with this voice needs a network connection.
+    ///
+    /// Android's engine offers both a network voice and an on-device one for the
+    /// same locale, and this app's whole premise is that it needs no network, so
+    /// the settings screen says which is which. macOS and iOS do not report such
+    /// a thing and every voice they list is local, which is what the default is
+    /// for — the field is only ever *set* from a platform that can tell.
+    #[serde(default)]
+    pub network: bool,
+}
+
+impl Voice {
+    /// A voice from a platform that cannot say whether it needs a network.
+    ///
+    /// Local as the default, and that is not a shrug: every voice macOS and iOS
+    /// list is on the device, and an `HANZI_TUTOR_VOICE` override is a name
+    /// handed to the synthesiser either way. Only Android distinguishes the two,
+    /// and it says so in the listing.
+    pub fn local(name: impl Into<String>, locale: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            locale: locale.into(),
+            network: false,
+        }
+    }
 }
 
 /// Voices preferred within mainland Mandarin, in order.
@@ -71,20 +95,21 @@ const MAX_UTTERANCE: usize = 64;
 
 /// What "the utterance in flight" is on this platform.
 ///
-/// macOS holds the `say` process so that killing it stops the speech. iOS holds
-/// nothing here — its synthesiser is not `Send` and so cannot live in the shared
-/// [`Speaker`]; it lives on the main thread instead (see [`with_main`]).
+/// Only the macOS backend holds anything here: it keeps the `say` process so
+/// that killing it stops the speech. iOS holds nothing — its synthesiser is not
+/// `Send` and so cannot live in the shared [`Speaker`]; it lives on the main
+/// thread instead (see [`with_main`]). Android holds nothing either, because its
+/// synthesiser lives on the Kotlin side of the bridge and stopping is a command
+/// to that side (see `crate::platform`).
 #[cfg(target_os = "macos")]
 type Utterance = Child;
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-type Utterance = ();
 
 /// Pronunciation, with at most one utterance in flight.
 #[derive(Default)]
 pub struct Speaker {
     /// The utterance in flight, kept so a new one can cut off the last instead
-    /// of talking over it.
-    #[cfg(not(target_os = "ios"))]
+    /// of talking over it. macOS only, for the reason [`Utterance`] gives.
+    #[cfg(target_os = "macos")]
     current: Mutex<Option<Utterance>>,
     /// The voice the learner has asked for, by name, or `None` for the
     /// automatic choice. Set from the settings screen at startup and on every
@@ -200,14 +225,27 @@ impl Speaker {
             speak_on_main(text, &voice.name)
         }
 
-        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        // Android's synthesiser belongs to the Kotlin side of the platform
+        // bridge, so speaking is a command to it rather than something kept
+        // here. The voice is named, not identified, which is the same contract
+        // the other two backends have.
+        #[cfg(target_os = "android")]
+        {
+            crate::platform::call::<serde_json::Value>(
+                "speak",
+                serde_json::json!({ "text": text, "voice": voice.name }),
+            )
+            .map(|_| ())
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
         {
             // Windows and Linux are the remaining backends (M6). Returning a
             // clear error beats shelling out to something unverified.
             let _ = voice;
             Err(
                 "pronunciation is not implemented on this platform yet; \
-                 it uses the system synthesiser on macOS and iOS"
+                 it uses the system synthesiser on macOS, iOS and Android"
                     .into(),
             )
         }
@@ -234,6 +272,13 @@ impl Speaker {
         // would finish it in its own time, which is the one thing "stop" may not
         // do. See `stop_on_main`.
         stop_on_main();
+        // Android's utterance lives on the Kotlin side, so this is a command
+        // too. A failure to reach it is deliberately ignored: it means nothing
+        // is speaking through that side, which is what `stop` wanted anyway.
+        #[cfg(target_os = "android")]
+        {
+            let _ = crate::platform::call::<serde_json::Value>("stop", ());
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -242,8 +287,8 @@ impl Speaker {
     }
 
     /// Take the lock, ignoring poisoning: a panic while holding it cannot leave
-    /// the utterance handle in a state that matters.
-    #[cfg(not(target_os = "ios"))]
+    /// the utterance handle in a state that matters. macOS only, like the field.
+    #[cfg(target_os = "macos")]
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<Utterance>> {
         self.current.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -507,12 +552,15 @@ impl Drop for Speaker {
 }
 
 fn no_voice_message() -> String {
-    // The path through Settings differs enough between the two systems to be
-    // worth getting right: telling someone on a phone to open "System Settings"
-    // sends them looking for a window that does not exist.
+    // The path through Settings differs enough between the systems to be worth
+    // getting right: telling someone on a phone to open "System Settings"
+    // sends them looking for a window that does not exist, and Android's own
+    // settings are somewhere else again.
     #[cfg(target_os = "ios")]
     const WHERE: &str = "Settings → Accessibility → Spoken Content → Voices";
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(target_os = "android")]
+    const WHERE: &str = "Settings → System → Languages & input → Text-to-speech output";
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
     const WHERE: &str =
         "System Settings → Accessibility → Spoken Content → System Voice → Manage Voices";
 
@@ -534,10 +582,7 @@ fn override_voice() -> Option<Voice> {
     if name.is_empty() {
         return None;
     }
-    Some(Voice {
-        name: name.to_string(),
-        locale: "override".to_string(),
-    })
+    Some(Voice::local(name, "override"))
 }
 
 /// The voice that will be used: the override, then the learner's choice, then
@@ -558,10 +603,7 @@ fn resolve_voice(
     // an installed voice, because it exists to hand the synthesiser a name the
     // list does not know about.
     if let Some(name) = overridden {
-        return Some(Voice {
-            name: name.to_string(),
-            locale: "override".to_string(),
-        });
+        return Some(Voice::local(name, "override"));
     }
     if let Some(wanted) = preferred {
         if let Some(voice) = find_voice(installed, wanted) {
@@ -628,16 +670,36 @@ fn list_voices() -> Result<Vec<Voice>, String> {
         let voices = unsafe { AVSpeechSynthesisVoice::speechVoices() };
         voices
             .iter()
-            .map(|voice| Voice {
+            .map(|voice| {
                 // SAFETY: as above.
-                name: unsafe { voice.name() }.to_string(),
-                locale: unsafe { voice.language() }.to_string(),
+                Voice::local(unsafe { voice.name() }.to_string(), unsafe { voice.language() }.to_string())
             })
             .collect::<Vec<Voice>>()
     }))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+/// Enumerate the installed voices through Android's own `TextToSpeech`.
+///
+/// The Kotlin side reports a BCP-47 tag (`zh-CN`) and Android's own voice names
+/// (`zh-cn-x-ccc-local`). `pick_voice` normalises the separator and matches on
+/// the locale, so the mainland preference holds; none of Android's names are on
+/// the macOS preferred list, which only means the automatic choice falls through
+/// to "any mainland voice" — and the Kotlin side has already ordered those
+/// on-device-first, because a network voice would quietly break the promise that
+/// this app needs no network.
+#[cfg(target_os = "android")]
+fn list_voices() -> Result<Vec<Voice>, String> {
+    /// The shape `PlatformPlugin.voices` answers with.
+    #[derive(serde::Deserialize)]
+    struct Listing {
+        voices: Vec<Voice>,
+    }
+
+    let listing: Listing = crate::platform::call("voices", ())?;
+    Ok(listing.voices)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
 fn list_voices() -> Result<Vec<Voice>, String> {
     Ok(Vec::new())
 }
@@ -667,10 +729,7 @@ fn parse_voices(output: &str) -> Vec<Voice> {
             if name.is_empty() || locale.is_empty() {
                 return None;
             }
-            Some(Voice {
-                name: name.to_string(),
-                locale: locale.to_string(),
-            })
+            Some(Voice::local(name, locale))
         })
         .collect()
 }
@@ -872,10 +931,7 @@ Sinji               zh_HK    # 你好！我叫善怡。
     fn picks_the_mainland_voice_from_the_ios_voice_list() {
         let voices: Vec<Voice> = IOS_VOICES
             .iter()
-            .map(|(name, locale)| Voice {
-                name: (*name).to_string(),
-                locale: (*locale).to_string(),
-            })
+            .map(|(name, locale)| Voice::local(*name, *locale))
             .collect();
         let picked = pick_voice(&voices).expect("iOS ships a Mandarin voice");
         assert_eq!(picked.name, "Tingting");
@@ -888,10 +944,7 @@ Sinji               zh_HK    # 你好！我叫善怡。
         // explains, rather than reading Chinese in an English voice.
         let voices: Vec<Voice> = IOS_VOICES[..1]
             .iter()
-            .map(|(name, locale)| Voice {
-                name: (*name).to_string(),
-                locale: (*locale).to_string(),
-            })
+            .map(|(name, locale)| Voice::local(*name, *locale))
             .collect();
         assert_eq!(pick_voice(&voices), None);
         assert!(no_voice_message().contains("no Chinese voice"));
@@ -946,14 +999,8 @@ Sinji               zh_HK    # 你好！我叫善怡。
     #[test]
     fn an_exact_name_wins_over_a_base_name_match() {
         let voices = vec![
-            Voice {
-                name: "Meijia (Chinese (China mainland))".into(),
-                locale: "zh_CN".into(),
-            },
-            Voice {
-                name: "Meijia".into(),
-                locale: "zh_TW".into(),
-            },
+            Voice::local("Meijia (Chinese (China mainland))", "zh_CN"),
+            Voice::local("Meijia", "zh_TW"),
         ];
         assert_eq!(find_voice(&voices, "Meijia").unwrap().locale, "zh_TW");
         assert_eq!(
@@ -994,18 +1041,37 @@ Sinji               zh_HK    # 你好！我叫善怡。
         // An iOS-style dash separator is filtered the same way.
         assert_eq!(
             chinese_voices(&[
-                Voice {
-                    name: "Daniel".into(),
-                    locale: "en-GB".into()
-                },
-                Voice {
-                    name: "Tingting".into(),
-                    locale: "zh-CN".into()
-                },
+                Voice::local("Daniel", "en-GB"),
+                Voice::local("Tingting", "zh-CN"),
             ])
             .len(),
             1
         );
+    }
+
+    /// Whether a voice needs a network is carried to the settings screen.
+    ///
+    /// Android offers a network voice and an on-device one for the same locale —
+    /// `zh-cn-x-ccc-network` and `zh-cn-x-ccc-local` are the real names — and
+    /// this flag is the only thing that tells them apart. It matters here more
+    /// than in most apps: the whole premise is that this one works with no
+    /// network, so a learner who picked the wrong one of the pair would find
+    /// pronunciation quietly dependent on being online.
+    #[test]
+    fn a_voice_carries_whether_it_needs_a_network() {
+        let network = Voice {
+            network: true,
+            ..Voice::local("zh-cn-x-ccc-network", "zh-CN")
+        };
+        let on_device = Voice::local("zh-cn-x-ccc-local", "zh-CN");
+        let offered = chinese_voices(&[network.clone(), on_device.clone()]);
+
+        assert_eq!(offered.len(), 2, "{offered:?}");
+        // Sorted by name for the screen, so `-local` comes before `-network`.
+        assert_eq!(offered[0].name, "zh-cn-x-ccc-local");
+        assert!(!offered[0].network, "the on-device voice needs no network");
+        assert!(offered[1].network, "the network voice says so");
+        assert!(network.network && !on_device.network);
     }
 
     #[test]

@@ -28,14 +28,45 @@
 //! plays it, and parks until it is told to stop; only plain data crosses back
 //! out. Same shape as the iOS speech backend in `speech.rs`, and for the same
 //! reason.
+//!
+//! ## Two backends, because `cpal`'s Android input does not work
+//!
+//! Everywhere but Android this is `cpal`, which is what the paragraph above
+//! describes. **On Android it is Kotlin's `AudioRecord`, over the platform
+//! bridge**, because `cpal`'s AAudio input opens a stream, reports `AAUDIO_OK`,
+//! reaches `Started`, and then never calls its data callback at all — no samples,
+//! no error, on an emulator and on a phone alike. `HANDOVER.md` §9 has the log
+//! and the five-source probe that ruled out the device. `AudioRecord` was probed
+//! on the same two devices and delivers exactly the samples asked of it, so this
+//! is not a workaround for broken hardware; it is the backend Android apps use.
+//!
+//! Android's samples do not come back through the IPC boundary the way
+//! `speech.rs`'s voice list does — ten seconds of 16 kHz mono is 320 kB, and the
+//! bridge carries JSON. The Kotlin side writes them to a scratch file in the
+//! app's own cache directory and Rust reads that file, which costs nothing and
+//! avoids a megabyte of JSON per utterance.
+//!
+//! The rate there is 16 kHz, which is `hanzi_core::tone::TARGET_SAMPLE_RATE`
+//! anyway, so the Android path skips the resampling the `cpal` path needs rather
+//! than adding a step.
 
+// The process backend, and the process types it needs.
+#[cfg(not(target_os = "android"))]
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+#[cfg(not(target_os = "android"))]
 use std::thread::JoinHandle;
+#[cfg(not(target_os = "android"))]
 use std::time::Duration;
 
+#[cfg(not(target_os = "android"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use serde::Serialize;
+// `Arc` belongs to the `cpal` backend, which shares a sample buffer with its
+// audio callback. Android's has nothing to share — its samples are Kotlin's
+// until they are written to a file.
+#[cfg(not(target_os = "android"))]
+use std::sync::Arc;
+use std::sync::Mutex;
 
 /// Longest single recording, in seconds.
 ///
@@ -48,6 +79,7 @@ pub const MAX_RECORD_SECS: u32 = 10;
 /// How long to wait for the device to open before giving up on it. Opening a
 /// microphone can block behind a permission dialog, and a command that hangs
 /// forever leaves the interface with a button that never comes back.
+#[cfg(not(target_os = "android"))]
 const OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// What the microphone can do, so the interface can decide whether to offer the
@@ -74,7 +106,9 @@ pub struct Recording {
     pub truncated: bool,
 }
 
-/// A recording in progress: the buffer being filled, and the way to stop it.
+/// A recording in progress, on the platforms whose capture is a `cpal` stream:
+/// the buffer being filled, and the way to stop it.
+#[cfg(not(target_os = "android"))]
 struct Active {
     samples: Arc<Mutex<Vec<f32>>>,
     failure: Arc<Mutex<Option<String>>>,
@@ -90,13 +124,56 @@ struct Active {
 /// A cell of its own rather than a field on the buffer's mutex, so that the
 /// callback can set it without taking the lock that the stop path is about to
 /// hold while it copies several hundred thousand samples out.
+#[cfg(not(target_os = "android"))]
 #[derive(Default)]
 struct Truncation(bool);
+
+/// A recording in progress on Android: there is nothing to hold but the facts
+/// to report, because the buffer is Kotlin's and the samples are on disk.
+#[cfg(target_os = "android")]
+struct Active {
+    sample_rate: u32,
+    device: String,
+}
 
 /// The microphone, as the app holds it.
 #[derive(Default)]
 pub struct Recorder {
     active: Mutex<Option<Active>>,
+}
+
+/// What `PlatformPlugin.recordStart` answers with.
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordStarted {
+    sample_rate: u32,
+    source: String,
+}
+
+/// What `PlatformPlugin.recordStop` answers with.
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordStopped {
+    /// Where the samples were written: PCM16 little-endian, mono.
+    path: String,
+    sample_rate: u32,
+}
+
+/// What `PlatformPlugin.recordStatus` answers with.
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordStatus {
+    available: bool,
+    sample_rate: u32,
+    source: String,
+    /// Whether a recording is running *now*, which is not the same question as
+    /// whether the microphone works.
+    recording: bool,
+    /// Why not, when `available` is false.
+    problem: String,
 }
 
 impl Recorder {
@@ -107,6 +184,12 @@ impl Recorder {
     /// why the detail says so rather than claiming the microphone works, and why
     /// "I could not hear enough voice" from the analyser is the symptom to
     /// expect in that case.
+    ///
+    /// Android answers the same question of `AudioRecord`, which is what actually
+    /// captures there. Asking `cpal` instead would report a working microphone on
+    /// a phone where every recording came back empty, and that is precisely the
+    /// confusion this backend was written to end.
+    #[cfg(not(target_os = "android"))]
     pub fn status(&self) -> MicrophoneStatus {
         let Some((device, config)) = open_default_device() else {
             return MicrophoneStatus {
@@ -129,7 +212,48 @@ impl Recorder {
         }
     }
 
+    /// Whether capture is possible, and at what rate.
+    ///
+    /// See the `cpal` version above for what a "denied permission" looks like;
+    /// the same caveat applies here, and on Android the permission is a runtime
+    /// grant the app asks for on first launch.
+    #[cfg(target_os = "android")]
+    pub fn status(&self) -> MicrophoneStatus {
+        let report: RecordStatus = match crate::platform::call("recordStatus", ()) {
+            Ok(report) => report,
+            Err(message) => {
+                return MicrophoneStatus {
+                    available: false,
+                    device: None,
+                    sample_rate: 0,
+                    detail: format!("The microphone could not be asked about: {message}"),
+                }
+            }
+        };
+        if !report.available {
+            return MicrophoneStatus {
+                available: false,
+                device: None,
+                sample_rate: 0,
+                detail: report.problem,
+            };
+        }
+        let name = report.source;
+        let rate = report.sample_rate;
+        MicrophoneStatus {
+            available: true,
+            device: Some(name.clone()),
+            sample_rate: rate,
+            detail: format!(
+                "Listening through {name} at {rate} Hz while the button is held. If the system \
+                 has been told to deny microphone access, this records silence rather than \
+                 failing."
+            ),
+        }
+    }
+
     /// Begin recording. Returns once the device is actually open and running.
+    #[cfg(not(target_os = "android"))]
     pub fn start(&self) -> Result<(), String> {
         let mut active = self.active.lock().expect("recorder mutex");
         if active.is_some() {
@@ -188,6 +312,7 @@ impl Recorder {
     }
 
     /// Stop recording and hand back what was captured.
+    #[cfg(not(target_os = "android"))]
     pub fn stop(&self) -> Result<Recording, String> {
         let active = {
             let mut slot = self.active.lock().expect("recorder mutex");
@@ -213,9 +338,87 @@ impl Recorder {
             truncated,
         })
     }
+
+    /// Begin recording, through Kotlin's `AudioRecord`.
+    ///
+    /// The Kotlin side does the work on a thread of its own and answers as soon
+    /// as the device is running, so this returns with the microphone already
+    /// open — the same promise the `cpal` version makes.
+    ///
+    /// The platform is asked which of the two is recording, because this side's
+    /// own record of it can go stale: Kotlin's audio thread ends by itself when
+    /// it hits the cap or fails, and nothing tells Rust when it does. Trusting
+    /// the local flag alone left the app refusing every later press with
+    /// "Already listening." for the life of the process — reachable by holding
+    /// the button past the cap once.
+    #[cfg(target_os = "android")]
+    pub fn start(&self) -> Result<(), String> {
+        let mut active = self.active.lock().expect("recorder mutex");
+        if active.is_some() {
+            let live = crate::platform::call::<RecordStatus>("recordStatus", ())
+                .map(|report| report.recording)
+                .unwrap_or(false);
+            if live {
+                return Err("Already listening.".into());
+            }
+            // A recording that ended without this side being told. Let it go.
+            *active = None;
+        }
+        let started: RecordStarted = crate::platform::call("recordStart", ())?;
+        *active = Some(Active {
+            sample_rate: started.sample_rate,
+            device: started.source,
+        });
+        Ok(())
+    }
+
+    /// Stop recording and read back what Kotlin wrote.
+    ///
+    /// The file is PCM16 little-endian and mono, at the rate the Kotlin side
+    /// reported. It is deleted here rather than left for the next recording to
+    /// overwrite: ten seconds of speech is not something to keep lying around in
+    /// an app whose whole claim is that it stores nothing it does not have to.
+    #[cfg(target_os = "android")]
+    pub fn stop(&self) -> Result<Recording, String> {
+        let active = {
+            let mut slot = self.active.lock().expect("recorder mutex");
+            slot.take().ok_or("Not listening.")?
+        };
+
+        let stopped: RecordStopped = crate::platform::call("recordStop", ())?;
+        let bytes = std::fs::read(&stopped.path)
+            .map_err(|error| format!("could not read the recording: {error}"))?;
+        let _ = std::fs::remove_file(&stopped.path);
+
+        let rate = if stopped.sample_rate == 0 {
+            active.sample_rate
+        } else {
+            stopped.sample_rate
+        };
+        let limit = rate as usize * MAX_RECORD_SECS as usize;
+        let mut samples: Vec<f32> = bytes
+            .chunks_exact(2)
+            // 32768 rather than 32767: it is the exact scale of the negative
+            // half, so a full-scale sample lands on -1.0 rather than slightly
+            // past it, and the sign is symmetric.
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32_768.0)
+            .collect();
+        let truncated = samples.len() > limit;
+        if truncated {
+            samples.truncate(limit);
+        }
+
+        Ok(Recording {
+            samples,
+            sample_rate: rate,
+            device: active.device,
+            truncated,
+        })
+    }
 }
 
 /// The default input device and its configuration, or nothing.
+#[cfg(not(target_os = "android"))]
 fn open_default_device() -> Option<(cpal::Device, cpal::SupportedStreamConfig)> {
     let host = cpal::default_host();
     let device = host.default_input_device()?;
@@ -224,6 +427,7 @@ fn open_default_device() -> Option<(cpal::Device, cpal::SupportedStreamConfig)> 
 }
 
 /// Runs on its own thread for the life of one recording.
+#[cfg(not(target_os = "android"))]
 fn capture_thread(
     samples: Arc<Mutex<Vec<f32>>>,
     failure: Arc<Mutex<Option<String>>>,
@@ -315,6 +519,7 @@ fn capture_thread(
 /// signed type's negative range cannot be silently halved. `u8` and the wider
 /// unsigned types are centred first: they carry silence at mid-scale, not at
 /// zero, and treating them as signed would clip every waveform in half.
+#[cfg(not(target_os = "android"))]
 fn append_mono(data: &cpal::Data, channels: usize, out: &mut Vec<f32>, limit: usize) {
     use cpal::SampleFormat as F;
 

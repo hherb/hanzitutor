@@ -21,7 +21,7 @@ See [`HANDOVER.md`](HANDOVER.md) for how to build, test and verify; see
 | M6 | Pronunciation on Windows/Linux | macOS-only today | S | not started |
 | M7 | Centreline stroke animation | Nicer, more accurate "show me" | S | **done** |
 | M8 | Input ergonomics | Long strokes on a trackpad | S | **done** |
-| M9 | Mobile shells | A stylus is the right input device | L | **in progress (iOS)** |
+| M9 | Mobile shells | A stylus is the right input device | L | **in progress (iOS + Android)** |
 | M10 | Durable study store (SQLite) | The JSON format caps the attempt log the grading work needs | M | **done** |
 | M11 | Tone practice (speech recognition, model-free) | Tone is the error handwriting cannot see, and it needs no model | L | **done** |
 | M12 | Speech recognition: text (optional download) | Recognise *what* was said, which needs a ~155 MB model the user installs from settings | L | not started, **unblocked** |
@@ -536,9 +536,11 @@ Deliberately not done, and why:
 
 ## M9 — Mobile shells
 
-**Status: in progress, iOS only.** It builds and runs on the iOS Simulator, with
-a phone layout made for practice rather than for fitting; the device build and
-pronunciation are still to come. What is verified, and how, is below.
+**Status: in progress, iOS and Android.** Both build, run, draw and speak. On
+Android a signed release bundle exists and has been run on a device; what is
+outstanding there is the Play submission itself (a published privacy policy, the
+listing, the Console questionnaires). On iOS the release build is still
+outstanding. What is verified, and how, is below.
 
 **Why.** A touchscreen with a stylus is the right input device for handwriting
 practice; a trackpad is a compromise. Tauri 2 supports iOS and Android. On this
@@ -569,6 +571,57 @@ iPhone is carried when the iPad is not, and practice on it is the point.
 - **The device default from M8 pays off here.** On a touch device the app starts
   on *drag* and leaves click-to-draw off — visible in the simulator screenshot —
   which is the right gesture for a finger and is exactly what that rule was for.
+
+- **Android runs on a phone and an emulator, and was verified by hand.** The
+  whole chain works on a physical NX809J: it installs, starts in 262 ms, loads
+  the course, renders the guide for 的, takes a stroke from a real touch, grades
+  it, writes the attempt to the study database and puts the character in the
+  review queue. An `adb shell input swipe` across the board is the evidence for
+  the stroke, and the board's own counter going `0 / 8` → `1 / 8` with
+  Undo/Clear coming alive is the evidence that the platform delivered it as
+  pointer events. Six things had to be fixed first, all of them recorded in
+  `HANDOVER.md` §6: the missing `cdylib`, AAudio's API 26 floor, Gradle's
+  inability to find the `tauri` CLI under pnpm, a startup race that made the
+  frontend's first commands fail, an unstripped 212 MB native library, and a
+  status bar the page could not measure.
+- **Android pronunciation, through the system synthesiser.** A Kotlin plugin
+  (`PlatformPlugin`) owns a `TextToSpeech` engine and is called from Rust over
+  Tauri's mobile-plugin bridge — the same seam, and the same shape, as the iOS
+  `AVSpeechSynthesizer` backend. The phone reports 16 Chinese voices and the
+  automatic choice is `cmn-cn-x-ccc-local`, a **local** voice: the Kotlin side
+  sorts on-device voices ahead of network ones precisely so that an offline app
+  does not quietly need a network to pronounce anything. "Hear it" is live
+  rather than greyed, and `speak` resolves without error. Confirmed by ear.
+- **Which voices need a network is said in the settings screen.** Android offers
+  a network voice beside an on-device one for the same locale — 9 offline and 7
+  needing a connection, on the test phone — and the app carries that flag all the
+  way to the list the learner chooses from, because this app on a train is the
+  whole point. The automatic choice is an on-device voice, so the default is
+  right; the flag is there for the person who goes looking.
+- **The microphone works on Android as well.** `cpal`'s AAudio input does **not**
+  — it opens a stream, reports success and then never calls back — so capture is
+  per-platform: `cpal` everywhere else, Kotlin's `AudioRecord` over the platform
+  bridge on Android, with the samples written to a scratch file and deleted after
+  they are read. `HANDOVER.md` §9 has the AAudio log and why the source is
+  `VOICE_RECOGNITION`. Verified on the phone end to end: hold the button, speak,
+  and the panel draws the pitch against the tone's template; the recording keeps
+  running for as long as the button is held, which took three separate fixes
+  (§9) — the button moving out from under the finger, `touch-action`, and
+  Android's long-press gesture cancelling the pointer at 555 ms.
+- **The back gesture belongs to the app, not to Android.** `MainActivity` asks
+  the page whether it used the press and only finishes the activity when the
+  answer is no, so back closes the navigation sheet first — the same thing
+  Escape does at a keyboard. Verified on the emulator: with the sheet open the
+  press closed it and the process stayed alive.
+- **A signed release, and the offline claim made checkable.** The release bundle
+  and APK are signed with an upload key kept out of the repository, and the
+  release manifest no longer declares `INTERNET` at all — `aapt2 dump
+  permissions` shows `RECORD_AUDIO` and nothing else, so "it works offline" is a
+  property of the artifact rather than a promise. The debug build keeps the
+  permission for its development server, in a debug-only manifest. Verified by
+  installing the release APK on a device, drawing on the board and grading, which
+  is also what proves that minification left the reflective Kotlin plugin bridge
+  intact.
 
 **What is left.**
 
@@ -605,24 +658,46 @@ iPhone is carried when the iPad is not, and practice on it is the point.
   The AVFoundation constraints are recorded in `HANDOVER.md` §6 — the objects are
   not `Send`, so the work goes to the main thread, and the delegate that ends the
   session is why the synthesizer and its delegate are kept together.
-- **Android**, which nothing here has touched.
-
+- **The Play submission itself.** A signed release bundle is built
+  (`app-universal-release.aab`), signed with an upload key that lives outside the
+  repository, and the same code has been installed and used on a device as a
+  release APK — the course loads, a stroke grades, and pronunciation is live. What
+  remains is the paperwork: publishing `docs/privacy-policy.md` at a public URL
+  (Play requires one because of the microphone), pasting the copy from
+  `store/listing.md`, and answering the Data safety and content-rating
+  questionnaires whose answers are written out there. Two things still need a
+  person rather than a program: hearing the pronunciation, and a stylus run on
+  the board to check palm rejection.
 **Approach.**
 
 - The Tauri config and the `lib` target with
   `#[cfg_attr(mobile, tauri::mobile_entry_point)]` are already in place, and the
-  Rust core has no platform dependencies — this was designed for.
-- Needs: touch and stylus handling in `PracticeCanvas.svelte` (pointer events
-  already cover this, but coalesced-event behaviour and palm rejection need
-  verifying), larger touch targets, a layout that works on a phone, and iOS
-  speech via `AVSpeechSynthesizer` rather than the `say` binary.
-- The 13 MB embedded artifact makes app size acceptable but worth measuring.
+  Rust core has no platform dependencies — this was designed for. That held up:
+  neither mobile port needed a `cfg` in `hanzi-core` or `hanzi-store`.
+- **Larger touch targets and a phone layout came with the iOS half** and needed
+  nothing for Android — the same `max-width: 760px` layout serves both. The one
+  thing it did need was a way to measure the system bars (see
+  `android_insets`): `env(safe-area-inset-*)` is the display cutout on Android,
+  not the status bar, so the layout was right on a notched phone and wrong on
+  every device without a notch.
+- **What is left is packaging, not code.** A release build needs a signing key
+  and a Play Store listing; the app itself runs.
+- **App size, measured.** The debug APK is 76 MB, of which a stripped
+  `libhanzi_tutor_lib.so` is 36 MB and the bundled interface font 17.7 MB. The
+  unstripped library is 203 MB, which is why Gradle is told to strip it: without
+  the `ndkVersion` that lets Gradle find `llvm-strip`, it cannot, and the APK
+  becomes 210 MB and will not fit an emulator's data partition.
 
 **Acceptance criteria.**
 
 - Runs on iOS Simulator and one physical iOS device with working drawing.
-- Text and controls are legible and reachable at phone sizes.
-- Pronunciation works on iOS without the `say` binary.
+- Runs on an Android emulator and one physical Android device with working
+  drawing, and leaves the app when there is nothing left for back to close.
+- Text and controls are legible and reachable at phone sizes, clear of the
+  status bar on a device with no display cutout as well as one with.
+- Pronunciation works on iOS through `AVSpeechSynthesizer` and on Android
+  through the system `TextToSpeech`, both without the `say` binary, and both
+  preferring a voice that needs no network.
 
 ---
 
@@ -898,6 +973,15 @@ microphone.
   than taken as a crate so that the one piece of signal processing in the project
   is owned and testable; a log-F0 contour over the voiced span; dynamic time
   warping against the four canonical tone shapes of the five-level scale.
+- **The neutral tone is scored too**, having been refused at first on the grounds
+  that it is short and takes its pitch from the syllable before it — both true,
+  and neither judgeable from one syllable. What *is* judgeable is that it is
+  level, which is enough to tell 的 from 得 said as a full tone, and refusing it
+  left the most common character in the language as the one the panel would not
+  look at. What the judgement cannot see is said to the learner every time
+  (`tone::NEUTRAL_LIMIT`). The refusal itself turned out to be in the wrong
+  module: `pinyin.rs` was deciding what could be *judged*, which it knows nothing
+  about.
 - `tone_from_pinyin` in the same module reads the tone out of the pinyin the
   dataset **already carries**, which is why no grapheme-to-phoneme work was
   needed at all — the asymmetry §2 of the research says to exploit.

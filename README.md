@@ -1,21 +1,28 @@
 # Hanzi Tutor
 
-A multi-=platform desktop & mobile app for learning to **read and write simplified 
-Chinese characters**.
-You write a character with a mouse, trackpad or stylus, and the app tells you
-whether it was written in the correct stroke order, whether the strokes are the
-right shape, in the right place and with enough ink, and whether the result is
-legible. Hold a button and **say** the character, and it tells you whether your
-tone was right — all offline, with no model downloads and no network access at
-runtime.
+An app for learning to **read and write simplified Chinese characters**. You write
+a character with a mouse, trackpad, finger or stylus, and it tells you whether it
+was written in the correct stroke order, whether the strokes are the right shape,
+in the right place and with enough ink, and whether the result is legible. Hold a
+button and **say** the character, and it tells you whether your tone was right —
+all offline, with no model downloads and no network access at runtime.
 
 Built with **Tauri 2 + Rust** for the engine and **Svelte 5 + TypeScript** for the
-interface. Primary target is macOS; the same code builds for Windows and Linux,
-and it builds for iOS today — it runs on the iPhone simulator and on a physical
-iPhone, with a phone layout made for practice rather than for fitting, and it
-speaks there through the system's own synthesiser. A release (rather than debug)
-device build and Android are the next steps (see [ROADMAP.md](ROADMAP.md) M9).
-The Rust core has no platform code at all, which is why that cost nothing.
+interface. The same code builds for **macOS, Windows, Linux, iOS and Android**;
+it runs on the iPhone (simulator and device) and on Android (emulator and a
+physical phone), with a phone layout made for practice rather than for fitting. It
+speaks through each system's own synthesiser, preferring a voice that needs no
+network. The Rust engine — the grading, the pitch analysis, the data — has no
+platform code in it at all, which is why none of those ports needed a `cfg` in
+the core.
+
+<p align="center">
+  <img src="store/phone-screenshots/01-trace-the-guide.png" width="30%" alt="Tracing a character's guide on a phone">
+  <img src="store/phone-screenshots/02-graded-feedback.png" width="30%" alt="A graded handwriting attempt with per-stroke feedback">
+</p>
+
+*Tracing the guide, and the same attempt graded — captured on an Android phone.
+More, and the artwork used for the Play listing, are in [`store/`](store/).*
 
 ## Status
 
@@ -23,9 +30,11 @@ Working end to end. The grading engine, the dataset pipeline, the Tauri command
 layer, the drawing UI, pronunciation, the personal vocabulary list, per-character
 progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
 measure**, the **durable study store** and **tone practice** — for characters
-*and words* — are all implemented and tested; 300 automated tests pass. What is
-not built yet is listed under
-[Next steps](#next-steps).
+*and words*, on desktop and on both mobile systems — are all implemented and
+tested; **302 automated tests** pass. A signed Android release bundle is built
+and runs on a physical phone; what is left for the Play Store is publishing the
+privacy policy and filling in the Console listing, not code. What is not built
+yet is listed under [Next steps](#next-steps).
 
 ## What it does
 
@@ -63,6 +72,11 @@ not built yet is listed under
   syllable went wrong — with an honest "not sure" when there was not enough voice
   to judge. This is the one error handwriting cannot see: 妈 written perfectly and
   said as `má` is a different word.
+  The **neutral tone is scored as well**, on being level — which is the part of it
+  that a single syllable can show — and the panel says plainly what that judgement
+  cannot see, since a neutral tone is short and takes its height from the syllable
+  before it. 的 is the most common character in the language, and it would be a
+  poor teacher that declined to look at it.
   Words are scored as words, which matters more than it sounds. Mandarin tone
   changes inside a word, so 你好 is spoken `níhǎo` — tone 2 then tone 3 — even
   though a dictionary lists `nǐhǎo`. Scoring you against the dictionary would mark
@@ -499,6 +513,15 @@ stroke as well as absolute.
 Tone practice answers a different question from a speech recogniser, and the
 difference is the reason it needs no model.
 
+<p align="center">
+  <img src="store/phone-screenshots/03-tone-panel.png" width="34%" alt="The tone panel: the learner's pitch drawn against the tone's template">
+</p>
+
+*The panel after one attempt: the dashed line is the tone the character asks for,
+the solid line is the pitch you produced, and the numbers are what the analyser
+measured — here 657 ms of voice at a median 134 Hz, which is room noise rather
+than a word, so it declines to score it.*
+
 ### A recogniser is built to hide the error you are looking for
 
 A Chinese ASR model carries a strong language-model prior. Say `shì` where `sì`
@@ -518,10 +541,14 @@ recognising text is a separate and much heavier milestone (M12).
 
 Five stages, all in `crates/hanzi-core/src/tone.rs` except the first:
 
-1. **Capture** (`src-tauri/src/capture.rs`) — `cpal` opens the microphone when you
-   press, downmixes to mono, and closes it when you release. The buffer lives in
+1. **Capture** (`src-tauri/src/capture.rs`) — the microphone is opened when you
+   press, downmixed to mono, and closed when you release. The buffer lives in
    memory for the length of one utterance and is then dropped; nothing is written
-   to disk and nothing is sent anywhere.
+   to disk and nothing is sent anywhere. There are two backends: `cpal` on macOS,
+   Windows and Linux, and Android's own `AudioRecord` over the platform bridge,
+   because `cpal`'s AAudio input starts a stream and then never calls back
+   (`HANDOVER.md` §9). On Android the samples go to a scratch file in the app's
+   cache, are read once and are deleted.
 2. **Resample** to 16 kHz, and run **YIN** over 40 ms frames for the fundamental.
    YIN rather than autocorrelation because autocorrelation's octave errors are
    precisely the failure that would ruin a tone score.
@@ -704,9 +731,15 @@ crates/hanzi-store/         the SQLite store. Native dependency, so it is
 src-tauri/                  Tauri shell
   src/commands.rs           the IPC surface
   src/state.rs              embedded dataset, speech warm-up, the stores
+  src/platform.rs           the Android bridge: the Kotlin plugin, registered and
+                            called through Tauri's mobile-plugin machinery
   src/speech.rs             pronunciation via the system synthesiser, and the
                             voice list the settings screen offers
+  src/capture.rs            microphone capture: `cpal`, or `AudioRecord` on Android
   src/licences.rs           the notices that ship
+  tauri.js                  a shim, because Gradle runs `node tauri …` and pnpm
+                            does not put a package by that name where it looks
+  gen/android/              the Android Studio project (committed, like gen/apple)
   tests/ipc_contract.rs     locks the JSON contract the UI reads
 src/lib/                    Svelte components
   PracticeCanvas.svelte     pointer capture, stroke recording
@@ -717,12 +750,14 @@ src/lib/                    Svelte components
   SettingsPanel.svelte      the four preferences, written as they are changed
   LicencesPanel.svelte      About: the app's identity and every notice, in full
 scripts/                    data fetching, cargo env, CLI selection
+docs/privacy-policy.md      what the Android build tells Play, and why it is true
+store/                      the Play listing: copy, answers, icon, artwork
 ```
 
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 300 tests
+pnpm test             # the whole Rust suite: 302 tests
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
@@ -787,6 +822,28 @@ set `CARGO_TARGET_DIR`:
 bundle/macos/Hanzi Tutor.app
 bundle/dmg/Hanzi Tutor_0.2.0_aarch64.dmg
 ```
+
+### Shipping the Android build
+
+```bash
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
+
+./scripts/with-cargo-env.sh ./scripts/tauri-cli.sh android build --apk --aab --target aarch64
+```
+
+That produces a signed `.aab` for Play and an `.apk` for installing by hand, under
+`src-tauri/gen/android/app/build/outputs/`. It is signed with a key kept **outside
+the repository** (`~/.android/hanzitutor-upload.jks`), whose passwords live in the
+gitignored `src-tauri/gen/android/key.properties`; without that file the build still
+runs and produces an **unsigned** bundle, and the filename says so. `store/README.md`
+has the commands for checking a release and for regenerating the listing artwork,
+and `store/listing.md` has the copy and the Play Console answers.
+
+Two things about this build are worth knowing before it goes wrong: it needs a
+wider sandbox than the rest of the project, because Gradle writes to `~/.gradle`
+and the emulator to `~/.android/avd`; and the release APK is the artifact to test
+by hand, because a release build's webview is not debuggable (HANDOVER §6).
 
 ### What is inside the bundle
 
@@ -860,7 +917,8 @@ Hanzi Tutor's own source code is licensed under the **GNU Affero General Public
 License, version 3** (see [`LICENSE`](LICENSE)). It bundles third-party **data**,
 one third-party **font**, and two third-party **libraries** compiled into the
 binary: SQLite, from the vendored amalgamation, which holds the study database;
-and `cpal`, Apache-2.0, which opens the microphone for tone practice. Every one
+and `cpal`, Apache-2.0, which opens the microphone for tone practice. (Android
+adds no dependency for that: it uses the platform's own `AudioRecord`.) Every one
 of them carries a notice obligation. See **[LICENSES.md](LICENSES.md)**.
 
 | Bundled | Source | Licence |
@@ -887,17 +945,24 @@ derived data rather than only the notices — see [`LICENSES.md`](LICENSES.md).
 ## Next steps
 
 See **[ROADMAP.md](ROADMAP.md)** for what to build next, in priority order, with
-approach notes and acceptance criteria. Distribution is done — the notices ship
-in the bundle, the data and font need no download, and CI runs the suite on every
-push — and so are the two interface milestones: the stroke-order animation now
-draws each stroke along its centre-line, and the board draws either by dragging
-or by clicking. The headline gaps are now:
+approach notes and acceptance criteria. Distribution is done for the desktop —
+the notices ship in the bundle, the data and font need no download, and CI runs the
+suite on every push — and so are the two interface milestones: the stroke-order
+animation draws each stroke along its centre-line, and the board draws either by
+dragging or by clicking. The headline gaps are now:
 
-1. **Pronunciation on Windows and Linux**, so the app is not macOS-only.
-2. **Mobile shells**, since a touchscreen with a stylus is the right input device.
-3. **Tone practice against real voices.** Characters and words both work and are
-   confirmed by hand; what is untuned is the *scoring constants*, which are still a
-   judgement that has never been fitted to a real recording (ROADMAP M11).
+1. **Pronunciation on Windows and Linux**, so the desktop app is not macOS-only.
+2. **The Android release.** The app runs on a phone, captures the microphone,
+   grades and speaks; a signed bundle is built. What remains is the paperwork Play
+   requires — publishing the privacy policy (the app asks for the microphone, so
+   one is mandatory) and filling in the Console listing, whose copy and artwork are
+   ready in [`store/`](store/). On iOS the app runs on device but the *release*
+   build does not link yet, which is a toolchain question rather than a code one
+   (ROADMAP M9, HANDOVER §6).
+3. **Tone practice against real voices.** Characters, words and now neutral tones
+   all work and are confirmed by hand; what is untuned is the *scoring constants*,
+   which are still a judgement that has never been fitted to a real recording
+   (ROADMAP M11).
 4. **Recognising *what* was said** (M12). This needs a ~155 MB Mandarin ASR model,
    which cannot be bundled. The project owner has settled the question: a download
    is acceptable **provided it is optional, user-triggered, and installed from the

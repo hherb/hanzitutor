@@ -73,12 +73,16 @@ impl ToneTarget {
 
     /// How many syllables carry a tone that can actually be judged.
     ///
-    /// The neutral tone cannot: it is short and pitched by the syllable before
-    /// it, so it is carried in the target and reported, but not scored.
+    /// All five do, neutral included — it is judged on being level, and what
+    /// that can and cannot see is `tone::NEUTRAL_LIMIT`. The range is written
+    /// out here rather than imported from `tone`, which is the one place this
+    /// module and that one overlap: they are kept apart on purpose (see the
+    /// module notes in `tone.rs`), and a two-number range is a smaller price
+    /// than the dependency. **Keep it equal to `tone::is_scorable`.**
     pub fn scorable(&self) -> usize {
         self.syllables
             .iter()
-            .filter(|s| (1..=4).contains(&s.spoken))
+            .filter(|s| (1..=5).contains(&s.spoken))
             .count()
     }
 }
@@ -314,8 +318,12 @@ pub fn spoken_tones(characters: &[char], citation: &[u8]) -> Vec<u8> {
 /// makes a splitting rule safe, because a reading the rule gets wrong is refused
 /// rather than silently mis-aligned against the recording.
 ///
-/// Also `None` when no syllable carries a scoreable tone — a single neutral-tone
-/// character such as 的, where there is nothing to judge.
+/// There is no longer a second refusal for a reading whose syllables are all
+/// neutral — 的, 了, 吗 and the rest of the particles. It used to be here, and it
+/// was the wrong place for it: whether a tone can be *judged* is a question about
+/// the analysis, which this module knows nothing about, not about pinyin. Neutral
+/// tones are scored now (see `tone::NEUTRAL_LIMIT` for what that can and cannot
+/// see), so the decision no longer exists to make.
 pub fn tone_target(text: &str, reading: &str) -> Option<ToneTarget> {
     let characters: Vec<char> = text.chars().collect();
     let list = syllables(reading)?;
@@ -325,9 +333,6 @@ pub fn tone_target(text: &str, reading: &str) -> Option<ToneTarget> {
 
     let citation: Vec<u8> = list.iter().map(|s| s.tone).collect();
     let spoken = spoken_tones(&characters, &citation);
-    if !spoken.iter().any(|t| (1..=4).contains(t)) {
-        return None;
-    }
 
     let syllables: Vec<TargetSyllable> = characters
         .iter()
@@ -361,11 +366,22 @@ pub fn tone_target(text: &str, reading: &str) -> Option<ToneTarget> {
     })
 }
 
-/// `"2 + 3"`, for a sentence.
+/// `"2 + 3"`, or `"1 + neutral"`, for a sentence.
+///
+/// A neutral tone is spelled out rather than numbered. "1 + 5" reads as a fifth
+/// full tone beside the four the course teaches, and a learner has no reason to
+/// know that 5 means "no tone mark on the reading". The full tones stay digits,
+/// because that is what the panel's own labels use.
 fn join_tones(tones: &[u8]) -> String {
     tones
         .iter()
-        .map(|t| t.to_string())
+        .map(|t| {
+            if *t == 5 {
+                "neutral".to_string()
+            } else {
+                t.to_string()
+            }
+        })
         .collect::<Vec<_>>()
         .join(" + ")
 }
@@ -549,11 +565,20 @@ mod tests {
     }
 
     #[test]
-    fn a_target_with_nothing_scoreable_is_refused() {
-        // 的 is the neutral tone: real, and not something to score.
-        assert!(tone_target("的", "de").is_none());
+    fn a_reading_of_particles_is_still_a_target() {
+        // 的 is the neutral tone. It used to be refused here — "real, and not
+        // something to score" — which left the most common character in the
+        // language as the one the tone panel would not look at. Neutral tones
+        // are scored now, on being level.
+        let target = tone_target("的", "de").expect("a neutral reading is a target");
+        assert_eq!(target.spoken(), vec![5]);
+        assert_eq!(target.scorable(), 1);
+        assert!(!target.sandhi_applied);
+        assert!(target.detail.contains("neutral"), "{}", target.detail);
+
+        // A word that mixes them keeps both, and both count.
         assert_eq!(tone_target("妈妈", "māma").map(|t| t.spoken()), Some(vec![1, 5]));
-        assert_eq!(tone_target("妈妈", "māma").map(|t| t.scorable()), Some(1));
+        assert_eq!(tone_target("妈妈", "māma").map(|t| t.scorable()), Some(2));
     }
 
     #[test]

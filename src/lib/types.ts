@@ -363,6 +363,15 @@ export interface VoiceOption {
   name: string;
   /** The locale, e.g. `zh_CN` — the only thing that tells similar voices apart. */
   locale: string;
+  /**
+   * Whether this voice needs a network connection to speak.
+   *
+   * Always false on macOS and iOS, where every voice the system lists is on the
+   * device. Android offers a network voice and an on-device one for the same
+   * locale, and this is the only thing that tells them apart — which matters
+   * here, because the app is meant to work with no network at all.
+   */
+  network: boolean;
 }
 
 /**

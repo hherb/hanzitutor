@@ -6,6 +6,7 @@
 mod commands;
 pub mod licences;
 mod capture;
+mod platform;
 mod speech;
 mod state;
 
@@ -30,8 +31,30 @@ pub fn run() {
         }
     };
 
+    // The expensive half of the state is built *before* the Tauri builder, and
+    // that placement is load-bearing on mobile rather than a style choice. The
+    // Android webview starts loading while `setup` runs, so a slow `setup` lets
+    // the frontend's first commands arrive before `app.manage()` has been
+    // called — and a command that finds no state is rejected outright instead of
+    // waiting, which left the phone showing "state not managed ... on command
+    // review_queue" and an empty board. Decoding the dataset and ordering the
+    // course out here leaves `setup` doing nothing but opening the study
+    // database, which is fast enough that the webview cannot get there first.
+    let prepared = match AppState::prepare() {
+        Ok(prepared) => prepared,
+        Err(message) => {
+            // The dataset is embedded, so this means the build itself is broken;
+            // there is nothing to fall back to and no window worth opening.
+            eprintln!("error: {message}");
+            std::process::exit(2);
+        }
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // The Kotlin half of the platform seam: the system synthesiser and the
+        // window insets. Registers nothing anywhere but Android.
+        .plugin(crate::platform::init())
         .setup(move |app| {
             use tauri::Manager;
             // The vocabulary list lives in the platform's application data
@@ -50,8 +73,7 @@ pub fn run() {
                     None
                 }
             };
-            let state = AppState::load(data_dir)?;
-            app.manage(state);
+            app.manage(AppState::assemble(prepared, data_dir));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -90,6 +112,8 @@ pub fn run() {
             commands::clear_click_to_draw,
             commands::app_info,
             commands::licence_notices,
+            commands::android_insets,
+            commands::speech_report,
             commands::webview_log,
         ])
         .run(tauri::generate_context!())

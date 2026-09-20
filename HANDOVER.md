@@ -1019,6 +1019,234 @@ downstream of them is covered by the IPC tests, which drive
   voice**. Do not read a passing ignored test as proof that capture works; read
   the peak level it prints. See §9.
 
+### Android
+
+- **Every Gradle and emulator command needs a wider sandbox than `workspace-write`.**
+  Gradle writes its dependency cache under `~/.gradle`, the emulator writes its
+  lock and userdata files under `~/.android/avd`, and `adb` wants `~/.android`
+  for its keys. All of those are refused with `Operation not permitted`, and the
+  failure mode is not a clean error: a Gradle build *hangs* with no output
+  because `cmd | tail` swallows the progress, and the emulator dies with
+  `A snapshot operation … is pending and timeout has expired`, which reads like a
+  stale snapshot rather than a permissions problem. Run these with
+  `danger-full-access`, and do not pipe a long build to `tail` while diagnosing.
+- **Android needs the `cdylib` crate type, and there is no way to have it only
+  there.** `crate-type` is not per-target. `src-tauri/Cargo.toml` carries all
+  three now and says why; the risk is that the iOS *link* trips over the dylib
+  again, which `cargo check --target aarch64-apple-ios` will not show because it
+  does not link.
+- **`minSdk` is 26 because of AAudio, and it has to be set in two places that
+  agree.** `cpal` pins the `ndk` crate to its `api-level-26` feature, so the
+  library needs `libaaudio.so`, which does not exist before Android 8. At
+  `minSdk = 24` the link fails with `unable to find library -laaudio` — note
+  *which* clang it used, `aarch64-linux-android24-clang`: that API level comes
+  from `bundle.android.minSdkVersion` in `tauri.conf.json`, which is what the CLI
+  uses to pick the linker, while the manifest's `minSdk` comes from the generated
+  `build.gradle.kts`. Setting only the Gradle one still fails to link.
+- **Gradle cannot find the Tauri CLI under pnpm, and the error is a bare
+  `Cannot find module`.** `gen/android/buildSrc/.../BuildTask.kt` runs
+  `node tauri android android-studio-script` from `src-tauri/`, expecting a
+  package literally named `tauri` to be resolvable from there. pnpm does not
+  flatten `@tauri-apps/cli` into such a name, so the task dies with
+  `Cannot find module '<root>/src-tauri/tauri'` after the Rust library has
+  already linked. `src-tauri/tauri.js` is a committed shim that loads the
+  package's real entry point — `tauri.js`, not `main.js`, which only exports an
+  API and would silently do nothing. It is an `import`, not a `require`, because
+  the root `package.json` says `"type": "module"`.
+- **The webview starts loading *while* `setup` runs, so nothing slow may happen
+  there.** This is the trap that cost the most. On desktop the windows are created
+  after `setup`, so a slow setup is invisible; on Android the frontend is running
+  by ~300 ms and its first commands arrive before `app.manage()`, and a command
+  that finds no state is **rejected, not queued** — the phone showed *"state not
+  managed for field `state` on command `review_queue`"* and an empty board, and a
+  second launch lost the commands entirely and sat on "Loading the character
+  set…" forever. Decoding the 13 MB dataset and ordering the course now happen in
+  `AppState::prepare()` **before the Tauri builder exists**, and `setup` only
+  opens the study database. Note that the fix is placement, not speed: the decode
+  is only ~1 s of CPU, which is still 3× the webview's head start. Anything else
+  slow added to `setup` — or to `AppState::assemble` — reintroduces this. Two
+  useful diagnostics, both cheap:
+  * `adb shell am start -W -n com.hanzitutor.app/.MainActivity` gives the real
+    cold-start time (`TotalTime`). 262 ms once the one-off ART compilation after
+    an install is past — the first launch after `adb install` takes ~90 s and is
+    not the app's fault.
+  * The webview is debuggable in a debug build, so the page can be inspected and
+    driven over the DevTools protocol: `adb forward tcp:9222
+    localabstract:webview_devtools_remote_<pid>`, then `curl
+    http://127.0.0.1:9222/json` for a WebSocket URL. Node 22+ has a global
+    `WebSocket`, so no dependency is needed. This is how the pending-promise
+    state, the missing managed state, and the `env()` value were all confirmed
+    rather than guessed.
+- **Logcat is unusable on the test phone.** `adb logcat -d` returns only kernel
+  and radio lines — no app output at all, on any buffer, including device-side
+  `logcat`, on a RedMagic NX809J. Do not plan on `[data] …` or `eprintln!` lines
+  there; use the DevTools probe above, or read the app's own data directory with
+  `adb shell run-as com.hanzitutor.app ls`.
+- **`env(safe-area-inset-*)` is the display cutout, not the status bar.** Android's
+  WebView reports the cutout, so on a phone with a punch-hole the CSS was right by
+  luck and on the emulator it was zero — the header was drawn under the clock.
+  Both are edge-to-edge and cannot opt out (targetSdk 35+), so the page is told
+  the real system bar insets by the `android_insets` command, and `app.css` takes
+  `max(env(…), var(--inset-…))`. Taking the maximum is what makes one rule right
+  on both: on a notched phone the two agree instead of summing.
+- **Tauri dispatches mobile plugin commands on the Android main thread.**
+  `run_command` goes through `run_on_android_context`, so a Kotlin plugin method
+  that blocks freezes the UI, and one that waits on a latch deadlocks. The
+  speech plugin resolves *later* instead: commands that arrive before
+  `TextToSpeech` reports ready are queued and answered when it does, which is the
+  normal case because the pronunciation warm-up asks for the voice list while the
+  app is still starting.
+- **Android offers a network voice beside the on-device one for the same
+  locale.** For an app whose whole premise is that it needs no network, the
+  default choice matters: the Kotlin side sorts `isNetworkConnectionRequired`
+  first, so the automatic pick is `cmn-cn-x-ccc-local` rather than a
+  network-backed voice that would fail offline. The Rust `Voice` model needed no
+  new field — `pick_voice` takes the first mainland voice in the order the
+  platform reported it.
+- **An unset `ndkVersion` silently costs 170 MB.** Gradle needs the NDK to find
+  `llvm-strip`; without a `ndkVersion` it gives up with a single line —
+  *"Unable to strip the following libraries, packaging them as they are"* — and
+  ships the 203 MB debug library verbatim. With it set, the same APK is 76 MB.
+  It is taken from `ANDROID_NDK_HOME` with the development version as a fallback
+  so that a build from Android Studio, where no such variable is set, still works.
+- **A back press has to be answered synchronously.** `OnBackPressedCallback` must
+  decide *now*, so the page is asked with `evaluateJavascript` and a global
+  function (`window.__hanziHandleBack`) whose return value settles it; an event
+  listener would need a round trip that cannot be waited for on the main thread.
+  And the callback must be registered **enabled** — `OnBackPressedCallback(false)`
+  is never invoked and the platform default quietly applies, which looks exactly
+  like the feature not working.
+- **`adb shell input` is a real enough input device to verify drawing.** `input
+  swipe` on the board produced a stroke, moved the counter to `1 / 8`, enabled
+  Undo/Clear and graded to a score — real touch events through the WebView's
+  pointer handling. `input tap` drives buttons the same way. What it does not
+  prove is palm rejection or stylus behaviour, which still wants a person.
+- **The emulator that ships with Android Studio was full, and it is not ours to
+  wipe.** `Medium_Phone_API_36.1` had 299 MB free of 6 GB with three of the
+  owner's own test apps on it, so installing there would have meant deleting
+  someone else's data. `HanziTutor_API36` is a second AVD cloned from its
+  `config.ini` with a 12 GB data partition instead — `avdmanager` is not
+  installed on this machine (there is no `cmdline-tools/`), so the two files were
+  written by hand: `~/.android/avd/HanziTutor_API36.ini` pointing at
+  `HanziTutor_API36.avd/config.ini`, whose `image.sysdir.1` is what ties it to the
+  already-installed system image. No image had to be downloaded.
+- **`key.properties` belongs to the Android project root, not to `app/`.** The
+  `.gitignore` there is the one that excludes it, and Gradle's module directory is
+  `gen/android/app/`, so `file("key.properties")` looks in the wrong place and
+  finds nothing — silently. The build does not fail; it just signs nothing, and
+  the only signal is that the artifact is called
+  `app-universal-release-unsigned.apk` instead of `app-universal-release.apk`.
+  Read that filename literally. Use `rootProject.file("key.properties")`.
+- **R8 does not break the Kotlin plugin bridge, but not because of anything
+  here.** Release builds minify, and `register_android_plugin` instantiates
+  `PlatformPlugin` **by name** — a reflective lookup that R8 cannot see. What
+  saves it is that Tauri's Android library ships *consumer* ProGuard rules
+  (`-keep @app.tauri.annotation.TauriPlugin public class *` and the same for
+  `@InvokeArg`), which apply to the app automatically. Debug-only verification
+  would never have caught a problem here, so the release build was run on a
+  device: the course loads, a stroke grades, and "Hear it" is live — which is
+  what proves `voices` answered through the reflective bridge.
+- **The release build is not debuggable, so it cannot be probed over DevTools.**
+  Wry enables webview debugging in debug builds only, so `webview_devtools_remote`
+  has no socket in a release build. Verify the release by installing it,
+  screenshotting, and driving it with `adb shell input` — which is what caught
+  the difference between "it built" and "it works".
+- **`INTERNET` is scoped to the debug source set.** The app downloads nothing and
+  makes no requests at runtime, so the released manifest does not declare the
+  permission at all — `aapt2 dump permissions` on the signed APK shows only
+  `RECORD_AUDIO`, which makes "works offline" checkable by anyone holding the
+  artifact. Debug builds keep it in `app/src/debug/AndroidManifest.xml` because
+  `tauri android dev` loads the interface from a development server.
+- **Play needs more than an AAB.** Because the app asks for the microphone, the
+  listing requires a published privacy policy and a Data safety declaration, and
+  the answers have to match what the app really does. `docs/privacy-policy.md`
+  and `store/listing.md` hold both; the policy still needs a real contact
+  address and a public URL before submission, and both are marked with TODOs.
+- **The version code comes from the app version.** `tauri.properties` derives
+  `2000` from `0.2.0`, and Play requires it to increase with every upload, so a
+  second upload means bumping the version in `Cargo.toml` and `tauri.conf.json`
+  first. `bundle.android.autoIncrementVersionCode` exists for people who would
+  rather not remember.
+
+### Android speech and the microphone
+
+- **`TextToSpeech.speak` returning `SUCCESS` means nothing was heard.** It means
+  the engine *accepted* the utterance. The voice's data may be missing, a network
+  voice may have no network, the output may not open — all of which produce
+  silence, or a progress callback nobody is listening to, from a call that
+  reported success. The first version of `PlatformPlugin.speak` resolved as soon
+  as `speak()` returned, so on a phone that could not make a sound the app said
+  everything was fine. It now resolves when `UtteranceProgressListener.onStart`
+  fires and **rejects with the engine's own error code** when it does not, with a
+  three-second guard so a silent engine cannot hang the caller. Both `onStart` and
+  `onError` are matched by **utterance id**: `speak` cuts off the previous
+  utterance, and the engine reports that cancellation in its own time, so without
+  the match a stale failure gets blamed on the next request.
+- **A listed voice is not necessarily a usable one, and on a phone that has never
+  had a network none of them are.** Android's engine advertises every voice it
+  knows and marks the ones whose data has never been downloaded with
+  `Engine.KEY_FEATURE_NOT_INSTALLED`. The test phone reported **16 Chinese voices
+  and 0 installed** — it had no connectivity at all, so nothing had ever been
+  fetched — and asking it to speak produced a service error or silence depending
+  on the moment. With WiFi on, the same query answered **14 installed** and
+  speech worked, using `cmn-cn-x-ccc-local`, an on-device voice. So: sort
+  installed voices first (Rust takes the first Mandarin voice it sees, so this is
+  what decides the default), prefer on-device over network, and keep the
+  promise that the *runtime* needs no network — the download is a one-time
+  device setup step, like installing a font, which is why the app can still ship
+  with no `INTERNET` permission.
+- **A vendor ROM may mute the synthesiser outright, and the app has to object.**
+  The RedMagic build logs, on every attempt:
+  `AudioHardening background playback would be muted for com.google.android.tts`,
+  with the music stream at full volume and the app in the foreground. This is the
+  Android twin of the iOS Ring/Silent problem in this same file: a synthesiser
+  that works for another app is silenced for this one unless the app says the
+  sound is deliberate. `speak` now takes audio focus
+  (`AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`, borrowed from the iOS session's
+  `duckOthers`) and sets `USAGE_MEDIA` + `CONTENT_TYPE_SPEECH`, giving the focus
+  back on `onDone`, on error, and on `stop`.
+- **Android 11 and later hide the speech engine unless it is asked for by
+  intent.** `<queries><intent><action
+  android:name="android.intent.action.TTS_SERVICE"/></intent></queries>` in the
+  manifest, or `getDefaultEngine()` answers null on a phone that plainly has an
+  engine installed.
+- **`TextToSpeech.getDefaultEngine()` does not resolve against this compile SDK.**
+  Read `Settings.Secure.TTS_DEFAULT_SYNTH` instead — it is the same value the
+  platform uses, and on the test phone it is *empty*, which is itself the answer
+  to "why is this phone silent": no synthesiser had ever been chosen there.
+- **The microphone has to be asked about more than once.** The status was fetched
+  once at startup, with the comment that "whether the machine has one does not
+  change while the app runs". On Android that is false in the most annoying
+  possible way: the permission is granted through a dialog that is dismissed
+  *after* that first read, so the answer is always "no" and a control disabled on
+  it stays disabled for ever. `MainActivity.onRequestPermissionsResult` now tells
+  the page to ask again, and the page also re-asks whenever it comes back to the
+  foreground, which is what catching a permission granted from the system
+  settings looks like.
+- **On a phone there is no tooltip, so a disabled control has to say why.** This
+  cost a round of confusion: `Hold to say it` was greyed out and read as a
+  microphone fault, when in fact the microphone was fine and **的** simply has no
+  judgeable tone — it is a neutral-tone particle, and `tone_target` returns
+  `None` for it. The button now labels itself `No tone to score` or
+  `No microphone` rather than `Hold to say it`. A separate explanatory paragraph
+  was tried first and rejected: it wrapped to its own row and pushed the rest of
+  the controls off the screen.
+
+- **Push-to-talk has three ways to stop itself, and the third is not obvious.**
+  The button moved out from under the finger (the label narrows on press *and*
+  clearing the previous judgement removed the panel above it), `touch-action` let
+  the browser claim the touch for a scroll, and — the one that survived both
+  fixes — **Android's long-press selection gesture takes the pointer at 555 ms**
+  and sends `pointercancel`. The button now captures the pointer, keeps a
+  `min-width`, leaves the previous judgement on screen, sets `touch-action: none`
+  and `user-select: none`, and swallows `contextmenu`, which is what the practice
+  board had been doing all along. §9 has the measurements and the event log that
+  found it.
+- **`cpal`'s Android input does not work; `AudioRecord` does.** Capture is
+  per-platform for that reason — `cpal` elsewhere, Kotlin's `AudioRecord` on
+  Android — and §9 has the AAudio log, the five-source probe and the three
+  details of the Kotlin backend that are easy to get wrong.
+
 ## 7. Open decisions
 
 - **Speech recognition of *text* (M12) — the product decision is taken, the code is
@@ -1431,6 +1659,138 @@ tuned against.
    contour to unit RMS amplifies its own measurement noise into what looks like a
    large movement, so a *correct* level tone would score badly for having been
    measured imperfectly. It is settled by `FLAT_ST` and given a fixed score.
+
+### The neutral tone, and a refusal that was in the wrong module
+
+Neutral tone was refused for a long time, and the reasoning was sound as far as it
+went: a neutral tone is short, and its pitch is set by the syllable before it, so
+scoring it from one syllable looks like it needs context this module does not
+have. What that missed is that "level" is still judgeable — and that the cost was
+paid on 的, the most common character in the language, whose tone button could not
+be pressed at all.
+
+Three things were wrong, and only one of them was in `tone.rs`:
+
+1. **The refusal lived in `pinyin.rs`.** `tone_target` returned `None` when no
+   syllable carried a tone in `1..=4`. Whether a tone can be *judged* is a
+   question about the analysis, and `pinyin.rs` knows nothing about that — it is
+   the seam this file describes two sections up. The guard is gone: `pinyin.rs`
+   builds a target from whatever tones the reading has, and `tone.rs` decides what
+   it can say about them.
+2. **`tone.rs` refused it in two more places.** `is_scorable` is new and is the
+   one predicate both call sites use, so "which tones can be judged" has a single
+   answer rather than `(1..=4)` written out four times.
+3. **A neutral target has no template, and the code assumed every expected tone
+   had one.** `score_contour`'s moving branch does
+   `(1..=4).find(|t| *t == expected_tone).expect("the expected tone is one of the
+   four")`, which tone 5 would have panicked on — unreachable only because of the
+   guards in step 2. A moving contour against a neutral target is now answered by
+   a rule instead: any clear movement is wrong for a neutral tone, so the tone it
+   moved like is named and it is marked off-target, with no distance taken. Check
+   the `is_scorable` guards before teaching this module a sixth tone.
+
+What is judged is that it was level. What is **not** judged is how high or how
+long it was: the mean is removed from every contour because register is
+unknowable, and duration is not scored at all. That limit is said to the learner
+every time (`NEUTRAL_LIMIT`) rather than left as a footnote here, because 85 for a
+neutral tone means less than 85 for a rising one. If that ever needs to be more
+than "level", duration is the thing to add — it is the part of a neutral tone a
+listener actually hears — and it would need real recordings to calibrate, which
+this module still has none of.
+
+### Android capture: `cpal`'s AAudio input starts and then never calls back
+
+**Android does not use `cpal` for capture, and this is why.** `capture.rs` uses
+`cpal` on every platform but Android, where the microphone is Kotlin's
+`AudioRecord` behind the platform bridge. The shape of the `cpal` failure is worth
+knowing, because it looks exactly like a dead microphone and nothing reports an
+error:
+
+- `open_stream()` returns **`AAUDIO_OK`**, `request_start()` returns 0, and the
+  stream reaches **`Started`** (state 4). It stays there.
+- The data callback is **never invoked** — not once, in three seconds — so the
+  recording comes back with **zero samples**, `span_ms` and `voiced_ms` are both
+  0, and the learner is told "I could not hear enough voice to judge".
+- The registration is real (cpal sets `.data_callback(...)` before
+  `open_stream`), and cpal's error callback is registered too — and never fires.
+
+The emulator's logcat is what settled it, since the phone's is unreadable (§6):
+
+```
+AAudioStreamBuilder_openStream() got Legacy, devIds = [8], perf = NO, burst = 768
+AAudioStreamBuilder_openStream() returns 0 = AAUDIO_OK for s#1
+AAudioStream_requestStart(s#1) called
+AAudioStream: setState(s#1) from 3 to 4       ← Starting → Started
+… three seconds, nothing …
+AAudioStream: setState(s#1) from 4 to 11      ← closed on stop
+```
+
+Setting a fixed callback size — which AAudio needs for input and cpal leaves
+unset, on advice that is about *output* latency — **does not fix it**, and that
+was tried first.
+
+**What replaced it, and the evidence.** `AudioRecord` was probed through the
+Kotlin bridge on the same two devices and delivered the right number of samples on
+both, 19,200 for 1.2 s at 16 kHz, across five sources:
+
+| Source | Emulator peak | Phone peak |
+| --- | --- | --- |
+| `DEFAULT` | 8 | 647 |
+| `MIC` | 32768 | 510 |
+| `VOICE_RECOGNITION` | 32768 | **2050** |
+| `UNPROCESSED` | 32768 | 219 |
+| `CAMCORDER` | 8 | 581 |
+
+`VOICE_RECOGNITION` is the source used: it is the one tuned for speech, and on
+the phone it is ten times the level of `UNPROCESSED`, which is the theoretically
+purer choice for pitch and too quiet here to be one in practice. `MIC` is the
+fallback, for devices that will not admit to the first.
+
+The samples do not cross the bridge as JSON — ten seconds of 16 kHz mono is
+320 kB. Kotlin writes them to `cacheDir/tone-recording.pcm` and Rust reads that
+file and **deletes it**, because an app that stores only what it has to should not
+leave a learner's voice in the cache. Verified end to end on the phone: a 2 s hold
+produces a 64,000-byte file, 85% of its samples non-zero.
+
+Three things about this backend are easy to get wrong again:
+
+- **The platform is the authority on whether a recording is live.** Kotlin's
+  audio thread ends by itself at its cap or on an error, and Rust was not told —
+  so its own `active` flag went stale and every later press failed with "Already
+  listening." for the life of the process, reachable by holding the button past
+  the cap once. `Recorder::start` on Android now asks `recordStatus` first and
+  drops a stale flag rather than trusting it.
+- **Nothing blocks the main thread.** The commands run on it (§6), so `recordStop`
+  does not wait for the audio thread: it clears the flag and the thread answers
+  when the file is closed, which is also the only moment Rust can safely read it.
+- **The rate is 16 kHz**, which is `tone::TARGET_SAMPLE_RATE` — so Android skips
+  the resampling the `cpal` path needs rather than adding a step.
+
+### The push-to-talk button, and the gesture that cancelled it
+
+Three separate things made holding the button stop the recording, and only the
+first was obvious. All three are fixed; the second and third are the ones to
+remember, because both look like a broken microphone.
+
+1. **The button moved out from under the finger.** The label narrows to
+   "Listening…" on press, and `startListening` cleared the previous judgement,
+   which removed the tone panel and pulled every control below it upwards. Either
+   one fires `pointerleave`, and `pointerleave` was wired to `stopListening`.
+   Fixed with `setPointerCapture`, a `min-width` so the label cannot reflow the
+   row, and by leaving the previous judgement on screen while listening.
+2. **`touch-action`.** A finger held on a button inside a scrolling page is a
+   gesture the browser wants: it takes the pointer for a scroll and sends
+   `pointercancel`. `touch-action: none` on the button settles that.
+3. **The long press.** Android's text-selection gesture takes the pointer at
+   about half a second — **measured at 555 ms** — and sends `pointercancel`. This
+   is the one that survived every other fix, and it is why the practice board has
+   carried `user-select: none` and a `contextmenu` guard all along. The button
+   needed the same. It also explains a stray text-selection popup that appeared
+   over the app in a screenshot, which was the same gesture showing its face.
+
+Instrument the events rather than guessing here: listeners on the button for
+`pointerdown`/`pointerup`/`pointercancel`/`lostpointercapture` with timestamps
+say in one run what took three rebuilds to infer.
 
 ### Things that will surprise you
 

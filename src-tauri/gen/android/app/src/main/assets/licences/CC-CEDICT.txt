@@ -1,0 +1,54 @@
+CC-CEDICT
+=========
+
+The word readings and English definitions in this app's dataset come from
+CC-CEDICT, a community-maintained free Chinese-English dictionary published by
+MDBG. They reach this app through the MIT-licensed "complete-hsk-vocabulary"
+compilation, which takes its word pinyin and definitions from CC-CEDICT.
+
+Attribution (as the dictionary's own header states it):
+
+  # CC-CEDICT
+  # Community maintained free Chinese-English dictionary.
+  #
+  # Published by MDBG
+  #
+  # License:
+  # Creative Commons Attribution-ShareAlike 4.0 International License
+  # https://creativecommons.org/licenses/by-sa/4.0/
+  #
+  # Referenced works:
+  # CEDICT - Copyright (C) 1997, 1998 Paul Andrew Denisowski
+
+Source:
+  Downloaded from https://www.mdbg.net/chinese/dictionary?page=cc-cedict
+  Project home:  https://cc-cedict.org/wiki/
+  Corrections:   https://cc-cedict.org/editor/editor.php
+
+Licence:
+  Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+  Full legal text: see the file "CC-BY-SA-4.0.txt" beside this notice, or
+  https://creativecommons.org/licenses/by-sa/4.0/legalcode
+
+  Note: the CC-CEDICT wiki's front page still describes the project as
+  CC BY-SA 3.0. The distribution actually used here (MDBG, the publisher named
+  in the dictionary's own header) states 4.0, and that is the licence recorded
+  and relied on. Both are share-alike; 4.0 is the more recent.
+
+What this app did to the data (the licence requires this to be stated):
+  * Selected only the words that appear in the HSK 2.0/3.0 vocabulary lists,
+    as compiled by "complete-hsk-vocabulary"; the dictionary's full 125,068
+    entries are not included.
+  * Stripped the traditional-character headword, keeping the simplified one.
+  * Chose one reading per word: the first form listed, unless it is a
+    capitalised proper-noun reading and an ordinary reading exists.
+  * Left the definition text verbatim; it is displayed as-is and is not
+    rewritten, summarised or machine-translated. Supporting text such as
+    classifier notation and bracketed glosses is preserved.
+  * Re-encoded the entries into a compact binary artifact
+    (`crates/hanzi-core/data/hanzi.bin.gz`) alongside the stroke geometry.
+
+Consequence of ShareAlike: the extracted definition text stays under
+CC BY-SA 4.0, and so does anything built from it. This does not reach the
+program code (AGPL-3.0), the stroke outlines (Arphic Public License) or the
+app's own interface text.

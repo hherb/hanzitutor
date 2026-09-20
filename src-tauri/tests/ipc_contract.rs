@@ -898,7 +898,10 @@ fn the_voice_list_says_which_voice_a_choice_resolved_to() {
     let json = serde_json::to_value(&voices).unwrap();
     expect_keys(&json, &["available", "active"]);
     for option in json["available"].as_array().unwrap() {
-        expect_keys(option, &["name", "locale"]);
+        // `network` travels with each voice so the settings screen can say which
+        // ones would need a connection — the app is meant to work offline, and
+        // Android offers both kinds for the same locale.
+        expect_keys(option, &["name", "locale", "network"]);
     }
 
     // Whatever this machine has, the stored preference is not a voice it can
@@ -1328,9 +1331,14 @@ fn a_word_target_applies_tone_sandhi() {
 fn a_target_is_refused_when_it_could_not_be_scored() {
     let state = state();
 
-    // 的 is the neutral tone: real, common, and not something a one-syllable
-    // exercise can judge.
-    assert!(state.tone_target("的").is_none());
+    // 的 is the neutral tone, and it is no longer refused. This assertion is the
+    // inversion of the one that used to be here: a neutral tone is judged on
+    // being level, which is the part of it a single syllable can show, and 的 is
+    // the most common character in the language — the one character whose tone
+    // the app would not look at.
+    let neutral = state.tone_target("的").expect("a neutral tone is a target");
+    assert_eq!(neutral.spoken(), vec![5]);
+    assert_eq!(neutral.scorable(), 1);
 
     // Not in the dataset at all.
     assert!(state.tone_target("€").is_none());
@@ -1352,20 +1360,25 @@ fn a_target_is_refused_when_it_could_not_be_scored() {
 #[test]
 fn every_offered_target_has_something_to_score() {
     let state = state();
-    for text in ["妈", "你好", "学习", "一个", "一起", "不是", "妈妈", "朋友们"] {
-        if let Some(target) = state.tone_target(text) {
+    // 的 and 妈妈 are here for the neutral tone, which is the case this test
+    // exists to protect: it used to be offered nothing at all.
+    for text in [
+        "妈", "你好", "学习", "一个", "一起", "不是", "妈妈", "朋友们", "的", "好了",
+    ] {
+        let target = state
+            .tone_target(text)
+            .unwrap_or_else(|| panic!("{text} should be offered"));
+        assert!(
+            target.scorable() > 0,
+            "{text} was offered with nothing scoreable"
+        );
+        for syllable in &target.syllables {
             assert!(
-                target.scorable() > 0,
-                "{text} was offered with nothing scoreable"
+                (1..=5).contains(&syllable.spoken),
+                "{text}: tone {} is not a tone",
+                syllable.spoken
             );
-            for syllable in &target.syllables {
-                assert!(
-                    (1..=5).contains(&syllable.spoken),
-                    "{text}: tone {} is not a tone",
-                    syllable.spoken
-                );
-                assert!(!syllable.reading.is_empty(), "{text}: no reading");
-            }
+            assert!(!syllable.reading.is_empty(), "{text}: no reading");
         }
     }
 }

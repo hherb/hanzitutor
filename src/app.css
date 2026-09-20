@@ -32,6 +32,16 @@
   --accent: #2563eb;
   --accent-ink: #1d4ed8;
   --accent-soft: #eff6ff;
+  /* What keeps content clear of the status bar and the home indicator.
+     `env()` is iOS's answer and the larger of the two is right on both systems:
+     iOS leaves `--inset-*` at 0, while on Android `env(safe-area-inset-*)`
+     reports the **display cutout** rather than the system bars, so it is zero on
+     a phone without a notch or punch-hole and the header would sit under the
+     clock. `--inset-*` is set from the backend's measurement of the real system
+     bar insets (the `android_insets` command); on a notched Android phone the
+     two agree rather than summing, because this takes the maximum. */
+  --safe-top: max(env(safe-area-inset-top, 0px), var(--inset-top, 0px));
+  --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--inset-bottom, 0px));
   /* The canvas draws real glyph outlines, but lists and headings still need a
      CJK face for the characters they render as text. The first entry is the
      copy bundled with the app; the rest are what any machine can be relied on

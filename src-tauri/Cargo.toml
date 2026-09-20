@@ -8,19 +8,29 @@ license.workspace = true
 # A library target keeps the door open for mobile bundles later; the desktop
 # binary is a thin wrapper around it.
 #
-# `staticlib` is what iOS links (the Xcode project's "Build Rust Code" phase
-# copies it in as `libapp.a`), `rlib` is what the desktop binary links against,
-# and `cdylib` — which Tauri's template includes for Android's `.so` — is
-# deliberately **not** built. On a device build its link fails with
+# All three crate types are needed and each has exactly one consumer:
+#
+# - `staticlib` is what iOS links (the Xcode project's "Build Rust Code" phase
+#   copies it in as `libapp.a`).
+# - `cdylib` is what Android loads: Gradle's `rustBuild*` task runs
+#   `tauri android android-studio-script`, which builds `libhanzi_tutor_lib.so`
+#   and drops it into `jniLibs`. Without it `tauri android build` fails asking
+#   for the `.so` — this is the "needs it back" note M9 left behind.
+# - `rlib` is what the desktop binary links against.
+#
+# The tension to know about: cargo has no per-target `crate-type`, so the
+# `cdylib` is built for the iOS target as well, where its link once failed with
 # `symbol(s) not found for architecture arm64` for every Tauri Swift symbol
-# (`_run_plugin_command`, `_register_plugin`, …): the dylib link is handed the
-# Swift search paths but not the `-lTauri` flags, and cargo treats the failure as
-# fatal and never reaches the Xcode step. Nothing on iOS or macOS reads the
-# dylib. **Android work (the other half of M9) needs it back**, and the link
-# flags will have to be looked at then.
+# (`_run_plugin_command`, `_register_plugin`, …) — the dylib link is handed the
+# Swift search paths but not the `-lTauri` flags, and cargo treats that as fatal
+# before Xcode ever runs. Nothing on iOS or macOS reads the dylib; only iOS
+# *app* builds are at risk, and `cargo check --target aarch64-apple-ios` (which
+# does not link) still passes. If an iOS device build trips over it again, the
+# fix is to build that target's library explicitly rather than to drop `cdylib`
+# here — dropping it breaks Android, which is the platform being worked on.
 [lib]
 name = "hanzi_tutor_lib"
-crate-type = ["staticlib", "rlib"]
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -230,8 +230,10 @@
         <span class="name" id="set-voice">Pronunciation voice</span>
         <span class="why">
           Which installed voice reads a character or a word aloud. Only Chinese
-          voices are listed: an English voice handed 汉 guesses at it. Nothing is
-          downloaded — these are the voices the system already has.
+          voices are listed: an English voice handed 汉 guesses at it. The
+          automatic choice is an on-device voice, so pronunciation keeps working
+          with no network; a voice marked <em>needs internet</em> is one the
+          system offers that would not.
         </span>
       </div>
       <div class="how">
@@ -263,7 +265,7 @@
               <option value="">Automatic</option>
               {#each voices.available as voice (voice.name)}
                 <option value={voice.name}>
-                  {voice.name} — {voice.locale}
+                  {voice.name} — {voice.locale}{voice.network ? " · needs internet" : ""}
                 </option>
               {/each}
             </select>

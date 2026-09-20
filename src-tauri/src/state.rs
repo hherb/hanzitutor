@@ -290,6 +290,21 @@ impl Persisted<SettingsStore> {
     }
 }
 
+/// The half of the state that costs real time to build.
+///
+/// Decoding the embedded dataset and ordering the course into lessons is the
+/// expensive part of starting up, and it needs nothing from Tauri — which is why
+/// it is a step of its own rather than the first half of [`AppState::load`]. On
+/// a phone the webview begins loading *while* the Tauri `setup` hook runs, so
+/// anything slow in that hook delays `app.manage()` past the frontend's first
+/// commands, and every one of them fails with "state not managed". Building this
+/// before the Tauri builder exists keeps `setup` down to opening the study
+/// database. See [`AppState::prepare`].
+pub struct Prepared {
+    dataset: Dataset,
+    course: HashSet<char>,
+}
+
 /// State held for the lifetime of the app and shared by all commands.
 pub struct AppState {
     pub dataset: Dataset,
@@ -312,12 +327,15 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Decode the embedded dataset, open the study documents and start the
-    /// pronunciation warm-up.
+    /// Decode the embedded dataset and order the course.
     ///
-    /// `data_dir` is where the documents live; `None` keeps them in memory, which
-    /// is what the tests use.
-    pub fn load(data_dir: Option<PathBuf>) -> Result<Self, String> {
+    /// This is the slow half of starting up — decompressing 13 MB and ordering
+    /// 7,744 characters into 775 lessons — and it touches nothing but memory, so
+    /// it can be done before Tauri exists. That matters on mobile and is the
+    /// whole reason this is split out: the webview starts loading while `setup`
+    /// runs, so a slow `setup` lets the frontend's first commands arrive before
+    /// `manage`, and they fail rather than wait. See [`Prepared`].
+    pub fn prepare() -> Result<Prepared, String> {
         let dataset = Dataset::from_gzip_bytes(ARTIFACT)
             .map_err(|e| format!("could not read the embedded character dataset: {e}"))?;
 
@@ -325,6 +343,18 @@ impl AppState {
             .into_iter()
             .flat_map(|lesson| lesson.characters)
             .collect();
+
+        Ok(Prepared { dataset, course })
+    }
+
+    /// Open the study documents and finish what [`Self::prepare`] started.
+    ///
+    /// Deliberately cheap, and it has to stay that way: on mobile this runs
+    /// between the webview appearing and the frontend's first command arriving,
+    /// so it is a race this code is expected to win. `data_dir` is where the
+    /// documents live; `None` keeps them in memory, which is what the tests use.
+    pub fn assemble(prepared: Prepared, data_dir: Option<PathBuf>) -> Self {
+        let Prepared { dataset, course } = prepared;
 
         // One database holds all three stores: progress and the vocabulary list
         // are read together on every review-queue build, and a review item
@@ -364,15 +394,19 @@ impl AppState {
             ),
         };
 
-        // The voice the learner chose goes to the speaker *before* the warm-up is
-        // started below: on a machine with several Chinese voices, resolving
-        // first would mean the session opened on the automatic voice and the
-        // startup log named one that is not in use.
+        // The voice the learner chose is applied on the warm-up thread rather
+        // than here, which is a change of *where*, not of *what*: it still
+        // happens before the warm-up reports which voice is in use, so the log
+        // still names the voice really being spoken with. Resolving it means
+        // enumerating the system's voices — `say -v '?'` on macOS, about a
+        // second, and starting a synthesiser on Android — and none of that
+        // belongs on the startup path, least of all for the reason
+        // [`Self::prepare`] gives.
+        let preferred = settings.view().voice().map(str::to_string);
         let speech = Arc::new(Speaker::default());
-        speech.set_voice(settings.view().voice());
-        warm_voice(Arc::clone(&speech));
+        warm_voice(Arc::clone(&speech), preferred);
 
-        Ok(Self {
+        Self {
             dataset,
             speech,
             capture: Recorder::default(),
@@ -381,7 +415,17 @@ impl AppState {
             progress: Mutex::new(progress),
             cursor: Mutex::new(cursor),
             settings: Mutex::new(settings),
-        })
+        }
+    }
+
+    /// Decode the dataset, open the study documents and start the pronunciation
+    /// warm-up, in one step.
+    ///
+    /// What the tests and the desktop entry point want. The mobile entry point
+    /// deliberately splits the two halves apart — see [`Self::prepare`] — so that
+    /// the slow one is finished before there is a webview to ask for anything.
+    pub fn load(data_dir: Option<PathBuf>) -> Result<Self, String> {
+        Ok(Self::assemble(Self::prepare()?, data_dir))
     }
 
     /// Lock the vocabulary list, tolerating a poisoned mutex: a panic while
@@ -589,6 +633,7 @@ impl AppState {
                 .map(|voice| VoiceOption {
                     name: voice.name,
                     locale: voice.locale,
+                    network: voice.network,
                 })
                 .collect(),
             active: self.speech.voice().map(|voice| voice.name),
@@ -746,17 +791,23 @@ pub fn resolve_data_dir(app: &AppHandle, cli: Option<PathBuf>) -> Result<PathBuf
         .map_err(|e| format!("could not locate the application data directory: {e}"))
 }
 
-/// Resolve the system voice on a background thread.
+/// Apply the learner's chosen voice — if the settings name one — and report
+/// which voice is really in use, on a thread of this call's own.
 ///
-/// Enumerating voices means running `say -v '?'`, which takes about a second.
-/// Doing it here keeps that cost off both the startup path and the first
-/// "hear it" click.
-fn warm_voice(speaker: Arc<Speaker>) {
-    std::thread::spawn(move || match speaker.status() {
-        Some(voice) => eprintln!("[speech] using voice {voice}"),
-        None => eprintln!(
-            "[speech] no Chinese voice installed; pronunciation will be unavailable"
-        ),
+/// Enumerating voices is what this exists to move off the startup path: it runs
+/// `say -v '?'` on macOS, which takes about a second, and it means bringing up a
+/// `TextToSpeech` engine on Android. Nothing waits for the answer, and a machine
+/// whose preference names a voice it does not have falls back to the automatic
+/// choice inside [`Speaker::set_voice`] rather than failing here.
+fn warm_voice(speaker: Arc<Speaker>, preferred: Option<String>) {
+    std::thread::spawn(move || {
+        speaker.set_voice(preferred.as_deref());
+        match speaker.status() {
+            Some(voice) => eprintln!("[speech] using voice {voice}"),
+            None => eprintln!(
+                "[speech] no Chinese voice installed; pronunciation will be unavailable"
+            ),
+        }
     });
 }
 

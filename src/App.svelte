@@ -203,7 +203,9 @@
   let microphone = $state<MicrophoneStatus | null | undefined>(undefined);
   /**
    * What the tones should be, or `null` when nothing can score this text — more
-   * than a word, the neutral tone only, or not in the dataset.
+   * than a word, or not in the dataset. It used to be `null` for a neutral-tone
+   * reading as well, which is why the most common character in the language had
+   * a tone button that could not be pressed.
    */
   let toneTarget = $state<ToneTarget | null>(null);
   /** The last judgement, or `null` before anything has been said. */
@@ -453,6 +455,55 @@
     window.addEventListener("error", onError);
     window.addEventListener("unhandledrejection", onRejection);
 
+    /**
+     * Publish the system bar insets the platform measured.
+     *
+     * Android's webview answers `env(safe-area-inset-*)` with the display cutout
+     * rather than the status bar, so on a phone without a notch or punch-hole
+     * those are zero and the header is drawn underneath the clock. `app.css`
+     * takes the larger of that and these, so this only has to report the
+     * platform's own numbers — and on iOS they are zero and change nothing.
+     * Re-read on resize, which is what a rotation is, because the insets swap
+     * sides when the phone turns.
+     */
+    const publishInsets = () => {
+      void api
+        .androidInsets()
+        .then((insets) => {
+          const root = document.documentElement.style;
+          root.setProperty("--inset-top", `${insets.top}px`);
+          root.setProperty("--inset-bottom", `${insets.bottom}px`);
+        })
+        .catch(() => {
+          // Every platform but Android reports zero, and a failure there leaves
+          // the CSS `env()` values in charge. Nothing to report to the learner.
+        });
+    };
+    publishInsets();
+    window.addEventListener("resize", publishInsets);
+
+    /**
+     * What Android's back gesture does before it leaves the app.
+     *
+     * Back is the platform's own version of Escape, and the first thing a
+     * learner expects it to dismiss is whatever is covering the board — the
+     * navigation sheet, then the explanation. Answering `true` says the press
+     * was used; `false` lets Android finish the activity. `MainActivity.kt` is
+     * the only caller, so on every other platform this is never invoked.
+     */
+    const platform = window as unknown as { __hanziHandleBack?: () => boolean };
+    platform.__hanziHandleBack = () => {
+      if (navOpen) {
+        navOpen = false;
+        return true;
+      }
+      if (showHelp) {
+        showHelp = false;
+        return true;
+      }
+      return false;
+    };
+
     void (async () => {
       try {
         const [loadedStats, loadedLessons] = await Promise.all([
@@ -531,18 +582,69 @@
       });
     void refreshVoices();
 
-    // Tone practice needs a microphone, and asking is cheap. It is resolved
-    // once: whether the machine has one does not change while the app runs.
+    // What the synthesiser is really doing, said once in the log. A phone that
+    // lists Chinese voices and then makes no sound is a real failure mode, and
+    // this line is what tells the two apart: no engine, an engine with no
+    // Chinese voice, a voice whose data was never downloaded, or a voice that
+    // needs a network — which this app will not use at runtime.
     void api
-      .microphoneStatus()
-      .then((status) => {
-        microphone = status;
-        void api.log(`microphone: ${status.detail}`);
-      })
-      .catch((cause) => {
-        microphone = null;
-        void api.log(`could not ask about the microphone: ${cause}`);
+      .speechReport()
+      .then((report) =>
+        void api.log(
+          `speech: default=${report.defaultEngine || "none"} voice=${report.engine || "none"} ` +
+            `locale=${report.locale || "none"} chinese=${report.chineseInstalled}` +
+            `/${report.chineseVoices} installed (${report.chineseAvailable || "unknown"}) ` +
+            `network=${report.networkRequired}`,
+        ),
+      )
+      .catch(() => {
+        // Nothing to report on platforms whose synthesiser Rust talks to itself.
       });
+
+    /**
+     * Ask whether a microphone is usable.
+     *
+     * Deliberately repeatable rather than a one-off, however much it looks like
+     * it should not change while the app runs. On Android the permission is
+     * granted through a dialog that is dismissed *after* this first runs, so the
+     * first answer there is always "no" — and a control disabled on that answer
+     * would stay disabled for ever. It is asked again when the dialog is
+     * answered (see `__hanziPermissionsChanged`, which `MainActivity` calls) and
+     * whenever the app comes back to the foreground, which is what catching a
+     * permission granted from the system settings looks like.
+     */
+    const refreshMicrophone = () => {
+      void api
+        .microphoneStatus()
+        .then((status) => {
+          microphone = status;
+          void api.log(`microphone: ${status.detail}`);
+        })
+        .catch((cause) => {
+          microphone = null;
+          void api.log(`could not ask about the microphone: ${cause}`);
+        });
+    };
+    refreshMicrophone();
+
+    const onVisibility = () => {
+      if (!document.hidden) refreshMicrophone();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    /**
+     * The permission dialog has been answered.
+     *
+     * Called from `MainActivity.onRequestPermissionsResult`, because the answer
+     * the page was given at startup was necessarily given too early.
+     */
+    const platformHooks = window as unknown as {
+      __hanziPermissionsChanged?: () => boolean;
+    };
+    platformHooks.__hanziPermissionsChanged = () => {
+      refreshMicrophone();
+      return true;
+    };
 
     // A character answered badly comes back within the minute, so "due" is not
     // a one-off computed at startup: give the badge a slow heartbeat.
@@ -579,6 +681,10 @@
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onRejection);
+      window.removeEventListener("resize", publishInsets);
+      document.removeEventListener("visibilitychange", onVisibility);
+      delete platformHooks.__hanziPermissionsChanged;
+      delete (window as unknown as { __hanziHandleBack?: () => boolean }).__hanziHandleBack;
       clearInterval(reviewTimer);
       clearTimeout(cursorTimer);
     };
@@ -635,7 +741,11 @@
   async function startListening() {
     if (toneTarget === null || listening || toneBusy) return;
     toneError = null;
-    toneResult = null;
+    // The previous judgement is deliberately *left on screen*. Clearing it here
+    // removed the tone panel from the document, the page got shorter, and every
+    // control below it — including the button under the learner's finger — moved
+    // up. That is what made holding the button look like the interface jumping
+    // and the recording stopping. The new judgement replaces it when it arrives.
     scoredText = toneText;
     toneBusy = true;
     try {
@@ -1817,11 +1927,24 @@
               class:listening
               onpointerdown={(event) => {
                 event.preventDefault();
+                // Take the pointer, so that every later event for it comes here
+                // wherever the finger travels and however the button reflows.
+                // Without this the browser sends `pointerleave` as soon as the
+                // button moves out from under the finger — which it did, twice
+                // over: the label narrows to "Listening…" on press, and the
+                // result panel above can appear or vanish — and the recording
+                // ended the instant it began. Push-to-talk should survive a
+                // finger that slides, which is why there is no `pointerleave`
+                // handler here at all.
+                event.currentTarget.setPointerCapture(event.pointerId);
                 void startListening();
               }}
-              onpointerup={() => void stopListening()}
-              onpointerleave={() => void stopListening()}
+              onpointerup={(event) => {
+                event.currentTarget.releasePointerCapture(event.pointerId);
+                void stopListening();
+              }}
               onpointercancel={() => void stopListening()}
+              oncontextmenu={(event) => event.preventDefault()}
               disabled={toneTarget === null || !microphone?.available || toneBusy}
               title={microphone === undefined
                 ? "Looking for a microphone…"
@@ -1830,18 +1953,29 @@
                   : toneTarget === null
                     ? "There are no tones to practise here — too long to score, or nothing in it has a judgeable tone"
                     : `Hold and say ${toneText} — ${toneTarget.syllables
-                        .map((s) => `tone ${s.spoken}`)
+                        .map((s) => (s.spoken === 5 ? "neutral" : `tone ${s.spoken}`))
                         .join(", ")}${toneTarget.sandhiApplied ? " as it is spoken in this word" : ""}`}
             >
               <span aria-hidden="true">{listening ? "●" : "🎤"}</span>
               <!-- Name the text rather than saying "it": on a phone there is no
                    tooltip, so a generic label leaves the learner guessing what
-                   the microphone is listening for. -->
+                   the microphone is listening for.
+                   A disabled button has to say why it is disabled for the same
+                   reason, and it is the cheapest place to say it — the label is
+                   already dynamic, and a separate note would push the rest of
+                   the controls off the screen. The two reasons are worth
+                   distinguishing: 的 is a neutral-tone particle with nothing to
+                   score, which is not the learner's fault and not fixable,
+                   whereas a missing microphone is. -->
               {listening
                 ? "Listening…"
-                : toneTarget
-                  ? `Hold to say ${toneText}`
-                  : "Hold to say it"}
+                : microphone === undefined
+                  ? "Looking for a microphone…"
+                  : microphone === null || !microphone.available
+                    ? "No microphone"
+                    : toneTarget
+                      ? `Hold to say ${toneText}`
+                      : "No tone to score"}
             </button>
 
             <button
@@ -2214,6 +2348,31 @@
   .controls button.say span[aria-hidden] {
     margin-right: 3px;
   }
+  .controls button.say {
+    /* Wide enough for the longest label it swaps between, so pressing it does
+       not reflow the row. The label changes to "Listening…" on press, and a
+       button that shrinks under the learner's finger is a button that stops
+       listening to them. */
+    min-width: 11.5rem;
+    justify-content: flex-start;
+    text-align: left;
+    /* The page scrolls, and a finger held still on a button inside a scrolling
+       page is a gesture the browser wants to claim: it sends `pointercancel`
+       once it decides the touch is a scroll, and `pointercancel` ends the
+       recording. Saying the button owns its own touches is what stops a held
+       press from being cancelled a fraction of a second after it starts — which
+       is what "I hold it and it stops immediately" turned out to be, after the
+       layout shift had been ruled out. */
+    touch-action: none;
+    /* And the *other* gesture a held finger starts: a long press on text. At
+       about half a second Android takes the pointer for its selection gesture
+       and cancels ours — measured at 555 ms, which is why this is not a
+       cosmetic rule. The practice board has guarded against it all along; a
+       push-to-talk button needs it for the same reason. */
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
   .controls button.say.listening {
     background: #2f6f4f;
     border-color: #2f6f4f;
@@ -2408,8 +2567,7 @@
       height: 100dvh;
       overflow-y: auto;
       gap: 10px;
-      padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px
-        calc(env(safe-area-inset-bottom, 0px) + 12px);
+      padding: calc(var(--safe-top) + 8px) 12px calc(var(--safe-bottom) + 12px);
     }
 
     .topbar {
@@ -2457,8 +2615,8 @@
       left: 0;
       z-index: 40;
       width: min(86vw, 320px);
-      padding-top: env(safe-area-inset-top, 0px);
-      padding-bottom: env(safe-area-inset-bottom, 0px);
+      padding-top: var(--safe-top);
+      padding-bottom: var(--safe-bottom);
       background: var(--surface);
       box-shadow: 0 10px 40px rgb(15 23 42 / 0.3);
       transform: translateX(-102%);

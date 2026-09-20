@@ -27,6 +27,39 @@ import type {
 
 export const datasetStats = () => invoke<DatasetStats>("dataset_stats");
 
+/**
+ * The window's system bar insets, in CSS pixels.
+ *
+ * Only Android answers with anything but zero: there the webview's
+ * `env(safe-area-inset-*)` reports the display cutout rather than the status
+ * bar, so the shell asks the platform for the real numbers and publishes them
+ * as the `--inset-*` custom properties that `--safe-top` / `--safe-bottom` in
+ * `app.css` take the larger of.
+ */
+export const androidInsets = () =>
+  invoke<{ top: number; bottom: number; left: number; right: number }>("android_insets");
+
+/**
+ * What the platform's speech system is doing, for when it is doing nothing.
+ *
+ * Android answers; every other platform returns empty fields, because there the
+ * synthesiser is reachable from Rust directly and there is nothing hidden to
+ * ask about.
+ */
+export const speechReport = () =>
+  invoke<{
+    engine: string;
+    engines: string;
+    defaultEngine: string;
+    locale: string;
+    networkRequired: boolean;
+    chineseVoices: number;
+    /** How many of those can actually be spoken with, offline. */
+    chineseInstalled: number;
+    chineseAvailable: string;
+    lastProblem: string;
+  }>("speech_report");
+
 export const listLessons = () => invoke<Lesson[]>("lessons");
 
 export const getCharacter = (ch: string) => invoke<Character>("character", { ch });

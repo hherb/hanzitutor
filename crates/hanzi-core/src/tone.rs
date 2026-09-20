@@ -559,6 +559,30 @@ pub fn tone_name(tone: u8) -> &'static str {
     }
 }
 
+/// What a neutral-tone judgement can and cannot see, said to the learner every
+/// time one is scored.
+///
+/// This is a real limit rather than a hedge. Every contour has its mean removed
+/// before comparison, because the speaker's register is not knowable, and the
+/// score is about shape rather than duration. A neutral tone is short and takes
+/// its pitch from the syllable before it — those are the two things a listener
+/// hears, and neither is judged here. What *is* judged is that it was level, and
+/// saying so is better than the alternative this replaced, which was to refuse to
+/// score neutral tones at all.
+pub const NEUTRAL_LIMIT: &str =
+    "A neutral tone is short and takes its pitch from the syllable before it, so this \
+     judges that it was level — not how high or how long it was.";
+
+/// Whether a tone can be judged at all: the four full tones, and neutral.
+///
+/// Neutral was once refused here, on exactly the grounds [`NEUTRAL_LIMIT`]
+/// describes. That is defensible and it was wrong in practice: it left 的 — the
+/// most frequent character in the language — as the one character in the course
+/// whose tone the app would not even look at.
+pub fn is_scorable(tone: u8) -> bool {
+    matches!(tone, 1..=5)
+}
+
 /// The canonical shape of a tone, as a centred semitone contour.
 ///
 /// Built from the classical five-level scale — tone 1 `55`, tone 2 `35`, tone 3
@@ -726,13 +750,13 @@ impl ToneAttempt {
 
 /// The tone an attempt could not be judged against, and why.
 ///
-/// Neutral (`5`) and not-a-tone (`0`) land here: neutral tone is short and its
-/// pitch is set by the syllable before it, so scoring it needs context this
-/// module does not have.
+/// Only not-a-tone (`0`) lands here now. Neutral used to, and no longer does:
+/// it is judged on being level, which is the part of it that can be seen from
+/// one syllable — see [`NEUTRAL_LIMIT`] and [`is_scorable`].
 fn unsupported(expected_tone: u8) -> ToneAttempt {
     ToneAttempt::unheard(
         expected_tone,
-        "only the four full tones can be judged so far; this reading has none of them",
+        "this reading does not name a tone that can be judged",
     )
 }
 
@@ -748,8 +772,8 @@ fn score_contour(contour: &Contour, expected_tone: u8) -> ToneAttempt {
     // would amplify its own measurement noise into what looks like a large
     // movement, so a *correct* level tone would be scored badly for having been
     // measured imperfectly. Judged by the rule instead, and given a fixed honest
-    // score: level is right for tone 1 and for a tone 3 realised flat, and it is
-    // plainly not a rising or a falling tone.
+    // score: level is right for tone 1, for a tone 3 realised flat and for a
+    // neutral tone, and it is plainly not a rising or a falling tone.
     let (verdict, score, heard_tone, mut detail) = if contour.is_flat() {
         if matches!(expected_tone, 1 | 3) {
             (
@@ -761,6 +785,13 @@ fn score_contour(contour: &Contour, expected_tone: u8) -> ToneAttempt {
                      this counts whether you were aiming for 1 or 3.",
                     tone_name(expected_tone)
                 ),
+            )
+        } else if expected_tone == 5 {
+            (
+                ToneVerdict::Match,
+                FLAT_MATCH_SCORE,
+                Some(5),
+                format!("A level tone, which is what a neutral tone is. {NEUTRAL_LIMIT}"),
             )
         } else {
             (
@@ -784,49 +815,70 @@ fn score_contour(contour: &Contour, expected_tone: u8) -> ToneAttempt {
             .copied()
             .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
             .expect("four tones");
-        let expected_distance = distances
-            .iter()
-            .find(|(t, _)| *t == expected_tone)
-            .map(|(_, d)| *d)
-            .expect("the expected tone is one of the four");
-        let score = 100.0 * (-expected_distance / SCORE_DECAY_ST).exp();
 
-        if heard == expected_tone {
+        if expected_tone == 5 {
+            // The pitch moved, and a neutral tone is level, so this is wrong
+            // whatever it moved like. Nothing is measured against a template
+            // here because a neutral tone cannot have one — its height comes
+            // from the syllable before it — which is why this is answered by the
+            // rule rather than by a distance, in the same band as a level
+            // contour offered for a moving tone. The tone it *did* move like is
+            // still named, because "that was a rising tone where a neutral one
+            // was asked for" is something a learner can act on.
             (
-                ToneVerdict::Match,
-                score,
+                ToneVerdict::OffTarget,
+                FLAT_OFF_TARGET_SCORE,
                 Some(heard),
                 format!(
-                    "That is {} (tone {}), which is what the character asks for.",
-                    tone_name(expected_tone),
-                    expected_tone
-                ),
-            )
-        } else if (expected_distance - best).abs() < DECIDE_MARGIN {
-            (
-                ToneVerdict::Uncertain,
-                score,
-                Some(heard),
-                format!(
-                    "Between tone {} ({}) and tone {} ({}). Say it again, a little longer.",
-                    expected_tone,
-                    tone_name(expected_tone),
-                    heard,
+                    "Heard {}, but this asks for a neutral tone. {NEUTRAL_LIMIT}",
                     tone_name(heard)
                 ),
             )
         } else {
-            (
-                ToneVerdict::OffTarget,
-                score,
-                Some(heard),
-                format!(
-                    "Heard {}, but the character asks for tone {} ({}).",
-                    tone_name(heard),
-                    expected_tone,
-                    tone_name(expected_tone)
-                ),
-            )
+            let expected_distance = distances
+                .iter()
+                .find(|(t, _)| *t == expected_tone)
+                .map(|(_, d)| *d)
+                .expect("the expected tone is one of the four");
+            let score = 100.0 * (-expected_distance / SCORE_DECAY_ST).exp();
+
+            if heard == expected_tone {
+                (
+                    ToneVerdict::Match,
+                    score,
+                    Some(heard),
+                    format!(
+                        "That is {} (tone {}), which is what the character asks for.",
+                        tone_name(expected_tone),
+                        expected_tone
+                    ),
+                )
+            } else if (expected_distance - best).abs() < DECIDE_MARGIN {
+                (
+                    ToneVerdict::Uncertain,
+                    score,
+                    Some(heard),
+                    format!(
+                        "Between tone {} ({}) and tone {} ({}). Say it again, a little longer.",
+                        expected_tone,
+                        tone_name(expected_tone),
+                        heard,
+                        tone_name(heard)
+                    ),
+                )
+            } else {
+                (
+                    ToneVerdict::OffTarget,
+                    score,
+                    Some(heard),
+                    format!(
+                        "Heard {}, but the character asks for tone {} ({}).",
+                        tone_name(heard),
+                        expected_tone,
+                        tone_name(expected_tone)
+                    ),
+                )
+            }
         }
     };
 
@@ -1108,7 +1160,7 @@ pub fn analyze(samples: &[f32], sample_rate: u32, expected: &[u8]) -> ToneReport
                 "I could not hear enough voice to judge. Hold the button, then say the syllable.",
             );
         };
-        let attempt = if (1..=4).contains(&expected[0]) {
+        let attempt = if is_scorable(expected[0]) {
             score_contour(&contour, expected[0])
         } else {
             unsupported(expected[0])
@@ -1169,7 +1221,7 @@ pub fn analyze(samples: &[f32], sample_rate: u32, expected: &[u8]) -> ToneReport
 
     for (index, (from, to)) in edges.iter().enumerate() {
         let expected_tone = expected[index];
-        let attempt = if (1..=4).contains(&expected_tone) {
+        let attempt = if is_scorable(expected_tone) {
             match contour_in(&track, *from, *to) {
                 Some(contour) => score_contour(&contour, expected_tone),
                 None => ToneAttempt::unheard(
@@ -1710,21 +1762,35 @@ mod tests {
     }
 
     #[test]
-    fn a_neutral_syllable_is_carried_but_not_scored() {
-        // 妈妈: tone 1 then the neutral tone. The second cannot be judged, and
-        // saying so must not drag the first one down.
+    fn a_neutral_syllable_is_scored_for_being_level() {
+        // 妈妈: tone 1 then the neutral tone. Both are level here, so both match
+        // — and the neutral one says what was and was not judged.
         let samples = say_word(&[(2.0, 2.0), (-1.0, -1.0)], 220, 60);
         let report = analyze(&samples, TARGET_SAMPLE_RATE, &[1, 5]);
 
         assert_eq!(report.syllables.len(), 2);
-        assert_eq!(report.syllables[1].attempt.verdict, ToneVerdict::Uncertain);
-        assert!(report.syllables[1]
-            .attempt
-            .detail
-            .contains("four full tones"));
-        // The aggregate ignores it: one scorable syllable, and it matched.
+        assert_eq!(report.syllables[1].attempt.verdict, ToneVerdict::Match);
+        assert_eq!(report.syllables[1].attempt.heard_tone, Some(5));
+        assert!(
+            report.syllables[1].attempt.detail.contains("neutral"),
+            "{}",
+            report.syllables[1].attempt.detail
+        );
         assert_eq!(report.verdict, ToneVerdict::Match, "{}", report.detail);
-        assert_eq!(report.score, report.syllables[0].attempt.score);
+    }
+
+    #[test]
+    fn a_neutral_tone_asked_for_and_given_a_moving_tone_is_wrong() {
+        // The one thing a neutral tone cannot be is a clear movement, and that
+        // is answered by a rule rather than by a distance — there is no neutral
+        // template to measure against, because its height comes from the
+        // syllable before it.
+        let samples = say(8000, &[(0.0, -3.0), (1.0, 3.0)], 50);
+        let attempt = analyze_tone(&samples, TARGET_SAMPLE_RATE, 5);
+        assert_eq!(attempt.verdict, ToneVerdict::OffTarget, "{}", attempt.detail);
+        assert_eq!(attempt.heard_tone, Some(2), "a rising contour was heard");
+        assert!(attempt.detail.contains("neutral"), "{}", attempt.detail);
+        assert!((0.0..=100.0).contains(&attempt.score));
     }
 
     #[test]
@@ -1771,12 +1837,18 @@ mod tests {
     }
 
     #[test]
-    fn neutral_and_absent_tones_are_refused_rather_than_guessed() {
-        for tone in [0u8, 5] {
-            let attempt = analyze_tone(&vec![0.1f32; 16_000], TARGET_SAMPLE_RATE, tone);
-            assert_eq!(attempt.verdict, ToneVerdict::Uncertain);
-            assert!(attempt.detail.contains("four full tones"), "{}", attempt.detail);
-        }
+    fn a_tone_that_is_not_a_tone_is_refused_rather_than_guessed() {
+        // 0 is "no tone number at all", which is a fact about the reading rather
+        // than about the recording, so it is refused whatever was heard. Neutral
+        // (5) used to be refused alongside it and is now judged — see
+        // `a_neutral_syllable_is_scored_for_being_level`.
+        let attempt = analyze_tone(&vec![0.1f32; 16_000], TARGET_SAMPLE_RATE, 0);
+        assert_eq!(attempt.verdict, ToneVerdict::Uncertain);
+        assert!(
+            attempt.detail.contains("can be judged"),
+            "{}",
+            attempt.detail
+        );
     }
 
     #[test]
