@@ -226,6 +226,36 @@ fn upgrade(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE UNIQUE INDEX IF NOT EXISTS vocab_entry_uuid ON vocab_entry (uuid)",
     )?;
 
+    // The course cursor is one row and moves for one reason, so it needs only a
+    // tiebreak for two devices moving it inside the same second — the same problem
+    // the entry stamp solves with the same answer.
+    if !has_column(conn, "course_cursor", "device_id")? {
+        conn.execute_batch("ALTER TABLE course_cursor ADD COLUMN device_id TEXT")?;
+        conn.execute(
+            "UPDATE course_cursor SET device_id = ?1 WHERE device_id IS NULL",
+            [&device],
+        )?;
+    }
+
+    // A per-row counter, bumped on every write by whichever device makes it, and the
+    // third part of the stamp after the time and the device.
+    //
+    // It is here because time and device are not enough, and the failure is worse
+    // than it sounds. `updated_at` is whole seconds, so a learner who adds an entry
+    // and deletes it again inside one second produces two writes with the *same*
+    // stamp from the *same* device — and a peer holding the first of them has
+    // nothing to compare against, so it keeps the entry and the two devices stay
+    // different for ever with no later write to heal them. The counter makes a
+    // device's own writes ordered, so the second always beats the first, and every
+    // device computes the same answer from the same records.
+    for table in ["vocab_entry", "vocab_group", "course_cursor"] {
+        if !has_column(conn, table, "revision")? {
+            conn.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
+            ))?;
+        }
+    }
+
     Ok(())
 }
 

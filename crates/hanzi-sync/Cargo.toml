@@ -28,3 +28,11 @@ base64 = "0.21"
 
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# The end-to-end tests age a stamp directly, so that "later" is a fact rather than a
+# same-second tie — `updated_at` is whole seconds, and two operations in one test
+# share one. Already in the build graph through `hanzi-store`, so this adds no
+# upstream project, and it is a test-only dependency because nothing in the crate
+# itself touches SQL.
+rusqlite = { version = "0.31", features = ["bundled"] }

@@ -658,6 +658,10 @@
           <span class="status fine">
             Last time: {sync.last.published} sent, {sync.last.pulled} received,
             {sync.last.recomputed} schedule{sync.last.recomputed === 1 ? "" : "s"} updated{#if sync
+              .last.vocabChanged > 0}, {sync.last.vocabChanged} list {sync.last.vocabChanged === 1
+              ? "entry"
+              : "entries"} updated{/if}{#if sync.last.cursorMoved}, course position
+              moved{/if}{#if sync
               .last.leftAlone > 0}, {sync.last.leftAlone} left as {sync.last.leftAlone === 1
               ? "it was"
               : "they were"}{/if}.

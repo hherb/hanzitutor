@@ -127,6 +127,19 @@ pub(crate) fn cursor(conn: &mut Connection, dir: &Path) -> Result<(), ProgressEr
         return Ok(());
     }
     let file = dir.join(CURSOR_FILE);
+
+    // Nothing to import means nothing to write, and that guard is load-bearing
+    // rather than tidy. The upsert below replaces the whole row, so a device that
+    // has already been *synced* into position 340 would have it overwritten with
+    // the default 0 by its own "import" of a file that does not exist. Reading a
+    // missing document as an empty one is right for a store; writing it over a row
+    // somebody else put there is not.
+    if !file.exists() {
+        let tx = conn.transaction().map_err(|e| progress_error(&db, e))?;
+        set_meta(&tx, CURSOR_KEY, &marker(&file)).map_err(|e| progress_error(&db, e))?;
+        return tx.commit().map_err(|e| progress_error(&db, e));
+    }
+
     let store = CursorStore::open(&file).map_err(|e| named(&file, e))?;
     let document = store.document();
 

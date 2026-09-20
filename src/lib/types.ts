@@ -639,6 +639,10 @@ export interface SyncSummaryView {
   pulled: number;
   recomputed: number;
   leftAlone: number;
+  /** Vocabulary entries and groups whose stored form changed. */
+  vocabChanged: number;
+  /** Whether the place in the course moved on this device. */
+  cursorMoved: boolean;
 }
 
 /**

@@ -45,7 +45,7 @@ progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
 measure**, the **durable study store**, **tone practice**, **speech
 recognition** and optional **cross-device sync** through your own Dropbox — for
 characters *and words*, on desktop and on both mobile systems — are all implemented
-and tested; **374 automated tests** pass, and 4 more are
+and tested; **383 automated tests** pass, and 4 more are
 ignored unless a microphone or the speech model is present. A
 signed Android
 release bundle is built and runs on a physical phone, and the recognition model
@@ -947,7 +947,7 @@ store/                      the Play listing: copy, answers, icon, artwork
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 374 tests, 4 more ignored
+pnpm test             # the whole Rust suite: 383 tests, 4 more ignored
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
@@ -1251,8 +1251,11 @@ dragging or by clicking. The headline gaps are now:
    devices at once** — a MacBook, an iPhone and an Android phone — merging each way,
    including a device that had never seen a character picking up its schedule from
    another's log. What is still missing is named at the end of ROADMAP M13: an
-   automatic sync at launch, the vocabulary list and the course cursor, and the
-   baseline for a schedule whose log does not go back to its first attempt.
+   automatic sync at launch and the baseline for a schedule whose log does not go
+   back to its first attempt. The vocabulary list and the course cursor travel too:
+   an entry is edited and deleted rather than only appended to, so it is settled by
+   last-writer-wins on a three-part stamp, and the counters that only mean something
+   on the device that did the practising stay there.
 
 If you are picking this project up to continue development, read
 **[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the

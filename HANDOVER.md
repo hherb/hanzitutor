@@ -1559,6 +1559,15 @@ downstream of them is covered by the IPC tests, which drive
   point of that state. The damage is recoverable either way — the log kept every
   attempt and the next sync rebuilds from it — but it is a silently wrong due date
   until then. Two
+  On the vocabulary side, three rules are load-bearing. **The stamp is
+  `(updated_at, device_id, revision)` and all three parts are needed** — the time for
+  the ordinary case, the device for two devices writing in one second, and the
+  revision for two writes by *one* device in one second, which is what adding and
+  then immediately deleting an entry looks like. **The stamp moves only when what the
+  learner typed moves**: practice counters are this device's own, because one stamp
+  per entry means practising could otherwise clobber an edit. And **`vocab_view`
+  returns tombstones** — a removal that does not travel is a removal the other device
+  undoes. Two
   properties already in the code decide the whole design, so do not "improve" them
   away: `attempt` is append-only — a grow-only set, which merges with no conflict
   to resolve — and `Sm2::review` is pure, so a card is a *fold over the log*

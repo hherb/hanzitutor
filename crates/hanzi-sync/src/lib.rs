@@ -29,6 +29,7 @@
 //! can be tested against a temporary directory and a transport can be added
 //! without touching it.
 
+mod document;
 mod dropbox;
 mod http;
 mod local;
@@ -36,6 +37,10 @@ mod oauth;
 mod shard;
 mod store;
 
+pub use document::{
+    cursor_shard_name, merge_cursor, merge_vocab, read_cursor, read_vocab, vocab_shard_name,
+    write_cursor, write_vocab,
+};
 pub use dropbox::DropboxStore;
 pub use http::{Http, UreqHttp};
 pub use local::{full_log, own_log, publish, pull, recompute, sync, Summary};

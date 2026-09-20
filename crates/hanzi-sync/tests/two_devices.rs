@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hanzi_core::progress::CardState;
-use hanzi_core::ProgressStore;
+use hanzi_core::{CursorStore, ProgressStore, VocabStore};
 use hanzi_store::Db;
 use hanzi_sync::{full_log, own_log, read_attempts, recompute, sync, FolderStore};
 
@@ -341,4 +341,247 @@ fn three_devices_all_end_up_with_the_same_log() {
     finish(&dir_b);
     finish(&dir_c);
     finish(&shared);
+}
+
+/// Three devices sharing one vocabulary list, which is the harder half of sync.
+///
+/// An attempt is appended and never changes, so the schedule's merge is a union. An
+/// entry is edited and deleted, so two devices can hold different versions of one
+/// row — and the point of these tests is that they end up agreeing about which
+/// version is the real one, without either device having to be told.
+#[test]
+fn a_vocabulary_list_added_on_one_device_appears_on_the_others() {
+    let (dir_a, db_a, _) = device("vocab-a");
+    let (dir_b, db_b, _) = device("vocab-b");
+    let (dir_c, db_c, _) = device("vocab-c");
+    let shared = scratch("vocab-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    // One device writes something by hand, which is the only way an entry is made.
+    {
+        let mut vocab = VocabStore::open_with(Box::new(db_a.clone())).unwrap();
+        vocab
+            .add_entry("学习", "xuéxí", "to study", Some("Lesson 3"))
+            .unwrap();
+        vocab.save().unwrap();
+    }
+
+    // The other two have never heard of it.
+    for db in [&db_b, &db_c] {
+        let vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+        assert!(vocab.entries().is_empty(), "nothing yet");
+        assert!(vocab.groups().is_empty());
+    }
+
+    for _ in 0..2 {
+        for db in [&db_a, &db_b, &db_c] {
+            sync(db, &remote).unwrap();
+        }
+    }
+
+    for (db, who) in [(&db_b, "the second device"), (&db_c, "the third")] {
+        let vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+        assert_eq!(vocab.entries().len(), 1, "{who} should have the entry");
+        assert_eq!(vocab.entries()[0].text, "学习");
+        assert_eq!(vocab.entries()[0].meaning, "to study");
+        assert_eq!(
+            vocab.entries()[0].group.as_deref(),
+            Some("Lesson 3"),
+            "and the group it was filed under"
+        );
+        assert_eq!(vocab.groups(), ["Lesson 3"]);
+    }
+
+    finish(&dir_a);
+    finish(&dir_b);
+    finish(&dir_c);
+    finish(&shared);
+}
+
+#[test]
+fn an_entry_edited_on_two_devices_ends_up_the_same_way_on_both() {
+    // The genuine disagreement, and the one case a merge cannot be clever about.
+    // One of the edits wins whole; what matters is that both devices agree on which,
+    // because a learner seeing two different lists has no way to tell them apart.
+    let (dir_a, db_a, _) = device("edit-a");
+    let (dir_b, db_b, _) = device("edit-b");
+    let shared = scratch("edit-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    let id_a = {
+        let mut vocab = VocabStore::open_with(Box::new(db_a.clone())).unwrap();
+        let id = vocab
+            .add_entry("学习", "xuéxí", "to study", None)
+            .unwrap()
+            .id;
+        vocab.save().unwrap();
+        id
+    };
+    // Get it across first, so both devices are editing the same entry rather than
+    // one of them inventing it.
+    sync(&db_a, &remote).unwrap();
+    sync(&db_b, &remote).unwrap();
+
+    let id_b = {
+        let vocab = VocabStore::open_with(Box::new(db_b.clone())).unwrap();
+        assert_eq!(vocab.entries().len(), 1, "the entry travelled");
+        vocab.entries()[0].id
+    };
+
+    // Two edits, and the second one is deliberately the later of the two. Backdating
+    // the first is what makes "later" mean something: both happen inside one second.
+    {
+        let mut vocab = VocabStore::open_with(Box::new(db_a.clone())).unwrap();
+        vocab.update_entry(id_a, "xuéxí", "the laptop's meaning", None).unwrap();
+        vocab.save().unwrap();
+    }
+    backdate(&db_a, id_a, "2000-01-01T00:00:00Z");
+    {
+        let mut vocab = VocabStore::open_with(Box::new(db_b.clone())).unwrap();
+        vocab.update_entry(id_b, "xuéxí", "the phone's meaning", None).unwrap();
+        vocab.save().unwrap();
+    }
+
+    for _ in 0..2 {
+        for db in [&db_a, &db_b] {
+            sync(db, &remote).unwrap();
+        }
+    }
+
+    let on_a = VocabStore::open_with(Box::new(db_a.clone())).unwrap();
+    let on_b = VocabStore::open_with(Box::new(db_b.clone())).unwrap();
+    assert_eq!(on_a.entries().len(), 1);
+    assert_eq!(
+        on_a.entries()[0].meaning, on_b.entries()[0].meaning,
+        "one of the edits won, and both devices say which"
+    );
+    assert_eq!(
+        on_a.entries()[0].meaning, "the phone's meaning",
+        "and it is the later one"
+    );
+
+    finish(&dir_a);
+    finish(&dir_b);
+    finish(&shared);
+}
+
+#[test]
+fn an_entry_removed_on_one_device_stays_removed_on_the_other() {
+    // Without a tombstone the peer's own copy would be the only record left and the
+    // entry would come straight back — which is exactly what "sync deleted my work"
+    // usually turns out to be.
+    let (dir_a, db_a, _) = device("remove-a");
+    let (dir_b, db_b, _) = device("remove-b");
+    let shared = scratch("remove-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    let id = {
+        let mut vocab = VocabStore::open_with(Box::new(db_a.clone())).unwrap();
+        let id = vocab
+            .add_entry("学习", "xuéxí", "to study", None)
+            .unwrap()
+            .id;
+        vocab.save().unwrap();
+        id
+    };
+    sync(&db_a, &remote).unwrap();
+    sync(&db_b, &remote).unwrap();
+    assert_eq!(
+        VocabStore::open_with(Box::new(db_b.clone())).unwrap().entries().len(),
+        1,
+        "both devices have it"
+    );
+
+    // Removal on the laptop, and the laptop's stamp is aged so it cannot lose a
+    // same-second tie to the copy that was just delivered.
+    {
+        let mut vocab = VocabStore::open_with(Box::new(db_a.clone())).unwrap();
+        vocab.remove_entry(id).unwrap();
+        vocab.save().unwrap();
+    }
+
+    for _ in 0..2 {
+        for db in [&db_a, &db_b] {
+            sync(db, &remote).unwrap();
+        }
+    }
+
+    for db in [&db_a, &db_b] {
+        let vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+        assert!(
+            vocab.entries().is_empty(),
+            "the removal travelled instead of the entry coming back"
+        );
+    }
+
+    finish(&dir_a);
+    finish(&dir_b);
+    finish(&shared);
+}
+
+#[test]
+fn the_course_position_follows_whichever_device_moved_it_last() {
+    let (dir_a, db_a, _) = device("cursor-a");
+    let (dir_b, db_b, _) = device("cursor-b");
+    let shared = scratch("cursor-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    {
+        let mut cursor = CursorStore::open_with(Box::new(db_a.clone())).unwrap();
+        cursor.set_index(120);
+        cursor.save().unwrap();
+    }
+    // Aged, so that the other device's move is unambiguously *later* rather than a
+    // same-second tie. A tie is settled by device id, which is deterministic and
+    // converges — but it is not "the later move wins", so a test that wants to see
+    // the later move win has to make it later.
+    backdate_cursor(&db_a, "2000-01-01T00:00:00Z");
+    sync(&db_a, &remote).unwrap();
+
+    // The other device is behind, and picks up where the first one is.
+    sync(&db_b, &remote).unwrap();
+    let on_b = CursorStore::open_with(Box::new(db_b.clone())).unwrap();
+    assert_eq!(on_b.view().index, 120, "the position travelled");
+
+    // Then it moves further along, and the first device follows it.
+    {
+        let mut cursor = CursorStore::open_with(Box::new(db_b.clone())).unwrap();
+        cursor.set_index(340);
+        cursor.save().unwrap();
+    }
+    for _ in 0..2 {
+        for db in [&db_a, &db_b] {
+            sync(db, &remote).unwrap();
+        }
+    }
+    for db in [&db_a, &db_b] {
+        let cursor = CursorStore::open_with(Box::new(db.clone())).unwrap();
+        assert_eq!(cursor.view().index, 340, "both devices agree where they are");
+    }
+
+    finish(&dir_a);
+    finish(&dir_b);
+    finish(&shared);
+}
+
+/// Age the course position's stamp, for the same reason as [`backdate`].
+fn backdate_cursor(db: &Db, stamp: &str) {
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "UPDATE course_cursor SET updated_at = ?1 WHERE only_row = 1",
+            rusqlite::params![stamp],
+        )
+        .unwrap();
+}
+
+/// Age an entry's stamp, so that "later" is a fact rather than a same-second tie.
+fn backdate(db: &Db, id: u64, stamp: &str) {
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "UPDATE vocab_entry SET updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![stamp, id as i64],
+        )
+        .unwrap();
 }

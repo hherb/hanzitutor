@@ -581,6 +581,21 @@ impl CursorSink for Db {
                     })
                 },
             )
+            .or_else(|e| match e {
+                // No row means nobody has moved the cursor, which is the beginning
+                // of the course rather than a failure. It was an error until sync
+                // existed, because an import always wrote a row; with that import
+                // no longer inventing one for a document that is not there, this is
+                // the ordinary state of a device nobody has paged through yet — and
+                // it must stay an *absent row*, since that is what tells the sync
+                // that this device has no course position to publish.
+                rusqlite::Error::QueryReturnedNoRows => Ok(CursorDocument {
+                    version: hanzi_core::progress::FORMAT_VERSION,
+                    index: 0,
+                    updated_at: None,
+                }),
+                other => Err(other),
+            })
             .map_err(|e| progress_error(&path, e))?;
         Ok(document)
     }
@@ -588,12 +603,19 @@ impl CursorSink for Db {
     fn save(&mut self, document: &CursorDocument) -> Result<(), ProgressError> {
         let path = self.path();
         let conn = self.lock();
+        // The device id is written as well as the time, because the pair is what
+        // settles a course position two devices moved inside the same second. A
+        // local move that kept a peer's device id would leave the stamp saying
+        // somebody else was last when this device was.
         conn.execute(
-            "INSERT INTO course_cursor (only_row, position, updated_at) VALUES (1, ?1, ?2)
+            "INSERT INTO course_cursor (only_row, position, updated_at, device_id)
+             VALUES (1, ?1, ?2, ?3)
              ON CONFLICT(only_row) DO UPDATE SET
                  position = excluded.position,
-                 updated_at = excluded.updated_at",
-            params![document.index as i64, document.updated_at],
+                 updated_at = excluded.updated_at,
+                 device_id = excluded.device_id,
+                 revision = course_cursor.revision + 1",
+            params![document.index as i64, document.updated_at, self.device_id],
         )
         .map_err(|e| progress_error(&path, e))?;
         Ok(())
@@ -684,7 +706,8 @@ impl VocabSink for Db {
         for name in group_names(&tx, false).map_err(|e| vocab_error(&path, e))? {
             if !wanted.contains(name.as_str()) {
                 tx.execute(
-                    "UPDATE vocab_group SET deleted = 1, updated_at = ?1, device_id = ?2
+                    "UPDATE vocab_group SET deleted = 1, updated_at = ?1, device_id = ?2,
+                             revision = revision + 1
                      WHERE name = ?3",
                     params![now, device, name],
                 )
@@ -708,6 +731,10 @@ impl VocabSink for Db {
                          WHEN vocab_group.position <> excluded.position
                            OR vocab_group.deleted <> 0
                          THEN excluded.device_id ELSE vocab_group.device_id END,
+                     revision = CASE
+                         WHEN vocab_group.position <> excluded.position
+                           OR vocab_group.deleted <> 0
+                         THEN vocab_group.revision + 1 ELSE vocab_group.revision END,
                      position = excluded.position,
                      deleted = 0",
                 params![name, position as i64, now, device],
@@ -719,7 +746,8 @@ impl VocabSink for Db {
         for id in entry_ids(&tx, false).map_err(|e| vocab_error(&path, e))? {
             if !kept.contains(&id) {
                 tx.execute(
-                    "UPDATE vocab_entry SET deleted = 1, updated_at = ?1, device_id = ?2
+                    "UPDATE vocab_entry SET deleted = 1, updated_at = ?1, device_id = ?2,
+                             revision = revision + 1
                      WHERE id = ?3",
                     params![now, device, id],
                 )
@@ -803,6 +831,13 @@ fn write_entry(
                    OR IFNULL(vocab_entry.group_name, '') <> IFNULL(excluded.group_name, '')
                    OR vocab_entry.deleted <> 0
                  THEN excluded.device_id ELSE vocab_entry.device_id END,
+             revision = CASE
+                 WHEN vocab_entry.text <> excluded.text
+                   OR vocab_entry.pinyin <> excluded.pinyin
+                   OR vocab_entry.meaning <> excluded.meaning
+                   OR IFNULL(vocab_entry.group_name, '') <> IFNULL(excluded.group_name, '')
+                   OR vocab_entry.deleted <> 0
+                 THEN vocab_entry.revision + 1 ELSE vocab_entry.revision END,
              text = excluded.text,
              pinyin = excluded.pinyin,
              meaning = excluded.meaning,
@@ -1024,4 +1059,435 @@ pub(crate) fn set_meta(conn: &Connection, key: &str, value: &str) -> rusqlite::R
         params![key, value],
     )?;
     Ok(())
+}
+
+// ---- what sync reads and writes -------------------------------------------
+//
+// The schedule's sync surface is the attempt log, which is a different shape of
+// question and lives above. What follows is the *vocabulary list* and the course
+// cursor, and both are the harder kind: a row that is edited rather than appended
+// to, so two devices can hold different versions of it and the merge has to settle
+// which is right. The types below are the whole of that interface — a record with
+// its content and the stamp that settles arguments about it.
+//
+// The practice counters are deliberately absent from [`SyncedEntry`]. There is one
+// stamp per entry, so if practising moved the stamp a learner could undo an edit
+// made on another device just by practising afterwards. Counters stay where the
+// practice happened; what travels is what the learner wrote. See ROADMAP M13.
+
+/// One vocabulary entry as it travels between devices.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SyncedEntry {
+    /// The name no other device will ever pick for a different entry.
+    pub uuid: String,
+    pub text: String,
+    pub pinyin: String,
+    pub meaning: String,
+    pub group: Option<String>,
+    pub added_at: String,
+    /// When the learner last changed something they typed. Whole seconds.
+    pub updated_at: String,
+    /// Which device wrote that version, which is what settles a same-second tie
+    /// between two devices.
+    pub device_id: String,
+    /// Which of that device's writes this is, which is what settles a same-second
+    /// tie between two writes by *one* device — see the schema note.
+    pub revision: i64,
+    /// Removed, but kept as a row so that a peer holding a copy hears about it.
+    pub deleted: bool,
+}
+
+/// One vocabulary group as it travels between devices.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SyncedGroup {
+    /// A group is named by its name: there is nothing else to name it by, so a
+    /// rename arrives as one name leaving and another arriving.
+    pub name: String,
+    pub position: i64,
+    pub updated_at: String,
+    pub device_id: String,
+    pub revision: i64,
+    pub deleted: bool,
+}
+
+/// The course cursor as it travels between devices.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SyncedCursor {
+    pub position: i64,
+    pub updated_at: String,
+    pub device_id: String,
+    pub revision: i64,
+}
+
+impl Db {
+    /// This device's whole vocabulary view, tombstones included.
+    ///
+    /// Tombstones are in here on purpose: a removal that does not travel is a
+    /// removal the other device undoes, because it still has its own copy and has
+    /// no way to tell "gone" from "not heard about yet".
+    pub fn vocab_view(&self) -> Result<(Vec<SyncedEntry>, Vec<SyncedGroup>), String> {
+        let conn = self.lock();
+        let path = self.path();
+
+        let mut entries = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT uuid, text, pinyin, meaning, group_name, added_at,
+                            updated_at, device_id, revision, deleted
+                     FROM vocab_entry WHERE uuid IS NOT NULL ORDER BY id",
+                )
+                .map_err(|e| at(&path, e))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(SyncedEntry {
+                        uuid: row.get(0)?,
+                        text: row.get(1)?,
+                        pinyin: row.get(2)?,
+                        meaning: row.get(3)?,
+                        group: row.get(4)?,
+                        added_at: row.get(5)?,
+                        updated_at: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                        device_id: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                        revision: row.get(8)?,
+                        deleted: row.get::<_, i64>(9)? != 0,
+                    })
+                })
+                .map_err(|e| at(&path, e))?;
+            for row in rows {
+                entries.push(row.map_err(|e| at(&path, e))?);
+            }
+        }
+
+        let mut groups = Vec::new();
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name, position, updated_at, device_id, revision, deleted
+                     FROM vocab_group ORDER BY position, name",
+                )
+                .map_err(|e| at(&path, e))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(SyncedGroup {
+                        name: row.get(0)?,
+                        position: row.get(1)?,
+                        updated_at: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                        device_id: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                        revision: row.get(4)?,
+                        deleted: row.get::<_, i64>(5)? != 0,
+                    })
+                })
+                .map_err(|e| at(&path, e))?;
+            for row in rows {
+                groups.push(row.map_err(|e| at(&path, e))?);
+            }
+        }
+
+        Ok((entries, groups))
+    }
+
+    /// Write a merged vocabulary view, returning how many rows changed.
+    ///
+    /// Content and stamps are written **exactly as given**, which is the whole
+    /// point: a merge that let the local store re-stamp what it had just been
+    /// handed would make every device the winner of every argument it took part in.
+    /// The practice counters are not touched, for the reason the module note gives.
+    ///
+    /// A tombstone for something this device has never held is skipped rather than
+    /// created. There is nothing here to mark removed, and rows conjured from other
+    /// devices' deletions would accumulate for ever.
+    pub fn apply_vocab_view(
+        &self,
+        entries: &[SyncedEntry],
+        groups: &[SyncedGroup],
+    ) -> Result<usize, String> {
+        let path = self.path();
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(|e| at(&path, e))?;
+        let mut changed = 0usize;
+
+        for group in groups {
+            let known = group_exists(&tx, &group.name).map_err(|e| at(&path, e))?;
+            if !known && group.deleted {
+                continue;
+            }
+            // Compared against everything that gets written, `device_id` included:
+            // skipping it would leave this row stamped with this device while the
+            // merged record said another one wrote it, and the next merge would
+            // compare two stamps that disagree about who was last.
+            let before = group_state(&tx, &group.name).map_err(|e| at(&path, e))?;
+            let after = (
+                group.position,
+                group.updated_at.clone(),
+                group.device_id.clone(),
+                group.revision,
+                group.deleted,
+            );
+            if before.as_ref().is_some_and(|state| *state == after) {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO vocab_group
+                         (name, position, updated_at, device_id, revision, deleted)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(name) DO UPDATE SET
+                         position = excluded.position,
+                         updated_at = excluded.updated_at,
+                         device_id = excluded.device_id,
+                         revision = excluded.revision,
+                         deleted = excluded.deleted",
+                params![
+                    group.name,
+                    group.position,
+                    group.updated_at,
+                    group.device_id,
+                    group.revision,
+                    group.deleted as i64,
+                ],
+            )
+            .map_err(|e| at(&path, e))?;
+            changed += 1;
+        }
+
+        let mut next_id = meta_i64(&tx, "vocab_next_id")
+            .map_err(|e| at(&path, e))?
+            .unwrap_or(1)
+            .max(1);
+        for entry in entries {
+            match id_for_uuid(&tx, &entry.uuid).map_err(|e| at(&path, e))? {
+                Some(id) => {
+                    let before = entry_state(&tx, id).map_err(|e| at(&path, e))?;
+                    let after = (
+                        entry.text.clone(),
+                        entry.pinyin.clone(),
+                        entry.meaning.clone(),
+                        entry.group.clone(),
+                        entry.added_at.clone(),
+                        entry.updated_at.clone(),
+                        entry.device_id.clone(),
+                        entry.revision,
+                        entry.deleted,
+                    );
+                    tx.execute(
+                        "UPDATE vocab_entry SET
+                             text = ?1, pinyin = ?2, meaning = ?3, group_name = ?4,
+                             added_at = ?5, updated_at = ?6, device_id = ?7,
+                             revision = ?8, deleted = ?9
+                         WHERE id = ?10",
+                        params![
+                            entry.text,
+                            entry.pinyin,
+                            entry.meaning,
+                            entry.group,
+                            entry.added_at,
+                            entry.updated_at,
+                            entry.device_id,
+                            entry.revision,
+                            entry.deleted as i64,
+                            id,
+                        ],
+                    )
+                    .map_err(|e| at(&path, e))?;
+                    if before.as_ref().is_some_and(|state| *state == after) {
+                        continue;
+                    }
+                }
+                None => {
+                    if entry.deleted {
+                        continue;
+                    }
+                    // A row this device has never held, so its practice counters
+                    // start where a new entry's do — empty. They are this device's
+                    // own from here on.
+                    tx.execute(
+                        "INSERT INTO vocab_entry
+                             (id, text, pinyin, meaning, group_name, added_at, attempts,
+                              best_score, last_practised, uuid, updated_at, deleted,
+                              device_id, revision)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, NULL, NULL, ?7, ?8, 0, ?9, ?10)",
+                        params![
+                            next_id,
+                            entry.text,
+                            entry.pinyin,
+                            entry.meaning,
+                            entry.group,
+                            entry.added_at,
+                            entry.uuid,
+                            entry.updated_at,
+                            entry.device_id,
+                        entry.revision,
+                        ],
+                    )
+                    .map_err(|e| at(&path, e))?;
+                    next_id += 1;
+                }
+            }
+            changed += 1;
+        }
+        set_meta(&tx, "vocab_next_id", &next_id.to_string()).map_err(|e| at(&path, e))?;
+
+        tx.commit().map_err(|e| at(&path, e))?;
+        Ok(changed)
+    }
+
+    /// The course cursor as it travels, or `None` when nobody has moved it.
+    pub fn cursor_view(&self) -> Result<Option<SyncedCursor>, String> {
+        let conn = self.lock();
+        let path = self.path();
+        let found = conn
+            .query_row(
+                "SELECT position, updated_at, device_id, revision FROM course_cursor WHERE only_row = 1",
+                [],
+                |row| {
+                    Ok(SyncedCursor {
+                        position: row.get(0)?,
+                        updated_at: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        device_id: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                        revision: row.get(3)?,
+                    })
+                },
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .map_err(|e| at(&path, e))?;
+        Ok(found)
+    }
+
+    /// Move the cursor to a merged position, returning whether it actually moved.
+    pub fn set_cursor_from_sync(&self, cursor: &SyncedCursor) -> Result<bool, String> {
+        let (path, conn) = (self.path(), self.lock());
+        let before = conn
+            .query_row(
+                "SELECT position, updated_at, device_id, revision FROM course_cursor
+                 WHERE only_row = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .ok();
+        let after = (
+            cursor.position,
+            cursor.updated_at.clone(),
+            cursor.device_id.clone(),
+        cursor.revision,
+        );
+        conn.execute(
+            "INSERT INTO course_cursor (only_row, position, updated_at, device_id, revision)
+             VALUES (1, ?1, ?2, ?3, ?4)
+             ON CONFLICT(only_row) DO UPDATE SET
+                 position = excluded.position,
+                 updated_at = excluded.updated_at,
+                 device_id = excluded.device_id,
+                 revision = excluded.revision",
+            params![
+                cursor.position,
+                cursor.updated_at,
+                cursor.device_id,
+                cursor.revision
+            ],
+        )
+        .map_err(|e| at(&path, e))?;
+        Ok(before != Some(after))
+    }
+}
+
+/// Whether a group name is in the table at all, tombstoned or not.
+fn group_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    conn.query_row("SELECT 1 FROM vocab_group WHERE name = ?1", [name], |_| {
+        Ok(())
+    })
+    .map(|_| true)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(false),
+        other => Err(other),
+    })
+}
+
+/// The part of a group a change is judged by, so that a rewrite of identical
+/// values is not reported as a change.
+type GroupState = (i64, String, String, i64, bool);
+
+fn group_state(conn: &Connection, name: &str) -> rusqlite::Result<Option<GroupState>> {
+    conn.query_row(
+        "SELECT position, updated_at, device_id, revision, deleted FROM vocab_group WHERE name = ?1",
+        [name],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)? != 0,
+            ))
+        },
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other),
+    })
+}
+
+/// The part of an entry a change is judged by. The practice counters are not in it.
+type EntryState = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    i64,
+    bool,
+);
+
+fn entry_state(conn: &Connection, id: i64) -> rusqlite::Result<Option<EntryState>> {
+    conn.query_row(
+        "SELECT text, pinyin, meaning, group_name, added_at, updated_at,
+                device_id, revision, deleted
+         FROM vocab_entry WHERE id = ?1",
+        [id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)? != 0,
+            ))
+        },
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other),
+    })
+}
+
+/// The local id of the entry carrying a uuid, if this device has it.
+fn id_for_uuid(conn: &Connection, uuid: &str) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM vocab_entry WHERE uuid = ?1",
+        [uuid],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other),
+    })
 }

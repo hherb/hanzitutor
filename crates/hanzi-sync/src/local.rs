@@ -47,6 +47,9 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use hanzi_core::progress::{ProgressError, ProgressSink};
 use hanzi_store::{Db, IncomingAttempt, LoggedAttempt};
 
+use crate::document::{
+    merge_cursor, merge_vocab, read_cursor, read_vocab, write_cursor, write_vocab,
+};
 use crate::shard::{fold_cards, merge_attempts, read_attempts, write_attempts, MergedAttempt};
 use crate::store::{RemoteStore, SyncError};
 
@@ -68,13 +71,21 @@ pub struct Summary {
     pub recomputed: usize,
     /// Characters deliberately left alone because their log is incomplete.
     pub left_alone: usize,
+    /// Vocabulary entries and groups whose stored form changed.
+    pub vocab_changed: usize,
+    /// Whether the course position moved.
+    pub cursor_moved: bool,
 }
 
 impl Summary {
     /// True when the sync found nothing to do, which is what a second run of an
     /// already-synced device should report.
     pub fn is_empty(&self) -> bool {
-        self.published == 0 && self.pulled == 0 && self.recomputed == 0
+        self.published == 0
+            && self.pulled == 0
+            && self.recomputed == 0
+            && self.vocab_changed == 0
+            && !self.cursor_moved
     }
 }
 
@@ -123,6 +134,24 @@ pub fn publish(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
     db.set_meta_value(PUBLISHED_THROUGH, &highest.to_string())
         .map_err(SyncError::Io)?;
     Ok(fresh.len())
+}
+
+/// Publish this device's vocabulary list and course position.
+///
+/// Both are written **whole, every time**, and that is the difference from the
+/// attempt log rather than an oversight. An attempt is appended and never changes,
+/// so its shard is written once; an entry is edited, so there is nothing to append —
+/// what a device has to say about an entry is whatever it currently holds. See
+/// [`crate::document`] for why that does not put the merge at risk.
+pub fn publish_documents(db: &Db, store: &dyn RemoteStore) -> Result<(), SyncError> {
+    let (entries, groups) = db.vocab_view().map_err(SyncError::Io)?;
+    write_vocab(store, db.device_id(), &entries, &groups)?;
+    // A device that has never moved the cursor has nothing to say about where it
+    // is, and publishing a guess would be worse than publishing nothing.
+    if let Some(cursor) = db.cursor_view().map_err(SyncError::Io)? {
+        write_cursor(store, db.device_id(), &cursor)?;
+    }
+    Ok(())
 }
 
 /// Bring every peer's attempts into the local log, returning how many were new.
@@ -198,16 +227,49 @@ pub fn recompute(db: &Db) -> Result<(usize, usize), SyncError> {
     Ok((changed.len(), left_alone))
 }
 
-/// Publish, pull, and rebuild the schedule: one whole sync.
+/// Settle the vocabulary list with every peer, returning how many rows changed.
+///
+/// The merge runs over this device's view and every shard, and what it produces is
+/// applied back — so a device that already holds the winning version writes nothing,
+/// and a device holding an older one does not keep it.
+pub fn pull_vocab(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
+    let (local_entries, local_groups) = db.vocab_view().map_err(SyncError::Io)?;
+    let (remote_entries, remote_groups) = read_vocab(store)?;
+    let (entries, groups) =
+        merge_vocab(local_entries, local_groups, remote_entries, remote_groups);
+    db.apply_vocab_view(&entries, &groups).map_err(SyncError::Io)
+}
+
+/// Move to whoever last moved the course position, returning whether it moved here.
+pub fn pull_cursor(db: &Db, store: &dyn RemoteStore) -> Result<bool, SyncError> {
+    let local = db.cursor_view().map_err(SyncError::Io)?;
+    let remote = read_cursor(store)?;
+    match merge_cursor(local, remote) {
+        Some(winner) => db.set_cursor_from_sync(&winner).map_err(SyncError::Io),
+        None => Ok(false),
+    }
+}
+
+/// Publish, pull, and rebuild: one whole sync.
+///
+/// The order matters in one place only. Attempts are published before anything is
+/// pulled, because the log is what the schedule is folded from and a device should
+/// never be in the position of having applied a peer's work without having offered
+/// its own.
 pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
     let published = publish(db, store)?;
+    publish_documents(db, store)?;
     let pulled = pull(db, store)?;
+    let vocab_changed = pull_vocab(db, store)?;
+    let cursor_moved = pull_cursor(db, store)?;
     let (recomputed, left_alone) = recompute(db)?;
     Ok(Summary {
         published,
         pulled,
         recomputed,
         left_alone,
+        vocab_changed,
+        cursor_moved,
     })
 }
 

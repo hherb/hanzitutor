@@ -1535,7 +1535,7 @@ one that carries the weight does the whole pass: connect against a fake token
 endpoint, keep the refresh token, practise a character, sync over a real directory,
 find nothing to do the second time, then disconnect and prove the token is gone.
 
-The suite is green at 374 tests, with 4 more ignored unless a microphone or the
+The suite is green at 383 tests, with 4 more ignored unless a microphone or the
 speech model is present.
 
 **The settings screen.** A fifth row in the settings panel — the fourth was the
@@ -1568,11 +1568,56 @@ that had never seen a character picked up its schedule from another's log, which
 the whole design in one observation. The Android AES round trip is covered by that
 too, since it only runs when somebody completes an authorization there.
 
+**The vocabulary list and the course position travel too.** These are the harder
+half, and the reason is worth stating once: an attempt is *appended* and never
+changes, so a merged log is a union with nothing to settle; an entry is *edited and
+deleted*, so two devices can hold different versions of one row and something has to
+say which is right.
+
+- **A stamp of three parts: `(updated_at, device_id, revision)`.** The time is the
+  ordinary answer. The device settles two devices writing inside one second. The
+  revision settles two writes by *one* device inside one second — which is not
+  hypothetical: adding an entry and deleting it again takes well under a second, and
+  without the third part a peer holding the first of those writes has nothing to
+  compare against, keeps the entry, and stays different from the other device for
+  ever. That is a bug this work found in itself, by a test that failed.
+- **A device's own view is published whole, every sync.** There is nothing to append
+  for an entry that can be edited, so the shard is a document that gets rewritten.
+  That gives up the immutability the attempt log has — and it is worth being exact
+  about what that property was for: never the *merge*, always the *dumb transport*.
+  The safety survives, because every writer still owns its own directory, Dropbox
+  uploads are atomic, and the merge is a pure function of the records rather than of
+  their history. What is genuinely lost is that a shard is no longer a permanent
+  record of what a device once said; that is fine here and would not be for attempts,
+  which is why the two are different files and different formats.
+- **The stamp moves only when what the learner typed moves.** One stamp per entry, so
+  if practising moved it, a learner practising on the phone could silently undo an
+  edit made on the laptop. `attempts`, `best_score` and `last_practised` therefore stay
+  this device's own, and a `uuid`-addressed row arriving from a peer starts its
+  counters empty. **What syncs is what the learner wrote.**
+- **A removal is a tombstone, not an erasure.** Erasing would be worse than losing the
+  record: a peer still holding its own copy would put the entry straight back, since
+  "I have no row for this" and "I have not heard about this yet" are indistinguishable
+  to anybody else. A tombstone for something a device has never held is skipped rather
+  than created, so deletions do not accumulate as rows on every device.
+- **The course cursor is the same shape, one row.** Whoever moved it last wins, and
+  the same three-part stamp settles it. Its importer no longer writes a default row
+  when there is no document to import — which it used to, and which would have
+  overwritten a *synced* position with 0 on any device that had not been paged
+  through yet.
+
+Four more tests in `crates/hanzi-sync/tests/two_devices.rs`: an entry added on one
+device arriving on two others with its group; the same entry edited on two devices
+ending up the same way on both; a removal staying removed rather than being
+resurrected by the copy that was still there; and the course position following
+whichever device moved it last. Five unit tests in `crates/hanzi-sync/src/document.rs`
+cover the ordering itself, including the tiebreak, and four in
+`crates/hanzi-store/tests/store.rs` cover the storage the merge rests on.
+
 **What is not built.** Syncing at launch or on foreground rather than only on
-demand; the baseline for a card whose log does not go back to its first attempt; the
-vocabulary and cursor shards — which means a vocabulary list added on one device does
-not appear on another yet, though a *schedule* does; and a fingerprint prompt on
-Android, which needs `androidx.biometric` and so is its own change.
+demand; the baseline for a card whose log does not go back to its first attempt; and
+a fingerprint prompt on Android, which needs `androidx.biometric` and so is its own
+change.
 
 **Why.** Practice happens on whichever device is at hand — the laptop at a desk,
 the phone on a train — and a schedule that exists on only one of them is a

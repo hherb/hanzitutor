@@ -80,6 +80,10 @@ pub struct SyncSummaryView {
     pub pulled: usize,
     pub recomputed: usize,
     pub left_alone: usize,
+    /// Vocabulary entries and groups whose stored form changed.
+    pub vocab_changed: usize,
+    /// Whether the place in the course moved on this device.
+    pub cursor_moved: bool,
 }
 
 /// How well the stored sign-in is protected.
@@ -260,6 +264,8 @@ impl SyncService {
             pulled: summary.pulled,
             recomputed: summary.recomputed,
             left_alone: summary.left_alone,
+            vocab_changed: summary.vocab_changed,
+            cursor_moved: summary.cursor_moved,
         };
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some(view.clone());
         Ok(SyncView {
@@ -353,6 +359,16 @@ fn describe_summary(summary: &hanzi_sync::Summary) -> String {
     }
     if summary.recomputed > 0 {
         parts.push(format!("updated {}", plural(summary.recomputed, "schedule")));
+    }
+    if summary.vocab_changed > 0 {
+        let noun = match summary.vocab_changed {
+            1 => "list entry",
+            _ => "list entries",
+        };
+        parts.push(format!("updated {} {noun}", summary.vocab_changed));
+    }
+    if summary.cursor_moved {
+        parts.push("moved to where you left off".to_string());
     }
     format!("Synced: {}.", parts.join(", "))
 }
@@ -881,7 +897,7 @@ mod tests {
             published: 3,
             pulled: 2,
             recomputed: 1,
-            left_alone: 0,
+            ..hanzi_sync::Summary::default()
         };
         assert_eq!(describe_summary(&busy), "Synced: sent 3 attempts, received 2 attempts, updated 1 schedule.");
         assert_eq!(plural(1, "attempt"), "1 attempt");
@@ -1025,10 +1041,19 @@ mod tests {
             pulled: 2,
             recomputed: 3,
             left_alone: 4,
+            vocab_changed: 5,
+            cursor_moved: true,
         })
         .unwrap();
         let keys: BTreeMap<&str, &serde_json::Value> = summary.as_object().unwrap().iter().map(|(k, v)| (k.as_str(), v)).collect();
-        for expected in ["published", "pulled", "recomputed", "leftAlone"] {
+        for expected in [
+            "published",
+            "pulled",
+            "recomputed",
+            "leftAlone",
+            "vocabChanged",
+            "cursorMoved",
+        ] {
             assert!(keys.contains_key(expected), "{expected} missing from {summary}");
         }
     }
