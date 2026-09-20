@@ -1580,6 +1580,13 @@ that had never seen a character picked up its schedule from another's log, which
 the whole design in one observation. The Android AES round trip is covered by that
 too, since it only runs when somebody completes an authorization there.
 
+The vocabulary list and the course position were confirmed the same way: a word
+entered on the Android phone appeared on the other two, and the list and the sidebar
+retired themselves **while the apps were still running**. That last part took two
+attempts, because reloading the backend stores is not the same thing as the screen
+re-reading them — a distinction recorded in `HANDOVER.md`, since it is the shape of a
+mistake rather than a slip.
+
 **The vocabulary list and the course position travel too.** These are the harder
 half, and the reason is worth stating once: an attempt is *appended* and never
 changes, so a merged log is a union with nothing to settle; an entry is *edited and

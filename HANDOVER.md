@@ -1555,8 +1555,10 @@ downstream of them is covered by the IPC tests, which drive
   removing it puts the bug back. The reload runs on failure as well as success,
   because a sync that died partway through `recompute` may still have written
   something, and it leaves a store already in its *failed* state alone, since
-  refusing to save is the point of that state. **The vocabulary list is the one that
-  bites**: `save` reads an entry missing from the document as one the learner
+  refusing to save is the point of that state. Without it the schedule is wrong until
+  the next sync — recoverable, because the log kept every attempt and the fold
+  rebuilds from it, but silently wrong in between. **The vocabulary list is the one
+  that bites**: `save` reads an entry missing from the document as one the learner
   removed and tombstones it, so a save from a document that predates a sync deletes
   everything the sync brought in — and those tombstones then travel and delete the
   entries on the other devices too. It was forgotten once, after the progress store
@@ -1567,22 +1569,19 @@ downstream of them is covered by the IPC tests, which drive
   `onSynced`, which is `App.svelte`'s `refreshAfterSync` — vocabulary, progress and
   the review queue together, because one sync changes all three. A backend reload
   with no frontend re-read looks exactly like a sync that did nothing until the app
-  is restarted, which is what it was reported as twice. The damage is recoverable either way — the log kept every
-  attempt and the next sync rebuilds from it — but it is a silently wrong due date
-  until then. Two
-  On the vocabulary side, three rules are load-bearing. **The stamp is
-  `(updated_at, device_id, revision)` and all three parts are needed** — the time for
+  is restarted, which is how it was reported twice. On the vocabulary side, three
+  rules are load-bearing. **The stamp is `(updated_at, device_id, revision)` and all
+  three parts are needed** — the time for
   the ordinary case, the device for two devices writing in one second, and the
   revision for two writes by *one* device in one second, which is what adding and
   then immediately deleting an entry looks like. **The stamp moves only when what the
   learner typed moves**: practice counters are this device's own, because one stamp
   per entry means practising could otherwise clobber an edit. And **`vocab_view`
   returns tombstones** — a removal that does not travel is a removal the other device
-  undoes. Two
-  properties already in the code decide the whole design, so do not "improve" them
-  away: `attempt` is append-only — a grow-only set, which merges with no conflict
-  to resolve — and `Sm2::review` is pure, so a card is a *fold over the log*
-  rather than a mergeable value. **The log syncs; `hanzi.db` never does.** A live
+  undoes. Two properties already in the code decide the whole design, so do not
+  "improve" them away: `attempt` is append-only — a grow-only set, which merges with
+  no conflict to resolve — and `Sm2::review` is pure, so a card is a *fold over the
+  log* rather than a mergeable value. **The log syncs; `hanzi.db` never does.** A live
   SQLite file in a cloud folder is how study data gets corrupted — out-of-order
   WAL and SHM sidecars, snapshots taken mid-transaction, "conflicted copies" — and
   no phone exposes such a folder as a filesystem anyway. Three further rules: sync
