@@ -10,7 +10,10 @@
 //  * **They run on the main thread.** Tauri dispatches mobile plugin commands
 //    through `run_on_android_context`, which is the UI thread. So nothing here
 //    may block, which is why starting the synthesiser is asynchronous and
-//    commands that arrive first are *held* rather than waited for.
+//    commands that arrive first are *held* rather than waited for. The
+//    fingerprint prompt is asynchronous for the same reason: `BiometricPrompt`
+//    answers from a callback, so a learner may take as long as they like over
+//    it without the interface waiting on them.
 //  * **`env(safe-area-inset-*)` is not the status bar.** Android's WebView
 //    reports the *display cutout* through those CSS variables, so on a phone
 //    with a punch-hole camera the layout is inset correctly and on one without
@@ -41,11 +44,16 @@ import android.os.Looper
 import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.security.keystore.UserNotAuthenticatedException
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.fragment.app.FragmentActivity
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -56,6 +64,7 @@ import app.tauri.plugin.Plugin
 import java.io.File
 import java.io.FileOutputStream
 import java.security.KeyStore
+import java.security.UnrecoverableEntryException
 import java.util.Locale
 import java.util.UUID
 import javax.crypto.Cipher
@@ -74,6 +83,13 @@ class SpeakArgs {
 @InvokeArg
 class SaveSecretArgs {
     lateinit var secret: String
+
+    /**
+     * Whether the learner wants to be asked for a fingerprint before the sign-in
+     * is read back. Writing it does not ask for anything either way — see
+     * `saveSecret` — so this chooses the mode of the key, not of this call.
+     */
+    var requireAuth: Boolean = false
 }
 
 @TauriPlugin
@@ -552,17 +568,21 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
      * the device's secure hardware where there is any, and the file on disk is
      * useless without this device.
      *
-     * **What this deliberately is not, yet.** The key is created without
-     * `setUserAuthenticationRequired`, so nothing asks the learner for a
-     * fingerprint before the app reads the token back. macOS and iOS do ask,
-     * because their keychains have a per-item access control that a prompt
-     * attaches to. Requiring authentication here means showing a `BiometricPrompt`
-     * with the cipher as its `CryptoObject`, which needs `androidx.biometric` —
-     * a dependency this app does not carry — and it belongs in its own change
-     * rather than smuggled into this one. So the Rust side reports this store as
-     * `keychainOnly`, which is exactly what it is: encrypted at rest, released to
-     * this app without asking anybody. That is the same honest label the Mac's
-     * unsigned development build gets.
+     * **Asking for the learner.** [SaveSecretArgs.requireAuth] has the key made
+     * with `setUserAuthenticationRequired`, which is what puts the sign-in behind
+     * a fingerprint, a face or the device PIN. That is a property of the key,
+     * fixed when the key is made, so the mode the blob was written in is recorded
+     * beside it and a change of mode rebuilds the key — see [store]. Writing asks
+     * for nothing even then: keystore permits encryption with such a key and
+     * refuses only decryption, which is why the prompt lives in [loadSecret] and
+     * can never appear while the learner is connecting.
+     *
+     * A request for authentication that the device cannot honour — a phone with
+     * no screen lock at all, where keystore will not make such a key — degrades
+     * to a key that asks nothing rather than refusing to connect, and the answer
+     * says which of the two the token actually got. That is the same honesty as
+     * the Rust side's `Protection`, and the reason this command answers at all
+     * rather than resolving an empty object.
      *
      * **Why the ciphertext is what is written.** `apply()` rather than `commit()`:
      * the write is to this app's own preferences and a lost race with process
@@ -572,68 +592,134 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun saveSecret(invoke: Invoke) {
         val args = invoke.parseArgs(SaveSecretArgs::class.java)
+        var asksForAuth = false
         try {
-            val cipher = Cipher.getInstance(SECRET_TRANSFORMATION)
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey())
-            val encrypted = cipher.doFinal(args.secret.toByteArray(Charsets.UTF_8))
-            // The IV is generated per encryption and is not secret; it has to be
-            // kept, because GCM cannot decrypt without it.
-            val blob = encode(cipher.iv) + ":" + encode(encrypted)
-            preferences().edit().putString(SECRET_ENTRY, blob).apply()
-            invoke.resolve(JSObject())
+            store(args.secret, args.requireAuth)
+            asksForAuth = args.requireAuth
         } catch (problem: Exception) {
-            invoke.reject(
-                "the Android keystore would not store the Dropbox sign-in: ${problem.message}"
-            )
+            if (!args.requireAuth) {
+                invoke.reject(notStored(problem))
+                return
+            }
+            // A device with no screen lock cannot make a key that asks for
+            // authentication at all. Refusing to connect there would trade a
+            // working sign-in for a principle, so the request falls back to the
+            // mode every earlier build used — and the answer admits that it did.
+            forgetSecret()
+            try {
+                store(args.secret, false)
+            } catch (fallback: Exception) {
+                invoke.reject(notStored(fallback))
+                return
+            }
         }
+        val result = JSObject()
+        result.put("protected", asksForAuth)
+        invoke.resolve(result)
+    }
+
+    /** What a keystore that would not keep the sign-in is told, without a stack. */
+    private fun notStored(problem: Exception): String =
+        "the Android keystore would not store the Dropbox sign-in: ${problem.message}"
+
+    /**
+     * Encrypt [secret] under a keystore key in the mode [requireAuth] names.
+     *
+     * The mode cannot be changed on a key that already exists, so a request that
+     * differs from the mode the stored blob is in cannot be met by re-encrypting:
+     * the key has to go and be made again. The blob goes with it rather than
+     * being left encrypted under a key nothing will use again, which is also what
+     * keeps the recorded mode and the key from ever disagreeing.
+     */
+    private fun store(secret: String, requireAuth: Boolean) {
+        val prefs = preferences()
+        if (prefs.getBoolean(SECRET_AUTH_ENTRY, false) != requireAuth) {
+            forgetSecret()
+        }
+        val cipher = Cipher.getInstance(SECRET_TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey(requireAuth))
+        val encrypted = cipher.doFinal(secret.toByteArray(Charsets.UTF_8))
+        // The IV is generated per encryption and is not secret; it has to be
+        // kept, because GCM cannot decrypt without it.
+        val blob = encode(cipher.iv) + ":" + encode(encrypted)
+        prefs.edit()
+            .putString(SECRET_ENTRY, blob)
+            .putBoolean(SECRET_AUTH_ENTRY, requireAuth)
+            .apply()
     }
 
     /**
      * Read the sign-in back, or answer without one.
      *
-     * An absent key in the answer means "nothing is stored", which is the state a
-     * device nobody has connected is in. That is spelled as an *omitted* field
-     * rather than a null one on purpose: `JSObject` is a `JSONObject`, and
+     * An absent `secret` in the answer means "nothing is stored", which is the
+     * state a device nobody has connected is in. That is spelled as an *omitted*
+     * field rather than a null one on purpose: `JSObject` is a `JSONObject`, and
      * `put(key, null)` removes the mapping instead of writing a null, so an
      * explicit null would arrive as the same absent field by a route nobody could
      * read from the code.
      *
+     * `protected` says whether the blob is behind the learner's fingerprint, a
+     * face or the device PIN, which the Rust side reports as `userPresence` or
+     * `keychainOnly`. It is read from beside the blob rather than inferred from
+     * the key, because it is what decides whether this call can answer at once or
+     * has to ask somebody first.
+     *
      * A blob that cannot be decrypted is **forgotten rather than reported**, and
      * that is a decision rather than laziness. It is what a restored backup looks
      * like: the preferences came back and the keystore key did not, because the
-     * key is bound to the device. An undecryptable token is worth nothing to
-     * anybody, and failing here would leave a learner looking at an error they
-     * cannot act on, when the useful thing is to be told they are not connected
-     * and offered Connect.
+     * key is bound to the device. It is also what a fingerprint enrolled after
+     * the key was made looks like, because keystore invalidates the key instead
+     * of letting it decrypt. An undecryptable token is worth nothing to anybody,
+     * and failing here would leave a learner looking at an error they cannot act
+     * on, when the useful thing is to be told they are not connected and offered
+     * Connect.
      */
     @Command
     fun loadSecret(invoke: Invoke) {
-        val result = JSObject()
         val blob = preferences().getString(SECRET_ENTRY, null)
-        if (blob != null) {
-            val secret = try {
-                decrypt(blob)
-            } catch (problem: Exception) {
-                preferences().edit().remove(SECRET_ENTRY).apply()
-                null
-            }
-            if (secret != null) {
-                result.put("secret", secret)
-            }
+        if (blob == null) {
+            invoke.resolve(JSObject())
+            return
         }
+        val parts = blob.split(":")
+        if (parts.size != 2) {
+            // Not shaped like anything this wrote, so no key will decrypt it.
+            forgetSecret()
+            invoke.resolve(JSObject())
+            return
+        }
+        val iv = Base64.decode(parts[0], Base64.NO_WRAP)
+        val encrypted = Base64.decode(parts[1], Base64.NO_WRAP)
+        if (!preferences().getBoolean(SECRET_AUTH_ENTRY, false)) {
+            // A key that asks for nothing, so reading is silent — which is what
+            // a sync that starts by itself requires. See the note at the top.
+            resolveSecret(invoke, decrypt(iv, encrypted), false)
+            return
+        }
+        askForFingerprint(invoke, iv, encrypted)
+    }
+
+    /**
+     * Whether the learner can be asked to identify themselves at all.
+     *
+     * Rust asks this before it offers the switch, so a device that cannot ask is
+     * told so rather than offered a setting that would do nothing. The device
+     * credential is part of the question because a phone whose only lock is a PIN
+     * can still satisfy a keystore key made with `setUserAuthenticationRequired`,
+     * so "no fingerprint reader" is not the same as "cannot ask".
+     */
+    @Command
+    fun canLock(invoke: Invoke) {
+        val status = BiometricManager.from(activity).canAuthenticate(ASKABLE)
+        val result = JSObject()
+        result.put("available", status == BiometricManager.BIOMETRIC_SUCCESS)
         invoke.resolve(result)
     }
 
-    /** Forget the sign-in, and the key that encrypted it. */
+    /** Forget the sign-in, the mode it was kept in, and the key that encrypted it. */
     @Command
     fun clearSecret(invoke: Invoke) {
-        preferences().edit().remove(SECRET_ENTRY).apply()
-        try {
-            KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.deleteEntry(SECRET_KEY_ALIAS)
-        } catch (problem: Exception) {
-            // A keystore with no key in it is the ordinary case for a device that
-            // never stored one, and not a failure worth reporting.
-        }
+        forgetSecret()
         invoke.resolve(JSObject())
     }
 
@@ -642,43 +728,241 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
         activity.getSharedPreferences(SECRET_PREFERENCES, Context.MODE_PRIVATE)
 
     /**
+     * Forget the blob, the mode it was in, and the key that encrypted it.
+     *
+     * All three together: a blob whose key is gone is readable by nobody, and a
+     * mode left behind after its blob would have the next write keep a key from
+     * the other mode — the one thing [store] must not do.
+     */
+    private fun forgetSecret() {
+        preferences().edit().remove(SECRET_ENTRY).remove(SECRET_AUTH_ENTRY).apply()
+        try {
+            KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.deleteEntry(SECRET_KEY_ALIAS)
+        } catch (problem: Exception) {
+            // A keystore with no key in it is the ordinary case for a device that
+            // never stored one, and not a failure worth reporting.
+        }
+    }
+
+    /**
+     * Ask the learner to identify themselves, then decrypt with the cipher the
+     * prompt authorises.
+     *
+     * The cipher is built and initialised first because `CryptoObject` is how the
+     * system ties one successful authentication to one keystore operation:
+     * keystore gives the operation a challenge at init and refuses to finish it
+     * until that challenge has been answered. Nothing here blocks — `authenticate`
+     * returns at once and the learner's answer arrives in the callback, which is
+     * where the invoke is resolved. That is the note at the top of this file,
+     * applied to a prompt instead of to the synthesiser.
+     */
+    private fun askForFingerprint(invoke: Invoke, iv: ByteArray, encrypted: ByteArray) {
+        val host = activity as? FragmentActivity
+        if (host == null) {
+            invoke.reject(
+                "this app cannot show a fingerprint prompt on this device, so the stored " +
+                    "Dropbox sign-in cannot be read"
+            )
+            return
+        }
+        val cipher = try {
+            val prepared = Cipher.getInstance(SECRET_TRANSFORMATION)
+            prepared.init(
+                Cipher.DECRYPT_MODE,
+                secretKey(true),
+                GCMParameterSpec(SECRET_TAG_BITS, iv)
+            )
+            prepared
+        } catch (problem: UserNotAuthenticatedException) {
+            // Keystore wants the learner authenticated before it will even prepare
+            // the operation. The prompt is what authenticates, and it cannot be
+            // handed a cipher that failed to initialise, so this is reported
+            // rather than treated as an undecryptable blob — the sign-in may
+            // still be perfectly good.
+            invoke.reject(
+                "this device will not prepare the Dropbox sign-in to be read, so it was not read"
+            )
+            return
+        } catch (problem: Exception) {
+            // Keystore refused the operation outright rather than asking anybody:
+            // a key invalidated by a newly enrolled fingerprint is the ordinary
+            // case, and the blob is undecryptable by any route then, so it goes
+            // the way of a restored backup instead of becoming an error.
+            forgetSecret()
+            invoke.resolve(JSObject())
+            return
+        }
+        var answered = false
+        val prompt = BiometricPrompt(
+            host,
+            ContextCompat.getMainExecutor(activity),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(
+                    result: BiometricPrompt.AuthenticationResult
+                ) {
+                    if (answered) return
+                    answered = true
+                    val unlocked = result.cryptoObject?.cipher
+                    if (unlocked == null) {
+                        // The prompt hands back the cipher it was given. Without it
+                        // there is nothing that can decrypt, and a blob that may
+                        // still be good is not worth throwing away over that.
+                        invoke.reject(
+                            "the fingerprint prompt did not return the key it was given, so " +
+                                "the Dropbox sign-in could not be read"
+                        )
+                        return
+                    }
+                    val secret = try {
+                        String(unlocked.doFinal(encrypted), Charsets.UTF_8)
+                    } catch (problem: Exception) {
+                        forgetSecret()
+                        null
+                    }
+                    resolveSecret(invoke, secret, true)
+                }
+
+                override fun onAuthenticationError(errorCode: Int, message: CharSequence) {
+                    if (answered) return
+                    answered = true
+                    invoke.reject(reasonForPrompt(errorCode, message))
+                }
+
+                override fun onAuthenticationFailed() {
+                    // **The one callback that is not an answer.** A finger the sensor
+                    // did not recognise leaves the prompt up and asks the learner to
+                    // try again, which is why it is `onAuthenticationFailed` and not
+                    // `onAuthenticationError` — the two are separate precisely so this
+                    // one can be told apart from a refusal. Resolving here would turn
+                    // a slightly misplaced finger into a failed sync and a prompt that
+                    // vanished before it could be used, so nothing happens: the answer
+                    // arrives from the success callback or from the error one, and the
+                    // learner gets the retry the system is offering them.
+                }
+            }
+        )
+        val info = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Unlock your Dropbox sign-in")
+            .setSubtitle("Confirm it is you to read the sign-in saved on this device.")
+            // No negative button: with the device credential allowed the system
+            // draws its own cancel, and adding a second one is refused outright
+            // rather than being a belt and braces.
+            .setAllowedAuthenticators(ASKABLE)
+            .build()
+        prompt.authenticate(info, BiometricPrompt.CryptoObject(cipher))
+    }
+
+    /**
+     * Answer with the sign-in and how well it is protected, or with neither.
+     *
+     * The protection is what Rust turns into `userPresence` or `keychainOnly`,
+     * and it is why a read that asked for nothing can still be honest about an
+     * item that is worth asking for: a phone with no screen lock answers no to
+     * the switch and keychainOnly here, while one that does ask answers
+     * userPresence.
+     */
+    private fun resolveSecret(invoke: Invoke, secret: String?, guarded: Boolean) {
+        val result = JSObject()
+        if (secret != null) {
+            result.put("secret", secret)
+            result.put("protected", guarded)
+        }
+        invoke.resolve(result)
+    }
+
+    /**
+     * The prompt's own reason in words, so the learner is told which of the
+     * possibilities happened instead of being handed a code.
+     *
+     * The system's `message` is a last resort: it is localised and can be as
+     * uninformative as "Authenticate error", while these codes each ask something
+     * different of the learner — to try again, to enrol a fingerprint, or to stop
+     * trying and use the PIN.
+     */
+    private fun reasonForPrompt(errorCode: Int, message: CharSequence): String = when (errorCode) {
+        BiometricPrompt.ERROR_USER_CANCELED,
+        BiometricPrompt.ERROR_NEGATIVE_BUTTON,
+        BiometricPrompt.ERROR_CANCELED ->
+            "the request to read the Dropbox sign-in was cancelled"
+        BiometricPrompt.ERROR_NO_BIOMETRICS ->
+            "no fingerprint or face is set up on this device, so the Dropbox sign-in cannot be read"
+        BiometricPrompt.ERROR_HW_NOT_PRESENT,
+        BiometricPrompt.ERROR_HW_UNAVAILABLE ->
+            "this device has no fingerprint reader available, so the Dropbox sign-in cannot be read"
+        BiometricPrompt.ERROR_NO_DEVICE_CREDENTIAL ->
+            "this device has no screen lock set up, so the Dropbox sign-in cannot be read"
+        BiometricPrompt.ERROR_LOCKOUT,
+        BiometricPrompt.ERROR_LOCKOUT_PERMANENT ->
+            "the fingerprint reader has had too many unrecognised attempts, so the Dropbox " +
+                "sign-in was not read"
+        BiometricPrompt.ERROR_TIMEOUT ->
+            "the fingerprint prompt timed out, so the Dropbox sign-in was not read"
+        BiometricPrompt.ERROR_SECURITY_UPDATE_REQUIRED ->
+            "this device needs a security update before it can read the Dropbox sign-in"
+        BiometricPrompt.ERROR_UNABLE_TO_PROCESS ->
+            "the fingerprint reader could not read that, so the Dropbox sign-in was not read"
+        else -> "the Dropbox sign-in could not be read: $message"
+    }
+
+    /**
      * The AES key used for the sign-in, created inside the keystore on first use.
      *
      * `AndroidKeyStore` is a *provider*, not a file: `KeyStore.getInstance` and
      * `load(null)` reach the hardware-backed store, and the private material never
      * leaves it. The key is generated once and kept — regenerating it would make
-     * every stored token undecryptable, which is precisely the situation the
-     * `loadSecret` note above handles.
+     * every stored token undecryptable — so [requireAuth] decides something only
+     * when there is no key to keep, and a caller that wants the other mode has to
+     * delete this one first. [store] does exactly that.
+     *
+     * A key a newly enrolled fingerprint invalidated does not read back as a key
+     * at all. It can decrypt nothing, and the sign-in being written here is a
+     * fresh one, so it is replaced rather than reported.
      */
-    private fun secretKey(): SecretKey {
+    private fun secretKey(requireAuth: Boolean): SecretKey {
         val store = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        val existing = store.getEntry(SECRET_KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
+        val existing = try {
+            store.getEntry(SECRET_KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
+        } catch (problem: UnrecoverableEntryException) {
+            null
+        }
         if (existing != null) {
             return existing.secretKey
         }
-        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-        generator.init(
-            KeyGenParameterSpec.Builder(
-                SECRET_KEY_ALIAS,
-                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
-            )
-                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setKeySize(256)
-                .build()
+        val spec = KeyGenParameterSpec.Builder(
+            SECRET_KEY_ALIAS,
+            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
         )
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+        if (requireAuth) {
+            spec.setUserAuthenticationRequired(true)
+            // A fingerprint enrolled after this key was made must not be able to
+            // read what the old one encrypted. Keystore invalidates the key
+            // instead, and the token then goes the way of a restored backup:
+            // forgotten, rather than reported as an error nobody can act on.
+            spec.setInvalidatedByBiometricEnrollment(true)
+        }
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+        generator.init(spec.build())
         return generator.generateKey()
     }
 
-    /** Decrypt a stored blob, or null when it is not shaped like one. */
-    private fun decrypt(blob: String): String? {
-        val parts = blob.split(":")
-        if (parts.size != 2) return null
-        val iv = Base64.decode(parts[0], Base64.NO_WRAP)
-        val encrypted = Base64.decode(parts[1], Base64.NO_WRAP)
+    /**
+     * The sign-in from a blob written by a key that asks for nothing.
+     *
+     * A failure is the restored-backup or invalidated-key case, and is forgotten
+     * here for the reason [loadSecret] gives. The mode is not a parameter because
+     * this is only ever reached on that silent path; a blob behind a prompt is
+     * decrypted with the cipher the prompt authorises.
+     */
+    private fun decrypt(iv: ByteArray, encrypted: ByteArray): String? = try {
         val cipher = Cipher.getInstance(SECRET_TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(SECRET_TAG_BITS, iv))
-        return String(cipher.doFinal(encrypted), Charsets.UTF_8)
+        cipher.init(Cipher.DECRYPT_MODE, secretKey(false), GCMParameterSpec(SECRET_TAG_BITS, iv))
+        String(cipher.doFinal(encrypted), Charsets.UTF_8)
+    } catch (problem: Exception) {
+        forgetSecret()
+        null
     }
 
     /** Base64 without line wrapping, which would corrupt a blob split on `:`. */
@@ -924,6 +1208,29 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
         /** Where the sign-in is kept, and under what name. */
         const val SECRET_PREFERENCES = "hanzi-sync"
         const val SECRET_ENTRY = "dropbox"
+
+        /**
+         * Which mode the blob was written in, recorded beside it.
+         *
+         * The mode belongs to the keystore key and cannot be read back from it,
+         * so this is what says whether reading the blob is silent or has to ask
+         * somebody — and what [store] compares a new request against before it
+         * decides whether the key has to be replaced.
+         */
+        const val SECRET_AUTH_ENTRY = "dropbox-auth"
+
+        /**
+         * Who may answer the sign-in's prompt, and who counts as askable.
+         *
+         * A weak biometric rather than a strong one, together with the device
+         * credential, because a phone whose only lock is a PIN is still a phone
+         * that can be asked — and refusing it would make the switch mean
+         * "fingerprint or nothing" on a device that cannot have a fingerprint.
+         * [canLock] asks about this same set, so the switch is never offered for
+         * something the prompt would turn down.
+         */
+        val ASKABLE = BiometricManager.Authenticators.BIOMETRIC_WEAK or
+            BiometricManager.Authenticators.DEVICE_CREDENTIAL
 
         /**
          * The keystore the AES key is generated in, and the alias it is filed

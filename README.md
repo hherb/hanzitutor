@@ -1265,9 +1265,10 @@ dragging or by clicking. The headline gaps are now:
    schedule from another's log. A schedule whose log does not go back to its first
    attempt — one migrated from the old JSON files, which kept only the newest twenty
    attempts — travels too, folded from a baseline its device captured, so the two
-   devices agree about that one as well. What is still missing is named at the end of
-   ROADMAP M13: a fingerprint prompt on Android. The vocabulary list and the course
-   cursor travel too:
+   devices agree about that one as well. The sign-in is kept in the platform's own
+   secret store — the keychain on Apple's systems, the keystore on Android — and can be
+   put behind your fingerprint, face or device PIN on any of them. The vocabulary list
+   and the course cursor travel too:
    an entry is edited and deleted rather than only appended to, so it is settled by
    last-writer-wins on a three-part stamp, and the counters that only mean something
    on the device that did the practising stay there.

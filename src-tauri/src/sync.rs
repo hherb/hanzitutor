@@ -170,10 +170,12 @@ pub enum Protection {
     /// face, or the device password. Asked for when the token is about to be used,
     /// and never merely to draw the screen.
     UserPresence,
-    /// An ordinary login-keychain item: still encrypted at rest, but released to
-    /// this app without asking anybody. This is where an unsigned development build
-    /// lands, because the data-protection keychain needs an application identifier
-    /// that an ad-hoc signature does not have.
+    /// An ordinary login-keychain item, or Android's keystore with a key that
+    /// asks for nothing: still encrypted at rest, but released to this app
+    /// without asking anybody. This is where an unsigned development build lands,
+    /// because the data-protection keychain needs an application identifier that
+    /// an ad-hoc signature does not have — and where a phone with no screen lock
+    /// lands, because it cannot make a key that asks.
     KeychainOnly,
 }
 
@@ -193,8 +195,8 @@ pub struct SyncView {
     /// Whether this platform can ask for a fingerprint at all.
     ///
     /// Separate from [`Self::protection`], which says what the item that *is* stored
-    /// got: Android can keep a secret and cannot yet ask for a fingerprint, so the
-    /// switch is not offered there rather than offered and ignored.
+    /// got: a device with no fingerprint, no face and no screen lock cannot ask, so
+    /// the switch is not offered there rather than offered and ignored.
     pub can_lock: bool,
     /// Whether the learner has asked for a fingerprint.
     pub locked: bool,
@@ -414,8 +416,12 @@ impl SyncService {
             })?;
             let misplaced = locked && protection == Protection::KeychainOnly;
             let message = if misplaced {
-                "This build cannot ask for your fingerprint, so the sign-in is kept in the \
-                 device's own store instead. Your study data is unaffected."
+                // Which of the two it is differs by platform — an unsigned build on
+                // Apple, a phone with no screen lock on Android — and both are the
+                // same thing to the learner: the ask was not available, and the
+                // sign-in is still kept encrypted on this device.
+                "This build or this device cannot ask for your fingerprint, so the sign-in is \
+                 kept in the device's own store instead. Your study data is unaffected."
                     .to_string()
             } else if locked {
                 "The sign-in will now ask for your fingerprint before it is used.".to_string()
@@ -831,14 +837,12 @@ fn no_secure_store() -> String {
     )
 }
 
-/// This platform can keep the sign-in but cannot yet ask for a fingerprint.
+/// This device has nothing to ask the learner with.
 fn no_biometric() -> String {
-    format!(
-        "This build cannot ask for a fingerprint on {} yet, so the sign-in is protected by the \
-         device instead — kept where only this app can read it, and unreadable at rest. Your \
-         study data is unaffected.",
-        std::env::consts::OS
-    )
+    "This device cannot ask for a fingerprint or a screen lock, so the sign-in is protected by \
+     the device instead — kept where only this app can read it, and unreadable at rest. Your \
+     study data is unaffected."
+        .to_string()
 }
 
 // ---- where the token actually lives ----------------------------------------
@@ -855,7 +859,8 @@ fn no_biometric() -> String {
 /// - [`Self::save`] takes the learner's answer on asking for a fingerprint and
 ///   **returns what the item actually got**, because the answer is not always
 ///   available: a build the system cannot identify lands in the login keychain
-///   instead. A store that could not honour the request says so rather than letting
+///   instead, and an Android phone with no screen lock cannot make a key that asks
+///   at all. A store that could not honour the request says so rather than letting
 ///   the screen claim a prompt that will never appear.
 trait TokenStore: Send + Sync {
     /// Whether this platform can keep a secret at all.
@@ -891,27 +896,58 @@ fn platform_store() -> Box<dyn TokenStore> {
 /// secrets, so the Kotlin side generates an AES-256-GCM key inside it and keeps
 /// only the ciphertext. That is a real protection — the key material never leaves
 /// the device's secure hardware where there is any, and the file on disk is
-/// useless without it — but nothing asks the learner for anything, so this reports
-/// itself as [`Protection::KeychainOnly`] rather than claiming a user-presence
-/// prompt it does not show.
+/// useless without it.
 ///
-/// It is also why [`Self::can_lock`] is false here rather than the request being
-/// quietly ignored: the switch is not offered on a platform that cannot honour it.
-/// Honouring one means a `BiometricPrompt` with the cipher as its `CryptoObject`,
-/// which needs `androidx.biometric`; see the Kotlin side.
+/// **Asking for the learner.** A key made with `setUserAuthenticationRequired`
+/// will not decrypt until the learner has identified themselves, and the Kotlin
+/// side shows a `BiometricPrompt` carrying the cipher as its `CryptoObject` to get
+/// that. It is a per-*operation* constraint rather than a per-read one, which is
+/// what keeps it compatible with the module note: the prompt happens when the
+/// token is about to be used and never to draw a screen. A key made without it
+/// decrypts silently, which is what [`Self::load`] reports as
+/// [`Protection::KeychainOnly`].
+///
+/// The mode belongs to the key and cannot be changed afterwards, so the Kotlin
+/// side records it beside the blob and rebuilds the key when the learner switches.
+/// A phone with no screen lock cannot make an auth-required key at all, so
+/// [`Self::save`] reports the mode the item *actually* got — the unprotected one —
+/// rather than refusing to connect.
 #[cfg(target_os = "android")]
 struct AndroidKeystore;
 
-/// What `loadSecret` answers: the token, or no field at all.
+/// What `loadSecret` answers: the token, how it is protected, or no field at all.
 ///
-/// An absent field rather than a null one, because `JSObject` is a `JSONObject` and
-/// `put(key, null)` *removes* the mapping — so a null would arrive as an absent
+/// An absent `secret` rather than a null one, because `JSObject` is a `JSONObject`
+/// and `put(key, null)` *removes* the mapping — so a null would arrive as an absent
 /// field by a route nobody could read from the code.
 #[cfg(target_os = "android")]
 #[derive(serde::Deserialize)]
 struct StoredSecret {
     #[serde(default)]
     secret: Option<String>,
+    /// Whether the blob was written under a key that asks for the learner's
+    /// fingerprint, face or device password before it will decrypt.
+    #[serde(default)]
+    protected: bool,
+}
+
+/// What the Kotlin side says about whether the learner can be asked at all.
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct Askable {
+    available: bool,
+}
+
+/// What `saveSecret` answers: how well the sign-in actually ended up protected.
+///
+/// A separate answer from [`StoredSecret`] because it says what the write did,
+/// not what a read found, and the two can disagree: a device that cannot make a
+/// key which asks for authentication keeps the token the way an earlier build did,
+/// and says so here rather than failing.
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct SavedSecret {
+    protected: bool,
 }
 
 #[cfg(target_os = "android")]
@@ -921,27 +957,48 @@ impl TokenStore for AndroidKeystore {
     }
 
     fn can_lock(&self) -> bool {
-        false
+        // The plugin answers on Android's main thread and this blocks until it
+        // does — see `crate::platform::call`. That is safe here because every
+        // caller is a `#[tauri::command(async)]`, which Tauri runs on its runtime
+        // rather than on that thread. A bridge that is not up yet, or a device
+        // whose answer cannot be read, means no rather than a claim: the switch is
+        // then not offered, which is the same answer as a device that cannot ask.
+        crate::platform::call::<Askable>("canLock", ())
+            .map(|answer| answer.available)
+            .unwrap_or(false)
     }
 
     fn load(&self) -> Result<Option<(Account, Protection)>, String> {
         let answer: StoredSecret = crate::platform::call("loadSecret", ())?;
-        match answer.secret {
-            None => Ok(None),
-            Some(text) => serde_json::from_str(&text)
-                .map(|account| Some((account, Protection::KeychainOnly)))
-                .map_err(|e| format!("the stored Dropbox sign-in could not be read: {e}")),
-        }
+        let Some(text) = answer.secret else {
+            return Ok(None);
+        };
+        // What the item got, which is the same question the Apple store answers
+        // by which keychain it found the password in.
+        let protection = if answer.protected {
+            Protection::UserPresence
+        } else {
+            Protection::KeychainOnly
+        };
+        serde_json::from_str(&text)
+            .map(|account| Some((account, protection)))
+            .map_err(|e| format!("the stored Dropbox sign-in could not be read: {e}"))
     }
 
-    fn save(&self, account: &Account, _locked: bool) -> Result<Protection, String> {
+    fn save(&self, account: &Account, locked: bool) -> Result<Protection, String> {
         let text = serde_json::to_string(account)
             .map_err(|e| format!("the Dropbox sign-in could not be encoded: {e}"))?;
-        crate::platform::call::<serde_json::Value>(
+        let answer: SavedSecret = crate::platform::call(
             "saveSecret",
-            serde_json::json!({ "secret": text }),
+            serde_json::json!({ "secret": text, "requireAuth": locked }),
         )?;
-        Ok(Protection::KeychainOnly)
+        // The Kotlin side may have had to keep less than it was asked for, and its
+        // answer says which it managed — the honest label the screen draws from.
+        Ok(if answer.protected {
+            Protection::UserPresence
+        } else {
+            Protection::KeychainOnly
+        })
     }
 
     fn clear(&self) -> Result<(), String> {

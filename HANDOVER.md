@@ -1037,6 +1037,33 @@ downstream of them is covered by the IPC tests, which drive
   entry now carries `excludes: ["**/libapp.a"]` so a regeneration is safe; the
   library is still linked, because that comes from the `dependencies` entry and
   not from the directory walk. If the app ever balloons again, look here first.
+- **Compiling the Android Kotlin from here needs three deviations, and they are
+  worth knowing because the obvious command fails for a reason that looks like a
+  broken toolchain.** `./gradlew -g <workspace dir>` cannot work: the wrapper
+  insists on writing a `.zip.lck` beside the distribution, and `~/.gradle` is
+  read-only in this sandbox, while pointing `-g` at a workspace that symlinks the
+  (read-only) distribution fails the same way. So call the **already-unpacked
+  launcher** directly, give Gradle a read-only dependency cache so it never needs
+  to download anything, and ask for the task by its **flavour-specific** name —
+  the Rust plugin adds `abi` product flavours, so there is no plain
+  `compileDebugKotlin`:
+
+  ```bash
+  cd src-tauri/gen/android
+  GRADLE_RO_DEP_CACHE="$HOME/.gradle/caches" \
+    ~/.gradle/wrapper/dists/gradle-8.14.3-bin/*/gradle-8.14.3/bin/gradle \
+    -g "$PWD/../../../.gradle-home" --no-daemon :app:compileUniversalDebugKotlin
+  ```
+
+  The workspace `-g` directory is gitignored and regenerable — delete it when you
+  are done rather than leaving a gigabyte in the tree. Note also that a host
+  `cargo clippy` **never compiles the `#[cfg(target_os = "android")]` code**, so
+  a change to `AndroidKeystore` in `src-tauri/src/sync.rs` can pass every check
+  here and still not type-check; run
+  `cargo check -p hanzi-tutor --target aarch64-linux-android` with the NDK's
+  `aarch64-linux-android26-clang` as `CC`/linker (and `llvm-ar` as `AR`,
+  `llvm-ranlib` as `RANLIB`) to cover it.
+
 - **Both mobile targets need their own pinned sherpa-onnx artefact, and
   `with-cargo-env.sh` has to know which.** `sherpa-onnx-sys` forces shared
   linking on Android as well as iOS, so `SHERPA_ONNX_LIB_DIR` pointing at the
@@ -1638,7 +1665,14 @@ downstream of them is covered by the IPC tests, which drive
   rest and this-device-only. `Protection` reports which of the four states a device
   actually got, because an ad-hoc signed build cannot reach the data-protection
   keychain (`errSecMissingEntitlement`) and lands in the login keychain instead — the
-  one case that can ask for the keychain password. **The app also syncs by itself, at
+  one case that can ask for the keychain password. **On Android the same two states are
+  arranged differently, and one detail there is an invariant rather than a preference:**
+  the mode belongs to the *keystore key*, not to the item, so it is recorded beside the
+  blob and the key is rebuilt (blob and all) when the switch changes. `can_lock` asks
+  the Kotlin plugin, which blocks until Android's main thread answers — **safe only
+  because every caller is a `#[tauri::command(async)]`**, which Tauri runs on its
+  runtime instead of on that thread. Put a `view()` back into a plain blocking command
+  and Android deadlocks on the first settings screen. **The app also syncs by itself, at
   launch and when it comes back**, and two things about that are load-bearing rather
   than decorative. `crates/hanzi-sync/src/reach.rs` asks whether there is a network
   path *before* the sync tries: a TCP connection to the API host, on a thread with a

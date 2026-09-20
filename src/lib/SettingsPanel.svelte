@@ -663,20 +663,26 @@
             </span>
           {:else if sync.protection === "userPresence"}
             <span class="status fine">
-              The sign-in is kept behind your fingerprint. It is asked for when the
-              token is about to be used — once each time you open the app, not once per
-              sync, and never merely to show this screen.
+              The sign-in is kept behind your fingerprint, your face or your device PIN.
+              It is asked for when the token is about to be used — once each time you
+              open the app, not once per sync, and never merely to show this screen.
             </span>
           {:else if sync.protection === "keychainOnly"}
-            <!-- Said out loud rather than left to be discovered from a prompt. The
-                 fallback happens on a build the system cannot identify, which is
-                 what an unsigned development build is. -->
+            <!-- Said out loud rather than left to be discovered from a prompt, and it
+                 covers two things that look identical from here: a build the system
+                 cannot identify — an unsigned development build on a Mac — and a
+                 device that cannot ask at all, which is an Android phone with no
+                 screen lock. Both mean the same thing to the learner: the sign-in is
+                 encrypted on this device and released without asking anybody. The
+                 last sentence is deliberately scoped to the Mac, which is the only
+                 platform where this state can cost a password prompt. -->
             <span class="status fine">
-              The sign-in is kept in your login keychain rather than the
-              data-protection one, because this build is not signed and the system will
-              not recognise it. It is still encrypted{#if sync.locked}, but the
-              fingerprint you asked for could not be applied{/if}; this is also the one
-              case that may ask for your keychain password.
+              The sign-in is kept in this device's own store — the system keystore on
+              Android, the keychain on a Mac or an iPhone — encrypted at rest and
+              released to this app without asking anybody{#if sync.locked}, so the
+              fingerprint you asked for could not be applied{/if}. On a Mac this is also
+              the one case that may ask for your keychain password, because the system
+              cannot identify an unsigned build.
             </span>
           {/if}
         {:else if awaitingCode}

@@ -1271,7 +1271,7 @@ appears, it should displace this one.
 
 ## M13 — Cross-device sync
 
-**Status: working, with the gaps listed at the end.** Two devices connected to the
+**Status: done.** Two devices connected to the
 same Dropbox account merge their schedules: what travels is the attempt log, each
 device rebuilds its schedule from the whole of it, and the settings screen drives
 connect, sync and disconnect. It also **syncs by itself** when the app starts and
@@ -1566,22 +1566,45 @@ new upstream project for four endpoints:
   Only the missing-entitlement refusal falls back. Any other failure is reported, because
   a second attempt would only fail more quietly.
 - **Android keeps the sign-in in its keystore, which is a different shape of thing.**
-  There is no keychain of the Apple kind there: the Android keystore holds *keys*,
-  not secrets. So the Kotlin side generates an AES-256-GCM key inside it — never
+  There is no keychain of the Apple kind there: the Android keystore holds *keys*, not
+  secrets. So the Kotlin side generates an AES-256-GCM key inside it — never
   exportable, in secure hardware where there is any — and writes only the ciphertext,
-  to the app's own preferences. The file on disk is useless without the device. What
-  it deliberately is **not** yet is a fingerprint request: that means showing a
-  `BiometricPrompt` with the cipher as its `CryptoObject`, which needs
-  `androidx.biometric`, a dependency this app does not carry. So Android reports
-  `keychainOnly` — the same honest label the Mac's unsigned development build gets —
-  and `canLock` is false, so the switch is not offered there rather than offered and
-  ignored. `WryActivity` extends `AppCompatActivity`, so it is already a
-  `FragmentActivity`, which is the one structural thing a biometric prompt needs.
+  to the app's own preferences. The file on disk is useless without the device.
+- **And asks for the learner, in a way that had to be arranged differently.** An
+  Apple keychain item carries its own access control, so the prompt is a property of
+  the *item*. Keystore has no such thing: `setUserAuthenticationRequired(true)` is a
+  property of the **key**, fixed when the key is made and unchangeable afterwards. So
+  the Kotlin side records the mode beside the blob and rebuilds the key when the
+  learner flips the switch — deleting the blob with it, rather than leaving a token
+  encrypted under a key nothing will use again. The prompt itself is a
+  `BiometricPrompt` carrying the cipher as its `CryptoObject`, which is how the system
+  ties one successful authentication to one keystore operation; `androidx.biometric` is
+  a dependency this app now carries for it, and the only one it has ever added for a
+  single call.
+- **Writing never prompts, and reading only sometimes does.** Keystore permits
+  *encryption* with an authentication-required key and refuses only decryption, so
+  connecting asks for nothing — which is what the module note requires, since
+  connecting happens on a button press and a prompt there would be a prompt to create
+  the very thing the prompt protects. It is also why the constraint is compatible with
+  a sync that runs by itself: the prompt is per *operation*, and the token is read once
+  per run.
+- **A device that cannot ask is not a device that cannot connect.** A phone with no
+  screen lock cannot have such a key made at all, so the request degrades to a key that
+  asks nothing, and the answer says which of the two the token actually got — the same
+  honesty as `Protection`, and the reason `saveSecret` answers with the mode rather
+  than resolving an empty object. `canLock` asks
+  `BiometricManager.canAuthenticate(BIOMETRIC_WEAK or DEVICE_CREDENTIAL)` first, so the
+  switch is offered only where a prompt would actually appear: a PIN-only phone counts
+  as askable, because a key made this way can be satisfied by one.
 - **An undecryptable blob is forgotten rather than reported.** That is what a restored
   backup looks like on Android: the preferences come back and the keystore key does
-  not, because the key is bound to the device. An undecryptable token is worth nothing
-  to anybody, and failing would leave a learner staring at an error they cannot act on
-  when the useful thing is to be told they are not connected and offered Connect.
+  not, because the key is bound to the device. It is also what a fingerprint enrolled
+  *after* the key was made looks like, because `setInvalidatedByBiometricEnrollment`
+  makes keystore invalidate the key rather than let the old one keep decrypting — which
+  is the right direction to be wrong in for a secret. An undecryptable token is worth
+  nothing to anybody, and failing would leave a learner staring at an error they cannot
+  act on when the useful thing is to be told they are not connected and offered
+  Connect.
 
 Eleven tests in `crates/hanzi-sync/tests/dropbox.rs`, all against an in-memory
 Dropbox that answers the same four request shapes. The one that matters most is the
@@ -1673,8 +1696,10 @@ are deliberate:
   watching a button fail. A refusal is a bug report; a button that fails is a
   mystery.
 - **The fingerprint switch is not offered where the platform cannot ask.** `canLock`
-  is the same idea: a switch that does nothing is worse than no switch, and Android
-  is the platform it is false on until `androidx.biometric` arrives.
+  is the same idea as `canConnect`, one capability further out: a switch that does
+  nothing is worse than no switch, so on Android it is answered by asking
+  `BiometricManager` whether a prompt would actually appear — and a phone with no
+  screen lock answers no.
 - **A mistyped code keeps what was typed.** The field is cleared only on success,
   because the page it came from has usually been closed by then and retyping a long
   code from a page that no longer exists is not recoverable.
@@ -1835,13 +1860,14 @@ fallback for a card with no baseline to fold from. Five unit tests in `crates/ha
 cover the ordering itself, including the tiebreak, and four in
 `crates/hanzi-store/tests/store.rs` cover the storage the merge rests on.
 
-**What is not built.** A fingerprint prompt on Android, which needs
-`androidx.biometric` and so is its own change. The fingerprint *on the platforms that
-can do it* is built, and the order these were done in is the point twice over: a sync
-nobody asked for must not be a sync that stops to ask for something, so asking for
-nothing by default and reading the token once per run had to come before the automatic
-sync; and the baseline had to come before it too, because a schedule that a sync
-cannot rebuild is a schedule a sync can quietly get wrong.
+**The order these were built in was the work.** Nothing here was left for later, and
+the sequence is worth keeping because each step is the reason the next one is safe:
+asking for nothing by default and reading the token once per run had to come *before*
+the automatic sync, or a sync nobody asked for would have stopped to ask for something
+at a moment nobody chose; and the baseline had to come before that too, because a
+schedule a sync cannot rebuild is a schedule a sync can quietly get wrong. The
+fingerprint on Android came last and is the same shape of thing as the first step — the
+mode a sign-in is kept in, and what that costs the learner when it is read.
 
 **Why.** Practice happens on whichever device is at hand — the laptop at a desk,
 the phone on a train — and a schedule that exists on only one of them is a

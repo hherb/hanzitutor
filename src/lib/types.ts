@@ -681,9 +681,11 @@ export interface SyncView {
  * other devices, but the system releases it without a prompt. `userPresence` is the
  * same item with a fingerprint — a face, a print, or the device password — asked for
  * when the token is about to be used, which is once per run of the app and never
- * merely to draw this screen. `keychainOnly` means an ordinary login-keychain item,
- * which is where a build the system cannot identify lands, and the one case that can
- * ask for the login keychain password instead. `unknown` means nothing is stored.
+ * merely to draw this screen. `keychainOnly` means an item released without asking
+ * anybody, which is what a Mac whose build the system cannot identify falls back to
+ * and what an Android phone with no screen lock can only ever have; on a Mac it is
+ * also the one case that may ask for the login keychain password instead.
+ * `unknown` means nothing is stored.
  */
 export type SyncProtection =
   | "unknown"
