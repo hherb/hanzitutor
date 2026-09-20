@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "csv",
  "flate2",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hanzi-core",
  "rusqlite",
@@ -1503,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-tutor"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bzip2 0.5.2",
  "cpal",
