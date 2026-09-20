@@ -136,6 +136,34 @@ impl Rating {
             Rating::Easy => 5,
         }
     }
+
+    /// The stored name of this rating.
+    ///
+    /// It is the same string serde writes for the JSON document and the same one
+    /// the study database holds, so the three cannot drift apart — a test asserts
+    /// this against the serialised form, because a renamed variant would otherwise
+    /// leave a database and an interface quietly disagreeing about what a row
+    /// means.
+    pub fn name(self) -> &'static str {
+        match self {
+            Rating::Again => "again",
+            Rating::Hard => "hard",
+            Rating::Good => "good",
+            Rating::Easy => "easy",
+        }
+    }
+
+    /// The rating a stored name means, or `None` when it is not one this build
+    /// knows. The caller decides whether that is worth reporting or defaulting.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "again" => Some(Rating::Again),
+            "hard" => Some(Rating::Hard),
+            "good" => Some(Rating::Good),
+            "easy" => Some(Rating::Easy),
+            _ => None,
+        }
+    }
 }
 
 /// One recorded attempt.
@@ -602,7 +630,6 @@ impl ProgressStore {
             return Err(ProgressError::InvalidTimestamp(at.to_string()));
         }
         let score = score.clamp(0.0, 100.0);
-        let rating = Rating::from_score(score);
 
         let card = self
             .document
@@ -610,25 +637,7 @@ impl ProgressStore {
             .entry(ch.to_string())
             .or_insert_with(|| CardState::new(at));
 
-        card.attempts += 1;
-        card.last_score = Some(score);
-        card.best_score = Some(match card.best_score {
-            Some(best) => best.max(score),
-            None => score,
-        });
-        card.last_practised = Some(at.to_string());
-        let recorded = Attempt {
-            at: at.to_string(),
-            score,
-            rating,
-        };
-        card.history.push(recorded.clone());
-        if card.history.len() > MAX_HISTORY {
-            let excess = card.history.len() - MAX_HISTORY;
-            card.history.drain(..excess);
-        }
-
-        scheduler.review(card, rating, at);
+        let recorded = apply_attempt(card, score, at, scheduler);
 
         // What a sink has to write: the card, and the attempt itself, which is
         // the one thing the bounded in-memory history cannot be trusted to keep.
@@ -647,6 +656,69 @@ impl ProgressStore {
             .expect("the card was just inserted");
         Ok(card.view(ch, at))
     }
+}
+
+/// Apply one recorded attempt to a card, in the one order that is correct.
+///
+/// Pulled out of [`ProgressStore::record_with`] so that the log fold below, which
+/// rebuilds a card from its attempts, cannot drift from the way the card was built
+/// the first time. If the two ever disagreed, two devices would hold different
+/// schedules for the same history and neither could tell which was right.
+fn apply_attempt(
+    card: &mut CardState,
+    score: f32,
+    at: &str,
+    scheduler: &dyn Scheduler,
+) -> Attempt {
+    let rating = Rating::from_score(score);
+    card.attempts += 1;
+    card.last_score = Some(score);
+    card.best_score = Some(match card.best_score {
+        Some(best) => best.max(score),
+        None => score,
+    });
+    card.last_practised = Some(at.to_string());
+    let recorded = Attempt {
+        at: at.to_string(),
+        score,
+        rating,
+    };
+    card.history.push(recorded.clone());
+    if card.history.len() > MAX_HISTORY {
+        let excess = card.history.len() - MAX_HISTORY;
+        card.history.drain(..excess);
+    }
+    scheduler.review(card, rating, at);
+    recorded
+}
+
+/// Rebuild a card from the attempts that produced it.
+///
+/// This is the property cross-device sync rests on (ROADMAP M13): a card is never
+/// *merged* between devices, it is recomputed. Because [`apply_attempt`] is the
+/// only thing that ever advanced a card, folding the same attempts in the same
+/// order reproduces the same card — so two devices that practised the same
+/// character while apart agree on one schedule as soon as each has the other's
+/// log, with nothing to resolve and no winner to pick.
+///
+/// `attempts` must be in the order they happened, and the caller owns that order.
+/// The engine deliberately knows nothing about devices, shards or clocks: it is
+/// handed a sequence and returns the schedule it implies. An empty log has no
+/// card in it, so this returns `None` rather than inventing one.
+///
+/// A log that does not go back to the character's first attempt — which is what a
+/// card migrated from the pre-M10 JSON files has, since that kept only the newest
+/// twenty — reconstructs only the part of the history it holds. That case is why
+/// the shard format carries a baseline; see ROADMAP M13.
+pub fn fold_attempts(attempts: &[Attempt], scheduler: &dyn Scheduler) -> Option<CardState> {
+    let first = attempts.first()?;
+    // The same starting state `record_with` gives a character it has never seen:
+    // unseen, and due at the moment of its first attempt.
+    let mut card = CardState::new(&first.at);
+    for attempt in attempts {
+        apply_attempt(&mut card, attempt.score, &attempt.at, scheduler);
+    }
+    Some(card)
 }
 
 /// Build the review queue.
@@ -1463,5 +1535,104 @@ mod tests {
         cursor.save().unwrap();
         assert_eq!(cursor.view().index, 3);
         assert!(cursor.view().warning.is_none());
+    }
+
+    // ---- the fold, which cross-device sync is built on ---------------------
+
+    #[test]
+    fn the_stored_name_of_a_rating_is_the_serialised_one() {
+        // The database stores ratings by name, and the JSON documents store them
+        // through serde. If those two ever came apart, a row written by one build
+        // would be read as something else by the next.
+        for rating in [Rating::Again, Rating::Hard, Rating::Good, Rating::Easy] {
+            let serialised = serde_json::to_string(&rating).unwrap();
+            assert_eq!(serialised, format!("\"{}\"", rating.name()));
+            assert_eq!(Rating::from_name(rating.name()), Some(rating));
+        }
+        assert_eq!(Rating::from_name("excellent"), None, "and not just anything");
+    }
+
+    #[test]
+    fn folding_a_log_reproduces_the_card_that_recorded_it() {
+        // The whole of cross-device sync rests on this: a card is not merged, it
+        // is recomputed. Twenty attempts, a mix of passes and failures, so the
+        // ease factor and the repetition count both move.
+        let path = temp_path("fold-exact");
+        let mut store = ProgressStore::open(&path).unwrap();
+        let scores = [
+            91.0, 42.0, 88.0, 95.0, 30.0, 77.0, 100.0, 61.0, 84.0, 55.0, 92.0, 39.0, 70.0, 99.0,
+            48.0, 86.0, 93.0, 64.0, 58.0, 81.0,
+        ];
+        for (i, score) in scores.iter().enumerate() {
+            let at = format!("2026-09-19T09:{i:02}:00Z");
+            store.record_at('好', *score, &at).unwrap();
+        }
+
+        let recorded = store.document().cards.get("好").unwrap().clone();
+        let log = recorded.history.clone();
+        assert_eq!(log.len(), scores.len(), "the whole log is in the window");
+
+        let folded = fold_attempts(&log, &Sm2).unwrap();
+        assert_eq!(folded, recorded, "the fold rebuilds the card exactly");
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn folding_is_the_same_whichever_order_the_attempts_are_gathered_in() {
+        // Two devices, each with its own attempts for one character, then one
+        // merged log. Which device's attempts are laid down first must not matter,
+        // because the merge sorts them before folding — this is that claim, with
+        // the sort done by hand.
+        let first: Vec<Attempt> = (0..6)
+            .map(|i| Attempt {
+                at: format!("2026-09-19T09:{:02}:00Z", i * 2),
+                score: 80.0 + i as f32,
+                rating: Rating::from_score(80.0 + i as f32),
+            })
+            .collect();
+        let second: Vec<Attempt> = (0..6)
+            .map(|i| Attempt {
+                at: format!("2026-09-19T09:{:02}:00Z", i * 2 + 1),
+                score: 55.0 + i as f32,
+                rating: Rating::from_score(55.0 + i as f32),
+            })
+            .collect();
+
+        let mut interleaved = first.clone();
+        interleaved.extend(second.clone());
+        interleaved.sort_by(|a, b| a.at.cmp(&b.at));
+        let folded = fold_attempts(&interleaved, &Sm2).unwrap();
+
+        // The same attempts, offered in the other device's order first.
+        let mut other = second;
+        other.extend(first);
+        other.sort_by(|a, b| a.at.cmp(&b.at));
+        assert_eq!(fold_attempts(&other, &Sm2).unwrap(), folded);
+
+        // And the log is now genuinely both devices': six attempts each.
+        assert_eq!(folded.attempts, 12);
+        assert_eq!(folded.history.len(), 12);
+    }
+
+    #[test]
+    fn a_log_that_did_not_start_at_the_beginning_folds_only_what_it_holds() {
+        // The migrated-card case: six attempts happened, the log kept the newest
+        // three. The fold cannot invent the missing ones, so the count is what the
+        // window holds — which is exactly why the shard format carries a baseline
+        // for a card whose log is short of its count.
+        let all: Vec<Attempt> = (0..6)
+            .map(|i| Attempt {
+                at: format!("2026-09-19T09:0{i}:00Z"),
+                score: 70.0,
+                rating: Rating::from_score(70.0),
+            })
+            .collect();
+        let window = &all[3..];
+        let folded = fold_attempts(window, &Sm2).unwrap();
+        assert_eq!(folded.attempts, 3, "three attempts is all the log knows");
+        assert_eq!(folded.history.len(), 3);
+
+        assert!(fold_attempts(&[], &Sm2).is_none(), "an empty log has no card");
     }
 }

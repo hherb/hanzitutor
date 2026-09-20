@@ -1524,6 +1524,74 @@ downstream of them is covered by the IPC tests, which drive
   - **A preference at its default is stored as no row.** Otherwise a fresh
     install writes two rows saying "normal", and the settings table stops being a
     record of decisions somebody took.
+- **Cross-device sync: the design is settled, the groundwork is built.** M13.
+  Schema 3 has shipped: `meta.device_id`, `attempt.device_id`/`attempt.seq` with a
+  unique index on the pair, and `ATTEMPT_ORDER = (at, device_id, seq)` for reading
+  the log. **Never read the attempt log by `id` again** — `id` is this file's
+  insertion order, and once a peer's attempts have been merged in, the row that
+  arrived last is not the attempt that happened last; the schedule is folded in the
+  order the log is read, so reading by `id` would silently reorder a learner's
+  reviews. `seq` is numbered *per device*, so two devices legitimately both start
+  at 1: the pair is what is unique, never the number alone. `crates/hanzi-sync` now
+  holds the shard format, the merge and the fold, and three of its rules are
+  load-bearing: **a closed shard is never rewritten** (a name is the sequence it
+  starts at, which is why a shard carries no content hash — a hash would make the
+  name depend on the contents, so a retried partial write would make a second shard
+  instead of finishing the first); **the merge is a union, not a reconciliation**,
+  so two copies of one `(device_id, seq)` that disagree mean a shard was replaced
+  and are reported as `SyncError::Rewritten` rather than resolved, because picking a
+  winner would invent history the learner cannot check; and **the per-attempt update
+  lives in exactly one place**, `hanzi_core::apply_attempt`, called by both
+  `ProgressStore::record_with` and `fold_attempts`. Do not inline a copy of it into
+  either — if the live path and the fold can drift, two devices hold different
+  schedules for one history and neither can tell which is right. Two things about
+  the adapter are equally load-bearing: sync publishes **`Db::own_attempts`**, never
+  `Db::attempts` — after one sync the log holds a peer's work too, and publishing
+  that under this device's name would relabel it, which is the identity the merge
+  rests on; and **a caller must reload its `ProgressStore` after a sync**, because
+  the store holds the card document in memory and its next `save` (which every
+  review performs) would otherwise write its stale snapshot back over the synced
+  schedule. That one is recoverable — the log kept every attempt and the next sync
+  rebuilds from it — but it is a silently wrong schedule until then. Two
+  properties already in the code decide the whole design, so do not "improve" them
+  away: `attempt` is append-only — a grow-only set, which merges with no conflict
+  to resolve — and `Sm2::review` is pure, so a card is a *fold over the log*
+  rather than a mergeable value. **The log syncs; `hanzi.db` never does.** A live
+  SQLite file in a cloud folder is how study data gets corrupted — out-of-order
+  WAL and SHM sidecars, snapshots taken mid-transaction, "conflicted copies" — and
+  no phone exposes such a folder as a filesystem anyway. Three further rules: sync
+  must not carry `settings` (the absent-preference-asks-the-device invariant above
+  would break, so a phone's answer could overwrite a desktop's); the fold order
+  must be `(at, device_id, seq)`, because whole-second `at` ties are real and
+  `ease` accumulates in `f32`, so without a tiebreak the devices drift; and a
+  migrated card whose `attempts` exceeds its logged rows must fold from a captured
+  baseline, since its log is incomplete. Dropbox is the first transport, with
+  app-folder access and PKCE so that no client secret enters an AGPL repository —
+  and with **no redirect URI**, because Dropbox rejects custom schemes (every
+  redirect must be HTTPS except `localhost`), so the code is shown on the
+  authorization page and pasted into the app rather than deep-linked back. That
+  also means `tauri-plugin-deep-link` is not wanted here; do not add it on the
+  assumption that a mobile OAuth flow needs it. The Dropbox client itself is in
+  `crates/hanzi-sync/src/{http,oauth,dropbox}.rs`, hand-written over `ureq` rather
+  than an SDK so the licence catalogue does not grow, and tested against an
+  in-memory Dropbox — `UreqHttp` is the only part that touches a socket. Three
+  things about it are easy to get wrong: **the token request carries no
+  `client_secret`** (PKCE replaces it, and a test asserts it); **no `redirect_uri`
+  is sent at all**, because Dropbox refuses custom schemes and its code flow makes
+  the parameter optional, which is why the flow is a paste rather than a deep link;
+  and **a Dropbox refusal arrives as a 200 with `error_description` and no
+  `access_token`**, so the refusal must be checked *before* the access token is
+  required or the learner sees a parse error instead of Dropbox's own sentence.
+  `put` overwrites on purpose — a create-only upload breaks a retry after a timeout
+  the device could not distinguish from a failure. On the app side,
+  `src-tauri/src/sync.rs` owns the account and the Keychain, and two rules there are
+  worth not undoing: **the refresh token goes in the platform's secret store and
+  never in `hanzi.db`** (an ordinary file that backups copy around; a refusal to
+  connect on a platform with no secret store yet is a bug report, a plaintext
+  credential is a vulnerability nobody notices), and **the token store and the HTTP
+  client stay trait objects** — replacing them with the concrete Keychain and
+  `UreqHttp` would make the module untestable without touching the developer's real
+  Keychain, which is a test that deletes their account.
 - **The voice preference only works if it reaches the speaker before the
   warm-up.** `AppState::load` sets it on the `Speaker` *before* `warm_voice`
   spawns. Resolution is not cached (only the ~1s voice *list* is), so a change

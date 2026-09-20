@@ -7,6 +7,11 @@ license.workspace = true
 
 [dependencies]
 hanzi-core = { path = "../hanzi-core" }
+# A device's identity, and later a vocabulary entry's, has to be a value no other
+# device will ever pick (ROADMAP M13). Random rather than derived: a hostname or a
+# MAC address would be a stable identifier the learner cannot reset, and would
+# collide the moment two devices were cloned from one image.
+uuid.workspace = true
 
 # SQLite, compiled into the binary from the vendored amalgamation. The app makes
 # no network requests and starts no external process, so the study data has to

@@ -53,6 +53,10 @@ pub use schema::SCHEMA_VERSION;
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
     dir: PathBuf,
+    /// This device's identity, read once at open. It is what makes an attempt's
+    /// `(device_id, seq)` pair mean the same thing on every device, so two logs
+    /// can be merged without a row colliding — see [`schema`]'s `upgrade`.
+    device_id: String,
 }
 
 impl Db {
@@ -108,10 +112,20 @@ impl Db {
             }
         }
         schema::apply(&conn).map_err(|e| at(&path, e))?;
+        // `apply` has already generated this if the database was new or predated
+        // schema 3; reading it back here is what makes every write in this
+        // session able to name its own device without touching the table again.
+        let device_id = schema::device_id(&conn).map_err(|e| at(&path, e))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             dir,
+            device_id,
         })
+    }
+
+    /// This device's identity, for the sync layer to name its shards with.
+    pub fn device_id(&self) -> &str {
+        &self.device_id
     }
 
     /// The database file.
@@ -143,30 +157,25 @@ impl Db {
     /// This is the log the whole design exists for, and reading it is what makes
     /// it useful: tuning the grading tolerances against real attempts starts
     /// here, and so does any future "what have I been getting wrong" screen.
+    ///
+    /// "Oldest first" is [`ATTEMPT_ORDER`], which is when the attempt *happened*
+    /// rather than when this file heard about it. Those differ as soon as a
+    /// peer's attempts have been merged in.
     pub fn attempts(&self, ch: Option<char>) -> Result<Vec<LoggedAttempt>, String> {
         let conn = self.lock();
         let path = self.path();
-        let sql = "SELECT id, ch, at, score, rating FROM attempt";
+        let sql = "SELECT id, device_id, seq, ch, at, score, rating FROM attempt";
         let mut stmt = match ch {
             Some(_) => conn
-                .prepare(&format!("{sql} WHERE ch = ?1 ORDER BY id"))
+                .prepare(&format!("{sql} WHERE ch = ?1 {ATTEMPT_ORDER}"))
                 .map_err(|e| at(&path, e))?,
             None => conn
-                .prepare(&format!("{sql} ORDER BY id"))
+                .prepare(&format!("{sql} {ATTEMPT_ORDER}"))
                 .map_err(|e| at(&path, e))?,
         };
-        let read = |row: &rusqlite::Row<'_>| {
-            Ok(LoggedAttempt {
-                id: row.get(0)?,
-                ch: row.get(1)?,
-                at: row.get(2)?,
-                score: row.get(3)?,
-                rating: row.get(4)?,
-            })
-        };
         let rows = match ch {
-            Some(ch) => stmt.query_map([ch.to_string()], read),
-            None => stmt.query_map([], read),
+            Some(ch) => stmt.query_map([ch.to_string()], read_attempt),
+            None => stmt.query_map([], read_attempt),
         }
         .map_err(|e| at(&path, e))?;
 
@@ -176,19 +185,156 @@ impl Db {
         }
         Ok(out)
     }
+
+    /// This device's own attempts, in the order it made them.
+    ///
+    /// Not the same question as [`Db::attempts`], which answers with everything
+    /// the log holds — including attempts merged in from other devices. Sync
+    /// publishes *this* device's work under its own name, and a device that
+    /// published a peer's attempts as its own would corrupt the identity the whole
+    /// merge rests on, so the two questions must not be confused.
+    ///
+    /// Ordered by `seq` rather than by time, because that is what a shard's
+    /// numbering is: a device's own log in the order it wrote it.
+    pub fn own_attempts(&self) -> Result<Vec<LoggedAttempt>, String> {
+        let conn = self.lock();
+        let path = self.path();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, device_id, seq, ch, at, score, rating FROM attempt
+                 WHERE device_id = ?1 ORDER BY seq",
+            )
+            .map_err(|e| at(&path, e))?;
+        let rows = stmt
+            .query_map([&self.device_id], read_attempt)
+            .map_err(|e| at(&path, e))?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| at(&path, e))?);
+        }
+        Ok(out)
+    }
+
+    /// Merge attempts made elsewhere into the log, returning how many were new.
+    ///
+    /// An attempt already held — same `(device_id, seq)` — is left exactly as it
+    /// is. That is the whole of the merge on the storage side: the pair names one
+    /// attempt, so a sync that runs twice must neither duplicate it nor rewrite it.
+    /// Deciding whether two copies *agree* is the caller's job, because it is the
+    /// caller that has both texts to compare; this can only say "already have it".
+    pub fn merge_attempts(&self, incoming: &[IncomingAttempt]) -> Result<usize, String> {
+        if incoming.is_empty() {
+            return Ok(0);
+        }
+        let path = self.path();
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(|e| at(&path, e))?;
+        let mut added = 0usize;
+        for attempt in incoming {
+            added += tx
+                .execute(
+                    "INSERT INTO attempt (device_id, seq, ch, at, score, rating)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(device_id, seq) DO NOTHING",
+                    params![
+                        attempt.device_id,
+                        attempt.seq,
+                        attempt.ch,
+                        attempt.at,
+                        attempt.score,
+                        attempt.rating.name(),
+                    ],
+                )
+                .map_err(|e| at(&path, e))?;
+        }
+        tx.commit().map_err(|e| at(&path, e))?;
+        Ok(added)
+    }
+
+    /// Read a value out of the database's `meta` table.
+    ///
+    /// The table is the app's own bookkeeping — the schema version and the
+    /// once-only import markers live there — and sync keeps its watermarks beside
+    /// them rather than in a file of its own, so that one backup captures
+    /// everything.
+    pub fn meta_value(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.lock();
+        meta_get(&conn, key).map_err(|e| at(&self.path(), e))
+    }
+
+    /// Write a value into the database's `meta` table.
+    pub fn set_meta_value(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.lock();
+        set_meta(&conn, key, value).map_err(|e| at(&self.path(), e))
+    }
 }
+
+/// Read one attempt row, in the column order every query above uses.
+fn read_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoggedAttempt> {
+    Ok(LoggedAttempt {
+        id: row.get(0)?,
+        device_id: row.get(1)?,
+        seq: row.get(2)?,
+        ch: row.get(3)?,
+        at: row.get(4)?,
+        score: row.get(5)?,
+        rating: row.get(6)?,
+    })
+}
+
+/// The order the log is read in, and the order the schedule is folded in.
+///
+/// Deliberately not `id`. `id` is this file's insertion order, and the moment a
+/// peer's attempts have been merged in, a row inserted later can have happened
+/// earlier. `(at, device_id, seq)` is a total order that every device computes
+/// identically: `at` is only accurate to the second, so ties are real, and the
+/// tiebreak has to be something all devices agree on — SM-2's ease factor
+/// accumulates in `f32`, so folding the same log in two different orders would
+/// leave two devices with slightly different schedules and no way to notice.
+const ATTEMPT_ORDER: &str = "ORDER BY at, device_id, seq";
 
 /// One row of the attempt log.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoggedAttempt {
-    /// Insertion order, which is chronological: it is the log's own sequence.
+    /// This file's rowid. It orders nothing across devices and is not part of the
+    /// attempt's identity — `(device_id, seq)` is.
     pub id: i64,
+    /// The device that made the attempt.
+    pub device_id: String,
+    /// The attempt's number in that device's own log, from 1.
+    pub seq: i64,
     pub ch: String,
     /// When it happened, ISO-8601 UTC.
     pub at: String,
     pub score: f32,
     /// `again`, `hard`, `good` or `easy`.
     pub rating: String,
+}
+
+impl LoggedAttempt {
+    /// The pair that names this attempt on every device.
+    ///
+    /// This is the merge key: a peer sending an attempt this file already has must
+    /// be recognised as the same attempt and not appended again.
+    pub fn origin(&self) -> (&str, i64) {
+        (&self.device_id, self.seq)
+    }
+}
+
+/// An attempt made on another device, on its way into this log.
+///
+/// The same facts as a [`LoggedAttempt`] without this file's rowid, which means
+/// nothing anywhere else. A separate type rather than a `LoggedAttempt` with a
+/// placeholder `id`, because an `id` that is a lie is worse than no `id` at all.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IncomingAttempt {
+    pub device_id: String,
+    pub seq: i64,
+    pub ch: String,
+    pub at: String,
+    pub score: f32,
+    pub rating: Rating,
 }
 
 /// A database error, with the file it came from: "it could not be read" is not
@@ -214,7 +360,7 @@ fn settings_error(path: &Path, e: rusqlite::Error) -> SettingsError {
 impl ProgressSink for Db {
     fn load(&self) -> Result<ProgressDocument, ProgressError> {
         let mut conn = self.lock();
-        migrate::progress(&mut conn, self.dir())?;
+        migrate::progress(&mut conn, self.dir(), &self.device_id)?;
         let path = self.path();
         let mut cards = read_cards(&conn, &path)?;
         read_histories(&conn, &path, &mut cards)?;
@@ -244,8 +390,10 @@ impl ProgressSink for Db {
                 write_card(&tx, ch, card).map_err(|e| progress_error(&path, e))?;
             }
         }
-        for record in attempts {
-            insert_attempt(&tx, record).map_err(|e| progress_error(&path, e))?;
+        let first = next_seq(&tx, &self.device_id).map_err(|e| progress_error(&path, e))?;
+        for (seq, record) in (first..).zip(attempts.iter()) {
+            insert_attempt(&tx, &self.device_id, seq, record)
+                .map_err(|e| progress_error(&path, e))?;
         }
         tx.commit().map_err(|e| progress_error(&path, e))
     }
@@ -287,17 +435,38 @@ fn write_card(conn: &Connection, ch: &str, card: &CardState) -> rusqlite::Result
     Ok(())
 }
 
-fn insert_attempt(conn: &Connection, record: &AttemptRecord) -> rusqlite::Result<()> {
+fn insert_attempt(
+    conn: &Connection,
+    device_id: &str,
+    seq: i64,
+    record: &AttemptRecord,
+) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO attempt (ch, at, score, rating) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO attempt (device_id, seq, ch, at, score, rating)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
+            device_id,
+            seq,
             record.ch,
             record.attempt.at,
             record.attempt.score,
-            rating_text(record.attempt.rating),
+            record.attempt.rating.name(),
         ],
     )?;
     Ok(())
+}
+
+/// The next number this device should give an attempt.
+///
+/// Numbered per device — note the `WHERE` — because `(device_id, seq)` is what
+/// has to be unique across a merged log, not `seq` on its own. Two devices both
+/// starting at 1 is the intended behaviour, not a collision.
+pub(crate) fn next_seq(conn: &Connection, device_id: &str) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM attempt WHERE device_id = ?1",
+        [device_id],
+        |row| row.get(0),
+    )
 }
 
 fn read_cards(
@@ -341,6 +510,9 @@ fn read_cards(
 /// The newest [`MAX_HISTORY`] rows per character, oldest first — the same view
 /// the JSON document used to carry, except that the log behind it keeps going.
 /// The window function is what keeps this one query rather than one per card.
+///
+/// "Newest" is [`ATTEMPT_ORDER`] again, and for the same reason: after a merge,
+/// the rows that arrived last are not the attempts that happened last.
 fn read_histories(
     conn: &Connection,
     path: &Path,
@@ -349,10 +521,11 @@ fn read_histories(
     let mut stmt = conn
         .prepare(
             "SELECT ch, at, score, rating FROM (
-                 SELECT id, ch, at, score, rating,
-                        ROW_NUMBER() OVER (PARTITION BY ch ORDER BY id DESC) AS recent
+                 SELECT ch, at, score, rating, device_id, seq,
+                        ROW_NUMBER() OVER (PARTITION BY ch
+                                           ORDER BY at DESC, device_id DESC, seq DESC) AS recent
                  FROM attempt
-             ) WHERE recent <= ?1 ORDER BY id",
+             ) WHERE recent <= ?1 ORDER BY at, device_id, seq",
         )
         .map_err(|e| progress_error(path, e))?;
     let rows = stmt
@@ -374,37 +547,18 @@ fn read_histories(
             // inventing a card with no schedule.
             continue;
         };
-        card.history.push(Attempt {
-            at,
-            score,
-            rating: rating_from(&rating).map_err(|e| match e {
-                ProgressError::Malformed(why) => ProgressError::Malformed(format!("{why} in {}", path.display())),
-                other => other,
-            })?,
-        });
+        // The stored name is the engine's, not this crate's: `Rating::name` is
+        // asserted against serde's own form, so a database and the JSON documents
+        // cannot come to disagree about what a row means.
+        let rating = Rating::from_name(&rating).ok_or_else(|| {
+            ProgressError::Malformed(format!(
+                "{}: an attempt in the study database has an unknown rating {rating:?}",
+                path.display()
+            ))
+        })?;
+        card.history.push(Attempt { at, score, rating });
     }
     Ok(())
-}
-
-fn rating_text(rating: Rating) -> &'static str {
-    match rating {
-        Rating::Again => "again",
-        Rating::Hard => "hard",
-        Rating::Good => "good",
-        Rating::Easy => "easy",
-    }
-}
-
-fn rating_from(text: &str) -> Result<Rating, ProgressError> {
-    match text {
-        "again" => Ok(Rating::Again),
-        "hard" => Ok(Rating::Hard),
-        "good" => Ok(Rating::Good),
-        "easy" => Ok(Rating::Easy),
-        other => Err(ProgressError::Malformed(format!(
-            "an attempt in the study database has an unknown rating {other:?}"
-        ))),
-    }
 }
 
 // ---- the course cursor ----------------------------------------------------

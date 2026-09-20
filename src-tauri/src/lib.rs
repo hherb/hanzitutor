@@ -10,6 +10,7 @@ mod capture;
 mod platform;
 mod speech;
 mod state;
+mod sync;
 
 pub use commands::{LevelCount, VocabOutcome, VoiceOption, VoicesView, WordSearchView};
 pub use licences::{AppInfo, LicenceNotice};
@@ -18,6 +19,7 @@ pub use capture::{MicrophoneStatus, Recorder, Recording};
 pub use state::{
     AppState, CursorState, Persisted, ProgressState, SettingsState, VocabState, REVIEW_LIMIT,
 };
+pub use sync::{SyncService, SyncSummaryView, SyncView};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -54,6 +56,11 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Opens the Dropbox authorization page in the system browser. A plugin
+        // rather than `window.open`, because that would put Dropbox's sign-in
+        // inside a webview — which Dropbox asks against, and which Google's policy
+        // forbids outright for the accounts that sign in through it.
+        .plugin(tauri_plugin_opener::init())
         // The Kotlin half of the platform seam: the system synthesiser and the
         // window insets. Registers nothing anywhere but Android.
         .plugin(crate::platform::init())
@@ -75,7 +82,12 @@ pub fn run() {
                     None
                 }
             };
-            app.manage(AppState::assemble(prepared, data_dir));
+            let state = AppState::assemble(prepared, data_dir);
+            // Sync gets the database itself rather than any of the three views over
+            // it, because what it moves is the attempt log underneath them.
+            let sync = SyncService::new(state.db.clone());
+            app.manage(state);
+            app.manage(sync);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -120,6 +132,11 @@ pub fn run() {
             commands::android_insets,
             commands::speech_report,
             commands::webview_log,
+            commands::sync_status,
+            commands::sync_connect,
+            commands::sync_connect_finish,
+            commands::sync_now,
+            commands::sync_disconnect,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Hanzi Tutor");

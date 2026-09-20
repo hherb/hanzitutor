@@ -328,6 +328,12 @@ pub struct AppState {
     pub progress: Mutex<ProgressState>,
     pub cursor: Mutex<CursorState>,
     pub settings: Mutex<SettingsState>,
+    /// The study database itself.
+    ///
+    /// The three stores above are views over it, and cross-device sync needs the
+    /// log underneath them rather than any one view. `None` when the app has
+    /// nowhere to keep study data, in which case there is nothing to sync either.
+    pub db: Option<Db>,
     /// The teachable characters, as a set.
     ///
     /// The review queue needs to know which characters the course can offer, and
@@ -371,7 +377,7 @@ impl AppState {
         // having. What the three *separate files* used to buy — one bad document
         // not taking the others down — is kept where it still applies, in the
         // once-only import of those files, which is per document.
-        let (vocab, progress, cursor, settings) = match &data_dir {
+        let (vocab, progress, cursor, settings, db) = match &data_dir {
             Some(dir) => {
                 let where_it_lives = dir.join(Db::FILE_NAME);
                 match Db::open(dir) {
@@ -380,6 +386,7 @@ impl AppState {
                         ProgressState::open_database(&db, where_it_lives.clone()),
                         CursorState::open_database(&db, where_it_lives.clone()),
                         SettingsState::open_database(&db, where_it_lives),
+                        Some(db),
                     ),
                     // Without the database none of the stores can be read, so all
                     // of them say so and refuse to write. Nothing was destroyed:
@@ -390,6 +397,7 @@ impl AppState {
                         ProgressState::unavailable(where_it_lives.clone(), &reason),
                         CursorState::unavailable(where_it_lives.clone(), &reason),
                         SettingsState::unavailable(where_it_lives, &reason),
+                        None,
                     ),
                 }
             }
@@ -400,6 +408,7 @@ impl AppState {
                 ProgressState::in_memory(),
                 CursorState::in_memory(),
                 SettingsState::in_memory(),
+                None,
             ),
         };
 
@@ -425,6 +434,7 @@ impl AppState {
             progress: Mutex::new(progress),
             cursor: Mutex::new(cursor),
             settings: Mutex::new(settings),
+            db,
         }
     }
 

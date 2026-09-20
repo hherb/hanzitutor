@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hanzi-core", "crates/hanzi-store", "src-tauri"]
+members = ["crates/hanzi-core", "crates/hanzi-store", "crates/hanzi-sync", "src-tauri"]
 
 [workspace.package]
 version = "0.3.0"
@@ -10,6 +10,10 @@ license = "AGPL-3.0-only"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Device and vocabulary identity for cross-device sync (ROADMAP M13). Randomness
+# comes from `getrandom`, which is already in the graph through Tauri, so this
+# adds a name to the manifest but no new upstream project to the build.
+uuid = { version = "1", features = ["v4"] }
 postcard = { version = "1", features = ["alloc"] }
 flate2 = "1"
 

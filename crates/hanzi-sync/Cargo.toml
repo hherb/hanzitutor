@@ -1,0 +1,30 @@
+[package]
+name = "hanzi-sync"
+description = "Cross-device sync: the shard format, the merge and the log fold"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The fold and the scheduler are the engine's, not this crate's: what sync adds is
+# where the attempts came from, and it hands the engine a sequence in the order
+# they happened. The engine still knows nothing about devices or shards.
+hanzi-core = { path = "../hanzi-core" }
+
+# The local log lives here. The dependency runs one way only: this crate knows
+# about the database, and the database knows nothing about sync.
+hanzi-store = { path = "../hanzi-store" }
+
+# Identity for a PKCE verifier: random, and the same crate the device id uses.
+uuid.workspace = true
+
+# Dropbox is reached over plain HTTPS with hand-written requests rather than an
+# SDK. `ureq` and `sha2` are already in the build graph for the speech-model
+# download and `base64` arrives with the Tauri tree, so this transport adds no new
+# upstream project to the licence catalogue. Dropbox's own Rust SDK would.
+ureq = "2"
+sha2 = "0.10"
+base64 = "0.21"
+
+serde.workspace = true
+serde_json.workspace = true

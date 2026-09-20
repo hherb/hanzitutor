@@ -42,9 +42,12 @@ the Play listing are in [`store/`](store/).*
 Working end to end. The grading engine, the dataset pipeline, the Tauri command
 layer, the drawing UI, pronunciation, the personal vocabulary list, per-character
 progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
-measure**, the **durable study store**, **tone practice** and **speech
-recognition** — for characters *and words*, on desktop and on both mobile systems
-— are all implemented and tested; **318 automated tests** pass. A signed Android
+measure**, the **durable study store**, **tone practice**, **speech
+recognition** and optional **cross-device sync** through your own Dropbox — for
+characters *and words*, on desktop and on both mobile systems — are all implemented
+and tested; **364 automated tests** pass, and 4 more are
+ignored unless a microphone or the speech model is present. A
+signed Android
 release bundle is built and runs on a physical phone, and the recognition model
 has been installed and used on both a physical iPhone and a physical Android
 phone; what is left for the Play Store is publishing the privacy policy and
@@ -277,6 +280,12 @@ application data directory —
 sent anywhere, and nothing else is written: the database holds the vocabulary
 list, the per-character schedule with its log of every attempt, and your place in
 the course.
+
+The one exception is the one you ask for. If you connect a Dropbox account from
+the settings screen, pressing *Sync now* sends your attempt log to **your own
+Dropbox**, in a folder only this app can see, and takes back anything another of
+your devices left there. There is no account with us and no server of ours, and the
+sign-in itself is kept in the system Keychain rather than in the database.
 
 Where that directory is can be overridden, which is useful for a portable
 install, for keeping study data outside the application support folder, or for
@@ -844,10 +853,19 @@ The store is a crate of its own for the same reason: `hanzi-core` decides *what*
 remember and this decides *where*, behind a trait the engine defines, so SQL never
 enters the engine and the engine's tests never need a database.
 
+`hanzi-sync` is a third crate, and is split off for a sharper reason. Sync is two
+problems wearing one name: merging logs, which has to be *right* or a learner's
+schedule is silently wrong, and moving bytes, which only has to work. The merge is
+pure and is tested against a temporary directory with no account and no network;
+transport is a three-method trait underneath it. Nothing is wired up yet — see
+ROADMAP M13.
+
 The speech path sits alongside: `capture.rs` opens the microphone for the length of
 one held button, `hanzi-core`'s `tone.rs` measures the pitch of what it caught, and
-`asr.rs` runs the optional recognition model. Only `asr.rs` ever opens a socket, and
-only after somebody has pressed the install button.
+`asr.rs` runs the optional recognition model. Two things in this app can open a
+socket, and both only after a learner has pressed a button: `asr.rs`, to fetch the
+model, and `sync.rs`, to reach the learner's own Dropbox once they have connected an
+account. Nothing else here contacts anything.
 
 ### Coordinate systems
 
@@ -885,8 +903,22 @@ crates/hanzi-store/         the SQLite store. Native dependency, so it is
   src/migrate.rs            the once-only import of the old JSON documents
   src/lib.rs                the sinks, and the attempt log's reader
   tests/store.rs            the M10 acceptance criteria
+crates/hanzi-sync/          cross-device sync: the shard format, the merge and the
+                            fold (M13, in progress — nothing syncs yet)
+  src/shard.rs              the format, the union, and the fold into schedules
+  src/store.rs              `RemoteStore`, and the directory implementation
+  src/local.rs              the database side: publish, pull, recompute
+  src/http.rs               the four request shapes Dropbox uses, and `ureq`
+  src/oauth.rs              PKCE, the authorize URL, token exchange and refresh
+  src/dropbox.rs            Dropbox as a `RemoteStore`
+  tests/convergence.rs      two devices that practised apart must agree
+  tests/two_devices.rs      two real databases, one folder
+  tests/dropbox.rs          the client, against an in-memory Dropbox
+  tests/two_devices.rs      two real databases, one folder
 src-tauri/                  Tauri shell
   src/commands.rs           the IPC surface
+  src/sync.rs               cross-device sync: the Keychain, the account, and the
+                            five commands the settings screen calls
   src/state.rs              embedded dataset, speech warm-up, the stores
   src/platform.rs           the Android bridge: the Kotlin plugin, registered and
                             called through Tauri's mobile-plugin machinery
@@ -915,7 +947,7 @@ store/                      the Play listing: copy, answers, icon, artwork
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 318 tests
+pnpm test             # the whole Rust suite: 364 tests, 4 more ignored
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
@@ -1210,6 +1242,16 @@ dragging or by clicking. The headline gaps are now:
    settings screen**, with the app working exactly as it does today for anyone who
    declines. That screen now exists (ROADMAP's cross-cutting list); the recognition
    itself is not built, and ROADMAP M12 records the constraints it must meet.
+5. **Syncing between devices** (M13) — **built, and worth a first real run.** Connect
+   a Dropbox account from the settings screen on each device and press *Sync now*:
+   the attempt log travels, each device rebuilds its schedule from the whole of it,
+   and a character practised on one appears scheduled on the other. It is off until
+   you connect, nothing is sent until you press the button, and Dropbox is only ever
+   given a folder its own app can see. What is still missing is named at the end of
+   ROADMAP M13 — an automatic sync at launch, the vocabulary list and the course
+   cursor, and the baseline for a schedule whose log does not go back to its first
+   attempt. Nothing has been exercised against a real Dropbox account yet, so that is
+   the first thing to do rather than the last.
 
 If you are picking this project up to continue development, read
 **[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the

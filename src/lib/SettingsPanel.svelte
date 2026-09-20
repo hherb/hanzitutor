@@ -29,6 +29,7 @@
     Pace,
     SettingsPatch,
     SettingsView,
+    SyncView,
     VoicesView,
   } from "./types";
   import { onMount } from "svelte";
@@ -191,6 +192,95 @@
       ? Math.min(100, Math.round((asr.downloaded / asr.downloadBytes) * 100))
       : 0,
   );
+
+  // Cross-device sync --------------------------------------------------------
+  //
+  // Unlike the model above, this is not a download: it is the first thing in this
+  // app that sends anything *about the learner's study data* anywhere, and it stays
+  // entirely absent until they connect an account. The flow is a paste rather than
+  // a redirect, because Dropbox will not send a code back to an app — so the page
+  // opens in the browser, shows a code, and this screen asks for it. That is why
+  // there is a text field here and why nothing waits on a callback.
+
+  /** The backend's answer, or `null` until the first one arrives. */
+  let sync = $state<SyncView | null>(null);
+  /** True while a press is in flight, so a button cannot be double-pressed. */
+  let syncBusy = $state(false);
+  /** Set when the screen could not ask, or the press was refused. */
+  let syncError = $state<string | null>(null);
+  /** True between opening the authorization page and the code arriving. */
+  let awaitingCode = $state(false);
+  /** What the learner pasted. */
+  let code = $state("");
+  /** The URL, kept so the page can be reopened if the browser did not appear. */
+  let authorizeUrl = $state<string | null>(null);
+
+  async function refreshSync() {
+    try {
+      sync = await api.syncStatus();
+    } catch (cause) {
+      syncError = `Could not ask about sync: ${cause}`;
+    }
+  }
+
+  onMount(() => void refreshSync());
+
+  async function beginConnect() {
+    syncBusy = true;
+    syncError = null;
+    try {
+      authorizeUrl = await api.syncConnect();
+      awaitingCode = true;
+    } catch (cause) {
+      syncError = `${cause}`;
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  async function finishConnect() {
+    syncBusy = true;
+    syncError = null;
+    try {
+      sync = await api.syncConnectFinish(code.trim());
+      // Cleared only on success, so a mistyped code can be corrected rather than
+      // retyped — the page it came from has usually been closed by now.
+      code = "";
+      awaitingCode = false;
+      authorizeUrl = null;
+    } catch (cause) {
+      syncError = `${cause}`;
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  async function syncNow() {
+    syncBusy = true;
+    syncError = null;
+    try {
+      sync = await api.syncNow();
+    } catch (cause) {
+      syncError = `${cause}`;
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  async function disconnect() {
+    syncBusy = true;
+    syncError = null;
+    try {
+      sync = await api.syncDisconnect();
+      awaitingCode = false;
+      code = "";
+      authorizeUrl = null;
+    } catch (cause) {
+      syncError = `${cause}`;
+    } finally {
+      syncBusy = false;
+    }
+  }
 </script>
 
 <section class="panel">
@@ -456,6 +546,112 @@
         {/if}
       </div>
     </div>
+
+    <!-- Syncing between devices ------------------------------------------- -->
+    <div class="row">
+      <div class="what">
+        <span class="name" id="set-sync">Syncing between devices</span>
+        <span class="why">
+          Practice on the laptop and on the phone and you end up with two
+          schedules, because neither device has ever seen the other's attempts.
+          Connecting a Dropbox account joins them up. What travels is the
+          <em>attempt log</em> — every attempt, with when it happened — and each
+          device works out its own schedule from the whole of it, so there is no
+          schedule to reconcile and no device that wins. The attempts are kept in
+          your own Dropbox, in a folder only this app can see; there is no account
+          with us and no server of ours. Nothing is sent anywhere until you press
+          Sync, and this screen is the only place that can start it.
+        </span>
+      </div>
+      <div class="how">
+        {#if sync === null}
+          <span class="status">Reading the sync settings…</span>
+        {:else if !sync.canConnect}
+          <!-- A platform with no secret store. Said plainly rather than offering a
+               button that would fail: the token is never written somewhere it could
+               be read, and that is a deliberate refusal, not a missing feature. -->
+          <span class="status">{sync.message}</span>
+        {:else if sync.connected}
+          <div class="voicerow">
+            <button class="try" onclick={() => void syncNow()} disabled={syncBusy}>
+              {syncBusy ? "Syncing…" : "Sync now"}
+            </button>
+            <button
+              class="try plain"
+              onclick={() => void disconnect()}
+              disabled={syncBusy}>Disconnect</button
+            >
+          </div>
+          {#if sync.accountId}
+            <span class="status fine">
+              Connected as <code>{sync.accountId}</code>.
+            </span>
+          {/if}
+        {:else if awaitingCode}
+          <span class="status">
+            A Dropbox page has opened in your browser. Sign in and approve, and it
+            will show you a code. Copy that code and paste it here — Dropbox will
+            not send it back to the app by itself.
+          </span>
+          <div class="voicerow">
+            <input
+              class="code"
+              type="text"
+              bind:value={code}
+              placeholder="Paste the code"
+              aria-label="The code Dropbox showed you"
+              spellcheck="false"
+              autocapitalize="off"
+              autocomplete="off"
+            />
+            <button
+              class="try"
+              onclick={() => void finishConnect()}
+              disabled={syncBusy || code.trim() === ""}
+            >
+              {syncBusy ? "Connecting…" : "Connect"}
+            </button>
+          </div>
+          <span class="status fine">
+            {#if authorizeUrl}
+              <!-- Plain text, not a link. Clicking a link here would load Dropbox
+                   inside this webview, which is the one thing the whole flow avoids
+                   — and opening the address again would have to start a *new*
+                   authorization, which would invalidate the code on the page you
+                   already have open. So it is offered to copy, not to click. -->
+              If the browser did not come forward, open this address yourself:
+              <code class="url">{authorizeUrl}</code>
+            {/if}
+          </span>
+        {:else}
+          <div class="voicerow">
+            <button class="try" onclick={() => void beginConnect()} disabled={syncBusy}>
+              {syncBusy ? "Opening…" : "Connect Dropbox"}
+            </button>
+          </div>
+          <span class="status fine">
+            You will need a Dropbox account; the free one is more than enough, as
+            the attempts are a few kilobytes.
+          </span>
+        {/if}
+
+        {#if sync?.connected || sync?.last}
+          <span class="status">{sync.message}</span>
+        {/if}
+        {#if sync?.last}
+          <span class="status fine">
+            Last time: {sync.last.published} sent, {sync.last.pulled} received,
+            {sync.last.recomputed} schedule{sync.last.recomputed === 1 ? "" : "s"} updated{#if sync
+              .last.leftAlone > 0}, {sync.last.leftAlone} left as {sync.last.leftAlone === 1
+              ? "it was"
+              : "they were"}{/if}.
+          </span>
+        {/if}
+        {#if syncError}
+          <p class="warning">{syncError}</p>
+        {/if}
+      </div>
+    </div>
   </div>
 
   <p class="footnote">
@@ -602,6 +798,32 @@
   .try:disabled {
     color: var(--muted);
     cursor: default;
+  }
+  /* The second action in a row — Disconnect beside Sync now. It should be
+     available without looking like the thing to press. */
+  .try.plain {
+    color: var(--muted-strong);
+  }
+  /* The code Dropbox shows. Long and paste-only, so it gets the room a `select`
+     would and the monospace its look deserves. */
+  .code {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.78rem;
+    color: var(--muted-strong);
+  }
+  /* An address to copy by hand. Long enough to need wrapping rather than the
+     panel growing sideways. */
+  .url {
+    display: inline-block;
+    word-break: break-all;
+    font-size: 0.72rem;
+    user-select: all;
   }
 
   /* A download of 163 MB takes minutes, so "working" and "hung" have to look

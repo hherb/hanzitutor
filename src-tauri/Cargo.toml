@@ -39,12 +39,20 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 # Native open/save dialogs, for exporting and importing the vocabulary list.
 tauri-plugin-dialog = "2"
+# Opening the Dropbox authorization page in the *system browser* (ROADMAP M13).
+# Deliberately not a webview, which is also why this is a plugin rather than
+# `window.open`: Dropbox asks for the system browser, and Google's policy forbids
+# their sign-in flow inside one, which matters for accounts that sign in to Dropbox
+# through Google.
+tauri-plugin-opener = "2"
 serde.workspace = true
 serde_json.workspace = true
 hanzi-core = { path = "../crates/hanzi-core" }
 # The durable study store. Kept out of hanzi-core so the engine stays free of
 # native dependencies and testable without a filesystem.
 hanzi-store = { path = "../crates/hanzi-store" }
+# Cross-device sync: the shard format, the merge, the fold and the Dropbox client.
+hanzi-sync = { path = "../crates/hanzi-sync" }
 cpal = "0.18"
 
 # Speech recognition (ROADMAP.md M12). `sherpa-onnx` is the toolkit's own crate,
@@ -91,3 +99,11 @@ objc2-avf-audio = "0.3"
 # AVFoundation's objects are not `Send`, so speaking happens on the main thread
 # and this is how the work gets there.
 dispatch2 = "0.3"
+
+# The refresh token has to outlive the process, and it is the whole of the account
+# access this app has, so it goes in the platform's own secret store rather than in
+# the study database — which is an ordinary file in an ordinary directory that
+# backup tools copy around. Apple's Keychain is the same API on macOS and iOS; the
+# crate is `#![cfg(target_vendor = "apple")]`, so this section is where it belongs.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+security-framework = "3"

@@ -678,3 +678,168 @@ fn an_older_database_gains_the_new_tables_without_losing_anything() {
 
     finish(&dir);
 }
+
+// ---- schema 3: what an attempt has to be able to say about itself ----------
+//
+// These are M13's groundwork. Nothing here syncs anything yet; what it establishes
+// is that an attempt can be *named* — this device, this one — which is what a
+// merge needs before there can be one.
+
+#[test]
+fn a_database_has_one_device_identity_that_does_not_change() {
+    // The identity has to survive a restart, or the same device's attempts would
+    // be re-imported as a stranger's on every run.
+    let other_dir = dir("device-id-other");
+    let dir = dir("device-id");
+    let db = Db::open(&dir).unwrap();
+    let first = db.device_id().to_string();
+    assert!(!first.trim().is_empty(), "a device is named, not blank");
+
+    assert_eq!(db.device_id(), first, "and it is the same name twice");
+    let reopened = Db::open(&dir).unwrap();
+    assert_eq!(reopened.device_id(), first, "and across a restart");
+
+    // Two databases are two devices, which is the property a merge depends on.
+    let other = Db::open(&other_dir).unwrap();
+    assert_ne!(other.device_id(), first);
+
+    finish(&dir);
+    finish(&other_dir);
+}
+
+#[test]
+fn an_attempt_is_stamped_with_its_device_and_its_number_on_it() {
+    let second_dir = dir("provenance-second");
+    let dir = dir("provenance");
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    store.record_at('好', 83.0, "2026-09-19T09:00:00Z").unwrap();
+    store.record_at('好', 91.0, "2026-09-19T10:00:00Z").unwrap();
+    store.save().unwrap();
+
+    let logged = db.attempts(Some('好')).unwrap();
+    assert_eq!(logged.len(), 2);
+    assert_eq!(logged[0].device_id, db.device_id(), "this device made it");
+    assert_eq!(logged[0].origin(), (db.device_id(), 1), "numbered from 1");
+    assert_eq!(logged[1].origin().1, 2, "and in order");
+
+    // The numbers are per device, so a second device also starts at 1. That is
+    // why the *pair* has to be unique and the number on its own is not.
+    let second = Db::open(&second_dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(second.clone())).unwrap();
+    store.record_at('好', 70.0, "2026-09-19T11:00:00Z").unwrap();
+    store.save().unwrap();
+    let theirs = second.attempts(Some('好')).unwrap();
+    assert_eq!(theirs[0].origin().1, 1, "the other device also starts at 1");
+    assert_ne!(theirs[0].device_id, logged[0].device_id);
+
+    finish(&dir);
+    finish(&second_dir);
+}
+
+#[test]
+fn a_peer_sending_an_attempt_this_device_already_has_is_not_a_second_attempt() {
+    // The merge's safety property, and the reason `(device_id, seq)` is a unique
+    // index rather than a convention: a sync that runs twice, or is retried after
+    // a failure it cannot tell happened, must not double a learner's history.
+    let dir = dir("no-duplicates");
+    let db = Db::open(&dir).unwrap();
+    let insert = || {
+        rusqlite::Connection::open(db.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO attempt (device_id, seq, ch, at, score, rating)
+                 VALUES ('peer', 7, '好', '2026-09-19T08:00:00Z', 60.0, 'good')",
+                [],
+            )
+    };
+    insert().expect("the first copy is the peer's attempt arriving");
+    assert!(insert().is_err(), "the same attempt again is refused");
+    assert_eq!(db.attempt_count().unwrap(), 1);
+
+    finish(&dir);
+}
+
+#[test]
+fn the_log_reads_in_the_order_attempts_happened_not_the_order_they_arrived() {
+    // What a merge does to a log: a peer's attempts are inserted now but happened
+    // earlier. Reading by rowid would put them last, and since the schedule is
+    // folded in the order the log is read, that would silently reorder a
+    // learner's reviews.
+    let dir = dir("merge-order");
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    store.record_at('好', 80.0, "2026-09-19T12:00:00Z").unwrap();
+    store.save().unwrap();
+    drop(store);
+
+    // Older than the attempt above, and inserted after it.
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO attempt (device_id, seq, ch, at, score, rating)
+             VALUES ('peer', 1, '好', '2026-09-19T08:00:00Z', 60.0, 'good')",
+            [],
+        )
+        .unwrap();
+
+    let logged = db.attempts(Some('好')).unwrap();
+    assert_eq!(logged.len(), 2);
+    assert_eq!(logged[0].score, 60.0, "the earlier attempt reads first");
+    assert_eq!(logged[0].device_id, "peer");
+    assert_eq!(logged[1].score, 80.0);
+
+    // And the card's recent history, which is the same read, agrees.
+    let store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    let history = &store.card('好').unwrap().history;
+    assert_eq!(history[0].score, 60.0);
+    assert_eq!(history[1].score, 80.0);
+
+    finish(&dir);
+}
+
+#[test]
+fn a_schema_two_database_gains_attempt_provenance_without_renumbering() {
+    // The upgrade path for schema 2 → 3. A log written before these columns
+    // existed merges as correctly as one written after: every row belonged to
+    // this device, and its rowid is already the order it happened in, so the
+    // backfill invents nothing.
+    let dir = dir("older-attempts");
+    let db = Db::open(&dir).unwrap();
+    let device = db.device_id().to_string();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    for i in 0..3 {
+        let at = format!("2026-09-19T09:0{i}:00Z");
+        store.record_at('好', 70.0 + i as f32, &at).unwrap();
+    }
+    store.save().unwrap();
+    drop(store);
+
+    // Roll the file back to what schema 2 looked like. The device identity stays:
+    // a device does not become a different device by being upgraded.
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        conn.execute("DROP INDEX attempt_origin", []).unwrap();
+        conn.execute("ALTER TABLE attempt DROP COLUMN device_id", [])
+            .unwrap();
+        conn.execute("ALTER TABLE attempt DROP COLUMN seq", []).unwrap();
+        let old = "UPDATE meta SET value = '2' WHERE key = 'schema'";
+        conn.execute(old, []).unwrap();
+    }
+
+    let db = Db::open(&dir).unwrap();
+    assert_eq!(db.device_id(), device, "it is the same device afterwards");
+    let logged = db.attempts(Some('好')).unwrap();
+    assert_eq!(logged.len(), 3, "no attempt was lost");
+    for (i, attempt) in logged.iter().enumerate() {
+        assert_eq!(attempt.device_id, device);
+        assert_eq!(attempt.seq, attempt.id, "the rowid was already the order");
+        assert_eq!(attempt.score, 70.0 + i as f32);
+    }
+
+    // And the upgrade is not a one-off: reopening again changes nothing.
+    let again = Db::open(&dir).unwrap();
+    assert_eq!(again.attempts(Some('好')).unwrap().len(), 3);
+
+    finish(&dir);
+}

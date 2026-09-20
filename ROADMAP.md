@@ -1269,6 +1269,387 @@ appears, it should displace this one.
 
 ---
 
+## M13 — Cross-device sync
+
+**Status: working, with the gaps listed at the end.** Two devices connected to the
+same Dropbox account merge their schedules: what travels is the attempt log, each
+device rebuilds its schedule from the whole of it, and the settings screen drives
+connect, sync and disconnect. **Dropbox is the first transport**; others can follow
+behind the same three-method trait without the merge changing at all.
+
+**What has shipped.** Schema 3, which is the part everything else stands on, and
+which is useful on its own because it is what makes an attempt *nameable*:
+
+- **`meta.device_id`** — a random UUID, generated on first open and stable for the
+  life of the database. Random rather than derived from the machine: a hostname or
+  a MAC address would be an identifier the learner cannot reset, and would collide
+  the moment two devices were cloned from one image.
+- **`attempt.device_id` and `attempt.seq`** — the pair that names one attempt on
+  every device. The existing `id` could not do it: it is this file's rowid, so two
+  devices both reach 1, 2, 3 and a merged log would collide on every row. `seq` is
+  numbered per device, and `Db::attempts` exposes the pair as `origin()`.
+- **A unique index on `(device_id, seq)`** — the merge's safety property, not
+  tidiness. A sync that runs twice, or is retried after a failure it cannot tell
+  happened, must not double a learner's history.
+- **Backfill rather than renumber.** A log written before these columns existed
+  enters the scheme with `seq = id`, which is already the order it happened in, and
+  with this device's identity, because there was no other writer. Nothing is
+  invented and no attempt moves.
+- **`ATTEMPT_ORDER = (at, device_id, seq)`** for reading the log and for filling a
+  card's recent history. This is a behaviour change, not a refactor: `id` is
+  insertion order, and once a peer's attempts have been merged in, the row that
+  arrived last is not the attempt that happened last. Since the schedule is folded
+  in the order the log is read, reading by `id` would silently reorder a learner's
+  reviews. `at` is only accurate to the second, so the tiebreak has to be
+  something every device computes identically — SM-2's ease factor accumulates in
+  `f32`, and folding the same log in two orders would leave two devices subtly
+  disagreeing with no way to notice.
+- Columns arrive through a new `schema::upgrade`, which asks each table what it
+  already has and runs on every open, fresh install included. `SCHEMA` stays at the
+  shape each table was first created with, so a fresh install and a five-year-old
+  file take exactly the same path and no definition is kept in two places.
+
+Five tests in `crates/hanzi-store/tests/store.rs`: the identity survives a restart
+and differs between databases; an attempt carries its device and its number; a peer
+sending an attempt twice is refused by the index; the log reads in the order things
+happened rather than the order they arrived; and a schema-2 database gains the
+columns with its attempts attributed and nothing renumbered.
+
+**`crates/hanzi-sync`.** The format, the merge and the fold — the part that has to
+be *right*, kept apart from the part that has to work, and tested against a
+temporary directory with no account, no network and no credentials:
+
+- **The shard format.** `devices/<device-id>/attempts/<first-seq:012>.jsonl`, one
+  JSON object per line in sequence order, 500 to a shard. The device is in the path
+  rather than in every line, because the path is what a store can list without
+  fetching. A shard's name is the sequence it *starts* at, so a device cannot
+  overwrite a peer's work even by accident and a retried sync writes the same bytes
+  to the same names — there is no file-level conflict to have, which is what makes a
+  dumb transport safe. Deliberately **no content hash in the name**: that would make
+  the name depend on the contents, so a device that retried a partial write would
+  create a second shard instead of finishing the first.
+- **The merge is a union.** Attempts are identified by `(device_id, seq)` — the pair,
+  never the number alone. An attempt both sides have is the *same* attempt, so there
+  is nothing to resolve; and if two copies of one pair disagree, a shard was
+  rewritten, which is the one thing the format promises cannot happen. That is
+  reported as `SyncError::Rewritten` rather than quietly resolved, because a merge
+  that picked a winner would be inventing history for a learner who cannot check it.
+- **The fold recomputes, never merges, a schedule.** `hanzi_core::fold_attempts`
+  rebuilds each card from its attempts in canonical order. This is the claim the
+  whole design rests on, and it is asserted directly in `hanzi-core`: twenty mixed
+  attempts recorded through the store, then folded from the log alone, must give a
+  `CardState` equal in every field to the one the store built. To make that true by
+  construction rather than by coincidence, the per-attempt update was pulled out of
+  `ProgressStore::record_with` into one `apply_attempt` that both paths call — if
+  they could drift, two devices would hold different schedules for one history and
+  neither could tell which was right.
+- **Canonical order is `(at, device_id, seq)`**, applied by both the merge and the
+  fold. `at` is only accurate to the second, so ties are real and need a tiebreak
+  every device computes identically: SM-2's ease factor accumulates in `f32`, and
+  two devices folding one log in different orders would drift with no way to notice.
+- **`RemoteStore`** is three methods — list, get, put — with a revision per entry so
+  a transport can skip re-reading a shard that has not changed. `FolderStore` is the
+  directory implementation, which is both the desktop "bring your own folder" story
+  and what the merge is tested against. It refuses any name that would escape its
+  root: a shard name arrives from a remote store, so it is not this program's text.
+- **`Rating::name`/`from_name`** moved into the engine, which now owns the one
+  spelling of a rating for the database, the JSON documents and the wire. A test
+  asserts it against serde's own form, so a renamed variant cannot leave a database
+  and an interface disagreeing about what a row means.
+
+Sixteen tests across `crates/hanzi-core/src/progress.rs` and
+`crates/hanzi-sync/tests/convergence.rs`. The headline one is convergence: a laptop
+and a phone that practised 好 while apart, each folding the union of its own log and
+the peer's shards, must produce *the same* card — and the merged result must not
+depend on which log the merge was given first. Others cover a retried sync being a
+no-op, the same sequence number on two devices staying two attempts, an `f32` score
+surviving the JSON round trip exactly, a truncated shard being an error rather than
+a silently shorter log, and a shard name not reaching outside the store.
+
+**The local adapter**, which is where the database and the merge meet and the only
+place they do:
+
+- **`publish`** writes this device's attempts that no shard holds yet and moves a
+  watermark kept in `meta` (`sync:published_seq`). The watermark advances only after
+  the shards are written, so a failure re-publishes rather than skipping — which is
+  safe, because the same attempts produce the same names and the same bytes.
+- **It publishes `own_attempts`, never `attempts`.** After one sync the local log
+  holds a peer's attempts too, so "everything in the log" and "my attempts" are
+  different questions; publishing the first under this device's name would relabel
+  the peer's work, and `(device_id, seq)` is the identity the whole merge rests on.
+  The two queries have different names for that reason, and a test asserts the
+  published shards are three attempts each rather than six of one.
+- **`pull` merges in memory before writing.** The database's `DO NOTHING` cannot
+  tell "already have it" from "have a different copy of it", so the in-memory merge
+  runs first and a rewritten shard is reported rather than swallowed.
+- **`recompute` rebuilds schedules and is conservative about one case.** It skips
+  any card whose count exceeds its rows in the log — a card migrated from the
+  pre-M10 JSON kept only its newest twenty attempts — because folding those would
+  discard the part the log never held. It also skips a card the fold already agrees
+  with, so a sync that changes nothing reports that it changed nothing and
+  `Summary::is_empty` means what it says.
+- **The caller must reload its schedule store after a sync.** A `ProgressStore`
+  holds the document in memory and writes through it, so an open store is stale the
+  moment sync rewrites the `progress_card` rows, and its next `save` — which every
+  review performs — would write the stale card back. It is recoverable rather than
+  fatal, because the log kept every attempt and the next sync rebuilds from it, but
+  it is a silently wrong schedule until then. There is a test for the hazard and for
+  the recovery.
+
+Five more tests in `crates/hanzi-sync/tests/two_devices.rs`, against two real
+SQLite databases and one folder: they converge on one schedule; each device
+publishes its own work and attributes a peer's to the peer; a new device that has
+never seen a character learns its whole schedule; a card whose log is short of its
+count is left alone and reported; and an unreloaded store can undo a sync and the
+next sync heals it.
+
+The suite is green at 344 tests, with 4 more ignored unless a microphone or the
+speech model is present.
+
+**The Dropbox client.** Hand-written over `ureq`, because `ureq`, `sha2` and
+`base64` are all already in the build graph and Dropbox's own Rust SDK would be a
+new upstream project for four endpoints:
+
+- **Three HTTP shapes, one trait.** RPC (JSON in, JSON out), content (arguments in a
+  `Dropbox-API-Arg` header, bytes as the body, either direction) and form (no
+  authorization, for the token endpoint). `Http` is that shape rather than "an HTTP
+  client", so everything built on it is tested against an in-memory Dropbox and only
+  `UreqHttp` touches a socket.
+- **PKCE, and no secret anywhere.** The app is open source and ships no server, which
+  is Dropbox's own description of the case PKCE exists for. A test asserts the token
+  request carries no `client_secret`.
+- **No redirect URI at all.** Dropbox refuses custom schemes — every redirect must be
+  HTTPS except `localhost` — and its code flow makes the parameter optional for
+  exactly this case. So the authorization page shows a code and the learner pastes
+  it in: one paste per device, once, in exchange for no server, no hosted domain and
+  no per-platform URL registration. A test asserts no `redirect_uri` is sent.
+- **The verifier is two UUIDs.** RFC 7636 wants 43–128 characters from a restricted
+  alphabet; two version-4 UUIDs are 64 such characters and 244 bits of entropy, drawn
+  from the same crate that generates the device id. No new dependency.
+- **The refusal is read before the access token is required.** Dropbox reports a
+  refusal as a 200 with `error_description` and no `access_token`, so a struct that
+  demanded one would show the learner a missing-field parse error instead of
+  Dropbox's own sentence. That was a bug until a test caught it.
+- **`list` follows the cursor** through `files/list_folder/continue` until
+  `has_more` is false, and reports Dropbox's `rev` as the entry revision.
+- **`put` overwrites, deliberately.** A shard name is written once by this program, so
+  a re-upload is identical bytes and overwriting is harmless — whereas a create-only
+  upload breaks a retry after a timeout the device could not distinguish from a
+  failure. Immutability is the writer's discipline, and what checks it is the merge,
+  which refuses two shards that disagree about one attempt.
+- **`SyncError::Unauthorized` is its own failure.** It is the one error with an
+  obvious next move — refresh and retry — and reporting it as a network fault would
+  send somebody to check a connection that is working.
+
+Eleven tests in `crates/hanzi-sync/tests/dropbox.rs`, all against an in-memory
+Dropbox that answers the same four request shapes. The one that matters most is the
+last: the same shards written through the Dropbox client and through a directory
+must read back identically, which is the claim that a transport is interchangeable.
+`UreqHttp` itself is the one part not covered — it is the part with no decisions in
+it.
+
+The suite is green at 355 tests, with 4 more ignored unless a microphone or the
+speech model is present.
+
+**The app side.** `src-tauri/src/sync.rs`, plus five commands
+(`sync_status`, `sync_connect`, `sync_connect_finish`, `sync_now`,
+`sync_disconnect`):
+
+- **The refresh token goes in the platform's secret store** — Apple's Keychain, via
+  `security-framework`, which is the same API on macOS and iOS — and **not** in
+  `hanzi.db`. That file is an ordinary file in an ordinary directory that a backup
+  tool copies to a second disk and a cloud service; a database is the wrong place
+  for a credential even when it is the right place for study data, and those are not
+  the same claim. On a platform whose secret store is not wired up (Windows, Linux,
+  Android), connecting is **refused** rather than quietly written somewhere less
+  safe: a refusal is a bug report, a plaintext credential is a vulnerability nobody
+  notices.
+- **The store and the HTTP client are trait objects with production defaults**,
+  which is not ceremony — it is what lets the tests drive a whole
+  connect-then-sync-then-disconnect pass against a temporary directory and an
+  in-memory token store. A test that wrote to the developer's real Keychain would be
+  a test that deleted their account.
+- **Disconnect revokes before it forgets.** Dropping the local token would leave the
+  authorization standing on Dropbox's side, which is not what "disconnect" means to
+  somebody who pressed it. A failure to revoke is reported and still clears locally.
+- **The app key is a constant, not a build secret.** It travels in the authorization
+  URL, which is why PKCE exists; a fresh clone therefore builds something that
+  works, with `HANZI_DROPBOX_APP_KEY` as the override for a fork with its own app.
+- **The authorization page opens in the system browser** through
+  `tauri-plugin-opener` — never a webview, which Dropbox asks against and Google's
+  policy forbids for the accounts that sign in through them.
+- **`Http` is `Send + Sync`**, because the app holds one inside Tauri's managed
+  state. That was a compile error rather than a design note, and it is the reason
+  the bound is written on the trait instead of on the one implementation.
+
+Nine tests in that module, and none of them touches the Keychain or a socket. The
+one that carries the weight does the whole pass: connect against a fake token
+endpoint, keep the refresh token, practise a character, sync over a real directory,
+find nothing to do the second time, then disconnect and prove the token is gone.
+
+The suite is green at 364 tests, with 4 more ignored unless a microphone or the
+speech model is present.
+
+**The settings screen.** A fifth row in the settings panel — the fourth was the
+recognition model — with connect, the pasted code, Sync now, Disconnect, and a line
+saying what the last sync did. Four things about it are deliberate:
+
+- **The authorization address is offered to copy, not to click.** A link in this
+  webview would load Dropbox *inside* it, which is the one thing the whole flow
+  exists to avoid; and reopening the address would mean starting a *new*
+  authorization, which would invalidate the code on the page already open. So it is
+  plain, selectable text.
+- **The button is not offered where there is no secret store.** The screen asks
+  `canConnect` first, so a learner on such a platform is told why rather than
+  watching a button fail. A refusal is a bug report; a button that fails is a
+  mystery.
+- **A mistyped code keeps what was typed.** The field is cleared only on success,
+  because the page it came from has usually been closed by then and retyping a long
+  code from a page that no longer exists is not recoverable.
+- **Nothing syncs on its own.** There is no sync at launch or on foreground yet; the
+  learner presses Sync now. That is a gap against the sketch in "Left out" below
+  rather than an oversight, and it is the safe direction to be wrong in while the
+  feature is new — an automatic sync is a thing that happens to somebody who did not
+  ask for it, and this is the first code in the app that sends study data anywhere.
+
+**What is not built.** Syncing at launch or on foreground rather than only on
+demand; the baseline for a card whose log does not go back to its first attempt; and
+the vocabulary and cursor shards — which means a vocabulary list added on one device
+does not appear on the other yet, though a *schedule* does.
+
+**Why.** Practice happens on whichever device is at hand — the laptop at a desk,
+the phone on a train — and a schedule that exists on only one of them is a
+schedule the learner cannot trust. The requirement is narrower than "cloud": no
+paid service, no account of ours, and nothing that makes the app worse for
+somebody who declines it.
+
+**What makes this tractable.** Two properties are already in the code, and
+neither was added for sync:
+
+- `attempt` is append-only and never rewritten (M10). That is a grow-only set —
+  the one shape that merges across devices with no conflict to resolve.
+- `Sm2::review` is a pure function of `(CardState, Rating, at)`. A card is
+  therefore a *fold over the attempt log*, not a thing to be merged. Two devices
+  that practised the same character offline both append; both fold the union and
+  agree.
+
+So **the log syncs, the schedule is recomputed, and `hanzi.db` itself is never
+synced.** Putting a live SQLite database in a cloud folder is the approach this
+milestone exists to avoid: WAL and SHM sidecars are copied out of order, a client
+can snapshot mid-transaction, and a conflict leaves a "conflicted copy" nobody
+reads. It also cannot work on a phone at all, since neither Android nor iOS
+exposes a Dropbox or Drive folder as a filesystem.
+
+**Approach.**
+
+- **Device identity.** A `device_id` (UUID, generated once) in the database's
+  `meta` table. A synced row is identified by `(device_id, id)`, so two devices'
+  `AUTOINCREMENT` values can no longer collide.
+- **Shards, one directory per device, immutable once written.**
+  `devices/<device_id>/attempts/NNNNNN.jsonl` (append-only chunks; a closed chunk
+  is never rewritten), `vocab.json`, `cursor.json`, `baseline.json`. A shard's
+  filename carries the hash of its contents, which makes an upload idempotent and
+  gives a sync client nothing to make a conflicted copy *of*. This is what lets a
+  dumb transport — a cloud folder — be safe.
+- **Ordering.** `at` is ISO-8601 to the whole second, so ties are real. The fold
+  runs in `(at, device_id, id)` order: a total order every device computes the
+  same way. Without the tiebreak the ease factor, which accumulates in `f32`,
+  would drift between devices.
+- **The baseline, and the one card that cannot be replayed.** A migrated card has
+  `attempts` greater than its rows in `attempt`, because the JSON it came from
+  kept only the newest 20 — HANDOVER records this. Fold exactly those from a
+  captured `baseline.json` rather than the log, and take the branch with more
+  attempts when two devices disagree. Every other card folds exactly.
+- **Vocabulary entries are the only genuinely concurrent edits.** They are
+  user-authored, editable and deletable, so they gain a UUID, an `updated_at` and
+  a tombstone; merge is last-writer-wins per entry on `(updated_at, device_id)`.
+  There is no pretending that a sentence edited on two phones can be merged.
+- **The course cursor is last-writer-wins** on its existing `updated_at`.
+- **`settings` does not sync.** `hanzi-core/src/settings.rs` is built on "an
+  absent preference asks the device", so a phone's answer must never overwrite a
+  desktop's. That is the invariant, not an oversight.
+- **Schema version 3** carries the above: `device_id` in `meta`, `device_id` on
+  `attempt`, and `uuid`/`updated_at`/`deleted` on `vocab_entry` — additive, in the
+  shape M10 established.
+- **A `RemoteStore` trait** (`list`, `get`, `put`) in a new `crates/hanzi-sync`,
+  which depends on `hanzi-core` and `hanzi-store`. The merge is pure and tested
+  against a local directory; the transport is interchangeable. `hanzi-core` stays
+  free of I/O and native dependencies, as its crate note requires.
+
+**Dropbox, and why it is first.** Of the cross-platform options it is the only
+one that is both free and available on all three of macOS, Android and iOS
+without a paid third party. iCloud Drive has no Android client, so it cannot
+serve the phone-to-phone case at all; Syncthing is excellent on macOS and Android
+but reaches iOS only through Möbius Sync, which is paid. The specifics:
+
+- An App Console app with **app-folder access**, so the integration can only ever
+  see `Apps/HanziTutor` and never the learner's own files.
+- **OAuth 2.0 with PKCE** and `token_access_type=offline`, so a refresh token is
+  issued and no client secret needs to exist in an AGPL repository — Dropbox names
+  "open source applications" and "desktop and mobile apps without a server" as the
+  PKCE case. Scopes `account_info.read` (to name the connected account on the
+  settings screen), `files.metadata.read`, `files.content.read`,
+  `files.content.write`. The refresh token does not expire on its own and is
+  reused for every access token after the first.
+- **No redirect URI at all, because Dropbox forbids custom schemes.** Every
+  redirect URI must be HTTPS, with `localhost` the only exception — so
+  `hanzi-tutor://` cannot be registered at all, and a `tauri-plugin-deep-link`
+  registration would be dead weight on three platforms. Dropbox's code flow makes
+  `redirect_uri` *optional* for exactly this case: the authorization page displays
+  the code and the learner pastes it into the app, once per device. The app opens
+  that page in the **system browser** — the API says it must not be shown in a
+  webview, which also matters for accounts that sign in to Dropbox through Google
+  — using the official `tauri-plugin-opener`. One paste per device is the entire
+  cost, and it buys a flow needing no server, no hosted domain and no per-platform
+  URL registration. This is worth re-testing if the goal is a seamless mobile
+  sign-in: Google Drive does allow custom schemes on iOS and Android, which is the
+  one axis on which it is the smoother of the two.
+- Four endpoints: token, `list_folder` (with its cursor and `/continue`),
+  download, upload. `list_folder` returns a `rev` and a `content_hash` per entry,
+  so a device downloads only what changed and needs no state beyond the cursor.
+
+**Acceptance criteria.**
+
+- Two sets of shards merged in either order produce byte-identical `CardState`s
+  for every character.
+- Merging the same shards twice changes nothing.
+- Practising offline for any length of time and then syncing loses no attempt.
+- A card whose `attempts` exceeds its logged rows keeps its schedule through the
+  baseline path.
+- With sync unconfigured the app makes no network request, and `hanzi-sync` is
+  the only module besides `asr.rs` that can open a socket.
+
+**Left out, and why.**
+
+- **Background sync.** iOS gives an app no background execution, so syncing
+  happens at launch, on foreground and on demand. Append-only shards are why that
+  is acceptable: how long a device slept cannot cost data.
+- **Syncing the schedule as state.** It would hand two devices a conflict to
+  resolve where the log hands them a computation.
+- **A loopback listener or a hosted HTTPS redirect.** Both are permitted by
+  Dropbox and both are worse here than a paste. A hosted redirect means running a
+  server, which this milestone exists to avoid. A loopback listener
+  (`http://localhost:PORT`) is allowed and is the usual installed-app pattern, but
+  on iOS the app is suspended when the system browser comes forward, so the socket
+  it is supposed to receive the code on is the fragile part — and it would earn
+  only the removal of one paste per device.
+- **Dropbox's `dropbox-sdk` crate.** The four endpoints above are small enough to
+  call through `ureq` and `serde_json`, which the ASR download already puts in the
+  graph, so `LICENSES.md` need not grow. Revisit if the OAuth flow proves
+  fiddlier than it looks.
+- **Google Drive, Syncthing and a LAN peer-to-peer transport.** Behind the same
+  `RemoteStore` trait, later. Google Drive also keeps a personal OAuth app in
+  "Testing" mode, where refresh tokens expire weekly — a real trap for this use.
+
+**Privacy, restated.** M12 moved `INTERNET` into the main Android manifest, so
+sync adds no permission; what it does add is a reason for the privacy policy and
+the Play listing to be restated in the same change, exactly as M12 did, rather
+than left claiming the app contacts nothing. Sync ships **off by default**, with
+nothing enabled until the learner connects an account, and the app stays complete
+without it.
+
+---
+
 ## Explicitly out of scope
 
 To keep the project honest about what it is:
@@ -1278,8 +1659,15 @@ To keep the project honest about what it is:
   more useful problem for learning. A recogniser would be a separate feature.
 - **Traditional characters.** The dataset contains them, but the curriculum is
   simplified-only, which was the original requirement.
-- **Cloud accounts, syncing, social features.** The whole value of this app is
-  that it is offline and private.
+- **Cloud accounts and social features.** The whole value of this app is that it
+  is offline and private, and nothing here changes that: there is no account to
+  make and no server of ours to talk to.
+- **Syncing is no longer out of scope** — it is M13, on narrow terms. The
+  original objection was that the app must work offline and keep the learner's
+  data to themselves; that is a property of the design rather than of refusing
+  the feature, so M13 syncs through storage the learner already owns, ships off
+  by default, and leaves the app complete without it. Anything that would need an
+  account of ours, a server of ours, or a paid service is still out.
 - **Speech recognition for tones is no longer out of scope** — it is M11 and it
   has shipped, for characters and words, with no model. Recognising *text* was
   M12 and has now shipped too, as an optional model the learner installs from the

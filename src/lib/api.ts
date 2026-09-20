@@ -17,6 +17,7 @@ import type {
   ReviewView,
   SettingsPatch,
   SettingsView,
+  SyncView,
   ToneResult,
   ToneTarget,
   TextLookup,
@@ -291,3 +292,43 @@ export const asrInstall = () => invoke<void>("asr_install");
 
 /** Delete the recognition model, returning the state that leaves behind. */
 export const asrRemove = () => invoke<AsrStatus>("asr_remove");
+
+// ---- cross-device sync ------------------------------------------------------
+
+/**
+ * Whether this device is connected, and what happened last time.
+ *
+ * Reading this never touches the network: the connection is a refresh token in the
+ * platform's secret store, and this only asks whether there is one.
+ */
+export const syncStatus = () => invoke<SyncView>("sync_status");
+
+/**
+ * Start connecting a Dropbox account, and open the authorization page.
+ *
+ * The page opens in the **system browser**, not in this window: Dropbox asks for
+ * that, and Google's policy forbids their sign-in flow inside a webview, which
+ * matters for accounts that sign in to Dropbox through Google. The URL comes back
+ * as well, so a learner whose browser did not come forward can open it themselves.
+ *
+ * Dropbox will not redirect back to an app, so the flow ends with a code shown on
+ * that page which has to be pasted into `syncConnectFinish`.
+ */
+export const syncConnect = () => invoke<string>("sync_connect");
+
+/** Finish connecting, with the code the Dropbox page showed. */
+export const syncConnectFinish = (code: string) =>
+  invoke<SyncView>("sync_connect_finish", { code });
+
+/**
+ * Sync now: send this device's attempts, take the other's, and rebuild the
+ * schedule from the whole log.
+ *
+ * The first call in this app that sends anything about the learner's study data
+ * anywhere, and it only ever happens because they pressed a button. Nothing else
+ * in the app behaves differently while it runs.
+ */
+export const syncNow = () => invoke<SyncView>("sync_now");
+
+/** Forget the account here and on Dropbox's side, leaving study data untouched. */
+export const syncDisconnect = () => invoke<SyncView>("sync_disconnect");

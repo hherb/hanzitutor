@@ -31,7 +31,8 @@ use hanzi_core::AttemptRecord;
 use rusqlite::Connection;
 
 use crate::{
-    insert_attempt, meta_get, progress_error, set_meta, vocab_error, write_card, write_entry, Db,
+    insert_attempt, meta_get, next_seq, progress_error, set_meta, vocab_error, write_card,
+    write_entry, Db,
 };
 
 /// The documents, by the names the app has written since M1.
@@ -44,7 +45,15 @@ const VOCABULARY_KEY: &str = "import:vocabulary.json";
 const CURSOR_KEY: &str = "import:course-cursor.json";
 
 /// Import `progress.json`, if it has not been imported already.
-pub(crate) fn progress(conn: &mut Connection, dir: &Path) -> Result<(), ProgressError> {
+///
+/// Every attempt the document carried belonged to this device, so they enter the
+/// log under `device_id` and take its next numbers in the order the document
+/// listed them.
+pub(crate) fn progress(
+    conn: &mut Connection,
+    dir: &Path,
+    device_id: &str,
+) -> Result<(), ProgressError> {
     let db = db_path(dir);
     if imported(conn, PROGRESS_KEY).map_err(|e| progress_error(&db, e))? {
         return Ok(());
@@ -56,6 +65,7 @@ pub(crate) fn progress(conn: &mut Connection, dir: &Path) -> Result<(), Progress
     let document = ProgressStore::open(&file).map_err(|e| named(&file, e))?;
 
     let tx = conn.transaction().map_err(|e| progress_error(&db, e))?;
+    let mut seq = next_seq(&tx, device_id).map_err(|e| progress_error(&db, e))?;
     for (ch, card) in &document.document().cards {
         write_card(&tx, ch, card).map_err(|e| progress_error(&db, e))?;
         for attempt in &card.history {
@@ -63,7 +73,8 @@ pub(crate) fn progress(conn: &mut Connection, dir: &Path) -> Result<(), Progress
                 ch: ch.clone(),
                 attempt: attempt.clone(),
             };
-            insert_attempt(&tx, &record).map_err(|e| progress_error(&db, e))?;
+            insert_attempt(&tx, device_id, seq, &record).map_err(|e| progress_error(&db, e))?;
+            seq += 1;
         }
     }
     set_meta(&tx, PROGRESS_KEY, &marker(&file)).map_err(|e| progress_error(&db, e))?;

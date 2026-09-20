@@ -626,3 +626,35 @@ export interface MicrophoneStatus {
   sampleRate: number;
   detail: string;
 }
+
+/**
+ * What one sync did, in the shape the settings screen reads.
+ *
+ * `leftAlone` is the honest one: a character whose schedule this device cannot
+ * rebuild from its log — because the log does not go back to its first attempt —
+ * is left as it is rather than guessed at. See ROADMAP M13.
+ */
+export interface SyncSummaryView {
+  published: number;
+  pulled: number;
+  recomputed: number;
+  leftAlone: number;
+}
+
+/**
+ * Whether this device is connected to Dropbox, and what to say about it.
+ *
+ * `canConnect` is false on a platform with no secure store for the refresh token.
+ * The screen asks before it offers a button, so a learner is told why rather than
+ * watching a button fail — the token is never written somewhere it could be read.
+ */
+export interface SyncView {
+  connected: boolean;
+  /** Which Dropbox account, when Dropbox said. */
+  accountId: string | null;
+  canConnect: boolean;
+  /** The last sync this session, if there has been one. */
+  last: SyncSummaryView | null;
+  /** One plain sentence, worded by the Rust side. */
+  message: string;
+}

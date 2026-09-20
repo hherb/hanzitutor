@@ -16,6 +16,7 @@ use crate::asr::AsrStatus;
 use crate::capture::MicrophoneStatus;
 use crate::licences::{AppInfo, LicenceNotice};
 use crate::state::{AppState, ProgressState, VocabState};
+use crate::sync::{SyncService, SyncView};
 
 /// How many characters make up one lesson.
 pub const LESSON_SIZE: usize = 10;
@@ -845,4 +846,50 @@ pub fn app_info() -> AppInfo {
 #[tauri::command]
 pub fn licence_notices() -> Vec<LicenceNotice> {
     crate::licences::NOTICES.to_vec()
+}
+
+// ---- cross-device sync ------------------------------------------------------
+//
+// Four commands, and the shape of the flow is a paste rather than a redirect: the
+// app opens Dropbox's authorization page in the system browser, the learner copies
+// the code it shows them, and pastes it back. That is forced by Dropbox refusing
+// custom URL schemes, and it is why nothing here waits on a callback. See
+// `crate::sync` for why the token lives in the Keychain and not in `hanzi.db`.
+
+/// What the sync screen should be showing.
+#[tauri::command]
+pub fn sync_status(sync: State<'_, SyncService>) -> SyncView {
+    sync.view()
+}
+
+/// Begin connecting an account, and open the authorization page.
+///
+/// Returns the URL as well as opening it, so that a learner whose browser did not
+/// come forward can open it themselves rather than being stuck.
+#[tauri::command]
+pub fn sync_connect(sync: State<'_, SyncService>) -> Result<String, String> {
+    let url = sync.begin()?;
+    // In the system browser, never a webview: Dropbox asks for that, and Google's
+    // policy forbids their sign-in flow inside one.
+    tauri_plugin_opener::open_url(url.clone(), None::<&str>)
+        .map_err(|e| format!("could not open a browser: {e}"))?;
+    Ok(url)
+}
+
+/// Finish connecting, with the code the learner pasted.
+#[tauri::command]
+pub fn sync_connect_finish(sync: State<'_, SyncService>, code: String) -> Result<SyncView, String> {
+    sync.finish(&code)
+}
+
+/// Sync now.
+#[tauri::command]
+pub fn sync_now(sync: State<'_, SyncService>) -> Result<SyncView, String> {
+    sync.now()
+}
+
+/// Forget the account, here and on Dropbox's side.
+#[tauri::command]
+pub fn sync_disconnect(sync: State<'_, SyncService>) -> SyncView {
+    sync.disconnect()
 }
