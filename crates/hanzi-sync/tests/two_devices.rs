@@ -294,3 +294,51 @@ fn an_open_schedule_store_that_is_not_reloaded_can_undo_a_sync() {
     finish(&dir_b);
     finish(&shared);
 }
+
+#[test]
+fn three_devices_all_end_up_with_the_same_log() {
+    // The configuration this is actually used in: a Mac, an iPhone and an Android
+    // phone, all syncing against one app folder. Two devices prove the merge; three
+    // prove that reading *every* peer's directory works, which is the one thing a
+    // pair cannot exercise — a merge that quietly only ever looked at one other
+    // device would pass every two-device test there is.
+    let (dir_a, db_a, mut progress_a) = device("three-a");
+    let (dir_b, db_b, mut progress_b) = device("three-b");
+    let (dir_c, db_c, mut progress_c) = device("three-c");
+    let shared = scratch("three-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    record(&mut progress_a, '好', 88.0, "2026-09-19T09:00:00Z");
+    record(&mut progress_b, '好', 91.0, "2026-09-19T12:00:00Z");
+    record(&mut progress_c, '好', 74.0, "2026-09-19T18:00:00Z");
+
+    // Two rounds, in a fixed order. The first publishes and lets the last device
+    // collect; the second is what carries the late publishers back to the first, so
+    // that a fixed order still converges. Real devices do this in whatever order
+    // they are opened, which is why the fix for it is "sync again", not a schedule.
+    for _ in 0..2 {
+        for db in [&db_a, &db_b, &db_c] {
+            sync(db, &remote).unwrap();
+        }
+    }
+
+    let on_a = card(&reload(&db_a), "好");
+    let on_b = card(&reload(&db_b), "好");
+    let on_c = card(&reload(&db_c), "好");
+    assert_eq!(on_a.attempts, 3, "one attempt from each device");
+    assert_eq!(on_a, on_b, "three logs, one schedule");
+    assert_eq!(on_b, on_c, "and the third agrees as well");
+
+    // Settled: nothing left to send or receive anywhere.
+    for db in [&db_a, &db_b, &db_c] {
+        assert!(
+            sync(db, &remote).unwrap().is_empty(),
+            "a settled three-way sync should be a no-op"
+        );
+    }
+
+    finish(&dir_a);
+    finish(&dir_b);
+    finish(&dir_c);
+    finish(&shared);
+}

@@ -1535,7 +1535,7 @@ one that carries the weight does the whole pass: connect against a fake token
 endpoint, keep the refresh token, practise a character, sync over a real directory,
 find nothing to do the second time, then disconnect and prove the token is gone.
 
-The suite is green at 369 tests, with 4 more ignored unless a microphone or the
+The suite is green at 370 tests, with 4 more ignored unless a microphone or the
 speech model is present.
 
 **The settings screen.** A fifth row in the settings panel — the fourth was the
@@ -1560,16 +1560,19 @@ saying what the last sync did. Four things about it are deliberate:
   feature is new — an automatic sync is a thing that happens to somebody who did not
   ask for it, and this is the first code in the app that sends study data anywhere.
 
+**Verified where it counts.** A Dropbox account of the author's own, and **three
+devices at once** — a MacBook, an iPhone 13 Pro Max and an Android phone — each
+connected separately and syncing against the same app folder. Every pair merged in
+both directions, so the log on each ended up the union of all three; and a device
+that had never seen a character picked up its schedule from another's log, which is
+the whole design in one observation. The Android AES round trip is covered by that
+too, since it only runs when somebody completes an authorization there.
+
 **What is not built.** Syncing at launch or on foreground rather than only on
 demand; the baseline for a card whose log does not go back to its first attempt; the
 vocabulary and cursor shards — which means a vocabulary list added on one device does
-not appear on the other yet, though a *schedule* does; and a fingerprint prompt on
-Android, which needs `androidx.biometric` and so is its own change. One thing is
-**not** verified against a real account anywhere: the AES round trip on Android,
-because it only runs once a learner completes an authorization there. What is
-verified on the device is that the store is reachable and the flow starts — the
-settings screen offers Connect, and pressing it opens Dropbox's own consent page
-titled "link with HanziTutor".
+not appear on another yet, though a *schedule* does; and a fingerprint prompt on
+Android, which needs `androidx.biometric` and so is its own change.
 
 **Why.** Practice happens on whichever device is at hand — the laptop at a desk,
 the phone on a train — and a schedule that exists on only one of them is a

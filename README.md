@@ -45,7 +45,7 @@ progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
 measure**, the **durable study store**, **tone practice**, **speech
 recognition** and optional **cross-device sync** through your own Dropbox — for
 characters *and words*, on desktop and on both mobile systems — are all implemented
-and tested; **369 automated tests** pass, and 4 more are
+and tested; **370 automated tests** pass, and 4 more are
 ignored unless a microphone or the speech model is present. A
 signed Android
 release bundle is built and runs on a physical phone, and the recognition model
@@ -947,7 +947,7 @@ store/                      the Play listing: copy, answers, icon, artwork
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 369 tests, 4 more ignored
+pnpm test             # the whole Rust suite: 370 tests, 4 more ignored
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
@@ -1242,16 +1242,17 @@ dragging or by clicking. The headline gaps are now:
    settings screen**, with the app working exactly as it does today for anyone who
    declines. That screen now exists (ROADMAP's cross-cutting list); the recognition
    itself is not built, and ROADMAP M12 records the constraints it must meet.
-5. **Syncing between devices** (M13) — **built, and worth a first real run.** Connect
-   a Dropbox account from the settings screen on each device and press *Sync now*:
-   the attempt log travels, each device rebuilds its schedule from the whole of it,
-   and a character practised on one appears scheduled on the other. It is off until
-   you connect, nothing is sent until you press the button, and Dropbox is only ever
-   given a folder its own app can see. What is still missing is named at the end of
-   ROADMAP M13 — an automatic sync at launch, the vocabulary list and the course
-   cursor, and the baseline for a schedule whose log does not go back to its first
-   attempt. Nothing has been exercised against a real Dropbox account yet, so that is
-   the first thing to do rather than the last.
+5. **Syncing between devices** (M13) — **built, and exercised in earnest.** Connect a
+   Dropbox account from the settings screen on each device and press *Sync now*: the
+   attempt log travels, each device rebuilds its schedule from the whole of it, and a
+   character practised on one appears scheduled on the others. It is off until you
+   connect, nothing is sent until you press the button, and Dropbox is only ever given
+   a folder its own app can see. Confirmed against a real Dropbox account on **three
+   devices at once** — a MacBook, an iPhone and an Android phone — merging each way,
+   including a device that had never seen a character picking up its schedule from
+   another's log. What is still missing is named at the end of ROADMAP M13: an
+   automatic sync at launch, the vocabulary list and the course cursor, and the
+   baseline for a schedule whose log does not go back to its first attempt.
 
 If you are picking this project up to continue development, read
 **[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the
