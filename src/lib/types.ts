@@ -653,8 +653,21 @@ export interface SyncView {
   /** Which Dropbox account, when Dropbox said. */
   accountId: string | null;
   canConnect: boolean;
+  /** How the stored sign-in is protected. */
+  protection: SyncProtection;
   /** The last sync this session, if there has been one. */
   last: SyncSummaryView | null;
   /** One plain sentence, worded by the Rust side. */
   message: string;
 }
+
+/**
+ * How well the stored Dropbox sign-in is protected.
+ *
+ * `userPresence` means it is behind the data-protection keychain and the system asks
+ * for a fingerprint, a face, or the device password before releasing it.
+ * `keychainOnly` means it is an ordinary login-keychain item released without
+ * asking anybody — which is the case a learner is told about, because that is where
+ * "enter your keychain password" comes from. `unknown` means nothing is stored.
+ */
+export type SyncProtection = "unknown" | "userPresence" | "keychainOnly";

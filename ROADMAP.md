@@ -1448,6 +1448,23 @@ new upstream project for four endpoints:
 - **`SyncError::Unauthorized` is its own failure.** It is the one error with an
   obvious next move — refresh and retry — and reporting it as a network fault would
   send somebody to check a connection that is working.
+- **A missing scope does not arrive as a 401.** The error guide says a missing scope
+  is a 401, and the first real sync proved otherwise: an app without
+  `files.content.write` gets a **400** whose `error_summary` is `other/...` and whose
+  `user_message` names the scope *and* says which App Console tab enables it. So a
+  400 prefers `user_message` over the summary, because the summary named nothing and
+  the sentence under it was the whole of the fix. Worth knowing when enabling a
+  scope: Dropbox bakes scopes into the token at authorization time, so an existing
+  connection has to be disconnected and reconnected before a new scope takes effect.
+- **The stored sign-in asks for a fingerprint where it can.** The refresh token goes
+  into the *data-protection* keychain behind an access control requiring user
+  presence, which is what replaces "enter your keychain password" with Touch ID. That
+  needs an application identifier, so an ad-hoc signed development build cannot have
+  it: the item then falls back to an ordinary login-keychain entry, and
+  `SyncView.protection` says which of the two happened so the screen can tell the
+  learner rather than leave them to infer it from a prompt. Only the
+  missing-entitlement refusal falls back; any other failure is reported, because a
+  second attempt would only fail more quietly.
 
 Eleven tests in `crates/hanzi-sync/tests/dropbox.rs`, all against an in-memory
 Dropbox that answers the same four request shapes. The one that matters most is the
@@ -1495,7 +1512,7 @@ one that carries the weight does the whole pass: connect against a fake token
 endpoint, keep the refresh token, practise a character, sync over a real directory,
 find nothing to do the second time, then disconnect and prove the token is gone.
 
-The suite is green at 364 tests, with 4 more ignored unless a microphone or the
+The suite is green at 368 tests, with 4 more ignored unless a microphone or the
 speech model is present.
 
 **The settings screen.** A fifth row in the settings panel — the fourth was the

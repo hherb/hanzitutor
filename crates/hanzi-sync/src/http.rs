@@ -82,10 +82,13 @@ impl UreqHttp {
             ureq::Error::Status(401, _) => SyncError::Unauthorized,
             ureq::Error::Status(400, response) => {
                 let body = response.into_string().unwrap_or_default();
-                SyncError::Io(format!(
-                    "{url} refused the request (400), which means it was built wrongly: {}",
-                    body.trim()
-                ))
+                // A 400 means this program built a request Dropbox would not accept.
+                // Dropbox usually explains it in `user_message`, and that explanation
+                // is worth preferring over the raw body: the missing-scope failure
+                // names the scope *and* says which tab of the App Console enables it,
+                // which is the whole of what somebody needs to fix it.
+                let explanation = user_message(&body).unwrap_or_else(|| body.trim().to_string());
+                SyncError::Io(format!("{url} refused the request (400): {explanation}"))
             }
             ureq::Error::Status(code, response) => {
                 let body = response.into_string().unwrap_or_default();
@@ -102,20 +105,28 @@ impl Default for UreqHttp {
     }
 }
 
+/// Dropbox's `user_message`, the field it writes to be shown to a person.
+fn user_message(body: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(body).ok()?;
+    let text = json
+        .get("user_message")
+        .and_then(|message| message.get("text"))
+        .and_then(|text| text.as_str())?;
+    (!text.trim().is_empty()).then(|| text.trim().to_string())
+}
+
 /// The part of an error body worth putting in front of a person.
 ///
-/// Dropbox's own `user_message` when there is one — it is written to be shown —
-/// then its `error_summary`, then the body. Truncated, because a proxy's HTML error
-/// page is not a message anybody needs in full.
+/// The `user_message` when there is one, then `error_summary`, then the body.
+/// Truncated, because a proxy's HTML error page is not a message anybody needs in
+/// full. Note that an `error_summary` ends in a random number of dots — Dropbox adds
+/// them to discourage exact string matching — so it is never the last word on what
+/// went wrong.
 fn summarise(body: &str) -> String {
+    if let Some(message) = user_message(body) {
+        return message;
+    }
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
-        if let Some(message) = json
-            .get("user_message")
-            .and_then(|message| message.get("text"))
-            .and_then(|text| text.as_str())
-        {
-            return message.to_string();
-        }
         if let Some(summary) = json.get("error_summary").and_then(|v| v.as_str()) {
             return summary.to_string();
         }
@@ -181,5 +192,43 @@ impl Http for UreqHttp {
             .read_to_end(&mut bytes)
             .map_err(|e| SyncError::Io(format!("{url}: {e}")))?;
         Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_scope_is_reported_in_dropboxs_own_words() {
+        // The real body of the failure that cost a debugging session: the summary is
+        // `other/...`, which says nothing, while the user message names the scope and
+        // where to enable it. Preferring the summary would have hidden exactly the
+        // sentence that fixed it.
+        let body = r#"{
+            "error": {".tag": "other"},
+            "error_summary": "other/...",
+            "user_message": {
+                "locale": "en",
+                "text": "Error in call to API function \"files/upload\": Your app (ID: 8582195) is not permitted to access this endpoint because it does not have the required scope 'files.content.write'. The owner of the app can enable the scope for the app using the Permissions tab on the App Console."
+            }
+        }"#;
+        let message = summarise(body);
+        assert!(message.contains("files.content.write"), "{message}");
+        assert!(message.contains("Permissions tab"), "{message}");
+        assert!(!message.contains("other/..."), "the useless summary wins otherwise");
+    }
+
+    #[test]
+    fn an_error_without_a_user_message_falls_back_to_its_summary() {
+        let body = r#"{"error":{".tag":"path"},"error_summary":"path/conflict/file/..."}"#;
+        assert_eq!(summarise(body), "path/conflict/file/...");
+    }
+
+    #[test]
+    fn a_body_that_is_not_json_is_shown_rather_than_hidden() {
+        // A proxy in the way answers with HTML, and that is worth seeing.
+        assert_eq!(summarise("<html>502</html>"), "<html>502</html>");
+        assert_eq!(summarise("   "), "with no explanation");
     }
 }

@@ -587,6 +587,22 @@
               Connected as <code>{sync.accountId}</code>.
             </span>
           {/if}
+          {#if sync.protection === "userPresence"}
+            <span class="status fine">
+              The sign-in is kept in the system keychain behind your fingerprint —
+              the app cannot read it without you.
+            </span>
+          {:else if sync.protection === "keychainOnly"}
+            <!-- Said out loud rather than left to be discovered from a prompt. The
+                 fallback happens on a build the system cannot identify, which is
+                 what an unsigned development build is. -->
+            <span class="status fine">
+              The sign-in is kept in your login keychain, but this build is not
+              signed, so the system will not accept a fingerprint for it and may ask
+              for your keychain password instead. Signed builds ask for your
+              fingerprint.
+            </span>
+          {/if}
         {:else if awaitingCode}
           <span class="status">
             A Dropbox page has opened in your browser. Sign in and approve, and it

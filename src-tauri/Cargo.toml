@@ -105,5 +105,11 @@ dispatch2 = "0.3"
 # the study database — which is an ordinary file in an ordinary directory that
 # backup tools copy around. Apple's Keychain is the same API on macOS and iOS; the
 # crate is `#![cfg(target_vendor = "apple")]`, so this section is where it belongs.
+#
+# `OSX_10_15` is what exposes the data-protection keychain
+# (`use_protected_keychain`), and that is the only keychain an access control can be
+# attached to — so it is the only way to have macOS ask for a fingerprint rather
+# than for the keychain password. Tauri 2 already requires 10.15, so this raises
+# nothing.
 [target.'cfg(target_vendor = "apple")'.dependencies]
-security-framework = "3"
+security-framework = { version = "3", features = ["OSX_10_15"] }
