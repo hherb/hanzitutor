@@ -1274,8 +1274,10 @@ appears, it should displace this one.
 **Status: working, with the gaps listed at the end.** Two devices connected to the
 same Dropbox account merge their schedules: what travels is the attempt log, each
 device rebuilds its schedule from the whole of it, and the settings screen drives
-connect, sync and disconnect. **Dropbox is the first transport**; others can follow
-behind the same three-method trait without the merge changing at all.
+connect, sync and disconnect. It also **syncs by itself** when the app starts and
+when it comes back, which is the shape the feature was always meant to have. **Dropbox
+is the first transport**; others can follow behind the same three-method trait without
+the merge changing at all.
 
 **What has shipped.** Schema 3, which is the part everything else stands on, and
 which is useful on its own because it is what makes an attempt *nameable*:
@@ -1588,7 +1590,7 @@ speech model is present.
   state. That was a compile error rather than a design note, and it is the reason
   the bound is written on the trait instead of on the one implementation.
 
-Seventeen tests in that module, and none of them touches the Keychain or a socket. The
+Twenty-four tests in that module, and none of them touches the Keychain or a socket. The
 one that carries the weight does the whole pass: connect against a fake token
 endpoint, keep the refresh token, practise a character, sync over a real directory,
 find nothing to do the second time, then disconnect and prove the token is gone. Five
@@ -1600,7 +1602,7 @@ store it was found in; and both access controls the switch can ask for are ones 
 system will actually build, which is the one platform call that cannot be covered
 without a keychain.
 
-The suite is green at 392 tests, with 4 more ignored unless a microphone or the
+The suite is green at 403 tests, with 4 more ignored unless a microphone or the
 speech model is present.
 
 **The settings screen.** A fifth row in the settings panel — the fourth was the
@@ -1623,14 +1625,99 @@ are deliberate:
 - **A mistyped code keeps what was typed.** The field is cleared only on success,
   because the page it came from has usually been closed by then and retyping a long
   code from a page that no longer exists is not recoverable.
-- **Nothing syncs on its own.** There is no sync at launch or on foreground yet; the
-  learner presses Sync now. That is a gap against the sketch in "Left out" below
-  rather than an oversight, and it is the safe direction to be wrong in while the
-  feature is new — an automatic sync is a thing that happens to somebody who did not
-  ask for it, and this is the first code in the app that sends study data anywhere.
-  What that gap needed first is now in place: asking for nothing by default and
-  reading the token once per run is what makes an unasked-for sync possible without
-  stopping to ask for a fingerprint at a moment nobody chose.
+- **It says what it is doing.** A sync at launch has nobody watching it who chose it,
+  so the app puts a line on the screen while one is running and takes it away when it
+  is done — see "Syncing that nobody asked for" below. Without that, a slow sync is
+  indistinguishable from a hung app, which is the failure this feedback exists to
+  prevent.
+
+**Syncing that nobody asked for.** The settings screen starts a sync; so does the app
+itself, when it opens and when it comes back. Everything below is about the second
+one, which is the case where a design mistake is invisible until it happens to
+somebody who did not ask for it.
+
+- **Two triggers, one cooldown.** Launch is one. Coming back is the other, and it is
+  two events because the platforms disagree: a phone hides the page, so it is
+  `visibilitychange`, while a desktop window that is merely unfocused fires nothing —
+  so `focus` is listened for as well. Focus fires on every alt-tab, and a sync per
+  alt-tab is a request per alt-tab to somebody else's servers for data that has not
+  changed, so a foreground attempt is refused within **a minute** of the last one. An
+  in-flight guard sits in front of that, because the cooldown is about not asking too
+  often and not about two at once.
+- **Three refusals before anything is sent, in ascending order of cost.** *No
+  account*: read from the non-secret record, so no keychain and no socket — this is
+  the case for everybody who never connects Dropbox, which is most people, and it has
+  to be free. *A sign-in that asks for a fingerprint*: a sync that runs on its own has
+  nobody to satisfy that, so it does not run, and nothing is unlocked to find out.
+  *No network*: a bounded probe, which is the next bullet. Only after all three does
+  anything go over the wire.
+- **The network is asked about before the request, not by the request failing.**
+  `UreqHttp` allows ten seconds for a connect — deliberately, because the slow case it
+  is written for is a bad mobile connection rather than a dead one — and a device with
+  the radio off would spend all ten, per request, before concluding anything. At
+  launch that is a stall with somebody watching it, so `crates/hanzi-sync/src/reach.rs`
+  opens a TCP connection to the API host first: no TLS, no request, no data. Two
+  details are the whole of it. The probe runs on a **thread** with a deadline, because
+  name resolution has no timeout this code can set and a device attached to a network
+  with no working DNS is exactly the launch-time hang this exists to prevent — so
+  silence past the deadline means "no". And the host comes from `crate::dropbox`'s
+  `API_HOST`, built into the RPC root rather than written twice, because a probe of a
+  machine the client never talks to is worse than no probe at all. A `true` is not a
+  promise (a captive portal answers TCP and then refuses the request); a `false` is:
+  nothing was attempted and nothing would have worked.
+- **`AutoSync` is four outcomes rather than a `Result`.** "Nothing happened" is the
+  ordinary answer on most launches, and the screen has to tell the cases apart: not
+  connected and locked are silent, offline is one calm line — a phone on a train is
+  not an error — and only a failure is worth alarming anybody about, because an
+  automatic sync that fails quietly is a device falling out of step with the others.
+- **The commands that touch the network are `async`, and that is load-bearing.** A
+  plain `#[tauri::command]` runs on the main thread — the thread the webview draws on
+  — so a sync declared that way freezes the window for as long as it takes, and the
+  line that is supposed to say it is syncing cannot be painted until the sync it
+  describes is over. The `async` attribute on a **synchronous** function moves it to
+  Tauri's runtime with its signature unchanged, which is what `State` needs. That
+  makes two syncs possible at once, which is what the gate in `SyncService` is for:
+  the merge is idempotent so nothing would be corrupted, but two passes interleaving
+  their publish and pull would report nonsense. A refusal from the gate is not a
+  failure — for the automatic path it is silence, and for a pressed *Sync now* it is a
+  sentence saying another sync is running.
+- **The feedback says nothing when there is nothing to say.** A line appears after
+  400 ms — a sync that finishes sooner should not flash — and the working line is
+  replaced by the result when there is one. "There is one" means something moved:
+  attempts sent or received, schedules rebuilt, the list changed, the course position
+  moved. A launch that found nothing to do is silent, because the working line
+  disappearing is itself the answer to "did it sync?", and a sentence saying "already
+  up to date" on every launch is noise nobody can switch off. `leftAlone` is left out
+  of that judgement on purpose: it describes a schedule this device cannot rebuild,
+  which is a standing condition rather than news.
+- **The reload discipline, which matters most here because nobody chose the moment.**
+  `sync_now` already reloaded the backend stores and told the screen to re-read; the
+  automatic path does both too, and the second half is the one that is easy to miss. A
+  sync at launch writes the right things into the database and, without the screen
+  re-reading, goes on showing the old ones until the app is restarted — the exact bug
+  this milestone has already had twice. So the automatic sync bumps a counter the
+  settings screen watches, because that screen holds its own copy of the sync state and
+  may be open while a foreground sync runs.
+- **A sign-in left locked by an earlier build writes its own switch down.** This is
+  the upgrade path, and it is the one case the design would otherwise get badly wrong.
+  A device that connected before the fingerprint was a switch has a token behind a
+  fingerprint and no preference saying so; left at that, every launch would read a
+  locked item — a prompt at a moment nobody chose, for ever. So adopting a sign-in
+  records what the keychain says about it, and the switch and the item agree from then
+  on. It costs one prompt, once, on the first launch after the upgrade, which is the
+  price of not asking the learner to paste a new authorization code on every device.
+- **What decides is the *item*, not the switch.** A learner who asked for a fingerprint
+  on a build that could not provide one has the switch on and an item that asks
+  nothing; reading that is silent, so it is safe to sync. The reverse is the case that
+  matters, and it is the one above.
+
+Nine tests in `src-tauri/src/sync.rs` and four in `crates/hanzi-sync/src/reach.rs`
+cover it. The four that carry the weight are a launch with nothing connected (nothing
+sent anywhere), a launch that really syncs over the HTTP seam, a launch with no
+network (not one request attempted, which is the claim the pre-check exists for), and
+an overlap of two syncs (not reported as a failure). The probe's own tests are the
+ordinary three — something listening, a port with nothing behind it, a name that does
+not resolve — plus the one that pins the probed host to the host the client calls.
 
 **Verified where it counts.** A Dropbox account of the author's own, and **three
 devices at once** — a MacBook, an iPhone 13 Pro Max and an Android phone — each
@@ -1693,13 +1780,13 @@ whichever device moved it last. Five unit tests in `crates/hanzi-sync/src/docume
 cover the ordering itself, including the tiebreak, and four in
 `crates/hanzi-store/tests/store.rs` cover the storage the merge rests on.
 
-**What is not built.** Syncing at launch or on foreground rather than only on
-demand; the baseline for a card whose log does not go back to its first attempt; and
-a fingerprint prompt on Android, which needs `androidx.biometric` and so is its own
-change. The fingerprint *on the platforms that can do it* is built, and the reason
-that mattered first is the first item in this list: a sync nobody asked for must not
-be a sync that stops to ask for something, which is why asking for nothing is the
-default and why the token is read once per run rather than once per read.
+**What is not built.** The baseline for a card whose log does not go back to its
+first attempt, and a fingerprint prompt on Android, which needs `androidx.biometric`
+and so is its own change. The fingerprint *on the platforms that can do it* is built,
+and the order those two were done in is the point: a sync nobody asked for must not
+be a sync that stops to ask for something, so asking for nothing by default and
+reading the token once per run had to come before the automatic sync rather than
+after it.
 
 **Why.** Practice happens on whichever device is at hand — the laptop at a desk,
 the phone on a train — and a schedule that exists on only one of them is a

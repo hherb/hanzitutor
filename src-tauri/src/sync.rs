@@ -73,8 +73,8 @@ use std::sync::Mutex;
 
 use hanzi_store::Db;
 use hanzi_sync::{
-    authorize_url, exchange_code, refresh, revoke, sync, DropboxStore, Http, Pkce, RemoteStore,
-    SyncError, Tokens, UreqHttp,
+    authorize_url, exchange_code, refresh, revoke, sync, DropboxStore, Http, Pkce, Reach,
+    RemoteStore, SyncError, TcpReach, Tokens, UreqHttp,
 };
 use serde::{Deserialize, Serialize};
 
@@ -206,6 +206,28 @@ pub struct SyncView {
     pub message: String,
 }
 
+/// What an automatic sync did, or why it did not run.
+///
+/// Four outcomes rather than a `Result`, because "nothing happened" is the ordinary
+/// answer on most launches and the screen has to be able to tell the cases apart:
+/// not connected and locked are both **silent** — there is nothing to say and saying
+/// it every launch would be noise — offline is worth one calm line, and a failure is
+/// worth saying out loud.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase", tag = "outcome")]
+pub enum AutoSync {
+    /// Nothing was attempted: there is no account, or the sign-in is behind a
+    /// fingerprint and a sync that runs by itself cannot satisfy that.
+    Skipped { reason: String },
+    /// Nothing was attempted because there is no network path. Not a failure: a
+    /// phone on a train is the normal case this is written for.
+    Offline { reason: String },
+    /// A sync ran.
+    Synced { view: SyncView },
+    /// A sync ran and did not finish.
+    Failed { reason: String },
+}
+
 /// The sign-in this process has already read, or the fact that it has not read one.
 ///
 /// The third state is the point. `Mutex<Option<Account>>` could not tell "not read
@@ -239,16 +261,39 @@ pub struct SyncService {
     last: Mutex<Option<SyncSummaryView>>,
     /// The token store's answer, read at most once per run. See [`Open`].
     open: Mutex<Open>,
+    /// Whether there is a network path, asked before an automatic sync spends
+    /// `UreqHttp`'s ten-second connect timeout finding out that there is not.
+    reach: Box<dyn Reach>,
+    /// One sync at a time.
+    ///
+    /// The commands in `crate::commands` run off the main thread, which is what lets
+    /// the screen paint "Syncing…" while a sync is in flight — and also what makes
+    /// two of them possible at once: a sync at launch fires while somebody opens
+    /// Settings and presses Sync now. The merge is idempotent, so nothing would be
+    /// corrupted; what would be wrong is two passes interleaving their publish and
+    /// pull, and a learner told about a sync the other one had already overtaken. A
+    /// sync that finds this shut is not a failure: it is a sync with nothing to add.
+    gate: Mutex<()>,
 }
 
 impl SyncService {
     /// A sync service over the study database, using this platform's secret store.
     pub fn new(db: Option<Db>) -> Self {
-        Self::with_parts(db, platform_store(), Box::new(UreqHttp::new()))
+        Self::with_parts(
+            db,
+            platform_store(),
+            Box::new(UreqHttp::new()),
+            Box::new(TcpReach::dropbox()),
+        )
     }
 
-    /// The same, with the store and the client supplied.
-    fn with_parts(db: Option<Db>, tokens: Box<dyn TokenStore>, http: Box<dyn Http>) -> Self {
+    /// The same, with the store, the client and the probe supplied.
+    fn with_parts(
+        db: Option<Db>,
+        tokens: Box<dyn TokenStore>,
+        http: Box<dyn Http>,
+        reach: Box<dyn Reach>,
+    ) -> Self {
         Self {
             db,
             tokens,
@@ -256,7 +301,16 @@ impl SyncService {
             pending: Mutex::new(None),
             last: Mutex::new(None),
             open: Mutex::new(Open::Unread),
+            reach,
+            gate: Mutex::new(()),
         }
+    }
+
+    /// The gate, taken for the whole of a pass.
+    fn take_gate(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        self.gate.try_lock().map_err(|_| {
+            "A sync is already running. Its result will appear here when it finishes.".to_string()
+        })
     }
 
     /// The status the screen shows.
@@ -349,6 +403,11 @@ impl SyncService {
         // time the learner is asked for anything.
         if let Some((account, _)) = self.sign_in()? {
             let protection = self.tokens.save(&account, locked)?;
+            // The cache as well as the record. The cache is what decides whether a
+            // launch may read the sign-in, and a switch flipped to *on* that left it
+            // saying "nothing to unlock" would be a prompt at the next launch — which
+            // is the one thing this whole arrangement exists to prevent.
+            self.remember(Some((account.clone(), protection)));
             self.write_record(&Stored {
                 account_id: account.account_id,
                 protection,
@@ -378,6 +437,12 @@ impl SyncService {
 
     /// Forget the account, on this device and on Dropbox's side.
     pub fn disconnect(&self) -> SyncView {
+        // Disconnecting underneath a sync in flight would revoke the token the sync
+        // is using and clear the record it is about to write. Saying so is better
+        // than a race, and the learner only has to press it again.
+        let Ok(_running) = self.gate.try_lock() else {
+            return self.after("A sync is running. Press Disconnect again in a moment.");
+        };
         // Revoking first is the point: forgetting the token locally would leave the
         // authorization standing on Dropbox's side, which is not what "disconnect"
         // means to somebody who pressed it. A failure to revoke is reported rather
@@ -414,12 +479,79 @@ impl SyncService {
         }
     }
 
-    /// Sync now, over Dropbox.
+    /// Sync now, over Dropbox, because somebody pressed a button.
     pub fn now(&self) -> Result<SyncView, String> {
+        let _running = self.take_gate()?;
+        self.over_dropbox()
+    }
+
+    /// One pass over Dropbox, with the gate already held.
+    ///
+    /// Split from [`Self::now`] so that [`Self::auto`] can take the gate itself and
+    /// tell "a sync is already running" apart from "the sync failed" — which the
+    /// screen shows very differently, one being nothing at all.
+    fn over_dropbox(&self) -> Result<SyncView, String> {
         let account = self.account()?;
         let token = self.fresh_access_token(&account)?;
         let remote = DropboxStore::new(self.http.as_ref(), token);
         self.run(&remote, account.account_id)
+    }
+
+    /// Sync because the app started or came back, rather than because somebody
+    /// pressed a button.
+    ///
+    /// The three refusals before the attempt are in ascending order of cost, and
+    /// each one is a case where attempting would be worse than not:
+    ///
+    /// - **No account.** Nothing to sync, and the check is a read of the record —
+    ///   no keychain, no network. This is the case for most people, who never
+    ///   connect Dropbox at all, and it has to be free.
+    /// - **A locked sign-in.** The whole point of the fingerprint is that the token
+    ///   is released to a person; a sync that starts by itself has no person to ask,
+    ///   and asking at launch is exactly the friction the default exists to avoid.
+    ///   So with the lock on, syncing stays something the learner presses — which
+    ///   the switch's own wording says, and which is a real cost of turning it on
+    ///   rather than a hidden one.
+    /// - **No network.** A bounded probe rather than `UreqHttp`'s ten-second connect
+    ///   timeout, which would otherwise be paid per request at launch. See
+    ///   [`hanzi_sync::Reach`].
+    ///
+    /// What is left is an ordinary sync, reported the same way a pressed one is.
+    pub fn auto(&self) -> AutoSync {
+        if self.record().is_none() {
+            return AutoSync::Skipped {
+                reason: "Not connected to Dropbox.".to_string(),
+            };
+        }
+        // What the *item* needs, not what the switch says. A learner who asked for a
+        // fingerprint on a build that could not provide one has the switch on and an
+        // item that asks nothing, and reading that is silent — so it is safe to sync.
+        // The reverse is the case that matters: an item behind a fingerprint that no
+        // preference knows about, which is what an upgrade from an earlier build
+        // looks like, and which `record` writes down as soon as it finds it.
+        if self.protection() == Protection::UserPresence {
+            return AutoSync::Skipped {
+                reason: "The sign-in is kept behind your fingerprint, so syncing is something \
+                         you press rather than something that happens on its own."
+                    .to_string(),
+            };
+        }
+        if !self.reach.reachable() {
+            return AutoSync::Offline {
+                reason: "No network connection.".to_string(),
+            };
+        }
+        // Two at once is not a failure, and must not be reported as one: the other
+        // pass is doing the same work and will report for both of them.
+        let Ok(_running) = self.gate.try_lock() else {
+            return AutoSync::Skipped {
+                reason: "A sync is already running.".to_string(),
+            };
+        };
+        match self.over_dropbox() {
+            Ok(view) => AutoSync::Synced { view },
+            Err(reason) => AutoSync::Failed { reason },
+        }
     }
 
     /// Sync now, over whatever store is handed in.
@@ -566,6 +698,15 @@ impl SyncService {
             protection,
         };
         let _ = self.write_record(&stored);
+        // An item behind a fingerprint that no preference knows about is what an
+        // upgrade from an earlier build looks like, and the switch has to be told:
+        // left unsaid, the settings screen would show it off while the item asked
+        // for a fingerprint, and a launch would read it — which is a prompt at a
+        // moment nobody chose, once per launch, for ever. Saying nothing when the
+        // item asks for nothing is right, because that is what absent means.
+        if protection == Protection::UserPresence {
+            let _ = self.write_lock(true);
+        }
         Some(stored)
     }
 
@@ -1069,7 +1210,9 @@ mod tests {
     /// that wrote to the developer's would be one that deleted their account.
     #[derive(Default)]
     struct MemoryStore {
-        account: Mutex<Option<Account>>,
+        /// The sign-in, with how the write that stored it left it protected — which
+        /// is the fact the service cares about, and which only the store knows.
+        account: Mutex<Option<(Account, Protection)>>,
         available: bool,
         can_lock: bool,
         /// How many times the secret was actually read, which is the number this
@@ -1138,16 +1281,34 @@ mod tests {
             if self.refuse {
                 return Err("this store was not supposed to be read".to_string());
             }
-            let protection = self.reports.lock().unwrap().unwrap_or(Protection::DeviceOnly);
-            Ok(self.account.lock().unwrap().clone().map(|a| (a, protection)))
+            Ok(self.account.lock().unwrap().clone())
         }
-        fn save(&self, account: &Account, _locked: bool) -> Result<Protection, String> {
-            *self.account.lock().unwrap() = Some(account.clone());
-            Ok(self.reports.lock().unwrap().unwrap_or(Protection::DeviceOnly))
+        fn save(&self, account: &Account, locked: bool) -> Result<Protection, String> {
+            // A store that can honour the request does, which is what the real one
+            // does wherever the system lets it. `reports` overrides that, and is how
+            // the tests drive the case where it cannot — the login-keychain fallback,
+            // which is a build the system does not recognise.
+            let protection = self.reports.lock().unwrap().unwrap_or(if locked {
+                Protection::UserPresence
+            } else {
+                Protection::DeviceOnly
+            });
+            *self.account.lock().unwrap() = Some((account.clone(), protection));
+            Ok(protection)
         }
         fn clear(&self) -> Result<(), String> {
             *self.account.lock().unwrap() = None;
             Ok(())
+        }
+    }
+
+    /// A reachability probe that answers what the test says, so no test here opens
+    /// a socket.
+    struct FakeReach(bool);
+
+    impl Reach for FakeReach {
+        fn reachable(&self) -> bool {
+            self.0
         }
     }
 
@@ -1175,42 +1336,78 @@ mod tests {
         }
     }
 
-    /// An HTTP client that answers the token endpoints and records what it was
-    /// asked, so the OAuth calls can be driven without a socket.
-    #[derive(Default)]
+    /// An HTTP client that answers the endpoints a sync uses and records what it was
+    /// asked, so the OAuth calls and a whole sync can be driven without a socket.
+    ///
+    /// `Clone`, and the clone shares the recording — which is how a test keeps a
+    /// handle on what was sent after the service has taken ownership of its copy.
+    /// A newtype would do the same; this is smaller.
+    #[derive(Clone, Default)]
     struct FakeHttp {
+        inner: std::sync::Arc<FakeInner>,
+    }
+
+    #[derive(Default)]
+    struct FakeInner {
         forms: Mutex<Vec<String>>,
         revocations: Mutex<Vec<String>>,
         token_response: Mutex<Option<String>>,
+        /// What `rpc` answers. The default is an empty app folder, which is what a
+        /// Dropbox nobody else has written to looks like — and it is enough for a
+        /// whole sync, because an empty log writes no shards and has nothing to pull.
+        rpc_response: Mutex<Option<String>>,
+        /// Every request, in order, so a test can assert that *nothing* was sent.
+        /// That is the claim the offline and locked cases rest on, and it cannot be
+        /// checked by looking at the outcome alone.
+        calls: Mutex<Vec<String>>,
     }
 
     impl FakeHttp {
         fn answering(body: serde_json::Value) -> Self {
             Self {
-                token_response: Mutex::new(Some(body.to_string())),
-                ..Self::default()
+                inner: std::sync::Arc::new(FakeInner {
+                    token_response: Mutex::new(Some(body.to_string())),
+                    ..FakeInner::default()
+                }),
             }
+        }
+
+        fn calls(&self) -> usize {
+            self.inner.calls.lock().unwrap().len()
+        }
+
+        fn note(&self, call: impl Into<String>) {
+            self.inner.calls.lock().unwrap().push(call.into());
         }
     }
 
     impl Http for FakeHttp {
-        fn rpc(&self, _url: &str, bearer: &str, _body: &str) -> Result<String, SyncError> {
-            self.revocations.lock().unwrap().push(bearer.to_string());
-            Ok("null".to_string())
+        fn rpc(&self, url: &str, bearer: &str, _body: &str) -> Result<String, SyncError> {
+            self.note(url);
+            self.inner.revocations.lock().unwrap().push(bearer.to_string());
+            Ok(self.inner.rpc_response.lock().unwrap().clone().unwrap_or_else(|| {
+                serde_json::json!({ "entries": [], "cursor": "c", "has_more": false }).to_string()
+            }))
         }
-        fn form(&self, _url: &str, body: &str) -> Result<String, SyncError> {
-            self.forms.lock().unwrap().push(body.to_string());
-            self.token_response
+        fn form(&self, url: &str, body: &str) -> Result<String, SyncError> {
+            self.note(url);
+            self.inner.forms.lock().unwrap().push(body.to_string());
+            self.inner
+                .token_response
                 .lock()
                 .unwrap()
                 .clone()
                 .ok_or_else(|| SyncError::Io("the fake was not given a token response".into()))
         }
-        fn upload(&self, _url: &str, _bearer: &str, _arg: &str, _body: &[u8]) -> Result<String, SyncError> {
-            unreachable!("the token tests never upload")
+        fn upload(&self, url: &str, _bearer: &str, _arg: &str, _body: &[u8]) -> Result<String, SyncError> {
+            self.note(url);
+            // The client ignores the body of an upload — a shard is written once and
+            // its name already says what is in it — so this only has to be JSON.
+            Ok("{}".to_string())
         }
-        fn download(&self, _url: &str, _bearer: &str, _arg: &str) -> Result<Vec<u8>, SyncError> {
-            unreachable!("the token tests never download")
+        fn download(&self, url: &str, _bearer: &str, _arg: &str) -> Result<Vec<u8>, SyncError> {
+            self.note(url);
+            unreachable!("the fake lists an empty app folder, so there is nothing to read")
         }
     }
 
@@ -1223,8 +1420,72 @@ mod tests {
     }
 
     /// A service over a store the test still has a handle on.
-    fn with_store(db: Option<Db>, store: &std::sync::Arc<MemoryStore>, http: Box<dyn Http>) -> SyncService {
-        SyncService::with_parts(db, Box::new(std::sync::Arc::clone(store)), http)
+    ///
+    /// Always with a probe that says the network is there; [`with_store_offline`] is
+    /// the other one, and `a_launch_offline_says_so_without_attempting_anything`
+    /// is the test that needs it.
+    fn with_store(
+        db: Option<Db>,
+        store: &std::sync::Arc<MemoryStore>,
+        http: Box<dyn Http>,
+    ) -> SyncService {
+        with_probe(db, store, http, true)
+    }
+
+    fn with_probe(
+        db: Option<Db>,
+        store: &std::sync::Arc<MemoryStore>,
+        http: Box<dyn Http>,
+        reachable: bool,
+    ) -> SyncService {
+        SyncService::with_parts(
+            db,
+            Box::new(std::sync::Arc::clone(store)),
+            http,
+            Box::new(FakeReach(reachable)),
+        )
+    }
+
+    /// A service whose HTTP client the test can still see, which is what the tests
+    /// about *whether anything was sent* need.
+    fn with_http(
+        db: Option<Db>,
+        store: &std::sync::Arc<MemoryStore>,
+        http: &FakeHttp,
+        reachable: bool,
+    ) -> SyncService {
+        SyncService::with_parts(
+            db,
+            Box::new(std::sync::Arc::clone(store)),
+            Box::new(http.clone()),
+            Box::new(FakeReach(reachable)),
+        )
+    }
+
+    /// The token endpoint's answer: a refresh token, and an account to name.
+    fn connected_account() -> serde_json::Value {
+        serde_json::json!({
+            "access_token": "sl.access",
+            "refresh_token": "refresh-me",
+            "account_id": "dbid:AAAA"
+        })
+    }
+
+    /// The HTTP client every test that connects wants.
+    fn connecting() -> Box<dyn Http> {
+        Box::new(FakeHttp::answering(connected_account()))
+    }
+
+    /// The same, behind a handle, for the tests that ask what was sent.
+    fn connecting_http() -> FakeHttp {
+        FakeHttp::answering(connected_account())
+    }
+
+    /// A service with no database, over a store the test names and a probe that says
+    /// the network is there. Most of the tests want nothing else.
+    fn bare(store: MemoryStore) -> SyncService {
+        let store = std::sync::Arc::new(store);
+        with_probe(None, &store, Box::new(FakeHttp::default()), true)
     }
 
     /// A `Db` in a directory of its own, named for the test that wants it.
@@ -1232,35 +1493,23 @@ mod tests {
         Db::open(scratch(name)).unwrap()
     }
 
-    /// The HTTP client every test that connects wants: it answers the token
-    /// endpoints with a refresh token and an account id.
-    fn connecting() -> Box<dyn Http> {
-        Box::new(FakeHttp::answering(serde_json::json!({
-            "access_token": "sl.access",
-            "refresh_token": "refresh-me",
-            "account_id": "dbid:AAAA"
-        })))
+    /// Connect this service to Dropbox, the way the settings screen does.
+    fn connect(service: &SyncService) {
+        service.begin().unwrap();
+        let view = service.finish("the-code").unwrap();
+        assert!(view.connected, "{}", view.message);
     }
 
     #[test]
     fn a_view_says_whether_there_is_a_secret_store_and_an_account() {
-        let view = SyncService::with_parts(
-            None,
-            Box::new(MemoryStore::working()),
-            Box::new(FakeHttp::default()),
-        )
-        .view();
+        let view = bare(MemoryStore::working()).view();
         assert!(view.can_connect, "this platform can keep a secret");
         assert!(!view.connected, "but nobody has connected");
         assert!(view.last.is_none());
         assert!(view.message.contains("stays on this device"), "{}", view.message);
 
         // A platform with no secret store says so rather than offering a button.
-        let unavailable = SyncService::with_parts(
-            None,
-            Box::new(MemoryStore::unavailable()),
-            Box::new(FakeHttp::default()),
-        );
+        let unavailable = bare(MemoryStore::unavailable());
         assert!(!unavailable.view().can_connect);
         let refusal = unavailable.begin().unwrap_err();
         assert!(refusal.contains("no secure store"), "{refusal}");
@@ -1269,11 +1518,7 @@ mod tests {
 
     #[test]
     fn beginning_an_authorization_returns_a_url_to_open() {
-        let service = SyncService::with_parts(
-            None,
-            Box::new(MemoryStore::working()),
-            Box::new(FakeHttp::default()),
-        );
+        let service = bare(MemoryStore::working());
         let url = service.begin().unwrap();
         assert!(url.starts_with("https://www.dropbox.com/oauth2/authorize?"), "{url}");
         assert!(url.contains(&format!("client_id={APP_KEY}")), "{url}");
@@ -1289,11 +1534,7 @@ mod tests {
     fn a_code_is_only_accepted_while_an_authorization_is_in_progress() {
         // Typing a code into a stale screen, or pasting twice, must not trade
         // somebody else's code with this app's verifier.
-        let service = SyncService::with_parts(
-            None,
-            Box::new(MemoryStore::working()),
-            Box::new(FakeHttp::default()),
-        );
+        let service = bare(MemoryStore::working());
         let error = service.finish("some-code").unwrap_err();
         assert!(error.contains("no sign-in in progress"), "{error}");
     }
@@ -1498,6 +1739,43 @@ mod tests {
     }
 
     #[test]
+    fn a_sign_in_left_locked_by_an_older_build_is_not_synced_at_launch() {
+        // The upgrade path, and the case it would otherwise get wrong. An earlier
+        // build put the token behind a fingerprint and the learner never answered a
+        // switch, because there was none. Left at that, every launch would read a
+        // locked item — a prompt at a moment nobody chose, for ever — so adopting it
+        // writes the switch down as well, and the launch does not read it at all.
+        let db = database("adopt-locked");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        store
+            .save(
+                &Account {
+                    refresh_token: "from-an-older-build".to_string(),
+                    account_id: Some("dbid:OLD".to_string()),
+                },
+                true,
+            )
+            .unwrap();
+
+        let http = connecting_http();
+        let service = with_http(Some(db.clone()), &store, &http, true);
+
+        let view = service.view();
+        assert!(view.connected, "the older sign-in is adopted: {}", view.message);
+        assert_eq!(view.protection, Protection::UserPresence);
+        assert!(view.locked, "and the switch now says what the item needs");
+        assert_eq!(db.meta_value(LOCK_KEY).unwrap().as_deref(), Some("on"));
+        assert_eq!(store.reads(), 1, "one read to adopt it, and that is the last one");
+
+        match service.auto() {
+            AutoSync::Skipped { reason } => assert!(reason.contains("fingerprint"), "{reason}"),
+            other => panic!("a locked sign-in is not read at launch: {other:?}"),
+        }
+        assert_eq!(http.calls(), 0, "and nothing was sent");
+        assert_eq!(store.reads(), 1, "nor was the keychain asked again");
+    }
+
+    #[test]
     fn the_fingerprint_is_a_choice_and_survives_disconnecting() {
         let db = database("lock");
         let store = std::sync::Arc::new(MemoryStore::working());
@@ -1601,25 +1879,163 @@ mod tests {
         std::fs::remove_dir_all(&shared).ok();
     }
 
+    // ---- syncing at launch, which nobody asked for --------------------------
+
     #[test]
-    fn a_service_without_a_database_says_so_instead_of_pretending() {
-        let service = SyncService::with_parts(
-            None,
-            Box::new(MemoryStore::working()),
-            Box::new(FakeHttp::default()),
+    fn a_launch_with_nothing_connected_asks_nothing_of_anybody() {
+        // Most people never connect Dropbox at all, so this case has to be free of
+        // both the network and the keychain — it is the one that runs for them on
+        // every launch.
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        let service = with_http(Some(database("auto-none")), &store, &http, true);
+
+        match service.auto() {
+            AutoSync::Skipped { reason } => {
+                assert!(reason.contains("Not connected"), "{reason}")
+            }
+            other => panic!("nothing is connected, so nothing should sync: {other:?}"),
+        }
+        assert_eq!(http.calls(), 0, "and nothing was sent anywhere");
+    }
+
+    #[test]
+    fn a_launch_syncs_by_itself_and_says_what_it_did() {
+        // The whole point: nobody pressed anything. This drives a real sync over the
+        // HTTP seam — a token refresh, then a listing of the app folder.
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        let service = with_http(Some(database("auto")), &store, &http, true);
+        connect(&service);
+        assert_eq!(store.reads(), 0, "connecting does not read back what it wrote");
+
+        match service.auto() {
+            AutoSync::Synced { view } => {
+                assert!(view.connected);
+                assert_eq!(view.message, "Already up to date.", "nothing was written yet");
+                assert!(view.last.is_some(), "and the screen has a summary to show");
+            }
+            other => panic!("an account is connected, so a launch should sync: {other:?}"),
+        }
+        assert!(http.calls() >= 2, "a token was refreshed and the folder listed");
+        assert_eq!(store.reads(), 0, "and the token this run wrote is the one it used");
+    }
+
+    #[test]
+    fn a_launch_with_no_network_says_so_without_attempting_anything() {
+        // What the pre-check is for. `UreqHttp` allows ten seconds per connect, and
+        // a launch that spends them one request at a time is worse than no launch
+        // sync at all — so the probe refuses first and nothing is sent.
+        let db = database("auto-offline");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        connect(&with_http(Some(db.clone()), &store, &http, true));
+        let after_connecting = http.calls();
+
+        let offline = with_http(Some(db), &store, &http, false);
+        match offline.auto() {
+            AutoSync::Offline { reason } => assert!(reason.contains("No network"), "{reason}"),
+            other => panic!("no network is not a sync: {other:?}"),
+        }
+        assert_eq!(
+            http.calls(),
+            after_connecting,
+            "not one request was attempted, which is the whole point of asking first"
         );
+    }
+
+    #[test]
+    fn a_locked_sign_in_is_not_synced_by_itself() {
+        // A sync that runs on its own has nobody to satisfy a fingerprint check, so
+        // with the lock on it does not run — and nothing is unlocked to find that
+        // out. That is a real cost of turning the switch on, and the switch says so.
+        let db = database("auto-locked");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        let service = with_http(Some(db), &store, &http, true);
+        connect(&service);
+        service.set_lock(true).unwrap();
+        let (calls, reads) = (http.calls(), store.reads());
+
+        match service.auto() {
+            AutoSync::Skipped { reason } => assert!(reason.contains("fingerprint"), "{reason}"),
+            other => panic!("a locked sign-in is not read by itself: {other:?}"),
+        }
+        assert_eq!(http.calls(), calls, "nothing was sent");
+        assert_eq!(store.reads(), reads, "and nothing was unlocked");
+    }
+
+    #[test]
+    fn a_failed_launch_sync_is_reported_rather_than_hidden() {
+        // The one case that has to be said out loud: an automatic sync that fails
+        // silently is a device quietly falling out of step with the others.
+        let db = database("auto-failed");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        // No token response, so the refresh fails.
+        let http = FakeHttp::default();
+        let service = with_http(Some(db), &store, &http, true);
+        // Connecting needs a token, so the account is put there by hand — which is
+        // also the state a device is in after a restart.
+        store
+            .save(
+                &Account {
+                    refresh_token: "refresh-me".to_string(),
+                    account_id: Some("dbid:AAAA".to_string()),
+                },
+                false,
+            )
+            .unwrap();
+
+        match service.auto() {
+            AutoSync::Failed { reason } => assert!(reason.contains("token"), "{reason}"),
+            other => panic!("a sync that could not finish is a failure: {other:?}"),
+        }
+        assert!(store.reads() > 0, "and it got far enough to need the token");
+    }
+
+    #[test]
+    fn two_syncs_at_once_is_not_reported_as_a_failure() {
+        // Commands run off the main thread now, so a sync at launch and a pressed
+        // Sync can genuinely overlap. The second one has nothing to add and must not
+        // be dressed up as something going wrong.
+        let db = database("gate");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        let service = with_http(Some(db), &store, &http, true);
+        connect(&service);
+        let (calls, reads) = (http.calls(), store.reads());
+
+        // Holding the gate is what a sync in flight is doing.
+        let running = service.gate.lock().unwrap();
+
+        let refused = service.now().unwrap_err();
+        assert!(refused.contains("already running"), "{refused}");
+
+        match service.auto() {
+            AutoSync::Skipped { reason } => assert!(reason.contains("already running"), "{reason}"),
+            other => panic!("an overlap is not a failure: {other:?}"),
+        }
+
+        let view = service.disconnect();
+        assert!(view.connected, "and it did not disconnect underneath the sync");
+        assert!(view.message.contains("sync is running"), "{}", view.message);
+
+        assert_eq!(http.calls(), calls, "nothing was attempted by any of the three");
+        assert_eq!(store.reads(), reads, "and the keychain was left alone");
+
+        drop(running);
+        assert!(service.now().is_ok(), "and the gate opens again");
+    }
+
+    #[test]
+    fn a_service_without_a_database_says_so_instead_of_pretending() {        let service = bare(MemoryStore::working());
         let error = service.run(&hanzi_sync::FolderStore::open(scratch("nodir")).unwrap(), None).unwrap_err();
         assert!(error.contains("no study database"), "{error}");
     }
 
     #[test]
     fn the_view_serialises_the_way_the_interface_reads_it() {
-        let view = SyncService::with_parts(
-            None,
-            Box::new(MemoryStore::working()),
-            Box::new(FakeHttp::default()),
-        )
-        .view();
+        let view = bare(MemoryStore::working()).view();
         let json = serde_json::to_value(&view).unwrap();
         let keys: BTreeMap<&str, &serde_json::Value> = json.as_object().unwrap().iter().map(|(k, v)| (k.as_str(), v)).collect();
         for expected in [

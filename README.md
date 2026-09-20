@@ -45,7 +45,7 @@ progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
 measure**, the **durable study store**, **tone practice**, **speech
 recognition** and optional **cross-device sync** through your own Dropbox — for
 characters *and words*, on desktop and on both mobile systems — are all implemented
-and tested; **385 automated tests** pass, and 4 more are
+and tested; **403 automated tests** pass, and 4 more are
 ignored unless a microphone or the speech model is present. A
 signed Android
 release bundle is built and runs on a physical phone, and the recognition model
@@ -282,13 +282,16 @@ list, the per-character schedule with its log of every attempt, and your place i
 the course.
 
 The one exception is the one you ask for. If you connect a Dropbox account from
-the settings screen, pressing *Sync now* sends your attempt log to **your own
-Dropbox**, in a folder only this app can see, and takes back anything another of
-your devices left there. There is no account with us and no server of ours, and the
-sign-in itself is kept in the system Keychain rather than in the database —
-encrypted at rest, readable only by this app on this device, and released without
-asking you for anything. If you would rather it sat behind your fingerprint, there
-is a switch on that screen for it.
+the settings screen, your attempt log goes to **your own Dropbox**, in a folder only
+this app can see, and anything another of your devices left there comes back. There
+is no account with us and no server of ours, and nothing at all is sent until you
+connect an account — after which the app syncs by itself when it starts and when you
+return to it, as well as when you press *Sync now*. The sign-in is kept in the
+system Keychain rather than in the database: encrypted at rest, readable only by
+this app on this device, and released without asking you for anything. If you would
+rather it sat behind your fingerprint, there is a switch on that screen for it —
+and turning it on makes syncing something you press, because a sync that runs by
+itself has nobody to ask.
 
 Where that directory is can be overridden, which is useful for a portable
 install, for keeping study data outside the application support folder, or for
@@ -860,15 +863,18 @@ enters the engine and the engine's tests never need a database.
 problems wearing one name: merging logs, which has to be *right* or a learner's
 schedule is silently wrong, and moving bytes, which only has to work. The merge is
 pure and is tested against a temporary directory with no account and no network;
-transport is a three-method trait underneath it. Nothing is wired up yet — see
-ROADMAP M13.
+transport is a three-method trait underneath it. What travels is the attempt log, and
+`hanzi.db` itself never does — see ROADMAP M13.
 
 The speech path sits alongside: `capture.rs` opens the microphone for the length of
 one held button, `hanzi-core`'s `tone.rs` measures the pitch of what it caught, and
 `asr.rs` runs the optional recognition model. Two things in this app can open a
-socket, and both only after a learner has pressed a button: `asr.rs`, to fetch the
-model, and `sync.rs`, to reach the learner's own Dropbox once they have connected an
-account. Nothing else here contacts anything.
+socket, and neither does until the learner has opted in. `asr.rs` fetches the model,
+and only if the button on the settings screen is pressed. `sync.rs` reaches the
+learner's own Dropbox, and only once an account has been connected there — after
+which it syncs at launch and on return as well as on demand, which is why it asks
+whether there is a network at all before it tries. Nothing else here contacts
+anything.
 
 ### Coordinate systems
 
@@ -907,21 +913,22 @@ crates/hanzi-store/         the SQLite store. Native dependency, so it is
   src/lib.rs                the sinks, and the attempt log's reader
   tests/store.rs            the M10 acceptance criteria
 crates/hanzi-sync/          cross-device sync: the shard format, the merge and the
-                            fold (M13, in progress — nothing syncs yet)
+                            fold (M13)
   src/shard.rs              the format, the union, and the fold into schedules
   src/store.rs              `RemoteStore`, and the directory implementation
   src/local.rs              the database side: publish, pull, recompute
   src/http.rs               the four request shapes Dropbox uses, and `ureq`
   src/oauth.rs              PKCE, the authorize URL, token exchange and refresh
   src/dropbox.rs            Dropbox as a `RemoteStore`
+  src/reach.rs              whether there is a network path, asked first
   tests/convergence.rs      two devices that practised apart must agree
   tests/two_devices.rs      two real databases, one folder
   tests/dropbox.rs          the client, against an in-memory Dropbox
-  tests/two_devices.rs      two real databases, one folder
 src-tauri/                  Tauri shell
   src/commands.rs           the IPC surface
   src/sync.rs               cross-device sync: the Keychain, the account, and the
-                            six commands the settings screen calls
+                            seven commands the app calls, including the one that
+                            runs by itself at launch
   src/state.rs              embedded dataset, speech warm-up, the stores
   src/platform.rs           the Android bridge: the Kotlin plugin, registered and
                             called through Tauri's mobile-plugin machinery
@@ -1246,16 +1253,18 @@ dragging or by clicking. The headline gaps are now:
    declines. That screen now exists (ROADMAP's cross-cutting list); the recognition
    itself is not built, and ROADMAP M12 records the constraints it must meet.
 5. **Syncing between devices** (M13) — **built, and exercised in earnest.** Connect a
-   Dropbox account from the settings screen on each device and press *Sync now*: the
-   attempt log travels, each device rebuilds its schedule from the whole of it, and a
-   character practised on one appears scheduled on the others. It is off until you
-   connect, nothing is sent until you press the button, and Dropbox is only ever given
-   a folder its own app can see. Confirmed against a real Dropbox account on **three
-   devices at once** — a MacBook, an iPhone and an Android phone — merging each way,
-   including a device that had never seen a character picking up its schedule from
-   another's log. What is still missing is named at the end of ROADMAP M13: an
-   automatic sync at launch and the baseline for a schedule whose log does not go
-   back to its first attempt. The vocabulary list and the course cursor travel too:
+   Dropbox account from the settings screen on each device: the attempt log travels,
+   each device rebuilds its schedule from the whole of it, and a character practised
+   on one appears scheduled on the others. It syncs by itself when the app starts and
+   when you come back to it, with a line on the screen while it runs; *Sync now* is
+   there for doing it immediately. It is off until you connect, and Dropbox is only
+   ever given a folder its own app can see. Confirmed against a real Dropbox account
+   on **three devices at once** — a MacBook, an iPhone and an Android phone — merging
+   each way, including a device that had never seen a character picking up its
+   schedule from another's log. What is still missing is named at the end of ROADMAP
+   M13: the baseline for a schedule whose log does not go back to its first attempt,
+   and a fingerprint prompt on Android. The vocabulary list and the course cursor
+   travel too:
    an entry is edited and deleted rather than only appended to, so it is settled by
    last-writer-wins on a three-part stamp, and the counters that only mean something
    on the device that did the practising stay there.

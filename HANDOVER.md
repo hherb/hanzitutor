@@ -32,7 +32,7 @@ ls .cargo-home 2>/dev/null || {
 #    dataset artifact, the interface font and the licence texts are all
 #    committed, so a clone builds without downloading anything.
 pnpm install
-pnpm test                        # expect 392 passed, 0 failed, 4 ignored
+pnpm test                        # expect 403 passed, 0 failed, 4 ignored
 pnpm run check:rust && pnpm run check:web
 ```
 
@@ -543,7 +543,7 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
 Run before every commit:
 
 ```bash
-pnpm test           # 392 tests: engine + data pipeline units, the SQLite store, IPC contract, speech, notices, data-dir flag
+pnpm test           # 403 tests: engine + data pipeline units, the SQLite store, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
@@ -1524,7 +1524,7 @@ downstream of them is covered by the IPC tests, which drive
   - **A preference at its default is stored as no row.** Otherwise a fresh
     install writes two rows saying "normal", and the settings table stops being a
     record of decisions somebody took.
-- **Cross-device sync: the design is settled, the groundwork is built.** M13.
+- **Cross-device sync: built, and it now runs by itself.** M13.
   Schema 3 has shipped: `meta.device_id`, `attempt.device_id`/`attempt.seq` with a
   unique index on the pair, and `ATTEMPT_ORDER = (at, device_id, seq)` for reading
   the log. **Never read the attempt log by `id` again** — `id` is this file's
@@ -1549,14 +1549,16 @@ downstream of them is covered by the IPC tests, which drive
   `Db::attempts` — after one sync the log holds a peer's work too, and publishing
   that under this device's name would relabel it, which is the identity the merge
   rests on; and **every store a sync can rewrite is reloaded afterwards, by
-  `AppState::reload_after_sync`, which is called from `sync_now`** — progress, the
-  vocabulary list and the course cursor. That is why `sync_now` takes the `AppState`
-  as well as the sync service: if that parameter looks unused, it is not, and
-  removing it puts the bug back. The reload runs on failure as well as success,
-  because a sync that died partway through `recompute` may still have written
-  something, and it leaves a store already in its *failed* state alone, since
-  refusing to save is the point of that state. Without it the schedule is wrong until
-  the next sync — recoverable, because the log kept every attempt and the fold
+  `AppState::reload_after_sync`** — progress, the vocabulary list and the course
+  cursor. That is why `sync_now` and `sync_auto` both take the `AppState` as well as
+  the sync service: if that parameter looks unused, it is not, and removing it puts
+  the bug back. The reload runs on failure as well as success, because a sync that
+  died partway through `recompute` may still have written something, and it leaves a
+  store already in its *failed* state alone, since refusing to save is the point of
+  that state. `sync_auto` is the one caller that skips it, and **only** when nothing
+  was attempted at all — no account, a locked sign-in, no network. Without the reload
+  the schedule is wrong until the next sync — recoverable, because the log kept every
+  attempt and the fold
   rebuilds from it, but silently wrong in between. **The vocabulary list is the one
   that bites**: `save` reads an entry missing from the document as one the learner
   removed and tombstones it, so a save from a document that predates a sync deletes
@@ -1629,7 +1631,20 @@ downstream of them is covered by the IPC tests, which drive
   rest and this-device-only. `Protection` reports which of the four states a device
   actually got, because an ad-hoc signed build cannot reach the data-protection
   keychain (`errSecMissingEntitlement`) and lands in the login keychain instead — the
-  one case that can ask for the keychain password.
+  one case that can ask for the keychain password. **The app also syncs by itself, at
+  launch and when it comes back**, and two things about that are load-bearing rather
+  than decorative. `crates/hanzi-sync/src/reach.rs` asks whether there is a network
+  path *before* the sync tries: a TCP connection to the API host, on a thread with a
+  deadline, because `UreqHttp`'s ten-second connect timeout is written for a bad
+  connection rather than a dead one and a launch would spend it per request finding
+  out. And the commands that touch the network are declared `async`, which on a
+  *synchronous* function is what moves it off the main thread — without it the window
+  freezes and the "Syncing…" line cannot be painted, so the feedback this feature
+  exists to give would arrive after the thing it describes. Because two syncs can now
+  genuinely overlap, `SyncService` holds a gate; a refusal from it is not a failure.
+  A device upgrading from a build without the fingerprint switch has an item behind a
+  fingerprint and no preference saying so, which is why adopting a sign-in writes the
+  switch down — left unsaid, every launch would read a locked item and prompt.
 - **The voice preference only works if it reaches the speaker before the
   warm-up.** `AppState::load` sets it on the `Speaker` *before* `warm_voice`
   spawns. Resolution is not cached (only the ~1s voice *list* is), so a change

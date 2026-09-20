@@ -690,3 +690,20 @@ export type SyncProtection =
   | "deviceOnly"
   | "userPresence"
   | "keychainOnly";
+
+/**
+ * What an automatic sync did, or why it did not run.
+ *
+ * `skipped` is the ordinary answer on most launches — nothing is connected, or the
+ * sign-in is behind a fingerprint and a sync that runs by itself has nobody to ask —
+ * and it is deliberately **silent**: both of those are already said on the settings
+ * screen, and saying them on every launch would be noise nobody can switch off.
+ * `offline` is a phone on a train rather than anything going wrong, so it is worth
+ * one calm line and no alarm. Only `failed` is worth alarming anybody about: an
+ * automatic sync that fails quietly is a device falling out of step.
+ */
+export type AutoSync =
+  | { outcome: "skipped"; reason: string }
+  | { outcome: "offline"; reason: string }
+  | { outcome: "synced"; view: SyncView }
+  | { outcome: "failed"; reason: string };

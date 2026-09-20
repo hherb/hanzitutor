@@ -31,6 +31,7 @@
     ReviewView,
     SettingsPatch,
     SettingsView,
+    SyncView,
     MicrophoneStatus,
     ToneResult,
     ToneTarget,
@@ -252,6 +253,160 @@
    * list would otherwise look like an app that ships nothing to declare.
    */
   let licenceError = $state<string | null>(null);
+
+  // ---- syncing that nobody asked for --------------------------------------
+
+  /**
+   * What the launch or foreground sync has to say, or `null` for silence.
+   *
+   * `working` makes the line read as an activity rather than a result, which is the
+   * whole of the feedback this feature has: a sync that runs by itself has to look
+   * like something happening, or a slow one looks like a hang.
+   */
+  let syncNotice = $state<{
+    text: string;
+    working: boolean;
+    trouble: boolean;
+  } | null>(null);
+  /** True while an automatic sync is in flight, so a second cannot start on top. */
+  let syncRunning = false;
+  /**
+   * Bumped after every automatic sync, so the settings screen re-reads its own copy
+   * of the sync state.
+   *
+   * It holds the same facts the backend does — whether an account is connected, how
+   * the sign-in is protected, what the last sync did — and it is mounted only while
+   * it is open. Without this, leaving the app on the settings screen, going away and
+   * coming back would show the sync before last.
+   */
+  let syncPulse = $state(0);
+  /** When the last automatic attempt started, for the cooldown below. */
+  let lastAutoSync = 0;
+
+  /**
+   * How often coming back to the app may start a sync.
+   *
+   * Focus fires whenever the window is raised, which on a desktop is every alt-tab —
+   * and a sync per alt-tab is a request per alt-tab to somebody else's servers for
+   * data that has not changed. A minute is longer than a learner can notice missing
+   * and far longer than alt-tabbing takes.
+   */
+  const AUTO_SYNC_COOLDOWN = 60_000;
+
+  /** How long a sync may take before it is worth saying that it is happening. */
+  const SYNC_NOTICE_DELAY = 400;
+
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  let workingTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * Put a line on the screen, or take it away.
+   *
+   * A result stays long enough to read and then leaves on its own. There is no
+   * dismiss button: this is not a dialog, it is the app saying what it is doing, and
+   * anything that has to be dismissed is worse than the silence it replaced.
+   */
+  function showSyncNotice(
+    text: string | null,
+    options: { working?: boolean; trouble?: boolean } = {},
+  ) {
+    clearTimeout(noticeTimer);
+    if (text === null) {
+      syncNotice = null;
+      return;
+    }
+    const working = options.working ?? false;
+    syncNotice = { text, working, trouble: options.trouble ?? false };
+    // The working line is replaced by a result rather than expiring, so its own
+    // timeout is only a backstop against a backend that never answers.
+    noticeTimer = setTimeout(() => (syncNotice = null), working ? 30_000 : 6_000);
+  }
+
+  /**
+   * The one line worth showing after an automatic sync, or `null`.
+   *
+   * Silence when nothing changed, which is the common case and the one that decides
+   * whether this feature is welcome or annoying: the working line disappearing is
+   * itself the answer to "did it sync?", and a sentence saying "already up to date"
+   * on every launch is noise nobody can switch off. `leftAlone` is left out of that
+   * judgement deliberately — it describes a schedule this device cannot rebuild,
+   * which is a standing condition rather than news, and the settings screen says it
+   * in full.
+   */
+  function autoSyncLine(view: SyncView): string | null {
+    const last = view.last;
+    const changed =
+      last !== null &&
+      (last.published > 0 ||
+        last.pulled > 0 ||
+        last.recomputed > 0 ||
+        last.vocabChanged > 0 ||
+        last.cursorMoved);
+    return changed ? view.message : null;
+  }
+
+  /**
+   * Sync because the app started or came back.
+   *
+   * The backend refuses three cases before it sends anything — no account, a locked
+   * sign-in, and no network — and each of those answers in a moment, so the cost of
+   * asking on every launch is a round trip to Rust rather than a round trip to
+   * Dropbox. What comes back decides whether there is anything to say.
+   *
+   * The reload discipline matters here more than anywhere else, because this fires
+   * at moments nobody chose: the backend has re-read its stores by the time this
+   * returns, and `refreshAfterSync` is what re-reads *this* side's copies of them.
+   * Without it a launch sync would write the right things into the database and go
+   * on showing the old ones until the app was restarted — which is the exact bug
+   * this app has already had twice.
+   */
+  async function autoSync(reason: "launch" | "foreground") {
+    if (syncRunning) return;
+    const started = Date.now();
+    if (started - lastAutoSync < AUTO_SYNC_COOLDOWN) return;
+    lastAutoSync = started;
+    syncRunning = true;
+
+    workingTimer = setTimeout(
+      () => showSyncNotice("Syncing with your other devices…", { working: true }),
+      SYNC_NOTICE_DELAY,
+    );
+
+    try {
+      const outcome = await api.syncAuto();
+      const quiet = outcome.outcome === "skipped" || outcome.outcome === "offline";
+      void api.log(
+        `sync on ${reason}: ${outcome.outcome}` +
+          (quiet ? ` (${outcome.reason})` : ""),
+      );
+      clearTimeout(workingTimer);
+      switch (outcome.outcome) {
+        case "synced":
+          refreshAfterSync();
+          syncPulse += 1;
+          showSyncNotice(autoSyncLine(outcome.view));
+          break;
+        case "offline":
+          showSyncNotice(
+            "No connection, so nothing was synced. Your practice is safe on this device.",
+          );
+          break;
+        case "failed":
+          showSyncNotice(`Could not sync: ${outcome.reason}`, { trouble: true });
+          break;
+        case "skipped":
+          // Not connected, or the sign-in is locked. Both are said in full on the
+          // settings screen, and neither is worth interrupting a lesson for.
+          showSyncNotice(null);
+          break;
+      }
+    } catch (cause) {
+      clearTimeout(workingTimer);
+      showSyncNotice(`Could not sync: ${cause}`, { trouble: true });
+    } finally {
+      syncRunning = false;
+    }
+  }
 
   // ---- personal vocabulary list -------------------------------------------
   let vocab = $state<VocabView>({ entries: [], groups: [], warning: null });
@@ -724,9 +879,18 @@
     refreshMicrophone();
 
     const onVisibility = () => {
-      if (!document.hidden) refreshMicrophone();
+      if (!document.hidden) {
+        refreshMicrophone();
+        void autoSync("foreground");
+      }
     };
     document.addEventListener("visibilitychange", onVisibility);
+    // The desktop's version of the same thing. A phone hides the page when the app
+    // goes away and shows it again on return, so `visibilitychange` is the whole
+    // story there; a window that is merely not focused still fires nothing, which is
+    // why both are listened for.
+    const onFocus = () => void autoSync("foreground");
+    window.addEventListener("focus", onFocus);
 
     /**
      * The permission dialog has been answered.
@@ -741,6 +905,11 @@
       refreshMicrophone();
       return true;
     };
+
+    // And last, the one thing here that goes to the network. Deliberately after
+    // everything the learner is looking at has been asked for: a launch sync must
+    // never be something the course waits behind.
+    void autoSync("launch");
 
     // A character answered badly comes back within the minute, so "due" is not
     // a one-off computed at startup: give the badge a slow heartbeat.
@@ -778,7 +947,10 @@
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onRejection);
       window.removeEventListener("resize", publishInsets);
+      window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibility);
+      clearTimeout(noticeTimer);
+      clearTimeout(workingTimer);
       delete platformHooks.__hanziPermissionsChanged;
       delete (window as unknown as { __hanziHandleBack?: () => boolean }).__hanziHandleBack;
       clearInterval(reviewTimer);
@@ -1861,6 +2033,23 @@
       <p class="error">{error}</p>
     {/if}
 
+    {#if syncNotice}
+      <!-- `role="status"` rather than an alert: this is the app saying what it is
+           doing, and it should be announced once without stealing focus from the
+           board. -->
+      <p
+        class="sync-note"
+        class:trouble={syncNotice.trouble}
+        role="status"
+        aria-live="polite"
+      >
+        {#if syncNotice.working}
+          <span class="sync-pulse" aria-hidden="true"></span>
+        {/if}
+        {syncNotice.text}
+      </p>
+    {/if}
+
     {#if cursorWarning}
       <p class="warning">
         {cursorWarning} Meanwhile the course starts from the beginning.
@@ -1919,6 +2108,7 @@
         onChange={(patch) => void updateSettings(patch)}
         onClearClickToDraw={() => void clearClickToDraw()}
         onSynced={refreshAfterSync}
+        {syncPulse}
       />
     {:else if view === "about"}
       <LicencesPanel info={appInfo} notices={licenceList} error={licenceError} />
@@ -2861,6 +3051,55 @@
     background: #fef2f2;
     color: #991b1b;
     font-size: 0.84rem;
+  }
+
+  /* What the app is doing rather than what is wrong: a sync that started by itself
+     has to look like something happening, and it must not be mistaken for a warning
+     or for an error. */
+  .sync-note {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: var(--surface);
+    color: var(--muted-strong);
+    font-size: 0.8rem;
+  }
+  .sync-note.trouble {
+    border-color: #fcd34d;
+    background: #fffbeb;
+    color: #92400e;
+  }
+  /* The only moving thing in the app that is not the learner's own writing. Small
+     and slow on purpose: it has to be visible out of the corner of an eye and must
+     not pull attention off the board. */
+  .sync-pulse {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: sync-pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes sync-pulse {
+    0%,
+    100% {
+      opacity: 0.25;
+      transform: scale(0.8);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sync-pulse {
+      animation: none;
+      opacity: 1;
+    }
   }
 
   /* Something is wrong with a study file, but practice still works. */

@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
+  AutoSync,
   AsrStatus,
   Character,
   CursorView,
@@ -324,9 +325,11 @@ export const syncConnectFinish = (code: string) =>
  * Sync now: send this device's attempts, take the other's, and rebuild the
  * schedule from the whole log.
  *
- * The first call in this app that sends anything about the learner's study data
- * anywhere, and it only ever happens because they pressed a button. Nothing else
- * in the app behaves differently while it runs.
+ * One of the two calls in this app that send anything about the learner's study
+ * data anywhere — `syncAuto` is the other, and it is the one that happens without
+ * anybody pressing anything. Both are off until an account is connected, and both
+ * go only to the learner's own Dropbox. Nothing else in the app behaves
+ * differently while either runs.
  */
 export const syncNow = () => invoke<SyncView>("sync_now");
 
@@ -346,3 +349,18 @@ export const syncDisconnect = () => invoke<SyncView>("sync_disconnect");
  */
 export const syncSetLock = (locked: boolean) =>
   invoke<SyncView>("sync_set_lock", { locked });
+
+/**
+ * Sync because the app started or came back, rather than because you pressed a
+ * button.
+ *
+ * Nothing here is a failure the learner has to act on: most launches are not
+ * connected to anything, and a phone on a train has no network. The four outcomes
+ * keep those apart so the screen can be silent about the first two — see [`AutoSync`].
+ *
+ * A device with no account is not even asked: the backend answers from its own
+ * record, with no keychain read and no socket. A device with no *network* is refused
+ * by a bounded probe rather than by `ureq`'s ten-second connect timeout, because this
+ * is the one sync nobody is waiting for and it must not be the one that stalls.
+ */
+export const syncAuto = () => invoke<AutoSync>("sync_auto");

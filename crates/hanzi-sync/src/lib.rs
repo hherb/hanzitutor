@@ -34,6 +34,7 @@ mod dropbox;
 mod http;
 mod local;
 mod oauth;
+mod reach;
 mod shard;
 mod store;
 
@@ -45,6 +46,7 @@ pub use dropbox::DropboxStore;
 pub use http::{Http, UreqHttp};
 pub use local::{full_log, own_log, publish, pull, recompute, sync, Summary};
 pub use oauth::{authorize_url, exchange_code, refresh, revoke, Pkce, Tokens, SCOPES};
+pub use reach::{Reach, TcpReach};
 pub use shard::{
     attempts_shard_name, device_of_shard, fold_cards, merge_attempts, parse_attempts_shard,
     read_attempts, write_attempts, MergedAttempt, CHUNK,

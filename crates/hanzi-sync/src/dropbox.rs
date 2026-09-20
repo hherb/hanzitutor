@@ -36,9 +36,25 @@ use crate::http::Http;
 use crate::store::{RemoteEntry, RemoteStore, SyncError};
 
 /// The RPC host, for listing.
-const API: &str = "https://api.dropboxapi.com/2";
+///
+/// Also the host a reachability probe opens its connection to — see
+/// [`crate::reach`] — which is why it is written down once and built into the root
+/// below rather than spelled out twice. What has to be reachable is where this
+/// client is about to talk and nothing else, and two copies of a hostname is how
+/// that quietly stops being true.
+pub const API_HOST: &str = "api.dropboxapi.com";
 /// The content host, for reading and writing shards.
-const CONTENT: &str = "https://content.dropboxapi.com/2";
+pub const CONTENT_HOST: &str = "content.dropboxapi.com";
+
+/// The RPC root, for listing.
+pub fn api_root() -> String {
+    format!("https://{API_HOST}/2")
+}
+
+/// The content root, for reading and writing shards.
+pub fn content_root() -> String {
+    format!("https://{CONTENT_HOST}/2")
+}
 
 /// A Dropbox app folder, seen as a store.
 pub struct DropboxStore<'a> {
@@ -57,7 +73,7 @@ impl<'a> DropboxStore<'a> {
 
     /// One RPC call, with the arguments as JSON.
     fn rpc(&self, endpoint: &str, body: serde_json::Value) -> Result<serde_json::Value, SyncError> {
-        let url = format!("{API}/{endpoint}");
+        let url = format!("{}/{endpoint}", api_root());
         let response = self.http.rpc(&url, &self.access_token, &body.to_string())?;
         serde_json::from_str(&response).map_err(|e| {
             SyncError::Malformed(format!("{endpoint} answered something that is not JSON: {e}"))
@@ -141,7 +157,7 @@ impl RemoteStore for DropboxStore<'_> {
 
     fn get(&self, name: &str) -> Result<Vec<u8>, SyncError> {
         self.http.download(
-            &format!("{CONTENT}/files/download"),
+            &format!("{}/files/download", content_root()),
             &self.access_token,
             &json!({ "path": path_of(name) }).to_string(),
         )
@@ -149,7 +165,7 @@ impl RemoteStore for DropboxStore<'_> {
 
     fn put(&self, name: &str, bytes: &[u8]) -> Result<(), SyncError> {
         self.http.upload(
-            &format!("{CONTENT}/files/upload"),
+            &format!("{}/files/upload", content_root()),
             &self.access_token,
             &json!({
                 "path": path_of(name),

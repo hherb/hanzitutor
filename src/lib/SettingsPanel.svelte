@@ -60,6 +60,17 @@
      * stale by then is *this* side's copies of them.
      */
     onSynced: () => void;
+    /**
+     * Counts the syncs this screen did not start.
+     *
+     * A sync at launch or on foreground runs while this screen may be open, and it
+     * changes exactly the things shown here: whether a sign-in is stored, how it is
+     * protected, and what the last sync did. This screen keeps its own copy of all
+     * three, and its own copy is only replaced when a command hands over a new one —
+     * so without this it would show the state from before, which is the shape of bug
+     * this app has already had twice.
+     */
+    syncPulse: number;
   }
 
   let {
@@ -70,6 +81,7 @@
     onChange,
     onClearClickToDraw,
     onSynced,
+    syncPulse,
   }: Props = $props();
 
   /**
@@ -232,6 +244,21 @@
   }
 
   onMount(() => void refreshSync());
+
+  // Where the count stood at the last look. A plain local rather than `$state`,
+  // because it is a note of what has been seen rather than something to render, and
+  // `-1` because the first run of the effect is the mount, which `onMount` above has
+  // already answered.
+  let syncPulseSeen = -1;
+  $effect(() => {
+    const pulse = syncPulse;
+    if (syncPulseSeen === -1 || pulse === syncPulseSeen) {
+      syncPulseSeen = pulse;
+      return;
+    }
+    syncPulseSeen = pulse;
+    void refreshSync();
+  });
 
   async function beginConnect() {
     syncBusy = true;
@@ -536,8 +563,8 @@
           working whatever this is set to. Recognising <em>which</em> syllable you
           said is a different problem, with no model-free answer: a learner's own
           voice cannot be pre-recorded. That needs a speech model, and this app does
-          not ship one. Fetching it is the only thing in this app that ever touches
-          the network, and it happens only if you press the button beside this.
+          not ship one. It is the only thing this app ever <em>downloads</em>, and it
+          happens only if you press the button beside this.
         </span>
       </div>
       <div class="how">
@@ -597,8 +624,11 @@
           device works out its own schedule from the whole of it, so there is no
           schedule to reconcile and no device that wins. The attempts are kept in
           your own Dropbox, in a folder only this app can see; there is no account
-          with us and no server of ours. Nothing is sent anywhere until you press
-          Sync, and this screen is the only place that can start it.
+          with us and no server of ours. Nothing at all is sent until you connect an
+          account here. Once you have, this app syncs on its own when it starts and
+          when you come back to it, and <em>Sync now</em> is how to do it immediately
+          — including after turning the fingerprint switch on, which is the one
+          setting that makes syncing something you always press.
         </span>
       </div>
       <div class="how">
@@ -715,7 +745,8 @@
                 Off by default, so that a sync which starts on its own — at launch, or
                 when you come back to the app — never stops to ask you for anything. On,
                 the token is released only for a fingerprint, a face or your device
-                password.
+                password, and syncing becomes something you press: a sync that runs by
+                itself has nobody to ask.
               </span>
             </span>
           </label>

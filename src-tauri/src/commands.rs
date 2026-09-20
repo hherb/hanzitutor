@@ -17,7 +17,7 @@ use crate::asr::AsrStatus;
 use crate::capture::MicrophoneStatus;
 use crate::licences::{AppInfo, LicenceNotice};
 use crate::state::{AppState, ProgressState, VocabState};
-use crate::sync::{SyncService, SyncView};
+use crate::sync::{AutoSync, SyncService, SyncView};
 
 /// How many characters make up one lesson.
 pub const LESSON_SIZE: usize = 10;
@@ -851,11 +851,20 @@ pub fn licence_notices() -> Vec<LicenceNotice> {
 
 // ---- cross-device sync ------------------------------------------------------
 //
-// Four commands, and the shape of the flow is a paste rather than a redirect: the
+// Six commands, and the shape of the flow is a paste rather than a redirect: the
 // app opens Dropbox's authorization page in the system browser, the learner copies
 // the code it shows them, and pastes it back. That is forced by Dropbox refusing
 // custom URL schemes, and it is why nothing here waits on a callback. See
 // `crate::sync` for why the token lives in the Keychain and not in `hanzi.db`.
+//
+// **The ones that touch the network are `async`, and that is not decoration.** A
+// plain `#[tauri::command]` runs on the main thread — the thread the webview draws
+// on — so a sync declared that way freezes the window for as long as it takes, and
+// the "Syncing…" line that is supposed to say so cannot be painted until the sync
+// it describes is already over. The `async` attribute on a *synchronous* function
+// is what moves it to Tauri's runtime with its signature unchanged, which is what
+// `State` needs. Two of them can now overlap, which is why `SyncService` keeps a
+// gate; see its note.
 
 /// What the sync screen should be showing.
 #[tauri::command]
@@ -889,7 +898,7 @@ pub fn sync_connect(
 }
 
 /// Finish connecting, with the code the learner pasted.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sync_connect_finish(sync: State<'_, SyncService>, code: String) -> Result<SyncView, String> {
     sync.finish(&code)
 }
@@ -903,7 +912,7 @@ pub fn sync_connect_finish(sync: State<'_, SyncService>, code: String) -> Result
 /// the synced ones. So the store is reloaded, on failure as well as success,
 /// because a sync that died partway through `recompute` may still have written
 /// some of them.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sync_now(
     state: State<'_, AppState>,
     sync: State<'_, SyncService>,
@@ -917,9 +926,30 @@ pub fn sync_now(
 }
 
 /// Forget the account, here and on Dropbox's side.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn sync_disconnect(sync: State<'_, SyncService>) -> SyncView {
     sync.disconnect()
+}
+
+/// Sync because the app started or came back, rather than because somebody pressed
+/// a button.
+///
+/// Nothing here is a failure the learner has to act on: most launches are not
+/// connected to anything, and a phone on a train has no network. `AutoSync` keeps
+/// those apart so the screen can be silent about the first two and say something
+/// about the others — see `crate::sync`.
+#[tauri::command(async)]
+pub fn sync_auto(state: State<'_, AppState>, sync: State<'_, SyncService>) -> AutoSync {
+    let outcome = sync.auto();
+    // Skipping the reload when nothing was attempted is the only case that is safe
+    // to skip, and it is worth skipping: `reload_after_sync` re-reads three stores,
+    // and a launch with no network would otherwise pay for all three to learn that
+    // nothing had changed. A *failed* pass still reloads, for the reason `sync_now`
+    // gives — it may have written some schedules before it died.
+    if !matches!(outcome, AutoSync::Skipped { .. } | AutoSync::Offline { .. }) {
+        state.reload_after_sync();
+    }
+    outcome
 }
 
 /// Ask for a fingerprint before the sign-in is used, or stop asking for one.

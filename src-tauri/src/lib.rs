@@ -19,7 +19,7 @@ pub use capture::{MicrophoneStatus, Recorder, Recording};
 pub use state::{
     AppState, CursorState, Persisted, ProgressState, SettingsState, VocabState, REVIEW_LIMIT,
 };
-pub use sync::{SyncService, SyncSummaryView, SyncView};
+pub use sync::{AutoSync, SyncService, SyncSummaryView, SyncView};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -138,6 +138,7 @@ pub fn run() {
             commands::sync_now,
             commands::sync_disconnect,
             commands::sync_set_lock,
+            commands::sync_auto,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Hanzi Tutor");
