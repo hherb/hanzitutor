@@ -285,7 +285,10 @@ The one exception is the one you ask for. If you connect a Dropbox account from
 the settings screen, pressing *Sync now* sends your attempt log to **your own
 Dropbox**, in a folder only this app can see, and takes back anything another of
 your devices left there. There is no account with us and no server of ours, and the
-sign-in itself is kept in the system Keychain rather than in the database.
+sign-in itself is kept in the system Keychain rather than in the database —
+encrypted at rest, readable only by this app on this device, and released without
+asking you for anything. If you would rather it sat behind your fingerprint, there
+is a switch on that screen for it.
 
 Where that directory is can be overridden, which is useful for a portable
 install, for keeping study data outside the application support folder, or for
@@ -918,7 +921,7 @@ crates/hanzi-sync/          cross-device sync: the shard format, the merge and t
 src-tauri/                  Tauri shell
   src/commands.rs           the IPC surface
   src/sync.rs               cross-device sync: the Keychain, the account, and the
-                            five commands the settings screen calls
+                            six commands the settings screen calls
   src/state.rs              embedded dataset, speech warm-up, the stores
   src/platform.rs           the Android bridge: the Kotlin plugin, registered and
                             called through Tauri's mobile-plugin machinery

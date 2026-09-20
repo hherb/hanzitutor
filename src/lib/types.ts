@@ -651,12 +651,20 @@ export interface SyncSummaryView {
  * `canConnect` is false on a platform with no secure store for the refresh token.
  * The screen asks before it offers a button, so a learner is told why rather than
  * watching a button fail — the token is never written somewhere it could be read.
+ *
+ * `canLock` is the same question about a different capability: whether this platform
+ * can ask for a fingerprint at all. Android can keep the sign-in and cannot yet ask,
+ * so the switch is not offered there rather than offered and ignored.
  */
 export interface SyncView {
   connected: boolean;
   /** Which Dropbox account, when Dropbox said. */
   accountId: string | null;
   canConnect: boolean;
+  /** Whether this platform can ask for a fingerprint at all. */
+  canLock: boolean;
+  /** Whether the learner has asked for one. */
+  locked: boolean;
   /** How the stored sign-in is protected. */
   protection: SyncProtection;
   /** The last sync this session, if there has been one. */
@@ -668,10 +676,17 @@ export interface SyncView {
 /**
  * How well the stored Dropbox sign-in is protected.
  *
- * `userPresence` means it is behind the data-protection keychain and the system asks
- * for a fingerprint, a face, or the device password before releasing it.
- * `keychainOnly` means it is an ordinary login-keychain item released without
- * asking anybody — which is the case a learner is told about, because that is where
- * "enter your keychain password" comes from. `unknown` means nothing is stored.
+ * `deviceOnly` is the default and the point of it is that it asks nothing: the item
+ * is encrypted at rest, readable only by this app, and not carried to the learner's
+ * other devices, but the system releases it without a prompt. `userPresence` is the
+ * same item with a fingerprint — a face, a print, or the device password — asked for
+ * when the token is about to be used, which is once per run of the app and never
+ * merely to draw this screen. `keychainOnly` means an ordinary login-keychain item,
+ * which is where a build the system cannot identify lands, and the one case that can
+ * ask for the login keychain password instead. `unknown` means nothing is stored.
  */
-export type SyncProtection = "unknown" | "userPresence" | "keychainOnly";
+export type SyncProtection =
+  | "unknown"
+  | "deviceOnly"
+  | "userPresence"
+  | "keychainOnly";

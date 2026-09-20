@@ -921,3 +921,14 @@ pub fn sync_now(
 pub fn sync_disconnect(sync: State<'_, SyncService>) -> SyncView {
     sync.disconnect()
 }
+
+/// Ask for a fingerprint before the sign-in is used, or stop asking for one.
+///
+/// Nothing is read to answer this: the preference is recorded, and the stored item
+/// is rewritten only when there is one — which is the one moment turning the prompt
+/// *off* has to read it. See `crate::sync` for why asking for nothing is the default
+/// and why drawing the screen never unlocks anything.
+#[tauri::command]
+pub fn sync_set_lock(sync: State<'_, SyncService>, locked: bool) -> Result<SyncView, String> {
+    sync.set_lock(locked)
+}

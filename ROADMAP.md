@@ -1474,15 +1474,42 @@ new upstream project for four endpoints:
   the sentence under it was the whole of the fix. Worth knowing when enabling a
   scope: Dropbox bakes scopes into the token at authorization time, so an existing
   connection has to be disconnected and reconnected before a new scope takes effect.
-- **The stored sign-in asks for a fingerprint where it can.** The refresh token goes
-  into the *data-protection* keychain behind an access control requiring user
-  presence, which is what replaces "enter your keychain password" with Touch ID. That
-  needs an application identifier, so an ad-hoc signed development build cannot have
-  it: the item then falls back to an ordinary login-keychain entry, and
-  `SyncView.protection` says which of the two happened so the screen can tell the
-  learner rather than leave them to infer it from a prompt. Only the
-  missing-entitlement refusal falls back; any other failure is reported, because a
-  second attempt would only fail more quietly.
+- **Drawing the screen never unlocks anything, and the sign-in asks for nothing by
+  default.** The refresh token goes into the *data-protection* keychain with an access
+  control that carries **no constraint at all** and the mode
+  `AccessibleAfterFirstUnlockThisDeviceOnly`: encrypted at rest, released only to this
+  app, not carried to the learner's other devices, and readable without asking anybody.
+  A fingerprint is a switch — the same item created instead with a *user presence*
+  constraint — and it is asked for when the token is about to be used, never to draw a
+  screen. This reverses what was built first, and the reason is worth recording because
+  the first version looked correct on paper: an item with a user-presence constraint
+  asks on **every read** — there is no "always allow" for one built that way — so
+  reading the token to answer "is this device connected?" prompted for a fingerprint
+  merely for opening Settings, one sync could prompt three times, and the automatic
+  sync at launch this milestone still owes would have prompted every launch, at a moment
+  nobody chose. Two rules now hold it apart. **The token is read at most once per run of
+  the app**, cached for the life of the process, and only when something is about to use
+  it. **"Connected" is answered from a record that is not a secret** — Dropbox's
+  `account_id` and the protection the item actually got, in the database's `meta` table
+  beside the publish watermark — so `sync_status` costs no keychain access at all. A
+  device that connected under the earlier build has a token and no record, so the one
+  exception is deliberate and runs once: an absent record plus a sign-in in the store is
+  adopted, and read from the store it was found in rather than guessed at.
+  `SyncView.protection` still says which of the four states a device is in, and the
+  fingerprint switch is offered only where the platform can honour it (`canLock`).
+- **A store the system cannot identify falls back, and says so.** Access controls need
+  an application identifier, so an ad-hoc signed development build cannot have one: the
+  data-protection keychain refuses the item with `errSecMissingEntitlement` and it goes
+  to the login keychain instead. That is the one case that can ask for the **keychain
+  password**, because the system does not recognise a rebuilt binary as the one that
+  wrote the item — which is why `SyncView.protection` distinguishes `deviceOnly` (asks
+  nothing), `userPresence` (asks for a fingerprint), and `keychainOnly` (the login
+  keychain, may ask for the password). Reading the keychain now falls back on
+  `errSecMissingEntitlement` as well as `errSecItemNotFound`, because a build the system
+  cannot identify is refused the keychain as a whole rather than told about one item in
+  it; without that, a connection written by the fallback path would not be found again.
+  Only the missing-entitlement refusal falls back. Any other failure is reported, because
+  a second attempt would only fail more quietly.
 - **Android keeps the sign-in in its keystore, which is a different shape of thing.**
   There is no keychain of the Apple kind there: the Android keystore holds *keys*,
   not secrets. So the Kotlin side generates an AES-256-GCM key inside it — never
@@ -1491,10 +1518,10 @@ new upstream project for four endpoints:
   it deliberately is **not** yet is a fingerprint request: that means showing a
   `BiometricPrompt` with the cipher as its `CryptoObject`, which needs
   `androidx.biometric`, a dependency this app does not carry. So Android reports
-  `keychainOnly`, which is exactly what it is — the same honest label the Mac's
-  unsigned development build gets. `WryActivity` extends `AppCompatActivity`, so it
-  is already a `FragmentActivity`, which is the one structural thing a biometric
-  prompt needs.
+  `keychainOnly` — the same honest label the Mac's unsigned development build gets —
+  and `canLock` is false, so the switch is not offered there rather than offered and
+  ignored. `WryActivity` extends `AppCompatActivity`, so it is already a
+  `FragmentActivity`, which is the one structural thing a biometric prompt needs.
 - **An undecryptable blob is forgotten rather than reported.** That is what a restored
   backup looks like on Android: the preferences come back and the keystore key does
   not, because the key is bound to the device. An undecryptable token is worth nothing
@@ -1511,27 +1538,46 @@ it.
 The suite is green at 355 tests, with 4 more ignored unless a microphone or the
 speech model is present.
 
-**The app side.** `src-tauri/src/sync.rs`, plus five commands
+**The app side.** `src-tauri/src/sync.rs`, plus six commands
 (`sync_status`, `sync_connect`, `sync_connect_finish`, `sync_now`,
-`sync_disconnect`):
+`sync_disconnect`, `sync_set_lock`):
 
 - **The refresh token goes in the platform's secret store** — Apple's Keychain, via
   `security-framework`, which is the same API on macOS and iOS — and **not** in
   `hanzi.db`. That file is an ordinary file in an ordinary directory that a backup
   tool copies to a second disk and a cloud service; a database is the wrong place
   for a credential even when it is the right place for study data, and those are not
-  the same claim. On a platform whose secret store is not wired up (Windows, Linux,
-  Android), connecting is **refused** rather than quietly written somewhere less
-  safe: a refusal is a bug report, a plaintext credential is a vulnerability nobody
-  notices.
+  the same claim. On a platform whose secret store is not wired up (Windows, Linux),
+  connecting is **refused** rather than quietly written somewhere less safe: a refusal
+  is a bug report, a plaintext credential is a vulnerability nobody notices.
+- **What is *not* a credential does go in the database.** Whether a sign-in exists,
+  whose it is, and how well it is protected is not worth protecting, and putting it in
+  `meta` is what lets the screen be drawn without opening the keychain at all. That is
+  the difference the fingerprint default turns on: the record is read for every
+  `sync_status`, so a record that lived in the keychain would be a prompt for opening
+  Settings.
+- **The token store's answer is read once per process.** `load` is called when the
+  token is about to be *used*, and the answer is cached in an `Open` enum whose third
+  state is the point — `Mutex<Option<Account>>` could not tell "not read yet" from
+  "read, and there is nothing there", so a learner who has never connected would have
+  been sent to the keychain every time the screen was drawn.
+- **`save` returns what the item actually got.** A store that could not honour a
+  request for a fingerprint says so rather than letting the screen claim a prompt that
+  will never appear, which is what the fourth `Protection` state is for.
 - **The store and the HTTP client are trait objects with production defaults**,
   which is not ceremony — it is what lets the tests drive a whole
   connect-then-sync-then-disconnect pass against a temporary directory and an
   in-memory token store. A test that wrote to the developer's real Keychain would be
-  a test that deleted their account.
+  a test that deleted their account. The in-memory store counts its reads, which is
+  how the rule above is asserted: a read is the one moment a learner is asked for
+  anything, so "the screen was drawn five times and nothing was read" is a test.
 - **Disconnect revokes before it forgets.** Dropping the local token would leave the
   authorization standing on Dropbox's side, which is not what "disconnect" means to
   somebody who pressed it. A failure to revoke is reported and still clears locally.
+- **Connecting is refused if the connection cannot be written down.** A refresh token
+  the screen does not know about is one the learner cannot disconnect, so a record
+  that cannot be written takes the token back out again rather than leaving it where
+  nothing can reach it.
 - **The app key is a constant, not a build secret.** It travels in the authorization
   URL, which is why PKCE exists; a fresh clone therefore builds something that
   works, with `HANZI_DROPBOX_APP_KEY` as the override for a fork with its own app.
@@ -1542,17 +1588,25 @@ speech model is present.
   state. That was a compile error rather than a design note, and it is the reason
   the bound is written on the trait instead of on the one implementation.
 
-Nine tests in that module, and none of them touches the Keychain or a socket. The
+Seventeen tests in that module, and none of them touches the Keychain or a socket. The
 one that carries the weight does the whole pass: connect against a fake token
 endpoint, keep the refresh token, practise a character, sync over a real directory,
-find nothing to do the second time, then disconnect and prove the token is gone.
+find nothing to do the second time, then disconnect and prove the token is gone. Five
+of the others are about the friction this design exists to remove: the screen is drawn
+five times without a single read; the token is read once and not again however many
+times it is used; a connection survives a restart with a store that refuses to be read
+at all; a sign-in stored before the record existed is adopted once and read from the
+store it was found in; and both access controls the switch can ask for are ones the
+system will actually build, which is the one platform call that cannot be covered
+without a keychain.
 
-The suite is green at 385 tests, with 4 more ignored unless a microphone or the
+The suite is green at 392 tests, with 4 more ignored unless a microphone or the
 speech model is present.
 
 **The settings screen.** A fifth row in the settings panel — the fourth was the
-recognition model — with connect, the pasted code, Sync now, Disconnect, and a line
-saying what the last sync did. Four things about it are deliberate:
+recognition model — with connect, the pasted code, Sync now, Disconnect, a switch for
+the fingerprint prompt, and a line saying what the last sync did. Five things about it
+are deliberate:
 
 - **The authorization address is offered to copy, not to click.** A link in this
   webview would load Dropbox *inside* it, which is the one thing the whole flow
@@ -1563,6 +1617,9 @@ saying what the last sync did. Four things about it are deliberate:
   `canConnect` first, so a learner on such a platform is told why rather than
   watching a button fail. A refusal is a bug report; a button that fails is a
   mystery.
+- **The fingerprint switch is not offered where the platform cannot ask.** `canLock`
+  is the same idea: a switch that does nothing is worse than no switch, and Android
+  is the platform it is false on until `androidx.biometric` arrives.
 - **A mistyped code keeps what was typed.** The field is cleared only on success,
   because the page it came from has usually been closed by then and retyping a long
   code from a page that no longer exists is not recoverable.
@@ -1571,6 +1628,9 @@ saying what the last sync did. Four things about it are deliberate:
   rather than an oversight, and it is the safe direction to be wrong in while the
   feature is new — an automatic sync is a thing that happens to somebody who did not
   ask for it, and this is the first code in the app that sends study data anywhere.
+  What that gap needed first is now in place: asking for nothing by default and
+  reading the token once per run is what makes an unasked-for sync possible without
+  stopping to ask for a fingerprint at a moment nobody chose.
 
 **Verified where it counts.** A Dropbox account of the author's own, and **three
 devices at once** — a MacBook, an iPhone 13 Pro Max and an Android phone — each
@@ -1636,7 +1696,10 @@ cover the ordering itself, including the tiebreak, and four in
 **What is not built.** Syncing at launch or on foreground rather than only on
 demand; the baseline for a card whose log does not go back to its first attempt; and
 a fingerprint prompt on Android, which needs `androidx.biometric` and so is its own
-change.
+change. The fingerprint *on the platforms that can do it* is built, and the reason
+that mattered first is the first item in this list: a sync nobody asked for must not
+be a sync that stops to ask for something, which is why asking for nothing is the
+default and why the token is read once per run rather than once per read.
 
 **Why.** Practice happens on whichever device is at hand — the laptop at a desk,
 the phone on a train — and a schedule that exists on only one of them is a

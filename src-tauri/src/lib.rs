@@ -137,6 +137,7 @@ pub fn run() {
             commands::sync_connect_finish,
             commands::sync_now,
             commands::sync_disconnect,
+            commands::sync_set_lock,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Hanzi Tutor");

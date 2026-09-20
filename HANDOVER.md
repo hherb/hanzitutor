@@ -32,7 +32,7 @@ ls .cargo-home 2>/dev/null || {
 #    dataset artifact, the interface font and the licence texts are all
 #    committed, so a clone builds without downloading anything.
 pnpm install
-pnpm test                        # expect 300 passed, 0 failed, 1 ignored
+pnpm test                        # expect 392 passed, 0 failed, 4 ignored
 pnpm run check:rust && pnpm run check:web
 ```
 
@@ -543,7 +543,7 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
 Run before every commit:
 
 ```bash
-pnpm test           # 300 tests: engine + data pipeline units, the SQLite store, IPC contract, speech, notices, data-dir flag
+pnpm test           # 392 tests: engine + data pipeline units, the SQLite store, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
@@ -1609,14 +1609,27 @@ downstream of them is covered by the IPC tests, which drive
   required or the learner sees a parse error instead of Dropbox's own sentence.
   `put` overwrites on purpose — a create-only upload breaks a retry after a timeout
   the device could not distinguish from a failure. On the app side,
-  `src-tauri/src/sync.rs` owns the account and the Keychain, and two rules there are
+  `src-tauri/src/sync.rs` owns the account and the Keychain, and four rules there are
   worth not undoing: **the refresh token goes in the platform's secret store and
   never in `hanzi.db`** (an ordinary file that backups copy around; a refusal to
   connect on a platform with no secret store yet is a bug report, a plaintext
-  credential is a vulnerability nobody notices), and **the token store and the HTTP
-  client stay trait objects** — replacing them with the concrete Keychain and
-  `UreqHttp` would make the module untestable without touching the developer's real
-  Keychain, which is a test that deletes their account.
+  credential is a vulnerability nobody notices); **drawing the screen never reads the
+  keychain** — "connected?" is answered from a record in `meta` holding Dropbox's
+  `account_id` and the protection the item got, because an item behind a user-presence
+  access control asks on *every* read, so a keychain read to draw Settings is a
+  fingerprint prompt for opening Settings, and a sync at launch that did the same would
+  prompt at every launch; **the token is read at most once per run of the app**, cached
+  in an `Open` enum whose third state distinguishes "not read yet" from "read, nothing
+  there"; and **the token store and the HTTP client stay trait objects** — replacing
+  them with the concrete Keychain and `UreqHttp` would make the module untestable
+  without touching the developer's real Keychain, which is a test that deletes their
+  account. The fingerprint is a **switch**, off by default: with it on, the item is
+  created behind a user-presence constraint and asked for when the token is about to be
+  used; with it off, the item carries no constraint at all and is still encrypted at
+  rest and this-device-only. `Protection` reports which of the four states a device
+  actually got, because an ad-hoc signed build cannot reach the data-protection
+  keychain (`errSecMissingEntitlement`) and lands in the login keychain instead — the
+  one case that can ask for the keychain password.
 - **The voice preference only works if it reaches the speaker before the
   warm-up.** `AppState::load` sets it on the `Speaker` *before* `warm_voice`
   spawns. Resolution is not cached (only the ~1s voice *list* is), so a change

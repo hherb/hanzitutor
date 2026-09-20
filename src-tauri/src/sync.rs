@@ -17,7 +17,42 @@
 //! On a platform whose secret store is not wired up yet, connecting is **refused**
 //! rather than quietly written somewhere less safe. A refusal is a bug report; a
 //! plaintext token is a vulnerability nobody notices. macOS and iOS share the
-//! Keychain API, so the gap is Windows, Linux and Android.
+//! Keychain API, so the gap is Windows and Linux.
+//!
+//! ## Drawing the screen must not unlock anything
+//!
+//! This is the rule the rest of the module is arranged around, and it was learned
+//! the hard way. A keychain item can be created behind an access control that
+//! requires *user presence*, and such an item asks for a fingerprint, a face or the
+//! device password on **every single read** — there is no "always allow" for an
+//! item built that way. Reading the token to answer "is this device connected?" is
+//! therefore a way to prompt somebody for their fingerprint merely for opening
+//! Settings; reading it twice inside one sync is a way to prompt them three times
+//! for one button press; and a sync that starts by itself at launch would prompt
+//! every launch, at a moment nobody chose.
+//!
+//! So two things are kept apart:
+//!
+//! - **The credential**, which is the refresh token, in the platform's secret store.
+//!   It is read only when something is actually about to use it — a sync, a
+//!   disconnect, or a change of protection — and at most **once per run of the
+//!   app**, because the answer is cached in [`Open`] for the life of the process.
+//! - **A record of what is connected**, which is not a secret: Dropbox's
+//!   `account_id` and how well the token is protected. It lives in the database's
+//!   `meta` table beside the publish watermark, which is where sync already keeps
+//!   its bookkeeping, and it is what [`SyncService::view`] draws from. That call
+//!   therefore never touches the keychain — except once, to adopt a sign-in stored
+//!   by a build that predates the record. See [`SyncService::record`].
+//!
+//! ## Why the sign-in asks for nothing by default
+//!
+//! An item with a user-presence constraint is a real second factor, and it is also
+//! the wrong default here: it asks on every read, which for a feature meant to run
+//! by itself is friction at the one moment the learner is not paying attention. The
+//! default is therefore an item with **no constraint at all** — released to this
+//! app, on this device, and unreadable at rest without the device — and asking for a
+//! fingerprint is a switch the learner can turn on, in which case it is asked for
+//! exactly when the token is about to be used and never merely to draw a screen.
 //!
 //! ## Why the store and the HTTP client are injectable
 //!
@@ -44,11 +79,9 @@ use hanzi_sync::{
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_vendor = "apple")]
-use {
-    security_framework::access_control::{ProtectionMode, SecAccessControl},
-    security_framework::passwords_options::{AccessControlOptions, PasswordOptions},
-    std::sync::atomic::{AtomicU8, Ordering},
-};
+use security_framework::access_control::{ProtectionMode, SecAccessControl};
+#[cfg(target_vendor = "apple")]
+use security_framework::passwords_options::{AccessControlOptions, PasswordOptions};
 
 /// The Dropbox app key.
 ///
@@ -72,6 +105,36 @@ pub struct Account {
     pub account_id: Option<String>,
 }
 
+/// Where in the database's `meta` table the non-secret half is written.
+///
+/// Beside `sync:published_seq`, and for the reason given on `Db::meta_value`: sync
+/// keeps its bookkeeping in the one file a backup captures. Its value is a
+/// [`Stored`] as JSON.
+const ACCOUNT_KEY: &str = "sync:account";
+
+/// Where the learner's answer to "ask for my fingerprint?" is written.
+///
+/// A key of its own rather than a field of [`Stored`], because the two have
+/// different lifetimes: disconnecting forgets the account and must not forget that
+/// the learner wants a fingerprint the next time they connect.
+const LOCK_KEY: &str = "sync:lock";
+
+/// Everything about a connected account that is **not** a secret.
+///
+/// The presence of this record is what "connected" means, and it is why drawing the
+/// screen costs no keychain read: a refresh token that is worth protecting tells the
+/// screen nothing it needs, and the three things it does need — whether there is a
+/// sign-in, whose it is, and how well it is protected — are not worth protecting.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Stored {
+    /// Dropbox's `account_id`, when Dropbox said.
+    #[serde(default)]
+    account_id: Option<String>,
+    /// How the token in the secret store actually ended up protected, which is not
+    /// always what was asked for: see [`TokenStore::save`].
+    protection: Protection,
+}
+
 /// One sync's outcome, in the shape the settings screen reads.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,21 +151,29 @@ pub struct SyncSummaryView {
 
 /// How well the stored sign-in is protected.
 ///
-/// The screen shows this, and it is not a decoration. A build that cannot reach the
-/// data-protection keychain falls back to an ordinary login-keychain item, and that
-/// fallback is exactly where "enter your keychain password" comes from — so the
-/// learner is told which one they have rather than left to guess from a prompt.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+/// The screen shows this, and it is not a decoration. Which of these a device gets
+/// depends on what the platform can do, on whether the learner asked for a
+/// fingerprint, and on whether the build is one the system can identify — so the
+/// learner is told which one they have rather than left to guess it from a prompt
+/// they were not expecting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Protection {
     /// Nothing is stored yet, or the platform has no secret store at all.
     #[default]
     Unknown,
+    /// In the data-protection keychain with no constraint on it: released to this
+    /// app, on this device, and unreadable at rest without the device. Asking for
+    /// nothing is what makes a sync that runs by itself possible.
+    DeviceOnly,
     /// Behind the data-protection keychain, released only for a fingerprint, a
-    /// face, or the device password.
+    /// face, or the device password. Asked for when the token is about to be used,
+    /// and never merely to draw the screen.
     UserPresence,
     /// An ordinary login-keychain item: still encrypted at rest, but released to
-    /// this app without asking anybody.
+    /// this app without asking anybody. This is where an unsigned development build
+    /// lands, because the data-protection keychain needs an application identifier
+    /// that an ad-hoc signature does not have.
     KeychainOnly,
 }
 
@@ -119,6 +190,14 @@ pub struct SyncView {
     /// The screen needs to know before it offers the button, so that a learner on a
     /// platform without one is told why rather than watching a button fail.
     pub can_connect: bool,
+    /// Whether this platform can ask for a fingerprint at all.
+    ///
+    /// Separate from [`Self::protection`], which says what the item that *is* stored
+    /// got: Android can keep a secret and cannot yet ask for a fingerprint, so the
+    /// switch is not offered there rather than offered and ignored.
+    pub can_lock: bool,
+    /// Whether the learner has asked for a fingerprint.
+    pub locked: bool,
     /// How the stored sign-in is protected, where one is stored.
     pub protection: Protection,
     /// The last sync this session, if there has been one.
@@ -127,10 +206,28 @@ pub struct SyncView {
     pub message: String,
 }
 
+/// The sign-in this process has already read, or the fact that it has not read one.
+///
+/// The third state is the point. `Mutex<Option<Account>>` could not tell "not read
+/// yet" from "read, and there is nothing there", and those are different: the first
+/// has to go to the secret store and the second must not, or a learner who has never
+/// connected would be sent to the keychain every time the screen was drawn.
+#[derive(Default)]
+enum Open {
+    /// Nothing has asked for the token yet.
+    #[default]
+    Unread,
+    /// Read once, and this is the whole of the answer for this run of the app.
+    Known(Option<(Account, Protection)>),
+}
+
 /// The app's sync service.
 pub struct SyncService {
     /// The study database. `None` when the app has nowhere to keep study data, in
     /// which case there is nothing to sync and it says so.
+    ///
+    /// It is also where the non-secret [`Stored`] record and the lock preference
+    /// live, which is why they are absent on the same devices.
     db: Option<Db>,
     /// Where the refresh token lives. A trait object so the tests can use memory.
     tokens: Box<dyn TokenStore>,
@@ -140,6 +237,8 @@ pub struct SyncService {
     pending: Mutex<Option<Pkce>>,
     /// The last thing that happened, for the screen.
     last: Mutex<Option<SyncSummaryView>>,
+    /// The token store's answer, read at most once per run. See [`Open`].
+    open: Mutex<Open>,
 }
 
 impl SyncService {
@@ -156,17 +255,24 @@ impl SyncService {
             http,
             pending: Mutex::new(None),
             last: Mutex::new(None),
+            open: Mutex::new(Open::Unread),
         }
     }
 
     /// The status the screen shows.
+    ///
+    /// Reads the record, not the secret store — see the module note. The one
+    /// exception is the adoption path in [`Self::record`], which runs only on a
+    /// device whose sign-in predates the record and only once.
     pub fn view(&self) -> SyncView {
-        let account = self.tokens.load().ok().flatten();
+        let record = self.record();
         SyncView {
-            connected: account.is_some(),
-            account_id: account.and_then(|account| account.account_id),
+            connected: record.is_some(),
+            account_id: record.as_ref().and_then(|r| r.account_id.clone()),
             can_connect: self.tokens.available(),
-            protection: self.tokens.protection(),
+            can_lock: self.tokens.can_lock(),
+            locked: self.locked(),
+            protection: record.map(|r| r.protection).unwrap_or_default(),
             last: self.last.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             message: self.status_message(),
         }
@@ -205,8 +311,69 @@ impl SyncService {
             refresh_token: tokens.refresh_token().map_err(|e| describe(&e))?.to_string(),
             account_id: tokens.account_id.clone(),
         };
-        self.tokens.save(&account)?;
+
+        // The preference, not the default: a learner who asked for a fingerprint
+        // gets one from the first read, not from the second connection.
+        let protection = self.tokens.save(&account, self.locked())?;
+        self.remember(Some((account.clone(), protection)));
+
+        // Written down before the screen is told, and the token given back up if it
+        // cannot be: a refresh token the screen does not know about is one the
+        // learner cannot disconnect, which is worse than not being connected.
+        if let Err(why) = self.write_record(&Stored {
+            account_id: account.account_id,
+            protection,
+        }) {
+            let _ = self.tokens.clear();
+            self.remember(None);
+            return Err(format!(
+                "The Dropbox sign-in could not be recorded on this device, so it has been removed \
+                 again rather than left where nothing could reach it: {why}"
+            ));
+        }
         Ok(self.after("Connected to Dropbox."))
+    }
+
+    /// Ask for a fingerprint before the token is read, or stop asking for one.
+    ///
+    /// Rewrites the stored item when there is one, because the constraint is fixed
+    /// when a keychain item is created and cannot be changed afterwards.
+    pub fn set_lock(&self, locked: bool) -> Result<SyncView, String> {
+        if locked && !self.tokens.can_lock() {
+            return Err(no_biometric());
+        }
+        self.write_lock(locked)?;
+
+        // Reading it is the point rather than a side effect: turning the prompt off
+        // has to read the item it is about to rewrite, and that read is the last
+        // time the learner is asked for anything.
+        if let Some((account, _)) = self.sign_in()? {
+            let protection = self.tokens.save(&account, locked)?;
+            self.write_record(&Stored {
+                account_id: account.account_id,
+                protection,
+            })?;
+            let misplaced = locked && protection == Protection::KeychainOnly;
+            let message = if misplaced {
+                "This build cannot ask for your fingerprint, so the sign-in is kept in the \
+                 device's own store instead. Your study data is unaffected."
+                    .to_string()
+            } else if locked {
+                "The sign-in will now ask for your fingerprint before it is used.".to_string()
+            } else {
+                "The sign-in no longer asks for anything. It is still kept in the system \
+                 keychain, on this device only, and is unreadable at rest."
+                    .to_string()
+            };
+            return Ok(self.after(&message));
+        }
+
+        let message = if locked {
+            "The next account you connect will ask for your fingerprint before the sign-in is used."
+        } else {
+            "The sign-in will not ask for anything."
+        };
+        Ok(self.after(message))
     }
 
     /// Forget the account, on this device and on Dropbox's side.
@@ -215,16 +382,20 @@ impl SyncService {
         // authorization standing on Dropbox's side, which is not what "disconnect"
         // means to somebody who pressed it. A failure to revoke is reported rather
         // than swallowed, but it does not stop the local token being removed.
-        let unreported = match self.tokens.load() {
-            Ok(Some(account)) => self
+        let unreported = match self.sign_in() {
+            Ok(Some((account, _))) => self
                 .fresh_access_token(&account)
                 .and_then(|token| revoke(self.http.as_ref(), &token).map_err(|e| describe(&e)))
                 .err()
                 .map(|why| format!(" (Dropbox was not told: {why})")),
-            _ => None,
+            // Already gone from the store, or nobody ever connected. Either way
+            // there is nothing on Dropbox's side this app can name.
+            Ok(None) => None,
+            Err(why) => Some(format!(" (the sign-in could not be read to revoke it: {why})")),
         };
 
-        let cleared = self.tokens.clear();
+        let cleared = self.tokens.clear().and_then(|()| self.clear_record());
+        self.remember(None);
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let message = match (cleared, unreported) {
             (Ok(()), None) => "Disconnected. Your study data is untouched.".to_string(),
@@ -235,7 +406,9 @@ impl SyncService {
             connected: false,
             account_id: None,
             can_connect: self.tokens.available(),
-            protection: self.tokens.protection(),
+            can_lock: self.tokens.can_lock(),
+            locked: self.locked(),
+            protection: Protection::Unknown,
             last: None,
             message,
         }
@@ -272,7 +445,9 @@ impl SyncService {
             connected: true,
             account_id,
             can_connect: self.tokens.available(),
-            protection: self.tokens.protection(),
+            can_lock: self.tokens.can_lock(),
+            locked: self.locked(),
+            protection: self.protection(),
             last: Some(view),
             message: describe_summary(&summary),
         })
@@ -280,9 +455,54 @@ impl SyncService {
 
     /// The connected account, or a sentence saying there is none.
     fn account(&self) -> Result<Account, String> {
-        self.tokens
-            .load()?
-            .ok_or_else(|| "No Dropbox account is connected.".to_string())
+        self.sign_in()?
+            .map(|(account, _)| account)
+            .ok_or_else(|| {
+                "No Dropbox account is connected. Connect one from Settings.".to_string()
+            })
+    }
+
+    /// The sign-in, read from the secret store **at most once per run**.
+    ///
+    /// This is the only place the token store is read, which is what turns "one
+    /// prompt per read" into "one prompt per run of the app" for a sign-in the
+    /// learner has asked to have locked. A read that finds nothing also clears the
+    /// record, because a record that says connected while the store says otherwise
+    /// is a screen that offers Sync and then cannot do it.
+    fn sign_in(&self) -> Result<Option<(Account, Protection)>, String> {
+        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        if let Open::Known(known) = &*open {
+            return Ok(known.clone());
+        }
+        let found = self.tokens.load()?;
+        *open = Open::Known(found.clone());
+        drop(open);
+
+        if found.is_none() {
+            // Best effort: a record that cannot be cleared is one the next read of
+            // this store corrects anyway, and there is no screen to tell from here.
+            let _ = self.clear_record();
+        }
+        Ok(found)
+    }
+
+    /// What the already-read sign-in was protected by, without reading it.
+    fn protection(&self) -> Protection {
+        // Scoped so the lock is not held across `record`, which can take it.
+        {
+            let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+            if let Open::Known(Some((_, protection))) = &*open {
+                return *protection;
+            }
+        }
+        self.record().map(|r| r.protection).unwrap_or_default()
+    }
+
+    /// Put the secret store's answer in the cache, without writing to it.
+    ///
+    /// Used after a save, where the store has just said what it managed to do.
+    fn remember(&self, known: Option<(Account, Protection)>) {
+        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = Open::Known(known);
     }
 
     /// A fresh access token for an account.
@@ -297,30 +517,112 @@ impl SyncService {
 
     /// The view after a change, with a fresh message.
     fn after(&self, message: &str) -> SyncView {
-        let account = self.tokens.load().ok().flatten();
-        SyncView {
-            connected: account.is_some(),
-            account_id: account.and_then(|account| account.account_id),
-            can_connect: self.tokens.available(),
-            protection: self.tokens.protection(),
-            last: self.last.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-            message: message.to_string(),
-        }
+        let mut view = self.view();
+        view.message = message.to_string();
+        view
     }
 
     /// What to say when nothing has just happened.
+    ///
+    /// Reads the record rather than the store, so the answer costs no prompt — which
+    /// is the whole reason the record exists. A keychain that cannot be read at all
+    /// is not reported here either: nothing was asked of it, and the failure is
+    /// reported when something is.
     fn status_message(&self) -> String {
         if !self.tokens.available() {
             return no_secure_store();
         }
-        match self.tokens.load() {
-            Ok(Some(_)) => "Connected to Dropbox.".to_string(),
-            Ok(None) => {
-                "Not connected. Your study data stays on this device until you connect."
-                    .to_string()
-            }
-            Err(why) => format!("The keychain could not be read: {why}"),
+        match self.record() {
+            Some(_) => "Connected to Dropbox.".to_string(),
+            None => "Not connected. Your study data stays on this device until you connect."
+                .to_string(),
         }
+    }
+
+    // ---- the non-secret record, which is what the screen reads --------------
+
+    /// What is connected, without going near the secret store.
+    ///
+    /// ## The one read that is not a sync
+    ///
+    /// Before this record existed, "connected?" was answered by reading the token
+    /// store. A device that connected under a build like that has a token and no
+    /// record, so a record that is absent and a secret store that answers is exactly
+    /// how adoption looks: the answer is written down here, and that is the last
+    /// time drawing the screen touches the store. On a device that never connected
+    /// there is no item to find, so the lookup asks nobody for anything — which is
+    /// what makes it safe to attempt unconditionally.
+    ///
+    /// A failure to write the record down is swallowed deliberately: it costs one
+    /// adoption attempt per run, and taking the settings screen down with it would
+    /// be a worse answer than showing the connection a moment late.
+    fn record(&self) -> Option<Stored> {
+        if let Some(record) = self.read_record() {
+            return Some(record);
+        }
+        let (account, protection) = self.sign_in().ok().flatten()?;
+        let stored = Stored {
+            account_id: account.account_id,
+            protection,
+        };
+        let _ = self.write_record(&stored);
+        Some(stored)
+    }
+
+    /// The record as stored, or `None` when there is none to read.
+    fn read_record(&self) -> Option<Stored> {
+        let text = self.db.as_ref()?.meta_value(ACCOUNT_KEY).ok().flatten()?;
+        // A record that cannot be parsed is treated as absent rather than as a
+        // failure: the store is still the authority on the token, and the adoption
+        // path above will find it and write the record again.
+        serde_json::from_str(&text).ok()
+    }
+
+    /// Write the record down.
+    fn write_record(&self, stored: &Stored) -> Result<(), String> {
+        let text = serde_json::to_string(stored)
+            .map_err(|e| format!("the connection could not be recorded: {e}"))?;
+        self.db
+            .as_ref()
+            .ok_or_else(|| "this build has no study database to record the connection in".to_string())?
+            .set_meta_value(ACCOUNT_KEY, &text)
+            .map_err(|e| format!("the connection could not be recorded: {e}"))
+    }
+
+    /// Forget the record.
+    ///
+    /// An empty value rather than a deleted row: `meta` is written by upsert with no
+    /// delete to reach it from here, and `""` is not JSON, so every reader of this key
+    /// has to read it as "nothing written down" — which is the only thing it has to
+    /// mean. Best effort, and nothing to fail at when the app has no database.
+    fn clear_record(&self) -> Result<(), String> {
+        let Some(db) = &self.db else {
+            return Ok(());
+        };
+        db.set_meta_value(ACCOUNT_KEY, "")
+            .map_err(|e| format!("the connection could not be forgotten: {e}"))
+    }
+
+    /// Whether the learner has asked for a fingerprint.
+    ///
+    /// Absent means no, which is the default: see the module note on why asking for
+    /// nothing is the right default for something meant to run by itself.
+    fn locked(&self) -> bool {
+        self.db
+            .as_ref()
+            .and_then(|db| db.meta_value(LOCK_KEY).ok().flatten())
+            .is_some_and(|value| value == "on")
+    }
+
+    /// Write the learner's answer down.
+    fn write_lock(&self, locked: bool) -> Result<(), String> {
+        self.db
+            .as_ref()
+            .ok_or_else(|| {
+                "this build has no study database, so a preference cannot be kept".to_string()
+            })?
+            .set_meta_value(LOCK_KEY, if locked { "on" } else { "off" })
+            .map_err(|e| format!("the preference could not be saved: {e}"))
     }
 }
 
@@ -388,19 +690,41 @@ fn no_secure_store() -> String {
     )
 }
 
+/// This platform can keep the sign-in but cannot yet ask for a fingerprint.
+fn no_biometric() -> String {
+    format!(
+        "This build cannot ask for a fingerprint on {} yet, so the sign-in is protected by the \
+         device instead — kept where only this app can read it, and unreadable at rest. Your \
+         study data is unaffected.",
+        std::env::consts::OS
+    )
+}
+
 // ---- where the token actually lives ----------------------------------------
 
 /// What a platform's secret store has to do.
 ///
-/// Five methods, and no notion of a session, because that is all this app needs and
-/// every extra method is another thing a platform can get subtly wrong.
+/// Five methods, and **no notion of a session**, because that belongs to the caller
+/// — and every extra method is another thing a platform can get subtly wrong. Two of
+/// them are worth reading twice:
+///
+/// - [`Self::load`] is called when the token is about to be *used*, not to find out
+///   whether there is one. That is what keeps a fingerprint prompt off the settings
+///   screen; see the module note.
+/// - [`Self::save`] takes the learner's answer on asking for a fingerprint and
+///   **returns what the item actually got**, because the answer is not always
+///   available: a build the system cannot identify lands in the login keychain
+///   instead. A store that could not honour the request says so rather than letting
+///   the screen claim a prompt that will never appear.
 trait TokenStore: Send + Sync {
     /// Whether this platform can keep a secret at all.
     fn available(&self) -> bool;
-    /// How well the secret that is there is protected.
-    fn protection(&self) -> Protection;
-    fn load(&self) -> Result<Option<Account>, String>;
-    fn save(&self, account: &Account) -> Result<(), String>;
+    /// Whether this platform can ask for a fingerprint at all.
+    fn can_lock(&self) -> bool;
+    /// Read the sign-in, and how well it turned out to be protected.
+    fn load(&self) -> Result<Option<(Account, Protection)>, String>;
+    /// Write the sign-in, asking for a fingerprint on every read if `locked`.
+    fn save(&self, account: &Account, locked: bool) -> Result<Protection, String>;
     fn clear(&self) -> Result<(), String>;
 }
 
@@ -428,8 +752,12 @@ fn platform_store() -> Box<dyn TokenStore> {
 /// the device's secure hardware where there is any, and the file on disk is
 /// useless without it — but nothing asks the learner for anything, so this reports
 /// itself as [`Protection::KeychainOnly`] rather than claiming a user-presence
-/// prompt it does not show. Requiring one means a `BiometricPrompt` with the cipher
-/// as its `CryptoObject`, which needs `androidx.biometric`; see the Kotlin side.
+/// prompt it does not show.
+///
+/// It is also why [`Self::can_lock`] is false here rather than the request being
+/// quietly ignored: the switch is not offered on a platform that cannot honour it.
+/// Honouring one means a `BiometricPrompt` with the cipher as its `CryptoObject`,
+/// which needs `androidx.biometric`; see the Kotlin side.
 #[cfg(target_os = "android")]
 struct AndroidKeystore;
 
@@ -451,28 +779,28 @@ impl TokenStore for AndroidKeystore {
         true
     }
 
-    fn protection(&self) -> Protection {
-        Protection::KeychainOnly
+    fn can_lock(&self) -> bool {
+        false
     }
 
-    fn load(&self) -> Result<Option<Account>, String> {
+    fn load(&self) -> Result<Option<(Account, Protection)>, String> {
         let answer: StoredSecret = crate::platform::call("loadSecret", ())?;
         match answer.secret {
             None => Ok(None),
             Some(text) => serde_json::from_str(&text)
-                .map(Some)
+                .map(|account| Some((account, Protection::KeychainOnly)))
                 .map_err(|e| format!("the stored Dropbox sign-in could not be read: {e}")),
         }
     }
 
-    fn save(&self, account: &Account) -> Result<(), String> {
+    fn save(&self, account: &Account, _locked: bool) -> Result<Protection, String> {
         let text = serde_json::to_string(account)
             .map_err(|e| format!("the Dropbox sign-in could not be encoded: {e}"))?;
         crate::platform::call::<serde_json::Value>(
             "saveSecret",
             serde_json::json!({ "secret": text }),
         )?;
-        Ok(())
+        Ok(Protection::KeychainOnly)
     }
 
     fn clear(&self) -> Result<(), String> {
@@ -486,24 +814,33 @@ impl TokenStore for AndroidKeystore {
 /// One generic password, named by a service and an account. The service string is
 /// what a person sees in Keychain Access, so it says what it is.
 ///
-/// ## Why it asks for a fingerprint
+/// ## The two items this can leave behind
 ///
-/// A plain login-keychain item is released to whatever binary created it, and
-/// "whatever binary created it" is not stable across rebuilds: a development build
-/// carries an ad-hoc signature, so every rebuild is a different app to the system
-/// and macOS answers the next read by asking for the **keychain password**. Putting
-/// the item in the data-protection keychain behind an access control that requires
-/// *user presence* replaces that with a Touch ID (or face, or device password)
-/// prompt, which is both less typing and a real second factor.
+/// Neither asks for anything by default, and that is the choice the module note
+/// argues for:
 ///
-/// ## Why there is a fallback, and why it is not silent
+/// - A **data-protection** item with an access control that carries no constraint at
+///   all, marked `AccessibleAfterFirstUnlockThisDeviceOnly`. The item is encrypted at
+///   rest, is readable only by this app, is not carried to the learner's other
+///   devices, and is released without asking anybody — which is what a sync that
+///   starts by itself needs. `AfterFirstUnlock` rather than `WhenUnlocked` is what
+///   lets that sync work if it is ever woken while the screen is locked; it is still
+///   unreadable after a restart until the device has been unlocked once.
+/// - A **login-keychain** item, which is where an ad-hoc signed build lands, because
+///   access controls need an application identifier that an ad-hoc signature does not
+///   have (`errSecMissingEntitlement`). That fallback is also the one case that can
+///   ask for the **keychain password** — the system does not recognise a rebuilt
+///   binary as the one that wrote the item — and it is why the learner is told which
+///   of the two they got rather than left to discover it from a prompt.
 ///
-/// Access controls need an application identifier, which an ad-hoc signed build does
-/// not have; the data-protection keychain then refuses the item with
-/// `errSecMissingEntitlement`. Rather than leave a learner unable to sync at all in
-/// a development build, that case falls back to an ordinary item — and records
-/// which one happened, because the fallback is precisely where the password prompt
-/// comes from. [`Protection`] carries that to the screen.
+/// ## Asking for a fingerprint, when the learner wants one
+///
+/// The same item, created instead with `AccessibleWhenPasscodeSetThisDeviceOnly` and
+/// a *user presence* constraint. Apple requires that protection mode on an access
+/// control carrying that constraint, and it suits this app: the sign-in is this
+/// device's. Such an item asks on **every read** — there is no "always allow" for one
+/// built this way — which is exactly why the token is read once per run and never to
+/// draw the screen.
 #[cfg(target_vendor = "apple")]
 struct Keychain;
 
@@ -525,21 +862,6 @@ const ERR_SEC_AUTH_FAILED: i32 = -25293;
 #[cfg(target_vendor = "apple")]
 const ERR_SEC_MISSING_ENTITLEMENT: i32 = -34018;
 
-/// Which of the two items the last write actually managed to leave behind.
-///
-/// A process-wide cell rather than a `self` field because [`Keychain`] is a unit
-/// struct reached through the `TokenStore` trait object; there is one keychain per
-/// process either way, so this is not shared state so much as a fact about the
-/// machine.
-#[cfg(target_vendor = "apple")]
-static PROTECTION: AtomicU8 = AtomicU8::new(UNKNOWN);
-#[cfg(target_vendor = "apple")]
-const UNKNOWN: u8 = 0;
-#[cfg(target_vendor = "apple")]
-const USER_PRESENCE: u8 = 1;
-#[cfg(target_vendor = "apple")]
-const KEYCHAIN_ONLY: u8 = 2;
-
 /// A query for this app's one item, in the data-protection keychain.
 #[cfg(target_vendor = "apple")]
 fn protected() -> PasswordOptions {
@@ -550,20 +872,27 @@ fn protected() -> PasswordOptions {
     options
 }
 
-/// The access control an item has to be created with to ask for a fingerprint.
+/// The access control an item is created with.
 ///
-/// `AccessibleWhenPasscodeSetThisDeviceOnly` is not a preference: Apple requires it
-/// on the access control object that carries a user-presence constraint, and it also
-/// says what this app wants — the sign-in is this device's, and is not carried to
-/// the others by iCloud Keychain. Each device authorizes separately, which is the
-/// whole shape of the sync design.
+/// With `locked`, one that asks for a fingerprint, a face or the device password.
+/// Without, one that asks for nothing: the protection is still there — the mode
+/// below is what makes the item unreadable at rest and this device's alone — but
+/// there is no constraint for the system to satisfy, so reading it is silent.
 #[cfg(target_vendor = "apple")]
-fn access_control() -> Result<SecAccessControl, String> {
-    SecAccessControl::create_with_protection(
-        Some(ProtectionMode::AccessibleWhenPasscodeSetThisDeviceOnly),
-        AccessControlOptions::USER_PRESENCE.bits(),
-    )
-    .map_err(|e| format!("the access control could not be built: {e}"))
+fn access_control(locked: bool) -> Result<SecAccessControl, String> {
+    let (mode, options) = if locked {
+        (
+            ProtectionMode::AccessibleWhenPasscodeSetThisDeviceOnly,
+            AccessControlOptions::USER_PRESENCE.bits(),
+        )
+    } else {
+        (
+            ProtectionMode::AccessibleAfterFirstUnlockThisDeviceOnly,
+            0,
+        )
+    };
+    SecAccessControl::create_with_protection(Some(mode), options)
+        .map_err(|e| format!("the access control could not be built: {e}"))
 }
 
 /// Describe an OSStatus in words a person can act on.
@@ -579,9 +908,9 @@ fn describe_keychain(error: &security_framework::base::Error) -> String {
                 .to_string()
         }
         ERR_SEC_MISSING_ENTITLEMENT => {
-            "This build is not signed, so the system will not release a fingerprint-protected \
-             sign-in to it. A signed build asks for your fingerprint; this one uses an ordinary \
-             keychain item, which is what asks for your keychain password."
+            "This build is not signed, so the system will not keep a sign-in behind your \
+             fingerprint or in the data-protection keychain. It goes in your login keychain \
+             instead, which is still encrypted but may ask for your keychain password."
                 .to_string()
         }
         _ => error.to_string(),
@@ -594,55 +923,55 @@ impl TokenStore for Keychain {
         true
     }
 
-    fn protection(&self) -> Protection {
-        match PROTECTION.load(Ordering::Relaxed) {
-            USER_PRESENCE => Protection::UserPresence,
-            KEYCHAIN_ONLY => Protection::KeychainOnly,
-            _ => Protection::Unknown,
-        }
+    fn can_lock(&self) -> bool {
+        true
     }
 
-    fn load(&self) -> Result<Option<Account>, String> {
+    fn load(&self) -> Result<Option<(Account, Protection)>, String> {
         // The protected item first, then whatever an earlier build left in the login
         // keychain, so a connection made before any of this existed is not lost.
-        let found = match security_framework::passwords::generic_password(protected()) {
-            Ok(bytes) => {
-                PROTECTION.store(USER_PRESENCE, Ordering::Relaxed);
-                Ok(Some(bytes))
-            }
-            Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => {
+        //
+        // `errSecMissingEntitlement` falls back for the same reason it does in
+        // `save`: a build the system cannot identify may not reach the
+        // data-protection keychain *at all*, and that is a refusal to open that
+        // keychain rather than an answer about this item.
+        let (found, protection) = match security_framework::passwords::generic_password(protected()) {
+            Ok(bytes) => (Some(bytes), Protection::UserPresence),
+            Err(error)
+                if error.code() == ERR_SEC_ITEM_NOT_FOUND
+                    || error.code() == ERR_SEC_MISSING_ENTITLEMENT =>
+            {
                 match security_framework::passwords::get_generic_password(
                     KEYCHAIN_SERVICE,
                     KEYCHAIN_ACCOUNT,
                 ) {
-                    Ok(bytes) => {
-                        PROTECTION.store(KEYCHAIN_ONLY, Ordering::Relaxed);
-                        Ok(Some(bytes))
-                    }
-                    Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
-                    Err(error) => Err(describe_keychain(&error)),
+                    Ok(bytes) => (Some(bytes), Protection::KeychainOnly),
+                    Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => (None, Protection::Unknown),
+                    Err(error) => return Err(describe_keychain(&error)),
                 }
             }
-            Err(error) => Err(describe_keychain(&error)),
-        }?;
+            Err(error) => return Err(describe_keychain(&error)),
+        };
 
         let Some(bytes) = found else {
             return Ok(None);
         };
         let text = String::from_utf8(bytes)
             .map_err(|_| "the stored Dropbox sign-in is not readable text".to_string())?;
-        serde_json::from_str(&text)
-            .map(Some)
-            .map_err(|e| format!("the stored Dropbox sign-in could not be read: {e}"))
+        let account: Account = serde_json::from_str(&text)
+            .map_err(|e| format!("the stored Dropbox sign-in could not be read: {e}"))?;
+        Ok(Some((account, protection)))
     }
 
-    fn save(&self, account: &Account) -> Result<(), String> {
+    fn save(&self, account: &Account, locked: bool) -> Result<Protection, String> {
         let text = serde_json::to_string(account)
             .map_err(|e| format!("the Dropbox sign-in could not be encoded: {e}"))?;
 
-        // An access control cannot be added to an item that already exists, so the
-        // old one has to go — in both keychains, or a pre-fingerprint copy of the
-        // token would survive with weaker protection than the one replacing it.
+        // An access control cannot be changed on an item that already exists, so the
+        // old one has to go — in both keychains, or a copy of the token would survive
+        // with protection other than the one replacing it. That matters in both
+        // directions: a copy left behind with no constraint would keep the sign-in
+        // readable after the learner asked for a fingerprint.
         let _ = security_framework::passwords::delete_generic_password_options(protected());
         let _ = security_framework::passwords::delete_generic_password(
             KEYCHAIN_SERVICE,
@@ -650,15 +979,17 @@ impl TokenStore for Keychain {
         );
 
         let mut with_control = protected();
-        with_control.set_access_control(access_control()?);
+        with_control.set_access_control(access_control(locked)?);
+        let protected_item = if locked {
+            Protection::UserPresence
+        } else {
+            Protection::DeviceOnly
+        };
         match security_framework::passwords::set_generic_password_options(
             text.as_bytes(),
             with_control,
         ) {
-            Ok(()) => {
-                PROTECTION.store(USER_PRESENCE, Ordering::Relaxed);
-                Ok(())
-            }
+            Ok(()) => Ok(protected_item),
             // Only the missing-entitlement case falls back. Any other refusal is a
             // real problem and is reported rather than worked around, because a
             // second attempt would only fail more quietly.
@@ -669,8 +1000,7 @@ impl TokenStore for Keychain {
                     text.as_bytes(),
                 )
                 .map_err(|e| describe_keychain(&e))?;
-                PROTECTION.store(KEYCHAIN_ONLY, Ordering::Relaxed);
-                Ok(())
+                Ok(Protection::KeychainOnly)
             }
             Err(error) => Err(describe_keychain(&error)),
         }
@@ -689,10 +1019,12 @@ impl TokenStore for Keychain {
             match removed {
                 Ok(()) => {}
                 Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => {}
+                // The keychain could not be opened at all: there is no item in it that
+                // this build could have written, so there is nothing to remove.
+                Err(error) if error.code() == ERR_SEC_MISSING_ENTITLEMENT => {}
                 Err(error) => return Err(describe_keychain(&error)),
             }
         }
-        PROTECTION.store(UNKNOWN, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -709,13 +1041,13 @@ impl TokenStore for NoSecureStore {
     fn available(&self) -> bool {
         false
     }
-    fn protection(&self) -> Protection {
-        Protection::Unknown
+    fn can_lock(&self) -> bool {
+        false
     }
-    fn load(&self) -> Result<Option<Account>, String> {
+    fn load(&self) -> Result<Option<(Account, Protection)>, String> {
         Ok(None)
     }
-    fn save(&self, _account: &Account) -> Result<(), String> {
+    fn save(&self, _account: &Account, _locked: bool) -> Result<Protection, String> {
         Err(no_secure_store())
     }
     fn clear(&self) -> Result<(), String> {
@@ -739,7 +1071,16 @@ mod tests {
     struct MemoryStore {
         account: Mutex<Option<Account>>,
         available: bool,
-        protection: Protection,
+        can_lock: bool,
+        /// How many times the secret was actually read, which is the number this
+        /// module's whole design is about: it is what a learner experiences as a
+        /// fingerprint prompt.
+        reads: Mutex<usize>,
+        /// What a write reports back, so the "the platform could not honour the
+        /// request" path can be driven.
+        reports: Mutex<Option<Protection>>,
+        /// A store that fails every read, to prove that some paths do not read.
+        refuse: bool,
     }
 
     impl MemoryStore {
@@ -747,16 +1088,41 @@ mod tests {
             Self {
                 account: Mutex::new(None),
                 available: true,
-                protection: Protection::UserPresence,
+                can_lock: true,
+                reads: Mutex::new(0),
+                reports: Mutex::new(None),
+                refuse: false,
             }
         }
 
         fn unavailable() -> Self {
             Self {
-                account: Mutex::new(None),
                 available: false,
-                protection: Protection::Unknown,
+                ..Self::working()
             }
+        }
+
+        /// A store that reports this protection for whatever it holds. Used to drive
+        /// the fallback an Apple build without an application identifier lands in,
+        /// which is not something a test can bring about on a real keychain.
+        fn reporting(protection: Protection) -> Self {
+            Self {
+                reports: Mutex::new(Some(protection)),
+                ..Self::working()
+            }
+        }
+
+        /// A store that will not be read. What a run of the app that never needs the
+        /// token — every run that only draws the screen — must be able to work with.
+        fn refusing() -> Self {
+            Self {
+                refuse: true,
+                ..Self::working()
+            }
+        }
+
+        fn reads(&self) -> usize {
+            *self.reads.lock().unwrap()
         }
     }
 
@@ -764,19 +1130,48 @@ mod tests {
         fn available(&self) -> bool {
             self.available
         }
-        fn protection(&self) -> Protection {
-            self.protection
+        fn can_lock(&self) -> bool {
+            self.can_lock
         }
-        fn load(&self) -> Result<Option<Account>, String> {
-            Ok(self.account.lock().unwrap().clone())
+        fn load(&self) -> Result<Option<(Account, Protection)>, String> {
+            *self.reads.lock().unwrap() += 1;
+            if self.refuse {
+                return Err("this store was not supposed to be read".to_string());
+            }
+            let protection = self.reports.lock().unwrap().unwrap_or(Protection::DeviceOnly);
+            Ok(self.account.lock().unwrap().clone().map(|a| (a, protection)))
         }
-        fn save(&self, account: &Account) -> Result<(), String> {
+        fn save(&self, account: &Account, _locked: bool) -> Result<Protection, String> {
             *self.account.lock().unwrap() = Some(account.clone());
-            Ok(())
+            Ok(self.reports.lock().unwrap().unwrap_or(Protection::DeviceOnly))
         }
         fn clear(&self) -> Result<(), String> {
             *self.account.lock().unwrap() = None;
             Ok(())
+        }
+    }
+
+    /// The same store behind a handle the test keeps, so it can count the reads and
+    /// look at what was written — which is how the tests about *how often the secret
+    /// is read* are able to say anything at all.
+    ///
+    /// This is what a fingerprint prompt looks like from in here: a read is the one
+    /// moment a learner is asked for anything, so `reads()` is the number of prompts.
+    impl TokenStore for std::sync::Arc<MemoryStore> {
+        fn available(&self) -> bool {
+            self.as_ref().available()
+        }
+        fn can_lock(&self) -> bool {
+            self.as_ref().can_lock()
+        }
+        fn load(&self) -> Result<Option<(Account, Protection)>, String> {
+            self.as_ref().load()
+        }
+        fn save(&self, account: &Account, locked: bool) -> Result<Protection, String> {
+            self.as_ref().save(account, locked)
+        }
+        fn clear(&self) -> Result<(), String> {
+            self.as_ref().clear()
         }
     }
 
@@ -825,6 +1220,26 @@ mod tests {
         std::fs::remove_dir_all(&path).ok();
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    /// A service over a store the test still has a handle on.
+    fn with_store(db: Option<Db>, store: &std::sync::Arc<MemoryStore>, http: Box<dyn Http>) -> SyncService {
+        SyncService::with_parts(db, Box::new(std::sync::Arc::clone(store)), http)
+    }
+
+    /// A `Db` in a directory of its own, named for the test that wants it.
+    fn database(name: &str) -> Db {
+        Db::open(scratch(name)).unwrap()
+    }
+
+    /// The HTTP client every test that connects wants: it answers the token
+    /// endpoints with a refresh token and an account id.
+    fn connecting() -> Box<dyn Http> {
+        Box::new(FakeHttp::answering(serde_json::json!({
+            "access_token": "sl.access",
+            "refresh_token": "refresh-me",
+            "account_id": "dbid:AAAA"
+        })))
     }
 
     #[test]
@@ -891,6 +1306,22 @@ mod tests {
         assert!(!APP_KEY.contains("secret"), "{APP_KEY}");
     }
 
+    /// The one platform call that cannot be covered any other way.
+    ///
+    /// Building an access control touches no keychain — it is an object in this
+    /// process — so this is safe to run here, and it is worth running: the default
+    /// path passes **no** constraint flags, and a combination the system rejects with
+    /// `errSecParam` would be a connect that fails at the last step and only on a real
+    /// device. Both shapes are checked, because both are reachable from the switch.
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn both_access_controls_are_ones_the_system_will_build() {
+        for locked in [false, true] {
+            let control = access_control(locked);
+            assert!(control.is_ok(), "locked = {locked}: {:?}", control.err());
+        }
+    }
+
     #[test]
     fn a_summary_becomes_a_sentence() {
         let busy = hanzi_sync::Summary {
@@ -927,26 +1358,192 @@ mod tests {
         // The screen has to be able to say "this one asks for your fingerprint" or
         // "this one does not", because the fallback is exactly where the keychain
         // password prompt comes from and a learner should not have to guess.
-        assert_eq!(Protection::Unknown, Protection::Unknown);
         for (protection, expected) in [
             (Protection::Unknown, "unknown"),
+            (Protection::DeviceOnly, "deviceOnly"),
             (Protection::UserPresence, "userPresence"),
             (Protection::KeychainOnly, "keychainOnly"),
         ] {
             assert_eq!(serde_json::to_string(&protection).unwrap(), format!("\"{expected}\""));
         }
 
-        // And whatever the store reports reaches the screen unchanged, in both
-        // directions — the fallback is the case worth being able to see.
-        for protection in [Protection::UserPresence, Protection::KeychainOnly] {
-            let store = MemoryStore {
-                protection,
-                ..MemoryStore::working()
-            };
-            let service =
-                SyncService::with_parts(None, Box::new(store), Box::new(FakeHttp::default()));
+        // And what the store reports is what the screen shows, in both directions —
+        // the fallback is the case worth being able to see.
+        for protection in [
+            Protection::DeviceOnly,
+            Protection::UserPresence,
+            Protection::KeychainOnly,
+        ] {
+            let store = std::sync::Arc::new(MemoryStore::reporting(protection));
+            let service = with_store(Some(database("protection")), &store, connecting());
+            // Nothing is connected, so there is nothing to report a protection for.
+            assert_eq!(service.view().protection, Protection::Unknown);
+
+            service.begin().unwrap();
+            service.finish("the-code").unwrap();
             assert_eq!(service.view().protection, protection);
         }
+    }
+
+    #[test]
+    fn drawing_the_screen_no_longer_reads_the_secret_store() {
+        // The property the whole module is arranged around. A read is the one moment
+        // a learner is asked for a fingerprint, so the settings screen — which this
+        // app opens and closes all day, and which a sync at launch would draw without
+        // anybody asking — must not cause one.
+        let db = database("screen");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let service = with_store(Some(db), &store, connecting());
+
+        service.begin().unwrap();
+        let connected = service.finish("the-code").unwrap();
+        assert!(connected.connected, "{}", connected.message);
+        assert_eq!(store.reads(), 0, "connecting does not read back what it just wrote");
+
+        for _ in 0..5 {
+            let view = service.view();
+            assert!(view.connected);
+            assert_eq!(view.account_id.as_deref(), Some("dbid:AAAA"));
+            assert_eq!(view.protection, Protection::DeviceOnly);
+        }
+        assert_eq!(store.reads(), 0, "and neither does drawing the screen, however often");
+    }
+
+    #[test]
+    fn the_sign_in_is_read_once_per_run_of_the_app() {
+        // The other half of the same rule: when the token *is* needed — a sync, a
+        // disconnect — it is fetched once and remembered, rather than once per use.
+        // A locked sign-in therefore asks for a fingerprint once per run, not once
+        // per sync and never to draw the screen.
+        let db = database("once");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let service = with_store(Some(db.clone()), &store, connecting());
+        service.begin().unwrap();
+        service.finish("the-code").unwrap();
+
+        // The run that connected already holds the token, so it reads nothing at all.
+        assert_eq!(store.reads(), 0);
+        assert_eq!(service.account().unwrap().refresh_token, "refresh-me");
+        assert!(service.view().connected);
+        assert_eq!(store.reads(), 0, "the token this run just wrote is the one it uses");
+
+        // A later run has to fetch it — and fetches it once, however many times it is
+        // used. Two of these would be two prompts for a locked sign-in.
+        let next = with_store(Some(db), &store, Box::new(FakeHttp::default()));
+        assert_eq!(store.reads(), 0, "and nothing is read merely to build the service");
+        assert_eq!(next.account().unwrap().refresh_token, "refresh-me");
+        assert_eq!(store.reads(), 1, "the first thing that needs it reads it");
+        assert_eq!(next.account().unwrap().refresh_token, "refresh-me");
+        assert!(next.view().connected);
+        assert_eq!(next.view().protection, Protection::DeviceOnly);
+        assert_eq!(store.reads(), 1, "and nothing after that asks again");
+    }
+
+    #[test]
+    fn a_connection_survives_a_restart_without_the_keychain_being_touched() {
+        // What the record in `meta` is for. A run of the app that only draws the
+        // screen must work with a secret store that will not answer at all, because
+        // on a sign-in the learner has locked, "will not answer" is a prompt they
+        // have not been given yet.
+        let db = database("restart");
+        {
+            let store = std::sync::Arc::new(MemoryStore::working());
+            let first = with_store(Some(db.clone()), &store, connecting());
+            first.begin().unwrap();
+            first.finish("the-code").unwrap();
+        }
+
+        let store = std::sync::Arc::new(MemoryStore::refusing());
+        let second = with_store(Some(db), &store, Box::new(FakeHttp::default()));
+        let view = second.view();
+        assert!(view.connected, "the connection is on disk: {}", view.message);
+        assert_eq!(view.account_id.as_deref(), Some("dbid:AAAA"));
+        assert_eq!(view.protection, Protection::DeviceOnly);
+        assert_eq!(store.reads(), 0, "and the keychain was never asked");
+    }
+
+    #[test]
+    fn a_sign_in_stored_before_the_record_existed_is_adopted_once() {
+        // A device that connected under a build where "connected?" was answered by
+        // reading the keychain has a token and no record. Reading it once and writing
+        // down what is found is what keeps it connected instead of asking its owner
+        // to go through the browser and paste another code.
+        let db = database("adopt");
+        let store = std::sync::Arc::new(MemoryStore::reporting(Protection::UserPresence));
+        store
+            .save(
+                &Account {
+                    refresh_token: "from-an-older-build".to_string(),
+                    account_id: Some("dbid:OLD".to_string()),
+                },
+                true,
+            )
+            .unwrap();
+
+        let first = with_store(Some(db.clone()), &store, Box::new(FakeHttp::default()));
+        let view = first.view();
+        assert!(view.connected, "the older sign-in is found: {}", view.message);
+        assert_eq!(view.account_id.as_deref(), Some("dbid:OLD"));
+        assert_eq!(
+            view.protection,
+            Protection::UserPresence,
+            "and read from the keychain it was found in, not guessed at"
+        );
+        let reads = store.reads();
+
+        // The next run draws the screen from the record, which is the whole point.
+        let second = with_store(Some(db), &store, Box::new(FakeHttp::default()));
+        assert!(second.view().connected);
+        assert_eq!(store.reads(), reads, "and the adoption happens once, not every run");
+    }
+
+    #[test]
+    fn the_fingerprint_is_a_choice_and_survives_disconnecting() {
+        let db = database("lock");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let service = with_store(Some(db.clone()), &store, connecting());
+        service.begin().unwrap();
+        let connected = service.finish("the-code").unwrap();
+        assert!(!connected.locked, "asking for nothing is the default");
+        assert_eq!(connected.protection, Protection::DeviceOnly);
+
+        // Turning it on rewrites the item: an access control is fixed when a keychain
+        // item is created and cannot be changed afterwards.
+        store.reports.lock().unwrap().replace(Protection::UserPresence);
+        let locked = service.set_lock(true).unwrap();
+        assert!(locked.locked, "{}", locked.message);
+        assert_eq!(locked.protection, Protection::UserPresence);
+        assert!(locked.message.contains("will now ask"), "{}", locked.message);
+        assert_eq!(db.meta_value(LOCK_KEY).unwrap().as_deref(), Some("on"));
+
+        // And turning it off asks once more, which is the last time anything does.
+        store.reports.lock().unwrap().replace(Protection::DeviceOnly);
+        let unlocked = service.set_lock(false).unwrap();
+        assert!(!unlocked.locked);
+        assert_eq!(unlocked.protection, Protection::DeviceOnly);
+        assert!(unlocked.message.contains("no longer asks"), "{}", unlocked.message);
+
+        // The preference is not part of the account: disconnecting keeps it.
+        service.set_lock(true).unwrap();
+        service.disconnect();
+        let after = service.view();
+        assert!(!after.connected);
+        assert!(after.locked, "who wants a fingerprint still wants one");
+        assert_eq!(db.meta_value(LOCK_KEY).unwrap().as_deref(), Some("on"));
+    }
+
+    #[test]
+    fn a_platform_that_cannot_ask_for_a_fingerprint_is_told_so_rather_than_offered_it() {
+        let store = std::sync::Arc::new(MemoryStore {
+            can_lock: false,
+            ..MemoryStore::working()
+        });
+        let service = with_store(None, &store, Box::new(FakeHttp::default()));
+        assert!(!service.view().can_lock, "the switch is not offered");
+
+        let refusal = service.set_lock(true).unwrap_err();
+        assert!(refusal.contains("cannot ask for a fingerprint"), "{refusal}");
+        assert!(refusal.contains("unaffected"), "and it should reassure: {refusal}");
     }
 
     #[test]
@@ -958,16 +1555,7 @@ mod tests {
         let shared = scratch("pass-store");
         let remote = hanzi_sync::FolderStore::open(&shared).unwrap();
 
-        let http = Box::new(FakeHttp::answering(serde_json::json!({
-            "access_token": "sl.access",
-            "refresh_token": "refresh-me",
-            "account_id": "dbid:AAAA"
-        })));
-        let service = SyncService::with_parts(
-            Some(db.clone()),
-            Box::new(MemoryStore::working()),
-            http,
-        );
+        let service = with_store(Some(db.clone()), &std::sync::Arc::new(MemoryStore::working()), connecting());
 
         // Nothing is connected to begin with.
         assert!(!service.view().connected);
@@ -979,7 +1567,7 @@ mod tests {
         assert!(connected.connected, "{}", connected.message);
         assert_eq!(connected.account_id.as_deref(), Some("dbid:AAAA"));
         assert_eq!(
-            service.tokens.load().unwrap().unwrap().refresh_token,
+            service.tokens.load().unwrap().unwrap().0.refresh_token,
             "refresh-me",
             "and the long-lived token is what was kept"
         );
@@ -1000,12 +1588,15 @@ mod tests {
         let again = service.run(&remote, None).unwrap();
         assert_eq!(again.message, "Already up to date.");
 
-        // Disconnect revokes, then clears.
+        // Disconnect revokes, then clears — the token and the record together, so a
+        // fresh run of the app does not claim a connection that is gone.
         let gone = service.disconnect();
         assert!(!gone.connected);
         assert!(gone.message.contains("Disconnected"), "{}", gone.message);
         assert!(service.tokens.load().unwrap().is_none(), "the token is gone");
 
+        let after_restart = with_store(Some(db), &std::sync::Arc::new(MemoryStore::working()), Box::new(FakeHttp::default()));
+        assert!(!after_restart.view().connected, "and nothing remembers it");
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&shared).ok();
     }
@@ -1031,8 +1622,16 @@ mod tests {
         .view();
         let json = serde_json::to_value(&view).unwrap();
         let keys: BTreeMap<&str, &serde_json::Value> = json.as_object().unwrap().iter().map(|(k, v)| (k.as_str(), v)).collect();
-        for expected in ["connected", "accountId", "canConnect", "protection", "last", "message"]
-        {
+        for expected in [
+            "connected",
+            "accountId",
+            "canConnect",
+            "canLock",
+            "locked",
+            "protection",
+            "last",
+            "message",
+        ] {
             assert!(keys.contains_key(expected), "{expected} missing from {json}");
         }
         // The summary inside it too, because the screen reads those names as well.

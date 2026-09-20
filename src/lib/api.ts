@@ -332,3 +332,17 @@ export const syncNow = () => invoke<SyncView>("sync_now");
 
 /** Forget the account here and on Dropbox's side, leaving study data untouched. */
 export const syncDisconnect = () => invoke<SyncView>("sync_disconnect");
+
+/**
+ * Ask for a fingerprint before the sign-in is used, or stop asking for one.
+ *
+ * Nothing is unlocked to answer this. The preference is written down, and the stored
+ * item is rewritten only where there is one — which is the one moment turning the
+ * prompt *off* has to read it, because an access control is fixed when a keychain
+ * item is created and cannot be changed afterwards.
+ *
+ * Asking for nothing is the default, which is what makes a sync that starts by itself
+ * possible: see `src-tauri/src/sync.rs`.
+ */
+export const syncSetLock = (locked: boolean) =>
+  invoke<SyncView>("sync_set_lock", { locked });

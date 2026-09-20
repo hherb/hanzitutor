@@ -292,6 +292,33 @@
       syncBusy = false;
     }
   }
+
+  /**
+   * Turn the fingerprint prompt on or off.
+   *
+   * Offered only where the platform can honour it — a switch that does nothing is
+   * worse than no switch. Turning it off reads the stored sign-in one last time,
+   * because the constraint is a property of the keychain item and rewriting it is
+   * the only way to remove it; that read is the last thing in this panel that ever
+   * asks for anything.
+   *
+   * The box is put back by hand when the backend refuses, because a checkbox has
+   * already moved by the time this runs and nothing would tell it to move back —
+   * the answer it is bound to has not changed. A switch left showing something the
+   * app did not do is worse than an error message beside it.
+   */
+  async function setLock(locked: boolean, box: HTMLInputElement) {
+    syncBusy = true;
+    syncError = null;
+    try {
+      sync = await api.syncSetLock(locked);
+    } catch (cause) {
+      box.checked = !locked;
+      syncError = `${cause}`;
+    } finally {
+      syncBusy = false;
+    }
+  }
 </script>
 
 <section class="panel">
@@ -598,20 +625,28 @@
               Connected as <code>{sync.accountId}</code>.
             </span>
           {/if}
-          {#if sync.protection === "userPresence"}
+          {#if sync.protection === "deviceOnly"}
             <span class="status fine">
-              The sign-in is kept in the system keychain behind your fingerprint —
-              the app cannot read it without you.
+              The sign-in is kept in the system keychain: encrypted at rest, readable
+              only by this app, and not carried to your other devices. Nothing has to be
+              unlocked to sync.
+            </span>
+          {:else if sync.protection === "userPresence"}
+            <span class="status fine">
+              The sign-in is kept behind your fingerprint. It is asked for when the
+              token is about to be used — once each time you open the app, not once per
+              sync, and never merely to show this screen.
             </span>
           {:else if sync.protection === "keychainOnly"}
             <!-- Said out loud rather than left to be discovered from a prompt. The
                  fallback happens on a build the system cannot identify, which is
                  what an unsigned development build is. -->
             <span class="status fine">
-              The sign-in is kept in your login keychain, but this build is not
-              signed, so the system will not accept a fingerprint for it and may ask
-              for your keychain password instead. Signed builds ask for your
-              fingerprint.
+              The sign-in is kept in your login keychain rather than the
+              data-protection one, because this build is not signed and the system will
+              not recognise it. It is still encrypted{#if sync.locked}, but the
+              fingerprint you asked for could not be applied{/if}; this is also the one
+              case that may ask for your keychain password.
             </span>
           {/if}
         {:else if awaitingCode}
@@ -660,6 +695,30 @@
             You will need a Dropbox account; the free one is more than enough, as
             the attempts are a few kilobytes.
           </span>
+        {/if}
+
+        {#if sync?.canConnect && sync.canLock && !awaitingCode}
+          <!-- Offered before connecting as well as after, because the answer is
+               remembered and applies to whichever account is connected next. It only
+               appears where the platform can honour it: a switch that does nothing is
+               worse than no switch. -->
+          <label class="lock">
+            <input
+              type="checkbox"
+              checked={sync.locked}
+              disabled={syncBusy}
+              onchange={(event) => void setLock(event.currentTarget.checked, event.currentTarget)}
+            />
+            <span>
+              Ask for my fingerprint before the sign-in is used
+              <span class="why">
+                Off by default, so that a sync which starts on its own — at launch, or
+                when you come back to the app — never stops to ask you for anything. On,
+                the token is released only for a fingerprint, a face or your device
+                password.
+              </span>
+            </span>
+          </label>
         {/if}
 
         {#if sync?.connected || sync?.last}
@@ -872,6 +931,35 @@
     background: var(--accent);
     /* Short, so a poll every 400 ms reads as movement rather than as a jump. */
     transition: width 300ms linear;
+  }
+
+  /* The fingerprint switch. Laid out like a preference rather than a button,
+     because it is one: it says what will happen the next time the token is used,
+     and nothing happens when it is flipped except that the keychain item is
+     rewritten under the new rule. */
+  .lock {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    color: var(--muted-strong);
+    cursor: pointer;
+  }
+  .lock input {
+    flex: none;
+    margin: 2px 0 0;
+    accent-color: var(--accent);
+  }
+  .lock span {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .lock:has(input:disabled) {
+    cursor: default;
+    opacity: 0.6;
   }
 
   .status {
