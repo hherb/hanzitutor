@@ -652,9 +652,10 @@ export interface SyncSummaryView {
  * The screen asks before it offers a button, so a learner is told why rather than
  * watching a button fail — the token is never written somewhere it could be read.
  *
- * `canLock` is the same question about a different capability: whether this platform
- * can ask for a fingerprint at all. Android can keep the sign-in and cannot yet ask,
- * so the switch is not offered there rather than offered and ignored.
+ * `canLock` is the same question about a different capability: whether this device
+ * can ask for a fingerprint — or a face, or the device PIN — at all. A phone with no
+ * screen lock cannot, so it answers no and the switch is not offered there rather than
+ * offered and ignored.
  */
 export interface SyncView {
   connected: boolean;

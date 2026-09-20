@@ -22,12 +22,17 @@
 //!    two devices agree: neither schedule is merged, both are rebuilt from the
 //!    same attempts.
 //!
-//! Recomputing is deliberately conservative about one case. A card whose count
-//! exceeds its rows in the log had history before the log existed — that is a card
-//! migrated from the pre-M10 JSON files, which kept only the newest twenty
-//! attempts. Folding those from the log would discard the part the log never held,
-//! so they are left exactly as they are until the baseline ROADMAP M13 describes
-//! exists. Guessing would be worse than waiting.
+//! Recomputing handles one case specially, and the baseline is what it is for. A card
+//! whose count exceeds its rows in the log had history before the log existed — that
+//! is a card migrated from the pre-M10 JSON files, which kept only the newest twenty
+//! attempts. Folding those rows alone would rebuild a schedule out of the *tail* of a
+//! history, so the device that owns the card writes down the state the missing part
+//! left behind, publishes it, and every device folds from it.
+//!
+//! A card with no baseline to fold from is still left exactly as it is and counted in
+//! [`Summary::left_alone`]. That is what this did before the baseline existed, and it
+//! is kept deliberately: a missing baseline has to degrade to a stale schedule, never
+//! to an invented one.
 //!
 //! ## The caller must reload its schedule store afterwards
 //!
