@@ -1,6 +1,7 @@
 # Hanzi Tutor
 
-A desktop app for learning to **read and write simplified Chinese characters**.
+A multi-=platform desktop & mobile app for learning to **read and write simplified 
+Chinese characters**.
 You write a character with a mouse, trackpad or stylus, and the app tells you
 whether it was written in the correct stroke order, whether the strokes are the
 right shape, in the right place and with enough ink, and whether the result is
