@@ -385,8 +385,11 @@ impl SpeechSession {
 /// not promise which thread they arrive on, so every call goes through here. On
 /// the main thread already it runs inline — dispatching synchronously to the
 /// queue you are standing on is a deadlock, and the round trip buys nothing.
+///
+/// Capture borrows this for the audio session, which is AVFAudio too and shared
+/// with the synthesiser: see `capture::engage_input_session`.
 #[cfg(target_os = "ios")]
-fn with_main<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+pub(crate) fn with_main<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
     if MainThreadMarker::new().is_some() {
         return work();
     }

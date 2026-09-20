@@ -745,6 +745,29 @@ downstream of them is covered by the IPC tests, which drive
   `#character-details` behind a More button that a wide screen never draws.
   Checked at 390×844 in the app's own window — one width-based media query, so iOS
   and Android are the same layout.
+- **iOS decides whether there is an input at all from the audio *category*, and
+  `cpal` asks it.** The first device build with tone practice in it failed every
+  recording with **"channel count must be at least 1"**: `cpal` reads the input
+  channel count from `AVAudioSession.inputNumberOfChannels()`, and the session
+  this app shares with its speech was on `playback` — which has no input, so the
+  count was zero and the stream was refused. That reads like a broken microphone
+  and is not one. `capture.rs` now takes the session as `playAndRecord`
+  (measurement mode, `defaultToSpeaker`, `allowBluetoothHFP`), *activates* it,
+  and only then asks the device for its configuration; it gives the session back
+  when the stream is gone. It is the mirror of `speech.rs`'s playback session,
+  and the two are the only places that set it.
+  *The same surprise has a second half.* Taking the session **is** a route
+  change — the category moves, and the output moves from the receiver to the
+  loudspeaker — and `cpal` reports that to the stream's error callback as
+  "Audio route changed" (`StreamInvalidated`, or `DeviceChanged` for a removed
+  device). Its iOS backend only refreshes its latency estimate for those and
+  leaves the stream running, which its own `ErrorKind` documents ("the stream
+  remains active and no rebuild is required"), so treating the callback as fatal
+  threw away an utterance that was being captured perfectly well, as "The
+  microphone stopped: Audio route changed". Both kinds are now logged and
+  ignored on iOS; `DeviceNotAvailable` ("No suitable audio route for the session
+  category") still fails the recording. Nothing here affects Android, which
+  records through Kotlin's `AudioRecord` and always did.
 - **macOS voice names carry a locale qualifier**: `Tingting (Chinese (China
   mainland))`, not `Tingting`. Compare `base_name()`. A fixture with tidy names
   passed while the real list never matched, so the app quietly used another voice.

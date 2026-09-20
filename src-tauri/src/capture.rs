@@ -60,6 +60,11 @@ use std::time::Duration;
 
 #[cfg(not(target_os = "android"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+#[cfg(target_os = "ios")]
+use objc2_avf_audio::{
+    AVAudioSession, AVAudioSessionCategoryOptions, AVAudioSessionCategoryPlayAndRecord,
+    AVAudioSessionModeMeasurement, AVAudioSessionSetActiveOptions,
+};
 use serde::Serialize;
 // `Arc` belongs to the `cpal` backend, which shares a sample buffer with its
 // audio callback. Android's has nothing to share — its samples are Kotlin's
@@ -253,8 +258,30 @@ impl Recorder {
     }
 
     /// Begin recording. Returns once the device is actually open and running.
+    ///
+    /// On iOS the audio session is taken for recording first, and given back
+    /// again if no stream came of it — see [`engage_input_session`].
     #[cfg(not(target_os = "android"))]
     pub fn start(&self) -> Result<(), String> {
+        #[cfg(target_os = "ios")]
+        engage_input_session()?;
+
+        let opened = self.open_stream();
+
+        // A recording that never started must not leave the session taken: it
+        // would hold the microphone indicator lit, and the next utterance's
+        // speech would be the one that has to fight for it.
+        #[cfg(target_os = "ios")]
+        if opened.is_err() {
+            release_input_session();
+        }
+
+        opened
+    }
+
+    /// Open the device and start the stream. See [`Recorder::start`].
+    #[cfg(not(target_os = "android"))]
+    fn open_stream(&self) -> Result<(), String> {
         let mut active = self.active.lock().expect("recorder mutex");
         if active.is_some() {
             return Err("Already listening.".into());
@@ -324,6 +351,12 @@ impl Recorder {
         // having.
         let _ = active.stop.send(());
         let _ = active.thread.join();
+
+        // The stream is gone, so the session can go back to whatever it was
+        // taken from. Same bargain as the speech path: nothing is held while the
+        // learner is not actually speaking.
+        #[cfg(target_os = "ios")]
+        release_input_session();
 
         let samples = std::mem::take(&mut *active.samples.lock().expect("sample buffer"));
         if let Some(message) = active.failure.lock().expect("failure slot").take() {
@@ -426,6 +459,64 @@ fn open_default_device() -> Option<(cpal::Device, cpal::SupportedStreamConfig)> 
     Some((device, config))
 }
 
+/// Take the audio session for recording, so there is an input to open.
+///
+/// iOS answers "how many input channels does this session have?" from the
+/// session's *category*, and the one this app shares with its speech is
+/// `playback` — which has no input at all. `cpal` asks exactly that question,
+/// is told zero, and then refuses to build the stream with **"channel count
+/// must be at least 1"**, which reads like a broken microphone rather than a
+/// category that was never told this app also listens. So a recording takes the
+/// session as `playAndRecord` first, and [`release_input_session`] gives it back
+/// when the stream is gone. This is the mirror of `speech.rs`'s
+/// `engage_session`/`release_session`, and it has to happen *before* the device
+/// is asked for its configuration, which is why it is not inside the capture
+/// thread.
+///
+/// `measurement` mode is iOS's counterpart of the `VOICE_RECOGNITION` source
+/// Android records from: the pitch tracker wants the signal, not the system's
+/// idea of a telephone call, and it is what keeps the input gain from being
+/// moved under a learner trying to hold one steady note. `defaultToSpeaker`
+/// keeps the pronunciation button on the loudspeaker rather than the earpiece,
+/// which is what `playback` did before this took the session, and
+/// `allowBluetoothHFP` lets a headset's own microphone be the one that hears.
+#[cfg(target_os = "ios")]
+fn engage_input_session() -> Result<(), String> {
+    crate::speech::with_main(|| {
+        // SAFETY: on the main thread, and the session is a process-wide
+        // singleton that outlives this call.
+        unsafe {
+            let session = AVAudioSession::sharedInstance();
+            session
+                .setCategory_mode_options_error(
+                    AVAudioSessionCategoryPlayAndRecord.expect("declared by AVFAudio"),
+                    AVAudioSessionModeMeasurement.expect("declared by AVFAudio"),
+                    AVAudioSessionCategoryOptions::DefaultToSpeaker
+                        | AVAudioSessionCategoryOptions::AllowBluetoothHFP,
+                )
+                .map_err(|error| error.localizedDescription().to_string())?;
+            session
+                .setActive_error(true)
+                .map_err(|error| error.localizedDescription().to_string())
+        }
+    })
+}
+
+/// Give the audio session back, so whatever was paused for the recording resumes.
+#[cfg(target_os = "ios")]
+fn release_input_session() {
+    crate::speech::with_main(|| {
+        // SAFETY: as above.
+        unsafe {
+            let session = AVAudioSession::sharedInstance();
+            let _ = session.setActive_withOptions_error(
+                false,
+                AVAudioSessionSetActiveOptions::NotifyOthersOnDeactivation,
+            );
+        }
+    });
+}
+
 /// Runs on its own thread for the life of one recording.
 #[cfg(not(target_os = "android"))]
 fn capture_thread(
@@ -474,6 +565,25 @@ fn capture_thread(
     };
 
     let error_callback = move |err: cpal::Error| {
+        // A changed route is not the end of a recording, and on iOS *taking* the
+        // session for one is itself a route change: the category moves from
+        // `playback` to `playAndRecord` and the output from the receiver to the
+        // loudspeaker, so the first thing the new stream is told about is this
+        // process's own doing. Reported verbatim, that read as "the microphone
+        // stopped: Audio route changed" and threw away an utterance that was
+        // being captured perfectly well. `cpal` documents `DeviceChanged` as
+        // "the stream remains active and no rebuild is required", and its iOS
+        // backend only refreshes its latency estimate for either kind, so both
+        // are logged and the recording carries on. A session with no route at
+        // all is a different matter and still stops it.
+        #[cfg(target_os = "ios")]
+        if matches!(
+            err.kind(),
+            cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::StreamInvalidated
+        ) {
+            eprintln!("[capture] the audio route changed while listening: {err}");
+            return;
+        }
         if let Ok(mut slot) = data_error.lock() {
             // Keep the first error: later ones are usually consequences of it.
             if slot.is_none() {
