@@ -1561,7 +1561,13 @@ downstream of them is covered by the IPC tests, which drive
   everything the sync brought in — and those tombstones then travel and delete the
   entries on the other devices too. It was forgotten once, after the progress store
   had been done, which is why the set now lives in one method instead of three calls
-  at the command. The damage is recoverable either way — the log kept every
+  at the command. **Reloading the backend is only half of it, and the half that is
+  easy to miss**: this side keeps its own copies of the same views, and they are only
+  replaced when a command hands over a new one. So the settings screen calls
+  `onSynced`, which is `App.svelte`'s `refreshAfterSync` — vocabulary, progress and
+  the review queue together, because one sync changes all three. A backend reload
+  with no frontend re-read looks exactly like a sync that did nothing until the app
+  is restarted, which is what it was reported as twice. The damage is recoverable either way — the log kept every
   attempt and the next sync rebuilds from it — but it is a silently wrong due date
   until then. Two
   On the vocabulary side, three rules are load-bearing. **The stamp is

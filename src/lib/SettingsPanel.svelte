@@ -53,6 +53,13 @@
     onChange: (patch: SettingsPatch) => void;
     /** Called to forget the click-to-draw choice and follow the device again. */
     onClearClickToDraw: () => void;
+    /**
+     * Called after a sync, so the screens that show study data can re-read it.
+     *
+     * The backend has already reloaded its stores by the time this runs; what is
+     * stale by then is *this* side's copies of them.
+     */
+    onSynced: () => void;
   }
 
   let {
@@ -62,6 +69,7 @@
     voicesLoading,
     onChange,
     onClearClickToDraw,
+    onSynced,
   }: Props = $props();
 
   /**
@@ -260,6 +268,9 @@
     syncError = null;
     try {
       sync = await api.syncNow();
+      // After the answer, not before: the views this reloads come from the same
+      // database the sync has just finished writing.
+      onSynced();
     } catch (cause) {
       syncError = `${cause}`;
     } finally {

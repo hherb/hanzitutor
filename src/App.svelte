@@ -1377,6 +1377,25 @@
     if (next.warning) void api.log(`vocabulary warning: ${next.warning}`);
   }
 
+  /**
+   * Re-read everything a sync can have changed.
+   *
+   * The backend reloads its stores after a sync — see `AppState::reload_after_sync`
+   * — but this side holds its own copies of them and only replaces them when a
+   * command hands over a new view. Without this the sync succeeded and the screen
+   * went on showing what it had, which is what "the list only updates after a
+   * restart" was: the restart was the next thing that called these.
+   *
+   * All three, because one sync does all three: it rebuilds schedules, settles the
+   * vocabulary list, and moves the course position. Refreshing only the list would
+   * have replaced one half-fixed bug with another.
+   */
+  function refreshAfterSync() {
+    void refreshVocabulary();
+    void refreshProgress();
+    void refreshReview();
+  }
+
   async function refreshVocabulary() {
     try {
       const loaded = await api.vocabulary();
@@ -1899,6 +1918,7 @@
         {voicesLoading}
         onChange={(patch) => void updateSettings(patch)}
         onClearClickToDraw={() => void clearClickToDraw()}
+        onSynced={refreshAfterSync}
       />
     {:else if view === "about"}
       <LicencesPanel info={appInfo} notices={licenceList} error={licenceError} />

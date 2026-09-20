@@ -1394,8 +1394,13 @@ place they do:
   one the learner removed and tombstones it, so a save from a document predating a
   sync deletes everything the sync brought in, and those tombstones then travel.
   Progress was done first and the list was forgotten, which is why the set lives in
-  `AppState::reload_after_sync` rather than in three calls at the command. The
-  original note on the schedule's store:
+  `AppState::reload_after_sync` rather than in three calls at the command. And the
+  backend reload is only half of it: **the interface keeps its own copies of the same
+  views** and replaces them only when a command hands over a new one, so a sync also
+  has to make the screen re-read — `onSynced` from the settings screen, which is
+  `App.svelte`'s `refreshAfterSync`, covering vocabulary, progress and the review
+  queue together. Without that half, a successful sync looks exactly like a sync that
+  did nothing until the app restarts. The original note on the schedule's store:
   A `ProgressStore` holds the document in memory and writes through it, so an open
   store goes stale the moment a sync rewrites the `progress_card` rows — and its
   next `save`, which every review performs, would write the stale card back over the
