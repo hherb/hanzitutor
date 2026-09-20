@@ -1437,6 +1437,14 @@ new upstream project for four endpoints:
   upload breaks a retry after a timeout the device could not distinguish from a
   failure. Immutability is the writer's discipline, and what checks it is the merge,
   which refuses two shards that disagree about one attempt.
+- **Unions go on the wire as objects.** `"mode": "overwrite"` looked right and is
+  answered by the live API with a 400 whose summary is `other/...` — naming neither
+  the field nor the reason. The schema types every `WriteMode` variant as an object
+  with a required `.tag`, and Dropbox's own examples use the object form even for
+  variants that carry no value (`{".tag": "home"}`), so `{"mode": {".tag":
+  "overwrite"}}` is what it wants. A test pins the shape, and a 400 now reports the
+  whole response body rather than only `error_summary`, because a 400 is a request
+  this program built wrongly and its body is the only thing that says how.
 - **`SyncError::Unauthorized` is its own failure.** It is the one error with an
   obvious next move — refresh and retry — and reporting it as a network fault would
   send somebody to check a connection that is working.

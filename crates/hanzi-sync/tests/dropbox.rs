@@ -417,7 +417,16 @@ fn an_upload_lands_in_the_app_folder_and_is_not_announced() {
         panic!("put is an upload");
     };
     let arguments: serde_json::Value = serde_json::from_str(arg).unwrap();
-    assert_eq!(arguments["mode"], "overwrite", "a retry must survive");
+    // `mode` has to be the object form. This is not a style preference: sending the
+    // bare string `"overwrite"` is answered by the real API with a 400 and the
+    // summary `other/...`, which names neither the field nor the reason. The test
+    // exists because "simplify this to a string" is a tempting edit.
+    assert!(
+        arguments["mode"].is_object(),
+        "mode must be an object, not a bare string: {}",
+        arguments["mode"]
+    );
+    assert_eq!(arguments["mode"][".tag"], "overwrite", "a retry must survive");
     assert_eq!(arguments["autorename"], false, "a rename would break the name");
     assert_eq!(arguments["mute"], true, "a sync is nobody's notification");
     assert_eq!(bearer, "sl.access");

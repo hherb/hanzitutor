@@ -65,12 +65,28 @@ impl UreqHttp {
 
     /// Turn a `ureq` failure into ours, keeping what Dropbox said.
     ///
-    /// Dropbox explains itself in the body — `{"error_summary": "..."}` — and that
-    /// sentence is the difference between a bug report nobody can act on and one
-    /// that names the problem.
+    /// Dropbox explains itself in the body, and that explanation is the difference
+    /// between a bug report nobody can act on and one that names the problem. Three
+    /// things are worth having, in order of usefulness to a person: `user_message`,
+    /// which Dropbox writes to be shown as-is; `error_summary`, which names the
+    /// hierarchy of the failure; and the body itself.
+    ///
+    /// The body is included **only for a 400**, and that is deliberate. A 400 means
+    /// this program built a request Dropbox would not accept — a bug here rather
+    /// than anything the learner did — and the first one of these arrived as
+    /// `other/...`, which named neither the field nor the reason. A 401, 403, 409 or
+    /// 429 is a situation with a sentence attached, and dumping JSON under it would
+    /// only make the sentence harder to read.
     fn failed(url: &str, error: ureq::Error) -> SyncError {
         match error {
             ureq::Error::Status(401, _) => SyncError::Unauthorized,
+            ureq::Error::Status(400, response) => {
+                let body = response.into_string().unwrap_or_default();
+                SyncError::Io(format!(
+                    "{url} refused the request (400), which means it was built wrongly: {}",
+                    body.trim()
+                ))
+            }
             ureq::Error::Status(code, response) => {
                 let body = response.into_string().unwrap_or_default();
                 SyncError::Io(format!("{url} answered {code}: {}", summarise(&body)))
@@ -88,10 +104,18 @@ impl Default for UreqHttp {
 
 /// The part of an error body worth putting in front of a person.
 ///
-/// Dropbox's own `error_summary` when there is one, the body otherwise — truncated,
-/// because a proxy's HTML error page is not a message anybody needs in full.
+/// Dropbox's own `user_message` when there is one — it is written to be shown —
+/// then its `error_summary`, then the body. Truncated, because a proxy's HTML error
+/// page is not a message anybody needs in full.
 fn summarise(body: &str) -> String {
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(message) = json
+            .get("user_message")
+            .and_then(|message| message.get("text"))
+            .and_then(|text| text.as_str())
+        {
+            return message.to_string();
+        }
         if let Some(summary) = json.get("error_summary").and_then(|v| v.as_str()) {
             return summary.to_string();
         }

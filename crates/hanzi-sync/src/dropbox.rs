@@ -153,7 +153,13 @@ impl RemoteStore for DropboxStore<'_> {
             &self.access_token,
             &json!({
                 "path": path_of(name),
-                "mode": "overwrite",
+                // The **object** form, not the bare string. Dropbox's schema types
+                // `mode` as a union whose variants are objects with a required
+                // `.tag`, and a bare `"overwrite"` is answered with a 400 whose
+                // summary is `other/...` — which reads as neither a path problem nor
+                // a permissions one, and cost a real debugging session against the
+                // live API to find. The test below pins the shape.
+                "mode": { ".tag": "overwrite" },
                 "autorename": false,
                 // Keeps the learner's Dropbox activity feed to themselves: a sync is
                 // not something anybody needs a notification about.
