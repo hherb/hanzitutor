@@ -82,7 +82,15 @@ pub(crate) fn progress(
 }
 
 /// Import `vocabulary.json`, if it has not been imported already.
-pub(crate) fn vocabulary(conn: &mut Connection, dir: &Path) -> Result<(), VocabError> {
+/// Import `vocabulary.json`, if it has not been imported already.
+///
+/// Every entry belonged to this device, so it enters the list under `device_id`
+/// with a stamp from now — there is nothing older to claim.
+pub(crate) fn vocabulary(
+    conn: &mut Connection,
+    dir: &Path,
+    device_id: &str,
+) -> Result<(), VocabError> {
     let db = db_path(dir);
     if imported(conn, VOCABULARY_KEY).map_err(|e| vocab_error(&db, e))? {
         return Ok(());
@@ -100,8 +108,11 @@ pub(crate) fn vocabulary(conn: &mut Connection, dir: &Path) -> Result<(), VocabE
         )
         .map_err(|e| vocab_error(&db, e))?;
     }
+    // The imported entries have no stamp of their own, so they take one from this
+    // device and this moment: they are new here, and there was no other writer.
+    let stamp = now_iso8601();
     for entry in &document.entries {
-        write_entry(&tx, entry).map_err(|e| vocab_error(&db, e))?;
+        write_entry(&tx, entry, &stamp, device_id).map_err(|e| vocab_error(&db, e))?;
     }
     set_meta(&tx, "vocab_next_id", &document.next_id.to_string())
         .map_err(|e| vocab_error(&db, e))?;

@@ -20,7 +20,11 @@ use rusqlite::Connection;
 /// 3 — sync provenance: `device_id` in `meta`, and `device_id`/`seq` on
 ///     `attempt`, so one attempt can be named the same way on every device. See
 ///     [`upgrade`], which is where columns are added.
-pub const SCHEMA_VERSION: i64 = 3;
+/// 4 — the same idea for the vocabulary list, where an entry is *edited* rather
+///     than only appended to: a `uuid` to name it across devices, an `updated_at`
+///     to settle who wrote last, and a `deleted` tombstone so that a removal
+///     travels instead of the entry being resurrected by a peer's older copy.
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Everything the database needs, in one idempotent script.
 ///
@@ -154,6 +158,99 @@ fn upgrade(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS attempt_origin ON attempt (device_id, seq)",
     )?;
+
+    // ---- schema 4: the vocabulary list's turn ------------------------------
+    //
+    // The vocabulary list is the harder half of sync, and the difference is worth
+    // stating because it explains every choice below. An attempt is *appended*: it
+    // never changes, so a merged log is a union and there is nothing to settle. An
+    // entry is *edited and deleted*, so two devices can disagree about one entry
+    // and something has to say which of them is right. That something is
+    // `updated_at`, the device id as a tiebreak, and a tombstone for a removal.
+    if !has_column(conn, "vocab_entry", "uuid")? {
+        conn.execute_batch("ALTER TABLE vocab_entry ADD COLUMN uuid TEXT")?;
+        // Every row that existed before this column needs a name no other device
+        // will ever pick, and there is nothing in the row to derive one from.
+        backfill_entry_uuids(conn)?;
+    }
+    if !has_column(conn, "vocab_entry", "updated_at")? {
+        conn.execute_batch("ALTER TABLE vocab_entry ADD COLUMN updated_at TEXT")?;
+        // `added_at` is the best timestamp there is. An entry that was edited
+        // afterwards has a stamp earlier than it deserves, which errs towards
+        // losing to a peer's edit rather than winning over it — the harmless
+        // direction, since the alternative is inventing a time nothing recorded.
+        conn.execute(
+            "UPDATE vocab_entry SET updated_at = added_at WHERE updated_at IS NULL",
+            [],
+        )?;
+    }
+    if !has_column(conn, "vocab_entry", "deleted")? {
+        conn.execute_batch(
+            "ALTER TABLE vocab_entry ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    if !has_column(conn, "vocab_entry", "device_id")? {
+        conn.execute_batch("ALTER TABLE vocab_entry ADD COLUMN device_id TEXT")?;
+        // Every row that existed before this column was written by this device:
+        // there was no other writer. Same rule as schema 3's attempt backfill.
+        conn.execute(
+            "UPDATE vocab_entry SET device_id = ?1 WHERE device_id IS NULL",
+            [&device],
+        )?;
+    }
+    if !has_column(conn, "vocab_group", "updated_at")? {
+        conn.execute_batch("ALTER TABLE vocab_group ADD COLUMN updated_at TEXT")?;
+        // The epoch, deliberately. A group has no creation time recorded anywhere,
+        // and a constant is what keeps two devices' backfills from disagreeing; the
+        // epoch guarantees that any real edit, on any device, wins over it.
+        conn.execute(
+            "UPDATE vocab_group SET updated_at = '1970-01-01T00:00:00Z' WHERE updated_at IS NULL",
+            [],
+        )?;
+    }
+    if !has_column(conn, "vocab_group", "deleted")? {
+        conn.execute_batch(
+            "ALTER TABLE vocab_group ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    if !has_column(conn, "vocab_group", "device_id")? {
+        conn.execute_batch("ALTER TABLE vocab_group ADD COLUMN device_id TEXT")?;
+        conn.execute(
+            "UPDATE vocab_group SET device_id = ?1 WHERE device_id IS NULL",
+            [&device],
+        )?;
+    }
+    // Unique so that one entry can never be two rows. NULLs are distinct to SQLite,
+    // so a row still waiting for its uuid does not collide with another.
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS vocab_entry_uuid ON vocab_entry (uuid)",
+    )?;
+
+    Ok(())
+}
+
+/// Give every entry that predates schema 4 a name of its own.
+///
+/// One statement per row rather than one clever statement, because the value has to
+/// come from the operating system's random generator and SQL has none worth using
+/// for this. A vocabulary list is hundreds of entries, so this runs once and
+/// quickly.
+fn backfill_entry_uuids(conn: &Connection) -> rusqlite::Result<()> {
+    let ids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id FROM vocab_entry WHERE uuid IS NULL")?;
+        let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        ids
+    };
+    for id in ids {
+        conn.execute(
+            "UPDATE vocab_entry SET uuid = ?1 WHERE id = ?2",
+            rusqlite::params![uuid::Uuid::new_v4().to_string(), id],
+        )?;
+    }
     Ok(())
 }
 

@@ -843,3 +843,193 @@ fn a_schema_two_database_gains_attempt_provenance_without_renumbering() {
 
     finish(&dir);
 }
+
+// ---- schema 4: how a vocabulary entry is named, stamped and removed --------
+//
+// These are M13's groundwork for the list rather than the schedule. An attempt is
+// appended and never changes, so a merged log is a union. An entry is *edited and
+// deleted*, so two devices can disagree about one row — which is what the uuid, the
+// stamp and the tombstone are for.
+
+/// One vocabulary row as the database holds it, tombstones included.
+struct VocabRow {
+    uuid: String,
+    updated_at: String,
+    device_id: String,
+    deleted: i64,
+}
+
+/// Backdate an entry's stamp, so a test can tell an edit from a no-op.
+///
+/// Two operations inside one second would otherwise share a stamp: `updated_at` is
+/// whole seconds, which is fine for the merge — a device publishes its *current* row,
+/// so its own two writes never compete — but useless for a test that has to see a
+/// stamp move.
+fn age_the_stamp(db: &Db, id: u64, stamp: &str) {
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "UPDATE vocab_entry SET updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![stamp, id as i64],
+        )
+        .unwrap();
+}
+
+fn vocab_row(db: &Db, id: u64) -> VocabRow {
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .query_row(
+            "SELECT uuid, updated_at, device_id, deleted FROM vocab_entry WHERE id = ?1",
+            [id as i64],
+            |row| {
+                Ok(VocabRow {
+                    uuid: row.get(0)?,
+                    updated_at: row.get(1)?,
+                    device_id: row.get(2)?,
+                    deleted: row.get(3)?,
+                })
+            },
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_new_entry_is_given_a_name_and_a_stamp_of_its_own() {
+    let dir = dir("vocab-identity");
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    let id = vocab
+        .add_entry("学习", "xuéxí", "to study", None)
+        .unwrap()
+        .id;
+    vocab.save().unwrap();
+
+    let row = vocab_row(&db, id);
+    assert_eq!(row.uuid.len(), 36, "a uuid, not an empty string: {}", row.uuid);
+    assert!(!row.updated_at.is_empty(), "and a stamp to settle arguments with");
+    assert_eq!(row.device_id, db.device_id(), "stamped with this device");
+    assert_eq!(row.deleted, 0);
+
+    finish(&dir);
+}
+
+#[test]
+fn practising_an_entry_does_not_move_its_stamp_but_editing_it_does() {
+    // The invariant that makes per-entry last-writer-wins safe to use at all. There
+    // is one stamp for the whole entry, so if practising moved it, a learner who
+    // practised on the phone could silently undo an edit they had made on the
+    // laptop — and the edit would be gone with nothing to recover it from.
+    let dir = dir("vocab-stamp");
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    let id = vocab
+        .add_entry("学习", "xuéxí", "to study", None)
+        .unwrap()
+        .id;
+    vocab.save().unwrap();
+    age_the_stamp(&db, id, "2000-01-01T00:00:00Z");
+    let after_adding = vocab_row(&db, id).updated_at;
+
+    vocab.record_attempt(id, 91.0).unwrap();
+    vocab.save().unwrap();
+    assert_eq!(
+        vocab_row(&db, id).updated_at,
+        after_adding,
+        "practising is not an edit"
+    );
+    let scored = vocab.entries().iter().find(|e| e.id == id).unwrap();
+    assert_eq!(scored.best_score, Some(91.0), "though the score is kept");
+
+    vocab
+        .update_entry(id, "xuéxí", "to study hard", None)
+        .unwrap();
+    vocab.save().unwrap();
+    assert_ne!(
+        vocab_row(&db, id).updated_at,
+        after_adding,
+        "what the learner typed is an edit, and it moves the stamp"
+    );
+
+    finish(&dir);
+}
+
+#[test]
+fn a_removed_entry_leaves_a_tombstone_rather_than_nothing() {
+    // Erasing the row would be worse than losing the record: a device that still
+    // holds its own copy would put the entry straight back, because "I have no row
+    // for this" and "I have not heard about this yet" are the same thing to a peer.
+    let dir = dir("vocab-tombstone");
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    let id = vocab
+        .add_entry("学习", "xuéxí", "to study", None)
+        .unwrap()
+        .id;
+    vocab.save().unwrap();
+    age_the_stamp(&db, id, "2000-01-01T00:00:00Z");
+    let before = vocab_row(&db, id).updated_at;
+
+    vocab.remove_entry(id).unwrap();
+    vocab.save().unwrap();
+
+    assert!(vocab.entries().is_empty(), "the interface sees it gone");
+    assert_eq!(
+        rusqlite::Connection::open(db.path())
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM vocab_entry WHERE id = ?1", [id as i64], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "and the row is still there to say so"
+    );
+    let row = vocab_row(&db, id);
+    assert_eq!(row.deleted, 1, "marked removed");
+    assert_ne!(row.updated_at, before, "with a stamp that beats the old copy");
+    assert_eq!(row.device_id, db.device_id());
+
+    finish(&dir);
+}
+
+#[test]
+fn a_schema_three_database_gains_vocabulary_identity_without_reusing_a_name() {
+    // The upgrade path for schema 3 → 4. Every entry that predates the columns
+    // needs a name no other device will ever pick, and there is nothing in the row
+    // to derive one from.
+    let dir = dir("vocab-older");
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    let first_entry = vocab.add_entry("学习", "xuéxí", "to study", None).unwrap();
+    let (first, added_at) = (first_entry.id, first_entry.added_at.clone());
+    let second = vocab.add_entry("你好", "nǐhǎo", "hello", None).unwrap().id;
+    vocab.save().unwrap();
+    drop(vocab);
+
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        conn.execute("DROP INDEX vocab_entry_uuid", []).unwrap();
+        for column in ["uuid", "updated_at", "deleted", "device_id"] {
+            conn.execute(&format!("ALTER TABLE vocab_entry DROP COLUMN {column}"), [])
+                .unwrap();
+        }
+        conn.execute("UPDATE meta SET value = '3' WHERE key = 'schema'", [])
+            .unwrap();
+    }
+
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(vocab.entries().len(), 2, "nothing was lost");
+    let first_row = vocab_row(&db, first);
+    let second_row = vocab_row(&db, second);
+    assert_eq!(first_row.uuid.len(), 36);
+    assert_eq!(second_row.uuid.len(), 36);
+    assert_ne!(first_row.uuid, second_row.uuid, "no two entries share a name");
+    assert_eq!(
+        first_row.updated_at, added_at,
+        "and the stamp falls back to when it was added"
+    );
+    // Still usable afterwards.
+    vocab.record_attempt(first, 80.0).unwrap();
+    vocab.save().unwrap();
+
+    finish(&dir);
+}

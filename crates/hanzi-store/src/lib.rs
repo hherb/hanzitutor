@@ -39,6 +39,7 @@ use hanzi_core::progress::{
     MAX_HISTORY,
 };
 use hanzi_core::settings::{BoardSize, Pace, Settings, SettingsError, SettingsSink};
+use hanzi_core::time::now_iso8601;
 use hanzi_core::vocab::{Document as VocabDocument, VocabError, VocabSink};
 use hanzi_core::{Attempt, AttemptRecord, CardState, Entry, Rating};
 use rusqlite::{params, Connection};
@@ -604,7 +605,7 @@ impl CursorSink for Db {
 impl VocabSink for Db {
     fn load(&self) -> Result<VocabDocument, VocabError> {
         let mut conn = self.lock();
-        migrate::vocabulary(&mut conn, self.dir())?;
+        migrate::vocabulary(&mut conn, self.dir(), &self.device_id)?;
         let path = self.path();
 
         let next_id = meta_i64(&conn, "vocab_next_id")
@@ -615,7 +616,7 @@ impl VocabSink for Db {
         let mut groups = Vec::new();
         {
             let mut stmt = conn
-                .prepare("SELECT name FROM vocab_group ORDER BY position, name")
+                .prepare("SELECT name FROM vocab_group WHERE deleted = 0 ORDER BY position, name")
                 .map_err(|e| vocab_error(&path, e))?;
             let rows = stmt
                 .query_map([], |row| row.get::<_, String>(0))
@@ -631,7 +632,7 @@ impl VocabSink for Db {
                 .prepare(
                     "SELECT id, text, pinyin, meaning, group_name, added_at, \
                             attempts, best_score, last_practised
-                     FROM vocab_entry ORDER BY id",
+                     FROM vocab_entry WHERE deleted = 0 ORDER BY id",
                 )
                 .map_err(|e| vocab_error(&path, e))?;
             let rows = stmt
@@ -666,42 +667,67 @@ impl VocabSink for Db {
         let path = self.path();
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(|e| vocab_error(&path, e))?;
+        let now = now_iso8601();
+        let device = self.device_id.clone();
 
-        // Groups are a short ordered list, so they are replaced outright; the
-        // entries are upserted and the leftovers deleted, which keeps their ids
-        // (and therefore any review item pointing at them) stable.
-        tx.execute("DELETE FROM vocab_group", [])
-            .map_err(|e| vocab_error(&path, e))?;
+        // Nothing is deleted any more, and that is the change sync forced. An
+        // entry that disappears from the document is **tombstoned**: a row saying
+        // "this was removed, at this time, by this device". Erasing it instead
+        // would be worse than losing the record — a peer that still holds an older
+        // copy would put it straight back on the next sync, because absence cannot
+        // be distinguished from "I have not heard about that one yet".
+        //
+        // Groups go the same way, and a group is named by its name because there is
+        // nothing else to name it by: a rename arrives as one name leaving and
+        // another arriving.
+        let wanted: HashSet<&str> = document.groups.iter().map(String::as_str).collect();
+        for name in group_names(&tx, false).map_err(|e| vocab_error(&path, e))? {
+            if !wanted.contains(name.as_str()) {
+                tx.execute(
+                    "UPDATE vocab_group SET deleted = 1, updated_at = ?1, device_id = ?2
+                     WHERE name = ?3",
+                    params![now, device, name],
+                )
+                .map_err(|e| vocab_error(&path, e))?;
+            }
+        }
         for (position, name) in document.groups.iter().enumerate() {
+            // The stamp moves only when something the learner chose moves. A sync
+            // saves the whole document many times over, and a stamp that advanced
+            // on every save would make each device's newest write the winner for no
+            // reason — turning "nobody has touched this" into a race.
             tx.execute(
-                "INSERT INTO vocab_group (name, position) VALUES (?1, ?2)",
-                params![name, position as i64],
+                "INSERT INTO vocab_group (name, position, updated_at, deleted, device_id)
+                 VALUES (?1, ?2, ?3, 0, ?4)
+                 ON CONFLICT(name) DO UPDATE SET
+                     updated_at = CASE
+                         WHEN vocab_group.position <> excluded.position
+                           OR vocab_group.deleted <> 0
+                         THEN excluded.updated_at ELSE vocab_group.updated_at END,
+                     device_id = CASE
+                         WHEN vocab_group.position <> excluded.position
+                           OR vocab_group.deleted <> 0
+                         THEN excluded.device_id ELSE vocab_group.device_id END,
+                     position = excluded.position,
+                     deleted = 0",
+                params![name, position as i64, now, device],
             )
             .map_err(|e| vocab_error(&path, e))?;
         }
 
         let kept: HashSet<i64> = document.entries.iter().map(|e| e.id as i64).collect();
-        let existing: Vec<i64> = {
-            let mut stmt = tx
-                .prepare("SELECT id FROM vocab_entry")
-                .map_err(|e| vocab_error(&path, e))?;
-            let rows = stmt
-                .query_map([], |row| row.get::<_, i64>(0))
-                .map_err(|e| vocab_error(&path, e))?;
-            let mut ids = Vec::new();
-            for row in rows {
-                ids.push(row.map_err(|e| vocab_error(&path, e))?);
-            }
-            ids
-        };
-        for id in existing {
+        for id in entry_ids(&tx, false).map_err(|e| vocab_error(&path, e))? {
             if !kept.contains(&id) {
-                tx.execute("DELETE FROM vocab_entry WHERE id = ?1", [id])
-                    .map_err(|e| vocab_error(&path, e))?;
+                tx.execute(
+                    "UPDATE vocab_entry SET deleted = 1, updated_at = ?1, device_id = ?2
+                     WHERE id = ?3",
+                    params![now, device, id],
+                )
+                .map_err(|e| vocab_error(&path, e))?;
             }
         }
         for entry in &document.entries {
-            write_entry(&tx, entry).map_err(|e| vocab_error(&path, e))?;
+            write_entry(&tx, entry, &now, &device).map_err(|e| vocab_error(&path, e))?;
         }
 
         set_meta(&tx, "vocab_next_id", &document.next_id.to_string())
@@ -710,12 +736,73 @@ impl VocabSink for Db {
     }
 }
 
-fn write_entry(conn: &Connection, entry: &Entry) -> rusqlite::Result<()> {
+/// The ids of the entries this build can see, live or tombstoned.
+fn entry_ids(conn: &Connection, live_only: bool) -> rusqlite::Result<Vec<i64>> {
+    let sql = match live_only {
+        true => "SELECT id FROM vocab_entry WHERE deleted = 0",
+        false => "SELECT id FROM vocab_entry",
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(row?);
+    }
+    Ok(ids)
+}
+
+/// The names of the groups this build can see, live or tombstoned.
+fn group_names(conn: &Connection, live_only: bool) -> rusqlite::Result<Vec<String>> {
+    let sql = match live_only {
+        true => "SELECT name FROM vocab_group WHERE deleted = 0",
+        false => "SELECT name FROM vocab_group",
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut names = Vec::new();
+    for row in rows {
+        names.push(row?);
+    }
+    Ok(names)
+}
+
+/// Write one entry from the document the engine handed over.
+///
+/// Two things here are deliberate. The `uuid` is only ever *inserted*, never
+/// updated — it is the entry's name on other devices, so it must survive every
+/// edit, and a fresh one is generated on the way past even when the row already
+/// exists. And the last-writer-wins stamp moves only when **what the learner typed**
+/// moves: `text`, `pinyin`, `meaning` or the group. The practice counters do not
+/// move it, and that is the important one — a learner practising an entry on the
+/// phone must not be able to clobber an edit made on the laptop just because the
+/// practice happened later, and a single stamp per entry cannot express "these
+/// fields changed but those did not".
+fn write_entry(
+    conn: &Connection,
+    entry: &Entry,
+    now: &str,
+    device: &str,
+) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO vocab_entry
-             (id, text, pinyin, meaning, group_name, added_at, attempts, best_score, last_practised)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             (id, text, pinyin, meaning, group_name, added_at, attempts, best_score,
+              last_practised, uuid, updated_at, deleted, device_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12)
          ON CONFLICT(id) DO UPDATE SET
+             updated_at = CASE
+                 WHEN vocab_entry.text <> excluded.text
+                   OR vocab_entry.pinyin <> excluded.pinyin
+                   OR vocab_entry.meaning <> excluded.meaning
+                   OR IFNULL(vocab_entry.group_name, '') <> IFNULL(excluded.group_name, '')
+                   OR vocab_entry.deleted <> 0
+                 THEN excluded.updated_at ELSE vocab_entry.updated_at END,
+             device_id = CASE
+                 WHEN vocab_entry.text <> excluded.text
+                   OR vocab_entry.pinyin <> excluded.pinyin
+                   OR vocab_entry.meaning <> excluded.meaning
+                   OR IFNULL(vocab_entry.group_name, '') <> IFNULL(excluded.group_name, '')
+                   OR vocab_entry.deleted <> 0
+                 THEN excluded.device_id ELSE vocab_entry.device_id END,
              text = excluded.text,
              pinyin = excluded.pinyin,
              meaning = excluded.meaning,
@@ -723,7 +810,8 @@ fn write_entry(conn: &Connection, entry: &Entry) -> rusqlite::Result<()> {
              added_at = excluded.added_at,
              attempts = excluded.attempts,
              best_score = excluded.best_score,
-             last_practised = excluded.last_practised",
+             last_practised = excluded.last_practised,
+             deleted = 0",
         params![
             entry.id as i64,
             entry.text,
@@ -734,6 +822,9 @@ fn write_entry(conn: &Connection, entry: &Entry) -> rusqlite::Result<()> {
             entry.attempts,
             entry.best_score,
             entry.last_practised,
+            uuid::Uuid::new_v4().to_string(),
+            now,
+            device,
         ],
     )?;
     Ok(())
