@@ -517,13 +517,17 @@ Tone practice answers a different question from a speech recogniser, and the
 difference is the reason it needs no model.
 
 <p align="center">
-  <img src="store/phone-screenshots/03-tone-panel.png" width="34%" alt="The tone panel: the learner's pitch drawn against the tone's template">
+  <img src="docs/screenshots/03-tone-panel.png" width="88%" alt="The desktop window: a graded 生 beside the tone panel, with one pitch chart per syllable">
 </p>
 
-*The panel after one attempt: the dashed line is the tone the character asks for,
-the solid line is the pitch you produced, and the numbers are what the analyser
-measured — here 657 ms of voice at a median 134 Hz, which is room noise rather
-than a word, so it declines to score it.*
+*The panel after saying 学生, on the desktop: one chart per syllable, the dashed
+line the tone the character asks for and the solid line the pitch produced. What
+was heard — 学生, xue sheng — is reported as a transcription and kept apart from
+the tone judgement below it, because the two answer different questions. Here
+the rising tone 2 on 学 was not clear enough to call, so it says so instead of
+guessing, and shows what it measured: a median 170 Hz, 432 ms of voice, and the
+split between the syllables at 291 ms. 生 is neutral, which is why one tone was
+scored rather than two.*
 
 ### A recogniser is built to hide the error you are looking for
 
