@@ -11,6 +11,7 @@ use hanzi_core::{
 };
 use serde::Serialize;
 use tauri::State;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::asr::AsrStatus;
 use crate::capture::MicrophoneStatus;
@@ -867,11 +868,22 @@ pub fn sync_status(sync: State<'_, SyncService>) -> SyncView {
 /// Returns the URL as well as opening it, so that a learner whose browser did not
 /// come forward can open it themselves rather than being stuck.
 #[tauri::command]
-pub fn sync_connect(sync: State<'_, SyncService>) -> Result<String, String> {
+pub fn sync_connect(
+    app: tauri::AppHandle,
+    sync: State<'_, SyncService>,
+) -> Result<String, String> {
     let url = sync.begin()?;
     // In the system browser, never a webview: Dropbox asks for that, and Google's
     // policy forbids their sign-in flow inside one.
-    tauri_plugin_opener::open_url(url.clone(), None::<&str>)
+    //
+    // Through the **plugin handle**, not `tauri_plugin_opener::open_url`. That free
+    // function is a process spawn and desktop-only; on a phone it fails with
+    // `operation not permitted (os error 1)`. `Opener::open_url` is the one with a
+    // `#[cfg(mobile)]` twin that calls into the platform's own URL opener, and it
+    // needs an `AppHandle` to reach — which is why the handle is a parameter here
+    // even though nothing else in this command appears to use it.
+    app.opener()
+        .open_url(url.clone(), None::<&str>)
         .map_err(|e| format!("could not open a browser: {e}"))?;
     Ok(url)
 }
