@@ -909,11 +909,10 @@ pub fn sync_now(
     sync: State<'_, SyncService>,
 ) -> Result<SyncView, String> {
     let outcome = sync.now();
-    if let Some(db) = &state.db {
-        // `lock_progress` rather than `.lock()`: a poisoned mutex must not be the
-        // reason a schedule stays stale.
-        state.lock_progress().reload(db);
-    }
+    // Every store the sync can have rewritten, not just the schedule. See
+    // `AppState::reload_after_sync` for why forgetting one of these is not merely a
+    // stale screen.
+    state.reload_after_sync();
     outcome
 }
 

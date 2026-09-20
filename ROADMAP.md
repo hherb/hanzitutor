@@ -1388,7 +1388,14 @@ place they do:
   discard the part the log never held. It also skips a card the fold already agrees
   with, so a sync that changes nothing reports that it changed nothing and
   `Summary::is_empty` means what it says.
-- **The schedule store is reloaded after a sync, and `sync_now` is what does it.**
+- **Every store a sync can rewrite is reloaded after it, in one method.** Progress,
+  the vocabulary list and the course cursor. The vocabulary list is the one that
+  bites rather than merely annoys: `save` reads an entry missing from the document as
+  one the learner removed and tombstones it, so a save from a document predating a
+  sync deletes everything the sync brought in, and those tombstones then travel.
+  Progress was done first and the list was forgotten, which is why the set lives in
+  `AppState::reload_after_sync` rather than in three calls at the command. The
+  original note on the schedule's store:
   A `ProgressStore` holds the document in memory and writes through it, so an open
   store goes stale the moment a sync rewrites the `progress_card` rows — and its
   next `save`, which every review performs, would write the stale card back over the
@@ -1535,7 +1542,7 @@ one that carries the weight does the whole pass: connect against a fake token
 endpoint, keep the refresh token, practise a character, sync over a real directory,
 find nothing to do the second time, then disconnect and prove the token is gone.
 
-The suite is green at 383 tests, with 4 more ignored unless a microphone or the
+The suite is green at 385 tests, with 4 more ignored unless a microphone or the
 speech model is present.
 
 **The settings screen.** A fifth row in the settings panel — the fourth was the

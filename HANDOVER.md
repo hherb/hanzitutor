@@ -1548,15 +1548,20 @@ downstream of them is covered by the IPC tests, which drive
   the adapter are equally load-bearing: sync publishes **`Db::own_attempts`**, never
   `Db::attempts` — after one sync the log holds a peer's work too, and publishing
   that under this device's name would relabel it, which is the identity the merge
-  rests on; and **the `ProgressStore` is reloaded after every sync, by `sync_now`**,
-  because the store holds the card document in memory and its next `save` (which
-  every review performs) would otherwise write its stale snapshot back over the
-  synced schedule. That is why `sync_now` takes the `AppState` as well as the sync
-  service — if that parameter looks unused, it is not, and removing it puts the bug
-  back. The reload runs on failure as well as success, because a sync that died
-  partway through `recompute` may still have written some schedules, and it leaves a
-  store that is already in its *failed* state alone, since refusing to save is the
-  point of that state. The damage is recoverable either way — the log kept every
+  rests on; and **every store a sync can rewrite is reloaded afterwards, by
+  `AppState::reload_after_sync`, which is called from `sync_now`** — progress, the
+  vocabulary list and the course cursor. That is why `sync_now` takes the `AppState`
+  as well as the sync service: if that parameter looks unused, it is not, and
+  removing it puts the bug back. The reload runs on failure as well as success,
+  because a sync that died partway through `recompute` may still have written
+  something, and it leaves a store already in its *failed* state alone, since
+  refusing to save is the point of that state. **The vocabulary list is the one that
+  bites**: `save` reads an entry missing from the document as one the learner
+  removed and tombstones it, so a save from a document that predates a sync deletes
+  everything the sync brought in — and those tombstones then travel and delete the
+  entries on the other devices too. It was forgotten once, after the progress store
+  had been done, which is why the set now lives in one method instead of three calls
+  at the command. The damage is recoverable either way — the log kept every
   attempt and the next sync rebuilds from it — but it is a silently wrong due date
   until then. Two
   On the vocabulary side, three rules are load-bearing. **The stamp is

@@ -1680,3 +1680,124 @@ fn a_reloaded_schedule_store_agrees_with_what_a_sync_wrote() {
     std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_dir_all(&shared).ok();
 }
+
+/// A sync's vocabulary entries survive the next local edit.
+///
+/// This is the destructive half of the stale-document bug, and it is why the
+/// vocabulary list has to be reloaded after a sync rather than merely redrawn.
+/// `save` reads an entry missing from the document as one the learner removed and
+/// tombstones it — so a save made from a document that predates a sync deletes
+/// everything the sync brought in, and those tombstones then travel to the other
+/// devices and delete the entries there too. A test that only checked the *view*
+/// would pass while the data was being destroyed behind it.
+#[test]
+fn a_synced_vocabulary_entry_survives_the_next_local_edit() {
+    let dir = data_dir("vocab-sync-reload");
+    let state = AppState::load(Some(dir.clone())).expect("the dataset should decode");
+    let db = state.db.clone().expect("a data directory means a database");
+
+    // A peer's list, left in a folder as a shard the way a phone would.
+    let shared = data_dir("vocab-sync-store");
+    let remote = hanzi_sync::FolderStore::open(&shared).unwrap();
+    let entry = hanzi_store::SyncedEntry {
+        uuid: "11111111-1111-4111-8111-111111111111".to_string(),
+        text: "学习".to_string(),
+        pinyin: "xuéxí".to_string(),
+        meaning: "to study".to_string(),
+        group: None,
+        added_at: "2026-09-19T09:00:00Z".to_string(),
+        updated_at: "2026-09-19T09:00:00Z".to_string(),
+        device_id: "phone".to_string(),
+        revision: 0,
+        deleted: false,
+    };
+    hanzi_sync::write_vocab(&remote, "phone", &[entry], &[]).unwrap();
+
+    let summary = hanzi_sync::sync(&db, &remote).unwrap();
+    assert_eq!(summary.vocab_changed, 1, "the entry arrived");
+
+    // Without the reload the open list would not know about it, and this save would
+    // tombstone it. That is the bug: the assertion below is about the database, not
+    // about what the screen shows.
+    state.reload_after_sync();
+    assert_eq!(
+        state.lock_vocab().store.entries().len(),
+        1,
+        "and the open list can see it"
+    );
+
+    {
+        let mut vocab = state.lock_vocab();
+        vocab
+            .store
+            .add_entry("你好", "nǐhǎo", "hello", None)
+            .unwrap();
+        assert!(vocab.save().is_none(), "the new entry should be stored");
+    }
+
+    let after = hanzi_core::VocabStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(after.entries().len(), 2, "the synced entry is still there");
+    assert!(
+        after.entries().iter().any(|e| e.text == "学习"),
+        "and it is specifically the synced one that survived: {:?}",
+        after.entries().iter().map(|e| &e.text).collect::<Vec<_>>()
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&shared).ok();
+}
+
+/// And the other half: without the reload, a sync's entries are destroyed.
+///
+/// Runs the same steps as the test above with the reload left out, so that the
+/// hazard is a demonstrated fact rather than a claim in a comment. If this test ever
+/// stops failing to lose the entry, either `save` changed how it reads the absence
+/// of an entry, or these two tests are no longer testing what they say.
+#[test]
+fn a_stale_vocabulary_list_tombstones_what_a_sync_brought() {
+    let dir = data_dir("vocab-sync-stale");
+    let state = AppState::load(Some(dir.clone())).expect("the dataset should decode");
+    let db = state.db.clone().expect("a data directory means a database");
+
+    let shared = data_dir("vocab-sync-stale-store");
+    let remote = hanzi_sync::FolderStore::open(&shared).unwrap();
+    let entry = hanzi_store::SyncedEntry {
+        uuid: "22222222-2222-4222-8222-222222222222".to_string(),
+        text: "学习".to_string(),
+        pinyin: "xuéxí".to_string(),
+        meaning: "to study".to_string(),
+        group: None,
+        added_at: "2026-09-19T09:00:00Z".to_string(),
+        updated_at: "2026-09-19T09:00:00Z".to_string(),
+        device_id: "phone".to_string(),
+        revision: 0,
+        deleted: false,
+    };
+    hanzi_sync::write_vocab(&remote, "phone", &[entry], &[]).unwrap();
+    assert_eq!(hanzi_sync::sync(&db, &remote).unwrap().vocab_changed, 1);
+
+    // Deliberately **not** reloaded, which is the state the app was in: the open list
+    // still holds the document it loaded at startup.
+    assert!(
+        state.lock_vocab().store.entries().is_empty(),
+        "the open list cannot see it, which is the visible symptom"
+    );
+    {
+        let mut vocab = state.lock_vocab();
+        vocab
+            .store
+            .add_entry("你好", "nǐhǎo", "hello", None)
+            .unwrap();
+        assert!(vocab.save().is_none(), "and this save goes through");
+    }
+
+    // The entry the sync delivered is now a tombstone in the database — and that
+    // tombstone is exactly what sync propagates, so it would have deleted the entry
+    // on the other devices too.
+    let after = hanzi_core::VocabStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(after.entries().len(), 1, "only the locally added entry is left");
+    assert_eq!(after.entries()[0].text, "你好");
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&shared).ok();
+}

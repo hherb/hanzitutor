@@ -170,6 +170,33 @@ impl Persisted<VocabStore> {
     pub fn save(&mut self) -> Option<String> {
         self.save_with(VocabStore::save)
     }
+
+    /// Re-read the list from the study database, returning whether it worked.
+    ///
+    /// Needed after a sync, and here the consequence of skipping it is worse than a
+    /// stale screen. `save` treats an entry that is missing from the document as one
+    /// the learner removed and *tombstones* it — so a save made from a document that
+    /// predates a sync would delete every entry the sync had just brought in, and
+    /// those tombstones would then travel to the other devices and delete them there
+    /// too. Reloading is what keeps the document and the database the same thing.
+    ///
+    /// Nothing is lost by reloading: every change saves as it is made.
+    pub fn reload(&mut self, db: &Db) -> bool {
+        const NOUN: &str = "vocabulary list";
+        if self.load_error.is_some() {
+            return false;
+        }
+        match VocabStore::open_with(Box::new(db.clone())) {
+            Ok(store) => {
+                self.store = store;
+                true
+            }
+            Err(error) => {
+                *self = Self::failed(VocabStore::in_memory(), self.path.clone(), NOUN, error);
+                false
+            }
+        }
+    }
 }
 
 /// Per-character practice history and the review schedule.
@@ -284,6 +311,29 @@ impl Persisted<CursorStore> {
     /// Persist the cursor, returning a warning if that was skipped or failed.
     pub fn save(&mut self) -> Option<String> {
         self.save_with(CursorStore::save)
+    }
+
+    /// Re-read the course position from the study database.
+    ///
+    /// A stale cursor cannot lose anything — it is one row that gets overwritten,
+    /// not a document whose absences mean removals — but a save from a stale one
+    /// would put back a position a sync had just moved, which is the same visible
+    /// wrongness the schedule had. So all three are reloaded together.
+    pub fn reload(&mut self, db: &Db) -> bool {
+        const NOUN: &str = "place in the course";
+        if self.load_error.is_some() {
+            return false;
+        }
+        match CursorStore::open_with(Box::new(db.clone())) {
+            Ok(store) => {
+                self.store = store;
+                true
+            }
+            Err(error) => {
+                *self = Self::failed(CursorStore::in_memory(), self.path.clone(), NOUN, error);
+                false
+            }
+        }
     }
 }
 
@@ -482,6 +532,23 @@ impl AppState {
     /// the slow one is finished before there is a webview to ask for anything.
     pub fn load(data_dir: Option<PathBuf>) -> Result<Self, String> {
         Ok(Self::assemble(Self::prepare()?, data_dir))
+    }
+
+    /// Re-read every store a sync can have rewritten.
+    ///
+    /// One method rather than three calls at the call site, because the set of
+    /// stores a sync touches is a fact about sync and should not have to be
+    /// remembered in the command layer. Progress was the first to need this and the
+    /// vocabulary list was forgotten, which is exactly the mistake this shape
+    /// prevents: a sync rebuilds schedules *and* settles the list *and* can move the
+    /// course position, so all three are re-read together or one of them is missed.
+    pub fn reload_after_sync(&self) {
+        let Some(db) = &self.db else {
+            return;
+        };
+        self.lock_progress().reload(db);
+        self.lock_vocab().reload(db);
+        self.lock_cursor().reload(db);
     }
 
     /// Lock the vocabulary list, tolerating a poisoned mutex: a panic while
