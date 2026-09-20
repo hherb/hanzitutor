@@ -82,3 +82,12 @@ foreground, its background colour and `mipmap-anydpi-v26`) and the iOS
 `AppIcon.appiconset`. Forget it after changing the artwork and the phones go on
 showing the **template's Tauri logo**, which is what had happened here: the
 desktop icon was ours and both mobile ones were still the template's.
+
+One Android wrinkle, for the next time a reinstall looks like it did nothing:
+the launcher keeps the **old** icon until the package's version code changes or
+the launcher restarts, so a same-version reinstall shows the previous artwork on
+the home screen while the APK already contains the new one. Restarting the
+launcher drops that cache for good — `adb shell am force-stop <launcher>`, then
+home — and the two can be told apart instead of guessed at by pulling the
+installed APK (`adb shell pm path com.hanzitutor.app`, then `adb pull`, then
+`aapt2 dump badging`), which is what showed the artwork had been right all along.
