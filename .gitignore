@@ -12,6 +12,12 @@ debug
 .cargo-home/
 .cargo-target/
 
+# --- Python ---------------------------------------------------------------
+# Byte-code for the helper scripts in scripts/, written whenever one of them
+# is imported rather than run.
+__pycache__/
+*.py[cod]
+
 # --- Frontend ------------------------------------------------------------
 node_modules/
 dist/
