@@ -17,12 +17,15 @@ platform code in it at all, which is why none of those ports needed a `cfg` in
 the core.
 
 <p align="center">
-  <img src="store/phone-screenshots/01-trace-the-guide.png" width="30%" alt="Tracing a character's guide on a phone">
-  <img src="store/phone-screenshots/02-graded-feedback.png" width="30%" alt="A graded handwriting attempt with per-stroke feedback">
+  <img src="docs/screenshots/01-graded-attempt.png" width="42%" alt="A graded attempt at 将: 90 out of 100, legible, stroke order correct">
+  <img src="docs/screenshots/02-stroke-order-flagged.png" width="42%" alt="The same character scored 85, with strokes 1 to 3 marked out of order and a tone score below">
 </p>
 
-*Tracing the guide, and the same attempt graded — captured on an Android phone.
-More, and the artwork used for the Play listing, are in [`store/`](store/).*
+*The same character, 将, written twice on a phone: once in the right order, and
+once with its first three strokes out of order — which the grader says in as
+many words, colours on the board and marks in the stroke list, while the panel
+below scores the tone that was spoken with it. The artwork and screenshots for
+the Play listing are in [`store/`](store/).*
 
 ## Status
 
@@ -751,6 +754,7 @@ src/lib/                    Svelte components
   LicencesPanel.svelte      About: the app's identity and every notice, in full
 scripts/                    data fetching, cargo env, CLI selection
 docs/privacy-policy.md      what the Android build tells Play, and why it is true
+docs/screenshots/           the captures this README shows
 store/                      the Play listing: copy, answers, icon, artwork
 ```
 
