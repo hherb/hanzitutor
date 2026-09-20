@@ -867,7 +867,13 @@ pub fn licence_notices() -> Vec<LicenceNotice> {
 // gate; see its note.
 
 /// What the sync screen should be showing.
-#[tauri::command]
+///
+/// `async` for the same reason the network commands are, and for one more: on
+/// Apple this can be the read that raises a fingerprint prompt, and on Android it
+/// asks the platform whether a fingerprint can be asked for at all. Both of those
+/// are things the window should be able to keep drawing through, and neither can
+/// happen if this runs on the thread the webview paints on.
+#[tauri::command(async)]
 pub fn sync_status(sync: State<'_, SyncService>) -> SyncView {
     sync.view()
 }

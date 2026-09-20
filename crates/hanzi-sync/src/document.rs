@@ -34,6 +34,7 @@
 
 use std::collections::BTreeMap;
 
+use hanzi_core::progress::CardState;
 use hanzi_store::{SyncedCursor, SyncedEntry, SyncedGroup};
 
 use crate::shard::device_of_shard;
@@ -47,11 +48,15 @@ use crate::store::{RemoteStore, SyncError};
 const VOCAB_VERSION: u32 = 1;
 /// The cursor document's format version.
 const CURSOR_VERSION: u32 = 1;
+/// The baseline document's format version.
+const BASELINE_VERSION: u32 = 1;
 
 /// The file a device's vocabulary view lives in.
 const VOCAB_FILE: &str = "vocab.json";
 /// The file a device's course position lives in.
 const CURSOR_FILE: &str = "cursor.json";
+/// The file a device's baseline lives in.
+const BASELINE_FILE: &str = "baseline.json";
 
 /// The name of a device's vocabulary shard.
 pub fn vocab_shard_name(device_id: &str) -> String {
@@ -61,6 +66,11 @@ pub fn vocab_shard_name(device_id: &str) -> String {
 /// The name of a device's cursor shard.
 pub fn cursor_shard_name(device_id: &str) -> String {
     format!("devices/{device_id}/{CURSOR_FILE}")
+}
+
+/// The name of a device's baseline shard.
+pub fn baseline_shard_name(device_id: &str) -> String {
+    format!("devices/{device_id}/{BASELINE_FILE}")
 }
 
 /// The device a shard belongs to, when `name` is exactly `devices/<id>/<file>`.
@@ -257,6 +267,232 @@ pub fn merge_vocab(
     )
 }
 
+// ---- the baseline ----------------------------------------------------------
+//
+// A card whose log does not go back to its first attempt cannot be rebuilt from the
+// log, and folding the part of it that survives would produce a schedule from a
+// fraction of what happened. The baseline is what makes such a card foldable again:
+// the state the lost history left behind, published so that every device folds the
+// same card from the same starting point.
+//
+// It is a document rather than a log: a device captures one the first time it syncs
+// after this existed — see `crate::local` — and what it captured never changes, because
+// it describes history that has already happened. It is re-uploaded on every sync
+// anyway, for the same reason the vocabulary document is: a shard that went missing
+// comes back by itself, and tracking whether this one changed would cost more than the
+// bytes do.
+
+/// One device's baseline.
+///
+/// It belongs to exactly one device, and its `device_id` is not decoration: the row
+/// range below is in *that* device's `seq` numbering, which no other device shares.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Baseline {
+    /// The device that captured it.
+    pub device_id: String,
+    /// This device's log rows with `seq` in `[from, to)` are already inside every
+    /// card here, so folding them again would count them twice.
+    ///
+    /// A range rather than a list of attempts, because it is *every* row this device
+    /// had written when the baseline was captured — its imported history and whatever
+    /// it practised afterwards — and those are contiguous: `seq` is handed out one
+    /// device at a time, in the order things happened, starting at zero.
+    #[serde(default)]
+    pub from: i64,
+    #[serde(default)]
+    pub to: i64,
+    /// The card states, by character.
+    #[serde(default)]
+    pub cards: BTreeMap<String, CardState>,
+}
+
+/// What travels for the baseline.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BaselineShard {
+    version: u32,
+    device_id: String,
+    from: i64,
+    to: i64,
+    cards: BTreeMap<String, CardState>,
+}
+
+/// Read every device's baseline.
+pub fn read_baselines(store: &dyn RemoteStore) -> Result<Vec<Baseline>, SyncError> {
+    let mut found = Vec::new();
+    for entry in store.list()? {
+        if owner_of(&entry.name, BASELINE_FILE).is_none() {
+            continue;
+        }
+        let bytes = store.get(&entry.name)?;
+        let shard: BaselineShard = serde_json::from_slice(&bytes).map_err(|e| {
+            SyncError::Malformed(format!("{} could not be read: {e}", entry.name))
+        })?;
+        if shard.version > BASELINE_VERSION {
+            return Err(SyncError::Malformed(format!(
+                "{} was written by a newer version of the app (format {}, this build \
+                 understands {BASELINE_VERSION})",
+                entry.name, shard.version
+            )));
+        }
+        // The directory a baseline sits in and the device it claims to be are
+        // checked against each other, which no other shard here needs. The reason is
+        // the row range: it says "these rows of device X are already inside these
+        // cards", so a file that claimed another device's name could suppress that
+        // device's attempts on every peer — a whole character's history quietly
+        // folded into nothing. A shard can only speak for the device whose directory
+        // it is in.
+        let owner = owner_of(&entry.name, BASELINE_FILE).unwrap_or_default();
+        if owner != shard.device_id {
+            return Err(SyncError::Malformed(format!(
+                "{} claims to be {}'s baseline, and it is in {}'s directory",
+                entry.name, shard.device_id, owner
+            )));
+        }
+        found.push(Baseline {
+            device_id: shard.device_id,
+            from: shard.from,
+            to: shard.to,
+            cards: shard.cards,
+        });
+    }
+    Ok(found)
+}
+
+/// Publish a device's baseline.
+///
+/// Only ever called with a baseline that has something in it: a device with no
+/// incomplete cards has nothing to say, and an empty document would be a file every
+/// peer downloads to learn nothing.
+pub fn write_baseline(store: &dyn RemoteStore, baseline: &Baseline) -> Result<String, SyncError> {
+    let shard = BaselineShard {
+        version: BASELINE_VERSION,
+        device_id: baseline.device_id.clone(),
+        from: baseline.from,
+        to: baseline.to,
+        cards: baseline.cards.clone(),
+    };
+    let encoded = serde_json::to_vec(&shard).map_err(|e| {
+        SyncError::Malformed(format!("the baseline could not be encoded: {e}"))
+    })?;
+    let name = baseline_shard_name(&baseline.device_id);
+    store.put(&name, &encoded)?;
+    Ok(name)
+}
+
+/// Every baseline a fold has to know about, resolved into the two questions it asks.
+///
+/// The fold asks one thing of one character: *where do I start, and which of these
+/// rows am I already past?* Answering that is the whole of this type, and it exists
+/// because the answer has to be the same on every device — so the winner is chosen
+/// by a rule over values the baselines themselves carry, never by anything a device
+/// computed or by the order they arrived in.
+#[derive(Clone, Debug, Default)]
+pub struct Baselines {
+    /// The winning state per character, with the device it came from.
+    winners: BTreeMap<String, (String, CardState)>,
+    /// Per character, the device ranges whose rows that character's state already
+    /// accounts for.
+    ///
+    /// Keyed by character, and that is load-bearing rather than tidy. A baseline's
+    /// range is a stretch of one device's log, and it says "the cards named here
+    /// already hold these rows" — nothing at all about the rows the same device
+    /// wrote for characters it did *not* name. A device with an incomplete history
+    /// for one character and a complete one for another is the ordinary case, and
+    /// treating the range as global would silently drop the second character's
+    /// attempts and leave its card at whatever it was.
+    covered: BTreeMap<String, Vec<(String, i64, i64)>>,
+}
+
+impl Baselines {
+    /// Resolve the baselines of every device into one view.
+    ///
+    /// Two devices with a baseline for the same character is the degenerate case: it
+    /// means both migrated from a JSON file that had got out of step, and the two
+    /// states are not two halves of one history but two rival accounts of it. **The
+    /// one that remembers more attempts wins**, which is the rule ROADMAP M13
+    /// prescribes; the device id settles a tie, so that every device picks the same
+    /// one. Nothing here can tell which account is *right*, and pretending otherwise
+    /// would be inventing history.
+    pub fn resolve(devices: Vec<Baseline>) -> Self {
+        let mut winners: BTreeMap<String, (String, CardState)> = BTreeMap::new();
+        let mut covered: BTreeMap<String, Vec<(String, i64, i64)>> = BTreeMap::new();
+        for baseline in devices {
+            for (ch, card) in baseline.cards {
+                covered.entry(ch.clone()).or_default().push((
+                    baseline.device_id.clone(),
+                    baseline.from,
+                    baseline.to,
+                ));
+                let challenger = (baseline.device_id.clone(), card);
+                match winners.get(&ch) {
+                    Some(held) if !beats(&challenger, held) => {}
+                    _ => {
+                        winners.insert(ch, challenger);
+                    }
+                }
+            }
+        }
+        Self { winners, covered }
+    }
+
+    /// The state to fold this character from, if any baseline has one.
+    pub fn winner(&self, ch: &str) -> Option<&CardState> {
+        self.winners.get(ch).map(|(_, card)| card)
+    }
+
+    /// Every character a baseline has a state for, with the device it came from.
+    ///
+    /// The fold needs this as well as [`Self::winner`], because a character can be in
+    /// a baseline and have no row in the log at all — a migrated card whose stored
+    /// history was empty — and it still has a schedule that every device should
+    /// agree on.
+    pub fn winners(&self) -> impl Iterator<Item = (&String, &(String, CardState))> {
+        self.winners.iter()
+    }
+
+    /// Whether one row is already accounted for by the baseline for its character.
+    ///
+    /// Deliberately asked of *every* baseline naming that character and not only the
+    /// winning one. A losing baseline's rows were part of the account that was
+    /// discarded, and there is no reading of two rivals under which keeping them is
+    /// right — they describe the same stretch of one character's history, from the
+    /// other side, and applying them on top of the winner would count that stretch
+    /// twice.
+    pub fn covers(&self, ch: &str, device_id: &str, seq: i64) -> bool {
+        self.covered
+            .get(ch)
+            .is_some_and(|ranges| {
+                ranges
+                    .iter()
+                    .any(|(device, from, to)| device == device_id && seq >= *from && seq < *to)
+            })
+    }
+
+    /// Whether anything at all is known here, which is the common case: false for a
+    /// learner whose log has always been complete, and false for every device that
+    /// has never imported a JSON file.
+    pub fn is_empty(&self) -> bool {
+        self.winners.is_empty()
+    }
+}
+
+/// Whether one candidate baseline should win over the one held.
+///
+/// More attempts first, then the **lower** device id. Which way the tiebreak runs is
+/// arbitrary; that it *is* one is not. A rule that could tie would let two devices
+/// pick different winners out of the same shards and diverge with nothing to notice
+/// it by, so the comparison has to be a total order over what the baselines
+/// themselves carry — never the order they arrived in, and never anything a device
+/// computed.
+fn beats(candidate: &(String, CardState), held: &(String, CardState)) -> bool {
+    let (candidate_attempts, held_attempts) = (candidate.1.attempts, held.1.attempts);
+    match candidate_attempts.cmp(&held_attempts) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => candidate.0 < held.0,
+    }
+}
+
 /// The course position that won, or `None` when no device has published one.
 pub fn merge_cursor(local: Option<SyncedCursor>, remote: Vec<SyncedCursor>) -> Option<SyncedCursor> {
     local
@@ -380,5 +616,142 @@ mod tests {
             revision: 0,
         };
         assert_eq!(merge_cursor(None, vec![only.clone()]).unwrap().position, 7);
+    }
+
+    /// A card state with just enough filled in to tell two of them apart.
+    fn baseline_card(attempts: u32, ease: f32) -> CardState {
+        CardState {
+            attempts,
+            lapses: 0,
+            best_score: None,
+            last_score: None,
+            last_practised: None,
+            due: "2026-09-19T09:00:00Z".to_string(),
+            interval_days: 0.0,
+            ease,
+            repetitions: 0,
+            history: Vec::new(),
+        }
+    }
+
+    fn baseline(device: &str, from: i64, to: i64, cards: &[(&str, u32, f32)]) -> Baseline {
+        Baseline {
+            device_id: device.to_string(),
+            from,
+            to,
+            cards: cards
+                .iter()
+                .map(|(ch, attempts, ease)| (ch.to_string(), baseline_card(*attempts, *ease)))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn two_baselines_for_one_character_are_settled_by_the_one_that_remembers_more() {
+        // The degenerate case: two devices migrated from JSON files that had got out
+        // of step, so the two states are rival accounts rather than two halves of one
+        // history. Nothing here can tell which is right, so the rule is the one
+        // ROADMAP M13 prescribes — and the *device id* settles a tie, because a rule
+        // that could tie would let two devices choose differently and diverge with
+        // nothing to notice it by.
+        let phone = baseline("phone", 0, 3, &[("好", 5, 2.5)]);
+        let laptop = baseline("laptop", 0, 9, &[("好", 9, 2.1)]);
+
+        let resolved = Baselines::resolve(vec![phone.clone(), laptop.clone()]);
+        assert_eq!(resolved.winner("好").unwrap().attempts, 9, "more attempts wins");
+        let other_way = Baselines::resolve(vec![laptop, phone]);
+        assert_eq!(
+            other_way.winner("好").unwrap().ease,
+            resolved.winner("好").unwrap().ease,
+            "and the same one wins whichever order the shards arrived in"
+        );
+
+        // A tie goes to the lower device id, and to the same one either way round.
+        let a = baseline("aaa", 0, 1, &[("好", 4, 2.0)]);
+        let b = baseline("bbb", 0, 1, &[("好", 4, 2.9)]);
+        assert_eq!(Baselines::resolve(vec![b.clone(), a.clone()]).winner("好").unwrap().ease, 2.0);
+        assert_eq!(Baselines::resolve(vec![a, b]).winner("好").unwrap().ease, 2.0);
+    }
+
+    #[test]
+    fn a_baseline_speaks_only_for_the_characters_it_names() {
+        // The bug this scoping exists for. A baseline's range is a stretch of one
+        // device's log, and it claims the cards it names already hold those rows — it
+        // says nothing about the characters the same device wrote in the same stretch.
+        // Read as a global range it would drop them, and their cards would be left at
+        // whatever they were, silently.
+        let device = baseline("laptop", 0, 3, &[("好", 5, 2.5)]);
+        let resolved = Baselines::resolve(vec![device]);
+
+        assert!(resolved.covers("好", "laptop", 1), "the named character is covered");
+        assert!(!resolved.covers("好", "laptop", 3), "but only inside the range");
+        assert!(!resolved.covers("好", "phone", 1), "and only its own rows");
+        assert!(
+            !resolved.covers("猫", "laptop", 1),
+            "a character the baseline does not name keeps its rows"
+        );
+        assert!(resolved.winner("猫").is_none(), "and has no state to fold from");
+    }
+
+    /// The store the shard-reading tests use: a name to bytes.
+    struct MemoryStore(BTreeMap<String, Vec<u8>>);
+
+    impl RemoteStore for MemoryStore {
+        fn list(&self) -> Result<Vec<crate::RemoteEntry>, SyncError> {
+            Ok(self
+                .0
+                .iter()
+                .map(|(name, bytes)| crate::RemoteEntry {
+                    name: name.clone(),
+                    revision: format!("{}", bytes.len()),
+                })
+                .collect())
+        }
+        fn get(&self, name: &str) -> Result<Vec<u8>, SyncError> {
+            self.0
+                .get(name)
+                .cloned()
+                .ok_or_else(|| SyncError::Io(format!("{name} is not in the store")))
+        }
+        fn put(&self, _name: &str, _bytes: &[u8]) -> Result<(), SyncError> {
+            unreachable!("the reading tests never write")
+        }
+    }
+
+    #[test]
+    fn a_baseline_in_the_wrong_directory_is_refused() {
+        // The check that makes the row range safe to trust. A file claiming another
+        // device's name could suppress that device's attempts everywhere it travelled,
+        // which is a whole character's history folded into nothing.
+        let text = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "device_id": "laptop",
+            "from": 0,
+            "to": 9,
+            "cards": {},
+        }))
+        .unwrap();
+        let store = MemoryStore(BTreeMap::from([(
+            baseline_shard_name("phone"),
+            text,
+        )]));
+        let refusal = read_baselines(&store).unwrap_err();
+        assert!(
+            refusal.to_string().contains("directory"),
+            "the refusal should say what is wrong: {refusal}"
+        );
+    }
+
+    #[test]
+    fn a_baseline_with_nothing_in_it_covers_nothing() {
+        // A capture that found no incomplete cards still writes itself down, so the
+        // scan happens once rather than on every sync. It must then be inert: an
+        // empty document that suppressed a whole seq range would break every
+        // character on the device that captured it.
+        let empty = baseline("laptop", 0, 500, &[]);
+        let resolved = Baselines::resolve(vec![empty]);
+        assert!(resolved.is_empty());
+        assert!(!resolved.covers("好", "laptop", 1));
+        assert!(!resolved.covers("好", "laptop", 499));
     }
 }

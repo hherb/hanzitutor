@@ -32,7 +32,7 @@ ls .cargo-home 2>/dev/null || {
 #    dataset artifact, the interface font and the licence texts are all
 #    committed, so a clone builds without downloading anything.
 pnpm install
-pnpm test                        # expect 403 passed, 0 failed, 4 ignored
+pnpm test                        # expect 409 passed, 0 failed, 4 ignored
 pnpm run check:rust && pnpm run check:web
 ```
 
@@ -543,7 +543,7 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
 Run before every commit:
 
 ```bash
-pnpm test           # 403 tests: engine + data pipeline units, the SQLite store, IPC contract, speech, notices, data-dir flag
+pnpm test           # 409 tests: engine + data pipeline units, the SQLite store, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
@@ -1592,7 +1592,14 @@ downstream of them is covered by the IPC tests, which drive
   must be `(at, device_id, seq)`, because whole-second `at` ties are real and
   `ease` accumulates in `f32`, so without a tiebreak the devices drift; and a
   migrated card whose `attempts` exceeds its logged rows must fold from a captured
-  baseline, since its log is incomplete. Dropbox is the first transport, with
+  baseline, since its log is incomplete — **and that baseline is built now.** The rule
+  worth not undoing is that its covered range is **per character**: a baseline says
+  "the cards I name already hold my rows in this seq range" and nothing about the other
+  characters the same device wrote in the same stretch, so read as a global range it
+  silently drops them and leaves their cards at whatever they were. A card with no
+  baseline to fold from is left alone and reported, which is what the code did before
+  the baseline existed: the fallback must degrade to a stale schedule, never to an
+  invented one. Dropbox is the first transport, with
   app-folder access and PKCE so that no client secret enters an AGPL repository —
   and with **no redirect URI**, because Dropbox rejects custom schemes (every
   redirect must be HTTPS except `localhost`), so the code is shown on the

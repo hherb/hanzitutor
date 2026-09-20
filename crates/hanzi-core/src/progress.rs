@@ -706,19 +706,38 @@ fn apply_attempt(
 /// handed a sequence and returns the schedule it implies. An empty log has no
 /// card in it, so this returns `None` rather than inventing one.
 ///
-/// A log that does not go back to the character's first attempt — which is what a
-/// card migrated from the pre-M10 JSON files has, since that kept only the newest
-/// twenty — reconstructs only the part of the history it holds. That case is why
-/// the shard format carries a baseline; see ROADMAP M13.
+/// A log that does not go back to the character's first attempt reconstructs only
+/// the part of the history it holds; [`fold_from`] is the same fold with the rest
+/// of it supplied.
 pub fn fold_attempts(attempts: &[Attempt], scheduler: &dyn Scheduler) -> Option<CardState> {
     let first = attempts.first()?;
     // The same starting state `record_with` gives a character it has never seen:
     // unseen, and due at the moment of its first attempt.
-    let mut card = CardState::new(&first.at);
+    Some(fold_from(CardState::new(&first.at), attempts, scheduler))
+}
+
+/// Rebuild a card from a state a log cannot reach, and the attempts that followed.
+///
+/// For a card whose log is incomplete — a schedule migrated from the pre-M10 JSON
+/// files, which kept only the newest twenty attempts — the surviving rows are the
+/// *tail* of the history, and folding them from an unseen card would rebuild a
+/// schedule out of a fraction of what happened. `baseline` is what the history
+/// before that tail left behind, so the fold is the whole story again: the state,
+/// then every attempt the log holds that the state does not already account for.
+///
+/// It is deliberately the same [`apply_attempt`] the other path calls. A separate
+/// implementation could drift from it, and a device folding from a baseline would
+/// then disagree with one folding from a complete log — which is the silent
+/// divergence this whole design exists to prevent.
+pub fn fold_from(
+    mut baseline: CardState,
+    attempts: &[Attempt],
+    scheduler: &dyn Scheduler,
+) -> CardState {
     for attempt in attempts {
-        apply_attempt(&mut card, attempt.score, &attempt.at, scheduler);
+        apply_attempt(&mut baseline, attempt.score, &attempt.at, scheduler);
     }
-    Some(card)
+    baseline
 }
 
 /// Build the review queue.

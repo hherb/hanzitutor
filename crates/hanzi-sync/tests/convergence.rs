@@ -15,9 +15,15 @@ use std::path::{Path, PathBuf};
 
 use hanzi_core::Rating;
 use hanzi_sync::{
-    attempts_shard_name, device_of_shard, fold_cards, merge_attempts, parse_attempts_shard,
+    attempts_shard_name, device_of_shard, fold_cards, merge_attempts, parse_attempts_shard, Baselines,
     read_attempts, write_attempts, FolderStore, MergedAttempt, RemoteStore,
 };
+
+/// A fold with nothing to fold from, which is the ordinary case: a log that goes
+/// back to every character's first attempt needs no baseline.
+fn no_baseline() -> Baselines {
+    Baselines::default()
+}
 
 /// A private directory per test, cleaned up by the caller's `finish`.
 fn dir(name: &str) -> PathBuf {
@@ -86,8 +92,8 @@ fn two_devices_that_practised_apart_converge_on_one_schedule() {
         .cloned()
         .collect();
 
-    let on_laptop = fold_cards(&merge_attempts(laptop(), peers_of_laptop).unwrap());
-    let on_phone = fold_cards(&merge_attempts(phone(), peers_of_phone).unwrap());
+    let on_laptop = fold_cards(&merge_attempts(laptop(), peers_of_laptop).unwrap(), &no_baseline());
+    let on_phone = fold_cards(&merge_attempts(phone(), peers_of_phone).unwrap(), &no_baseline());
 
     assert_eq!(
         on_laptop, on_phone,
@@ -111,7 +117,7 @@ fn the_order_the_merge_is_given_the_two_logs_in_does_not_matter() {
     let forwards = merge_attempts(laptop(), phone()).unwrap();
     let backwards = merge_attempts(phone(), laptop()).unwrap();
     assert_eq!(forwards, backwards, "a union does not have a loser");
-    assert_eq!(fold_cards(&forwards), fold_cards(&backwards));
+    assert_eq!(fold_cards(&forwards, &no_baseline()), fold_cards(&backwards, &no_baseline()));
 
     finish(&dir("order"));
 }
@@ -177,7 +183,7 @@ fn the_same_sequence_number_on_two_devices_is_two_attempts() {
 
     let merged = merge_attempts(one, two).unwrap();
     assert_eq!(merged.len(), 2, "sequence 1 twice is still two attempts");
-    assert_eq!(fold_cards(&merged)["好"].attempts, 2);
+    assert_eq!(fold_cards(&merged, &no_baseline())["好"].attempts, 2);
 
     finish(&dir);
 }
@@ -317,7 +323,7 @@ fn a_chunk_of_the_log_is_one_shard_and_a_longer_log_is_more_than_one() {
 #[test]
 fn folding_an_empty_log_produces_no_cards() {
     // A store with nothing in it is a device that has never synced, not an error.
-    let cards = fold_cards(&[]);
+    let cards = fold_cards(&[], &no_baseline());
     assert!(cards.is_empty());
     assert!(merge_attempts(vec![], vec![]).unwrap().is_empty());
 

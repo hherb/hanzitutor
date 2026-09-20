@@ -54,7 +54,8 @@ pub use grade::{
 };
 pub use raster::INK_WIDTH;
 pub use progress::{
-    build_queue, fold_attempts, Attempt, AttemptRecord, CardState, CardView, CursorDocument,
+    build_queue, fold_attempts, fold_from, Attempt, AttemptRecord, CardState, CardView,
+    CursorDocument,
     CursorSink, CursorStore, CursorView, ProgressError, ProgressSink, ProgressStore, ProgressView,
     Rating, ReviewItem, ReviewSource, ReviewView, Scheduler, Sm2,
 };

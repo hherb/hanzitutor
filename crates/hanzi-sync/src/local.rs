@@ -44,11 +44,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use hanzi_core::progress::{ProgressError, ProgressSink};
+use hanzi_core::progress::{CardState, ProgressError, ProgressSink};
 use hanzi_store::{Db, IncomingAttempt, LoggedAttempt};
 
 use crate::document::{
-    merge_cursor, merge_vocab, read_cursor, read_vocab, write_cursor, write_vocab,
+    merge_cursor, merge_vocab, read_baselines, read_cursor, read_vocab, write_baseline,
+    write_cursor, write_vocab, Baseline, Baselines,
 };
 use crate::shard::{fold_cards, merge_attempts, read_attempts, write_attempts, MergedAttempt};
 use crate::store::{RemoteStore, SyncError};
@@ -59,6 +60,14 @@ use crate::store::{RemoteStore, SyncError};
 /// markers, so that one backup captures it and a restored database does not
 /// re-publish everything it ever recorded.
 const PUBLISHED_THROUGH: &str = "sync:published_seq";
+
+/// Where this device keeps its own baseline, as a JSON document.
+///
+/// In `meta` beside the watermark rather than in a file of its own, for the reason
+/// given on `Db::meta_value`: one backup captures everything. It is written once and
+/// never changes, because it describes history that has already happened — which is
+/// also why it is a document here rather than a table.
+const BASELINE_KEY: &str = "sync:baseline";
 
 /// What one sync did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -151,7 +160,85 @@ pub fn publish_documents(db: &Db, store: &dyn RemoteStore) -> Result<(), SyncErr
     if let Some(cursor) = db.cursor_view().map_err(SyncError::Io)? {
         write_cursor(store, db.device_id(), &cursor)?;
     }
+    // Before the pull, and that ordering is the point: a peer that reads this
+    // device's attempts must be able to read the baseline that says how to fold
+    // them. A peer that misses it folds what it can and is corrected by its next
+    // sync, which is the right direction to fail in.
+    if let Some(baseline) = capture_baseline(db)? {
+        write_baseline(store, &baseline)?;
+    }
     Ok(())
+}
+
+/// This device's baseline, captured on first use and read back afterwards.
+///
+/// ## What it is, and why it has to be captured rather than derived
+///
+/// A card imported from the pre-M10 JSON files remembers more attempts than the log
+/// holds, because that format kept only the newest twenty. The rows that survive are
+/// the *tail* of the character's history, and rebuilding the card from them alone
+/// would produce a schedule out of the last twenty attempts of a hundred — wrong
+/// everywhere, and wrong differently on a device that has only some of them. The
+/// state the missing history left behind cannot be recovered from the log, so it is
+/// written down once, here.
+///
+/// ## Why the covered range is what it is
+///
+/// The baseline accounts for **this device's own rows written so far**, and nothing
+/// else. Every one of them is genuinely inside the captured state: an attempt this
+/// device records goes through `apply_attempt` and is written back with the card in
+/// the same `save`, so the card has always moved with the log. A *peer's* rows are
+/// deliberately outside it — those arrived through a pull and, for exactly the cards
+/// that need a baseline, the recompute that follows a pull has always skipped them.
+/// Leaving them unfolded here would be the bug this exists to fix.
+///
+/// ## Why the capture is lazy rather than an upgrade step
+///
+/// It happens on the first sync after this existed, which is the first moment
+/// anybody needs it. A database that has already migrated gets one the same way a new
+/// one does, and one that never syncs never needs one — so there is no schema change
+/// and nothing to get wrong on the upgrade path.
+///
+/// An empty baseline is still written down, so that the capture is a one-off rather
+/// than a scan of every card on every sync. It is not *published* when empty: a file
+/// every peer downloads to learn nothing is worse than no file.
+fn capture_baseline(db: &Db) -> Result<Option<Baseline>, SyncError> {
+    if let Some(text) = db.meta_value(BASELINE_KEY).map_err(SyncError::Io)? {
+        if let Ok(baseline) = serde_json::from_str::<Baseline>(&text) {
+            return Ok((!baseline.cards.is_empty()).then_some(baseline));
+        }
+    }
+
+    let log = full_log(db)?;
+    let mut rows: BTreeMap<String, u32> = BTreeMap::new();
+    for attempt in &log {
+        *rows.entry(attempt.ch.clone()).or_insert(0) += 1;
+    }
+    // `own_attempts` is ordered by `seq`, so the last one names the range.
+    let next = db
+        .own_attempts()
+        .map_err(SyncError::Io)?
+        .last()
+        .map(|attempt| attempt.seq + 1)
+        .unwrap_or(0);
+    let document = db.load().map_err(|e| SyncError::Io(e.to_string()))?;
+    let cards: BTreeMap<String, CardState> = document
+        .cards
+        .iter()
+        .filter(|(ch, card)| card.attempts > rows.get(ch.as_str()).copied().unwrap_or(0))
+        .map(|(ch, card)| (ch.clone(), card.clone()))
+        .collect();
+
+    let baseline = Baseline {
+        device_id: db.device_id().to_string(),
+        from: 0,
+        to: next,
+        cards,
+    };
+    let text = serde_json::to_string(&baseline)
+        .map_err(|e| SyncError::Malformed(format!("the baseline could not be encoded: {e}")))?;
+    db.set_meta_value(BASELINE_KEY, &text).map_err(SyncError::Io)?;
+    Ok((!baseline.cards.is_empty()).then_some(baseline))
 }
 
 /// Bring every peer's attempts into the local log, returning how many were new.
@@ -182,13 +269,14 @@ pub fn pull(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
     db.merge_attempts(&incoming).map_err(SyncError::Io)
 }
 
-/// Rebuild the local schedule from the whole log.
+/// Rebuild the local schedule from the whole log, folding from a baseline where one
+/// exists.
 ///
 /// Returns how many characters were rebuilt and how many were left alone. See the
 /// module note for why any are left alone at all.
-pub fn recompute(db: &Db) -> Result<(usize, usize), SyncError> {
+pub fn recompute(db: &Db, baselines: &Baselines) -> Result<(usize, usize), SyncError> {
     let log = full_log(db)?;
-    let folded = fold_cards(&log);
+    let folded = fold_cards(&log, baselines);
 
     let mut rows_in_log: BTreeMap<&str, u32> = BTreeMap::new();
     for attempt in &log {
@@ -204,9 +292,14 @@ pub fn recompute(db: &Db) -> Result<(usize, usize), SyncError> {
         let existing = document.cards.get(&ch);
         let known = existing.map(|card| card.attempts).unwrap_or(0);
         let rows = rows_in_log.get(ch.as_str()).copied().unwrap_or(0);
-        if known > rows {
-            // Its own card remembers more attempts than the log holds, so the log
-            // is not the whole story and folding it would lose the rest.
+        if known > rows && baselines.winner(&ch).is_none() {
+            // Its own card remembers more attempts than the log holds, so the log is
+            // not the whole story and folding it would lose the rest. A baseline is
+            // what makes that story whole again, so what is left here is a card whose
+            // device has not published one yet — a device that has not synced since
+            // it migrated, or a peer's baseline that has not arrived. It is the *old*
+            // behaviour, kept deliberately: a missing baseline has to degrade to
+            // leaving the schedule alone, never to inventing one.
             left_alone += 1;
             continue;
         }
@@ -262,7 +355,16 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
     let pulled = pull(db, store)?;
     let vocab_changed = pull_vocab(db, store)?;
     let cursor_moved = pull_cursor(db, store)?;
-    let (recomputed, left_alone) = recompute(db)?;
+    // Every device's baseline, this one's included, resolved into the two questions
+    // the fold asks of it. Read after the pull so that a peer's baseline arriving in
+    // this pass is used in this pass rather than the next one.
+    let mut baselines = read_baselines(store)?;
+    if let Some(text) = db.meta_value(BASELINE_KEY).map_err(SyncError::Io)? {
+        if let Ok(own) = serde_json::from_str::<Baseline>(&text) {
+            baselines.push(own);
+        }
+    }
+    let (recomputed, left_alone) = recompute(db, &Baselines::resolve(baselines))?;
     Ok(Summary {
         published,
         pulled,

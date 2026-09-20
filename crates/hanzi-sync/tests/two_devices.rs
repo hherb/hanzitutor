@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use hanzi_core::progress::CardState;
 use hanzi_core::{CursorStore, ProgressStore, VocabStore};
 use hanzi_store::Db;
-use hanzi_sync::{full_log, own_log, read_attempts, recompute, sync, FolderStore};
+use hanzi_sync::{full_log, own_log, read_attempts, recompute, sync, Baselines, FolderStore};
 
 fn scratch(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("hanzi-sync-e2e-{name}-{}", std::process::id()));
@@ -205,34 +205,125 @@ fn a_device_that_has_never_seen_a_character_learns_its_whole_schedule() {
     finish(&shared);
 }
 
+/// Write a `progress.json` whose card remembers five attempts but kept only two of
+/// them, which is what the pre-M10 format produces once a history is longer than the
+/// twenty it stored.
+fn migrated_short_log(path: &Path, ch: char, attempts: usize, kept: usize) {
+    let mut progress = ProgressStore::open(path.join("progress.json")).unwrap();
+    for i in 0..attempts {
+        let at = format!("2026-09-19T09:{i:02}:00Z");
+        progress.record_at(ch, 80.0, &at).unwrap();
+    }
+    progress.save().unwrap();
+    drop(progress);
+
+    let file = path.join("progress.json");
+    let text = fs::read_to_string(&file).unwrap();
+    let mut document: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let key = ch.to_string();
+    let history = document["cards"][&key]["history"].as_array().unwrap();
+    let newest = history[history.len() - kept..].to_vec();
+    document["cards"][&key]["history"] = serde_json::Value::Array(newest);
+    fs::write(&file, serde_json::to_string(&document).unwrap()).unwrap();
+}
+
+#[test]
+fn a_card_whose_log_is_short_of_its_count_keeps_its_schedule_through_the_baseline() {
+    // M13's baseline, and the acceptance criterion it was written for. The migrated
+    // card remembers five attempts and its log holds two, so folding those two would
+    // rebuild a schedule out of the tail of a history — wrong on the device that has
+    // them and differently wrong on a device that has only some of them. The baseline
+    // is the state the missing part left behind, and it travels, so the device that
+    // never saw the JSON ends up with the same schedule as the one that did.
+    let path_a = scratch("baseline-a");
+    migrated_short_log(&path_a, '好', 5, 2);
+    let db_a = Db::open(&path_a).unwrap();
+    assert_eq!(card(&reload(&db_a), "好").attempts, 5, "the count survived the import");
+    assert_eq!(full_log(&db_a).unwrap().len(), 2, "the log only ever had two");
+
+    let shared = scratch("baseline-store");
+    let remote = FolderStore::open(&shared).unwrap();
+    // A's first sync is where the baseline is captured and published.
+    sync(&db_a, &remote).unwrap();
+    let on_a = card(&reload(&db_a), "好");
+
+    let (dir_b, db_b, _) = device("baseline-b");
+    sync(&db_b, &remote).unwrap();
+    let on_b = card(&reload(&db_b), "好");
+
+    assert_eq!(on_b, on_a, "both devices fold the same card from the same baseline");
+    assert_eq!(on_b.attempts, 5, "including the three attempts the log never held");
+    assert_eq!(
+        on_b.ease, on_a.ease,
+        "and the ease the lost attempts had accumulated, which no fold of the two \
+         surviving rows could have reached"
+    );
+
+    // The proof that it did not stop at copying the card over: B's new attempt has
+    // to be folded *on top of* the baseline. Ignoring it is what "left alone" did,
+    // and it is why this was worth building.
+    let mut progress_b = reload(&db_b);
+    record(&mut progress_b, '好', 90.0, "2026-10-01T09:00:00Z");
+    sync(&db_b, &remote).unwrap();
+    sync(&db_a, &remote).unwrap();
+
+    let after_a = card(&reload(&db_a), "好");
+    let after_b = card(&reload(&db_b), "好");
+    assert_eq!(after_a, after_b, "one history, one schedule");
+    assert_eq!(after_a.attempts, 6, "five from the baseline and one since");
+    assert!(after_a.last_score == Some(90.0), "the new attempt is the latest");
+
+    // And a third sync still has nothing to do.
+    let idle = sync(&db_a, &remote).unwrap();
+    assert!(idle.is_empty(), "a second sync should be a no-op: {idle:?}");
+
+    finish(&path_a);
+    finish(&dir_b);
+    finish(&shared);
+}
+
+#[test]
+fn the_baseline_does_not_suppress_a_character_whose_log_is_complete() {
+    // The range a baseline covers is a stretch of one device's log, and it says
+    // which rows the *cards it names* already hold — nothing about the other
+    // characters that device wrote in the same stretch. Treating it as global would
+    // quietly drop them and leave their cards at whatever they were.
+    let path_a = scratch("baseline-mixed");
+    // 好 migrated with a history that does not go back to its first attempt.
+    migrated_short_log(&path_a, '好', 5, 2);
+    let db_a = Db::open(&path_a).unwrap();
+
+    // 猫 is practised afterwards, so its log is complete and it needs no baseline.
+    let mut progress_a = reload(&db_a);
+    record(&mut progress_a, '猫', 70.0, "2026-09-25T09:00:00Z");
+    record(&mut progress_a, '猫', 80.0, "2026-09-26T09:00:00Z");
+
+    let shared = scratch("baseline-mixed-store");
+    let remote = FolderStore::open(&shared).unwrap();
+    sync(&db_a, &remote).unwrap();
+    let on_a = card(&reload(&db_a), "猫");
+    assert_eq!(on_a.attempts, 2);
+
+    let (dir_b, db_b, _) = device("baseline-mixed-b");
+    sync(&db_b, &remote).unwrap();
+    let on_b = card(&reload(&db_b), "猫");
+    assert_eq!(on_b, on_a, "the complete character crossed intact");
+    assert_eq!(on_b.attempts, 2);
+
+    finish(&path_a);
+    finish(&dir_b);
+    finish(&shared);
+}
+
 #[test]
 fn a_card_whose_log_is_short_of_its_count_is_left_alone() {
-    // The migrated card, and the one case where folding would *lose* something.
-    // `progress.json` kept only the newest twenty attempts, so a card can honestly
-    // remember more attempts than the log holds. Rebuilding it from the log alone
-    // would discard the part the log never had, so it is left as it is until the
-    // baseline exists — reported, not guessed at.
+    // The same card as the baseline test above, on a device that has never published
+    // a baseline — a peer whose own baseline has not arrived, or a database whose
+    // capture has not happened yet. Leaving the schedule alone is what this did
+    // before the baseline existed, and it is deliberately still the fallback: a
+    // missing baseline has to degrade to no answer, never to a wrong one.
     let path = scratch("short-log");
-    {
-        // Write a legacy document with a card that has five attempts behind it but
-        // only two in its history, which is exactly what a migrated card looks
-        // like. The real writer produces the format; only the history is trimmed.
-        let mut progress = ProgressStore::open(path.join("progress.json")).unwrap();
-        for i in 0..5 {
-            let at = format!("2026-09-19T09:0{i}:00Z");
-            progress.record_at('好', 80.0, &at).unwrap();
-        }
-        progress.save().unwrap();
-        drop(progress);
-
-        let file = path.join("progress.json");
-        let text = fs::read_to_string(&file).unwrap();
-        let mut document: serde_json::Value = serde_json::from_str(&text).unwrap();
-        let history = document["cards"]["好"]["history"].as_array().unwrap();
-        let newest_two = history[history.len() - 2..].to_vec();
-        document["cards"]["好"]["history"] = serde_json::Value::Array(newest_two);
-        fs::write(&file, serde_json::to_string(&document).unwrap()).unwrap();
-    }
+    migrated_short_log(&path, '好', 5, 2);
 
     // Opening the database imports that document: five attempts remembered, two
     // rows in the log.
@@ -241,7 +332,7 @@ fn a_card_whose_log_is_short_of_its_count_is_left_alone() {
     assert_eq!(card(&progress, "好").attempts, 5, "the count survived the import");
     assert_eq!(full_log(&db).unwrap().len(), 2, "the log only ever had two");
 
-    let (changed, left_alone) = recompute(&db).unwrap();
+    let (changed, left_alone) = recompute(&db, &Baselines::default()).unwrap();
     assert_eq!(changed, 0, "nothing may be rebuilt from a log this short");
     assert_eq!(left_alone, 1, "and it is reported rather than silently skipped");
 

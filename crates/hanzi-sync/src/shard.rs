@@ -39,7 +39,9 @@
 
 use std::collections::BTreeMap;
 
-use hanzi_core::{fold_attempts, Attempt, CardState, Rating, Sm2};
+use hanzi_core::{fold_attempts, fold_from, Attempt, CardState, Rating, Sm2};
+
+use crate::document::Baselines;
 use serde::{Deserialize, Serialize};
 
 use crate::store::{RemoteStore, SyncError};
@@ -239,28 +241,70 @@ pub fn merge_attempts(
 /// concatenated two sources still gets one answer. Each character's attempts are
 /// gathered in that same order and handed to the engine's fold, which is the only
 /// thing that decides what a schedule is.
-pub fn fold_cards(attempts: &[MergedAttempt]) -> BTreeMap<String, CardState> {
+///
+/// ## What the baselines change
+///
+/// For a character some device has published a baseline for, the fold starts from
+/// that state instead of from an unseen card — and the rows that state already
+/// accounts for are **left out**, because folding them again would count them twice.
+/// Everything else is the same fold, which is the point: a device folding from a
+/// baseline and a device folding from a complete log run the same code over the same
+/// attempts and must land on the same card.
+///
+/// A character can also be *only* in a baseline, with no row in the log at all: a
+/// migrated card whose stored history was empty has nothing in the log to key it by,
+/// and its state is exactly what its own device holds. So the character set is the
+/// union of the two, not the log's.
+///
+/// ## The one approximation, stated rather than hidden
+///
+/// A baseline carries no timestamp — it is a state, not an event — so every attempt
+/// that is applied on top of one is applied *after* it, whatever the clock says. An
+/// attempt a peer recorded before this device migrated is therefore folded as though it
+/// came afterwards. That is the best available reading: the baseline is the only record
+/// of what happened before, and it has no date to order against. It is the same
+/// approximation the loser of two rival baselines gets, and it is bounded by the fact
+/// that a baseline exists at all only for characters whose history predates the log.
+pub fn fold_cards(attempts: &[MergedAttempt], baselines: &Baselines) -> BTreeMap<String, CardState> {
     let mut ordered: Vec<&MergedAttempt> = attempts.iter().collect();
     ordered.sort_by(|a, b| canonical(a, b));
 
-    let mut by_character: BTreeMap<&str, Vec<Attempt>> = BTreeMap::new();
+    let mut by_character: BTreeMap<&str, Vec<&MergedAttempt>> = BTreeMap::new();
     for attempt in ordered {
-        by_character
-            .entry(attempt.ch.as_str())
-            .or_default()
-            .push(Attempt {
-                at: attempt.at.clone(),
-                score: attempt.score,
-                rating: attempt.rating,
-            });
+        by_character.entry(attempt.ch.as_str()).or_default().push(attempt);
     }
 
-    by_character
-        .into_iter()
-        .filter_map(|(ch, log)| {
-            // `fold_attempts` returns `None` for an empty log, which cannot
-            // happen here: a character is only in the map because it has one.
-            fold_attempts(&log, &Sm2).map(|card| (ch.to_string(), card))
-        })
-        .collect()
+    let mut folded = BTreeMap::new();
+    for (ch, rows) in &by_character {
+        let log: Vec<Attempt> = rows
+            .iter()
+            .filter(|row| !baselines.covers(&row.ch, &row.device_id, row.seq))
+            .map(|row| Attempt {
+                at: row.at.clone(),
+                score: row.score,
+                rating: row.rating,
+            })
+            .collect();
+        let card = match baselines.winner(ch) {
+            Some(state) => Some(fold_from(state.clone(), &log, &Sm2)),
+            // No baseline, so the log is the whole story — and `fold_attempts`
+            // answers `None` for an empty one, which cannot happen for a character
+            // that is in this map. Everything below is a character that is in a
+            // baseline and not in the log, which the loop after this one covers.
+            None => fold_attempts(&log, &Sm2),
+        };
+        if let Some(card) = card {
+            folded.insert(ch.to_string(), card);
+        }
+    }
+
+    // A character with a baseline and no rows at all: nothing to fold onto it, and
+    // its state is the baseline itself.
+    for (ch, (_, state)) in baselines.winners() {
+        folded
+            .entry(ch.clone())
+            .or_insert_with(|| state.clone());
+    }
+
+    folded
 }

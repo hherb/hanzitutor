@@ -45,7 +45,7 @@ progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
 measure**, the **durable study store**, **tone practice**, **speech
 recognition** and optional **cross-device sync** through your own Dropbox — for
 characters *and words*, on desktop and on both mobile systems — are all implemented
-and tested; **403 automated tests** pass, and 4 more are
+and tested; **409 automated tests** pass, and 4 more are
 ignored unless a microphone or the speech model is present. A
 signed Android
 release bundle is built and runs on a physical phone, and the recognition model
@@ -916,8 +916,9 @@ crates/hanzi-sync/          cross-device sync: the shard format, the merge and t
                             fold (M13)
   src/shard.rs              the format, the union, and the fold into schedules
   src/store.rs              `RemoteStore`, and the directory implementation
-  src/local.rs              the database side: publish, pull, recompute
+  src/local.rs              the database side: publish, pull, recompute, baseline
   src/http.rs               the four request shapes Dropbox uses, and `ureq`
+  src/document.rs           the shards that get rewritten, baseline included
   src/oauth.rs              PKCE, the authorize URL, token exchange and refresh
   src/dropbox.rs            Dropbox as a `RemoteStore`
   src/reach.rs              whether there is a network path, asked first
@@ -1261,10 +1262,12 @@ dragging or by clicking. The headline gaps are now:
    ever given a folder its own app can see. Confirmed against a real Dropbox account
    on **three devices at once** — a MacBook, an iPhone and an Android phone — merging
    each way, including a device that had never seen a character picking up its
-   schedule from another's log. What is still missing is named at the end of ROADMAP
-   M13: the baseline for a schedule whose log does not go back to its first attempt,
-   and a fingerprint prompt on Android. The vocabulary list and the course cursor
-   travel too:
+   schedule from another's log. A schedule whose log does not go back to its first
+   attempt — one migrated from the old JSON files, which kept only the newest twenty
+   attempts — travels too, folded from a baseline its device captured, so the two
+   devices agree about that one as well. What is still missing is named at the end of
+   ROADMAP M13: a fingerprint prompt on Android. The vocabulary list and the course
+   cursor travel too:
    an entry is edited and deleted rather than only appended to, so it is settled by
    last-writer-wins on a three-part stamp, and the counters that only mean something
    on the device that did the practising stay there.

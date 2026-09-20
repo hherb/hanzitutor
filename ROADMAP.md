@@ -1384,12 +1384,16 @@ place they do:
 - **`pull` merges in memory before writing.** The database's `DO NOTHING` cannot
   tell "already have it" from "have a different copy of it", so the in-memory merge
   runs first and a rewritten shard is reported rather than swallowed.
-- **`recompute` rebuilds schedules and is conservative about one case.** It skips
-  any card whose count exceeds its rows in the log — a card migrated from the
-  pre-M10 JSON kept only its newest twenty attempts — because folding those would
-  discard the part the log never held. It also skips a card the fold already agrees
-  with, so a sync that changes nothing reports that it changed nothing and
-  `Summary::is_empty` means what it says.
+- **`recompute` rebuilds schedules, and folds the one case it cannot rebuild from a
+  baseline.** A card whose count exceeds its rows in the log had history before the
+  log existed — a card migrated from the pre-M10 JSON, which kept only its newest
+  twenty attempts — and folding those rows alone would rebuild a schedule out of the
+  tail of one. See "The baseline" below for what happens instead. A card with no
+  baseline to fold from is left exactly as it was and reported, which is what this
+  did *before* the baseline existed: the fallback is the conservative answer, never an
+  invented one. It also skips a card the fold already agrees with, so a sync that
+  changes nothing reports that it changed nothing and `Summary::is_empty` means what
+  it says.
 - **Every store a sync can rewrite is reloaded after it, in one method.** Progress,
   the vocabulary list and the course cursor. The vocabulary list is the one that
   bites rather than merely annoys: `save` reads an entry missing from the document as
@@ -1425,6 +1429,55 @@ next sync heals it.
 
 The suite is green at 344 tests, with 4 more ignored unless a microphone or the
 speech model is present.
+
+**The baseline, which is how a card whose log is too short still folds.** The one
+thing the "the log syncs and the schedule is recomputed" design could not do is a card
+whose log does not reach its first attempt. The pre-M10 JSON files kept only the newest
+twenty attempts of a character, so a migrated card honestly remembers more than the log
+holds, and folding the rows that survived would rebuild a schedule out of the *tail* of
+a history. Three things make it foldable again.
+
+- **The state is captured, because it cannot be derived.** What the missing attempts
+  left behind is not recoverable from the two that survived — SM-2's ease accumulates,
+  and nothing in the log records what it was before. So the device that owns such a card
+  writes the state down once, in `meta` beside the publish watermark, and publishes it
+  as its own `baseline.json`.
+- **The capture is lazy, not an upgrade step.** It happens on the first sync after this
+  existed, which is the first moment anybody needs it, and a database that migrated
+  years ago gets one the same way a fresh one does. No schema change, and nothing to get
+  wrong on the upgrade path. An empty capture is written down and *not* published, so
+  the scan happens once and a peer is not handed a file to learn nothing from.
+- **What it covers is exactly this device's own rows so far.** Every one of them is
+  genuinely inside the captured state, because an attempt this device records goes
+  through `apply_attempt` and is written back with its card in the same `save` — the two
+  have always moved together. A *peer's* rows are deliberately outside it: those arrived
+  through a pull, and for precisely the cards that need a baseline the recompute that
+  follows a pull has always skipped them. Leaving them unfolded here would be the bug
+  the baseline exists to fix.
+- **The range is per character, and that is not tidiness.** A baseline's range is a
+  stretch of one device's log, and all it claims is that *the cards it names* already
+  hold those rows. The first version treated it as a global range and a test caught what
+  that costs: a device with an incomplete history for one character and a complete one
+  for another would have had the second character's attempts silently dropped, leaving
+  its card at whatever it was. This is the kind of bug that produces two devices
+  disagreeing with nothing to notice it by, which is why the test exists.
+- **Two baselines for one character are settled by the one that remembers more**, with
+  the device id breaking a tie. Two rival accounts of one history is a degenerate case —
+  it means two JSON files had got out of step — and nothing here can tell which is
+  right, so the rule is total and deterministic rather than clever. A rule that could
+  tie would let two devices pick different winners out of the same shards.
+- **The fallback is the old behaviour.** A card with no baseline to fold from is left
+  exactly as it was and counted in `Summary::left_alone`, so a missing baseline degrades
+  to a stale schedule and never to an invented one.
+
+The acceptance criterion this was written for is that **a card whose `attempts` exceeds
+its logged rows keeps its schedule through the baseline path**, and the test that
+carries it goes further than that: it proves the *new* attempt a peer records afterwards
+is folded on top of the baseline, because ignoring it is exactly what "left alone" used
+to do and is the reason this was worth building. Two more tests cover the mixed device
+above and the fallback, and three unit tests in `document.rs` cover the resolution
+itself — the winner, the tie, the per-character scoping, and an empty baseline being
+inert.
 
 **The Dropbox client.** Hand-written over `ureq`, because `ureq`, `sha2` and
 `base64` are all already in the build graph and Dropbox's own Rust SDK would be a
@@ -1602,7 +1655,7 @@ store it was found in; and both access controls the switch can ask for are ones 
 system will actually build, which is the one platform call that cannot be covered
 without a keychain.
 
-The suite is green at 403 tests, with 4 more ignored unless a microphone or the
+The suite is green at 409 tests, with 4 more ignored unless a microphone or the
 speech model is present.
 
 **The settings screen.** A fifth row in the settings panel — the fourth was the
@@ -1772,21 +1825,23 @@ say which is right.
   overwritten a *synced* position with 0 on any device that had not been paged
   through yet.
 
-Four more tests in `crates/hanzi-sync/tests/two_devices.rs`: an entry added on one
-device arriving on two others with its group; the same entry edited on two devices
-ending up the same way on both; a removal staying removed rather than being
-resurrected by the copy that was still there; and the course position following
-whichever device moved it last. Five unit tests in `crates/hanzi-sync/src/document.rs`
+Four more tests in `crates/hanzi-sync/tests/two_devices.rs` for the vocabulary list and
+the cursor: an entry added on one device arriving on two others with its group; the same
+entry edited on two devices ending up the same way on both; a removal staying removed
+rather than being resurrected by the copy that was still there; and the course position
+following whichever device moved it last. Three more cover the baseline: the acceptance
+criterion above, a device with one incomplete character and one complete one, and the
+fallback for a card with no baseline to fold from. Five unit tests in `crates/hanzi-sync/src/document.rs`
 cover the ordering itself, including the tiebreak, and four in
 `crates/hanzi-store/tests/store.rs` cover the storage the merge rests on.
 
-**What is not built.** The baseline for a card whose log does not go back to its
-first attempt, and a fingerprint prompt on Android, which needs `androidx.biometric`
-and so is its own change. The fingerprint *on the platforms that can do it* is built,
-and the order those two were done in is the point: a sync nobody asked for must not
-be a sync that stops to ask for something, so asking for nothing by default and
-reading the token once per run had to come before the automatic sync rather than
-after it.
+**What is not built.** A fingerprint prompt on Android, which needs
+`androidx.biometric` and so is its own change. The fingerprint *on the platforms that
+can do it* is built, and the order these were done in is the point twice over: a sync
+nobody asked for must not be a sync that stops to ask for something, so asking for
+nothing by default and reading the token once per run had to come before the automatic
+sync; and the baseline had to come before it too, because a schedule that a sync
+cannot rebuild is a schedule a sync can quietly get wrong.
 
 **Why.** Practice happens on whichever device is at hand — the laptop at a desk,
 the phone on a train — and a schedule that exists on only one of them is a
