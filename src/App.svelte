@@ -2142,6 +2142,12 @@
     padding: 16px 20px 20px;
     gap: 12px;
     overflow-y: auto;
+    /* A report that is longer than its column makes the page scroll, and a
+       classic scrollbar takes its width out of the page. Reserving that width
+       whether or not the page happens to scroll is what keeps the board the same
+       size before and after a tone is scored, rather than shrinking it by the
+       width of a scrollbar that the report brought with it. */
+    scrollbar-gutter: stable;
   }
 
   .status {
@@ -2234,10 +2240,20 @@
   }
 
   .workspace {
+    /* The practice column is given the height the header leaves, and the row is
+       *pinned* to it rather than grown to fit what is in it. The feedback column
+       is the tallest thing on the row whenever there is a tone report or a
+       grading report to show, and a row sized by its contents took the board's
+       height from the report: the square was re-fitted to the taller box and
+       centred lower in it, and every control below slid down as well. A report
+       describes the attempt; it does not get to resize the board that produced
+       it. What does not fit in the column now overflows the row and scrolls the
+       page, which is where the rest of the report already was. */
     flex: 1;
     min-height: 0;
     display: grid;
     grid-template-columns: minmax(0, 1fr) 330px;
+    grid-template-rows: minmax(0, 1fr);
     gap: 20px;
     /* Let the stage fill the row so the board has a real height to fit into. */
     align-items: stretch;

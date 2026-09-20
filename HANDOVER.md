@@ -141,7 +141,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Raster ink measure (M4) | Done | 9 rasteriser tests + 8 grading tests; a third-width pen fails all 7,744 characters, a correct trace scores exactly 1.000 on every one |
 | Dataset pipeline | Done | 9,574 characters, 13 MB artifact |
 | IPC surface | Done | contract tests asserting exact JSON key sets |
-| Drawing canvas | Done, human-confirmed | trace + recall modes, colour-coded feedback |
+| Drawing canvas | Done, human-confirmed | trace + recall modes, colour-coded feedback; the practice column is anchored under the header and sized by the window, so a tone or a grading report beside it can neither move nor resize the board (row-pinned `.workspace` + `scrollbar-gutter`; measured at 1180×840 — §6) |
 | Stroke-order animation (M7) | Done | pen sweeps each centre-line, the outline revealed behind it; band width measured per stroke; confirmed by window capture |
 | Input ergonomics (M8) | Done, human-confirmed | click-to-draw beside the corrections switch, on by default where there is a hover and remembered once chosen; both paths produce identical geometry; driven with synthetic pointer events, and the trackpad behaviour confirmed by hand |
 | Pronunciation | Done on macOS and iOS | 19 tests; the iOS voice list is pinned from the simulator's log; the voice preference outranks the automatic choice but yields to the environment override, and falls back rather than going silent; human-confirmed hearing 的 on both |
@@ -715,6 +715,20 @@ downstream of them is covered by the IPC tests, which drive
   `side`, which starts at 0, so an observer on *the canvas* can never see a size
   to grow into. `PracticeCanvas.svelte` observes the surrounding board instead.
   This was a silent deadlock — the window opened with an invisible canvas.
+- **The report column must not size the board.** `.workspace` is one grid row and
+  that row is `minmax(0, 1fr)`, pinned to the height `main` left it, because a row
+  with an `auto` size grows to whatever is in it — and the tallest thing in it is
+  the feedback column whenever a tone or a grading report is on screen. Sizing the
+  row that way handed the board its height from the report: the square was
+  re-fitted to the taller box, `place-items: center` pushed it down by half of the
+  extra, and the controls slid off the bottom of the window when a tone was
+  scored. Measured with a four-syllable tone report and a grading report beside
+  it, on a 1180×840 window: the board's top went from 120 to 247 (and the page
+  from 808 to 1052 of scroll) before the row was pinned, and stayed at 120 with
+  it. `main` also carries `scrollbar-gutter: stable`, without which the page
+  scrollbar the report brings with it takes its width out of the board and the
+  square quietly shrinks by ~15 px. The board's *size* is deliberately still a
+  fit to the window — what it must not do is change because a report appeared.
 - **macOS voice names carry a locale qualifier**: `Tingting (Chinese (China
   mainland))`, not `Tingting`. Compare `base_name()`. A fixture with tidy names
   passed while the real list never matched, so the app quietly used another voice.
