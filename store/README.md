@@ -67,3 +67,18 @@ python3 scripts/make-store-assets.py screenshot raw.png store/phone-screenshots/
 Requires Pillow. Screenshots are padded to 1080×1920 with the app's own
 background colour, because Play wants 16:9 or 9:16 and a modern phone is
 taller than that.
+
+The *app's own* icons — iOS, Android and desktop — come from the same artwork,
+and only `tauri icon` writes them:
+
+```bash
+# 1024×1024 with transparency; `icon.icns` carries one, and `iconutil -c iconset`
+# unpacks it if a PNG is wanted
+./scripts/with-cargo-env.sh ./scripts/tauri-cli.sh icon app-icon-1024.png --ios-color "#8c1d14"
+```
+
+It rewrites `src-tauri/icons/`, the Android `mipmap-*` sets (the adaptive icon's
+foreground, its background colour and `mipmap-anydpi-v26`) and the iOS
+`AppIcon.appiconset`. Forget it after changing the artwork and the phones go on
+showing the **template's Tauri logo**, which is what had happened here: the
+desktop icon was ours and both mobile ones were still the template's.
