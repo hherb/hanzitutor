@@ -328,7 +328,6 @@
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;
-				DEVELOPMENT_TEAM = "X5DWXB4283";
 			};
 			name = debug;
 		};
@@ -360,7 +359,6 @@
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;
-				DEVELOPMENT_TEAM = "X5DWXB4283";
 			};
 			name = release;
 		};
