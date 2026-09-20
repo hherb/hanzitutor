@@ -21,7 +21,10 @@ physical phone), with a phone layout made for practice rather than for fitting. 
 speaks through each system's own synthesiser, preferring a voice that needs no
 network. The Rust engine — the grading, the pitch analysis, the data — has no
 platform code in it at all, which is why none of those ports needed a `cfg` in
-the core.
+the core. Speech recognition runs on all three of the platforms this project is
+built for, phones included, and is the one part that is *not* a single binary:
+each target links a native engine of its own, fetched and pinned per platform. See
+[On a phone](#on-a-phone).
 
 <p align="center">
   <img src="docs/screenshots/01-graded-attempt.png" width="42%" alt="A graded attempt at 将: 90 out of 100, legible, stroke order correct">
@@ -39,12 +42,14 @@ the Play listing are in [`store/`](store/).*
 Working end to end. The grading engine, the dataset pipeline, the Tauri command
 layer, the drawing UI, pronunciation, the personal vocabulary list, per-character
 progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
-measure**, the **durable study store** and **tone practice** — for characters
-*and words*, on desktop and on both mobile systems — are all implemented and
-tested; **302 automated tests** pass. A signed Android release bundle is built
-and runs on a physical phone; what is left for the Play Store is publishing the
-privacy policy and filling in the Console listing, not code. What is not built
-yet is listed under [Next steps](#next-steps).
+measure**, the **durable study store**, **tone practice** and **speech
+recognition** — for characters *and words*, on desktop and on both mobile systems
+— are all implemented and tested; **318 automated tests** pass. A signed Android
+release bundle is built and runs on a physical phone, and the recognition model
+has been installed and used on both a physical iPhone and a physical Android
+phone; what is left for the Play Store is publishing the privacy policy and
+filling in the Console listing, not code. What is not built yet is listed under
+[Next steps](#next-steps).
 
 ## What it does
 
@@ -171,7 +176,10 @@ app data — the native code for the speech engine. Cargo would otherwise downlo
 it during `cargo build` against no recorded checksum, so this fetches it instead
 against a pinned SHA-256, into `.sherpa-onnx/` (gitignored, about 20 MB). It
 refuses a platform whose digest has not been recorded rather than trusting
-whatever the network returns; the script's header says how to add one.
+whatever the network returns; the script's header says how to add one. A mobile
+build needs its own run first, because each platform links a different artefact:
+`--ios` stages the framework Xcode links and must embed, and `--android` the `.so`
+files Gradle packages.
 
 The **model** that engine runs is separate again, and is not part of the build at
 all: it is downloaded at run time by the learner, from the settings screen, and
@@ -761,6 +769,40 @@ things are deliberate rather than incidental:
   correct syllable was wrong. That is the safe direction to be wrong in, and the
   tone verdict is unaffected either way.
 
+### On a phone
+
+Recognition is cheap enough that a phone from 2021 does not notice it. Measured on
+an iPhone 13 Pro Max (A15, 6 GB) with exactly the configuration above — int8
+weights, `zh` pinned, ITN off, one thread:
+
+| | |
+| --- | --- |
+| Loading the model | 0.63 s, once; ~330 MB resident thereafter |
+| A 5.6 s utterance | 0.20 s — about 27× faster than real time |
+| A single syllable | 0.04 s |
+
+Memory is a non-issue at that size on a 6 GB phone, and threading buys nothing
+worth taking: the app pins `num_threads` to 1 so the practice board cannot
+stutter, and four threads would save only 0.09 s.
+
+The engine, though, is the one part of this app that is **not** a single build.
+macOS links a static archive; iOS links a dynamic framework, which the app has to
+embed; Android links a `.so` per ABI. `scripts/fetch-sherpa.sh` therefore takes a
+target — `--ios`, `--android` — and each fetches and digest-checks the artefact
+that target needs, then stages it where that platform's build looks for it. On
+both mobile builds the engine is consequently *outside* the executable: an
+embedded framework on iOS, four `.so` files in the APK on Android.
+
+Two consequences are worth knowing before they surprise you:
+
+- **A dynamic framework must be embedded, not merely linked.** That declaration
+  lives in `src-tauri/gen/apple/project.yml`, which is a generated file — a full
+  `tauri ios init` drops it, and the app then builds cleanly and dies at launch.
+  All of the mobile build traps are in HANDOVER.md.
+- **The weights are a download on a phone too.** 163 MB over the phone's own
+  connection, into the application data directory, exactly as on the desktop. The
+  app offers it, states the size first, and everything else works without it.
+
 ## Architecture
 
 ```
@@ -974,6 +1016,7 @@ bundle/dmg/Hanzi Tutor_0.2.0_aarch64.dmg
 export ANDROID_HOME="$HOME/Library/Android/sdk"
 export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
 
+./scripts/fetch-sherpa.sh --android   # required once: stages the engine into jniLibs
 ./scripts/with-cargo-env.sh ./scripts/tauri-cli.sh android build --apk --aab --target aarch64
 ```
 
@@ -990,6 +1033,37 @@ wider sandbox than the rest of the project, because Gradle writes to `~/.gradle`
 and the emulator to `~/.android/avd`; and the release APK is the artifact to test
 by hand, because a release build's webview is not debuggable (HANDOVER §6).
 
+### Shipping the iOS build
+
+```bash
+./scripts/fetch-sherpa.sh --ios       # required once: stages the engine for Xcode
+
+export APPLE_DEVELOPMENT_TEAM="<your Apple team ID>"   # HANDOVER.md records this project's
+./scripts/with-cargo-env.sh ./scripts/tauri-cli.sh ios build --debug --target aarch64 --ci
+```
+
+That exports an IPA to `src-tauri/gen/apple/build/arm64/`. Unzip it and install
+`Payload/Hanzi Tutor.app` with `xcrun devicectl device install app --device <udid>`,
+then launch it with `xcrun devicectl device process launch --device <udid>
+com.hanzitutor.app`. The phone must be unlocked for that launch, which is the one
+step here that needs a person. Four things about this build are not obvious:
+
+- **It must be `--debug`.** A release iOS build fails at the app link with
+  `symbol(s) not found for architecture arm64` for Tauri's own Swift entry points,
+  which are local rather than exported in a release archive of `libTauri.a`. That
+  wants a toolchain fix, not a change here.
+- **Clear the archive between builds.** A second one fails with `failed to rename
+  app …: Directory not empty`; `rm -rf src-tauri/gen/apple/build` first.
+- **The team ID belongs in the environment**, as above, not in a committed file.
+  Xcode will write `DEVELOPMENT_TEAM` into the generated `project.pbxproj` while
+  it works; that line is not committed, for the same reason the macOS signing
+  identity is not in `tauri.conf.json`.
+- **It needs a wider sandbox than the rest of the project**, because it writes to
+  `~/Library/Developer` and runs `swift build`, which applies a sandbox of its own.
+
+Do not drive `xcodebuild` at the project directly: its "Build Rust Code" phase
+asks the parent CLI for its options over a WebSocket and panics without one.
+
 ### What is inside the bundle
 
 Everything the course teaches. Nothing is downloaded on first run and nothing has
@@ -1001,13 +1075,16 @@ to be installed besides the app itself:
 | The interface, including the Noto Sans SC font | Tauri embeds `frontendDist` into the executable | ~18 MB |
 | SQLite, for the study store | compiled from the amalgamation by `libsqlite3-sys` | ~1.5 MB |
 | Microphone capture, `cpal` | compiled in; CoreAudio on macOS | ~100 KB |
-| Speech recognition, `sherpa-onnx` + ONNX Runtime | linked in from the pinned native archive | ~26 MB |
+| Speech recognition, `sherpa-onnx` + ONNX Runtime | linked in from the pinned native artefact for the target — a static archive on macOS, an embedded framework on iOS, a `.so` per ABI on Android | ~26 MB |
 | Fourteen licence notices, as plain text | `bundle.resources` → `Contents/Resources/licences/` | ~75 KB |
 
 So the executable is about 62 MB — it was about 36 MB before the speech engine,
 which is the largest single addition the app has ever taken on. The engine is
 present whether or not a model is installed: it is the *weights* that are
-downloaded, not the code that runs them. The notices are **also** compiled into
+downloaded, not the code that runs them. The mobile builds are shaped differently,
+because the engine sits beside the executable there rather than inside it: an iOS
+app is a 70 MB executable plus a 25 MB embedded framework, and the Android APK is
+about 66 MB. The notices are **also** compiled into
 the binary, which is why the About screen cannot come up blank in a packaged
 build: the loose files are for a redistributor who wants to read them without
 launching the app. Both copies come from the same source file at build time, and a

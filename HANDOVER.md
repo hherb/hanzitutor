@@ -1012,6 +1012,53 @@ downstream of them is covered by the IPC tests, which drive
   Note that `tauri ios init` **leaves an existing `project.yml` alone**: to make
   the config take effect you must delete `src-tauri/gen/apple` and re-init, which
   also deletes the shim above.
+- **The iOS framework dependency is a hand-edit to `project.yml`, and a re-init
+  loses it.** `bundle.iOS.frameworks` is the *wrong* key for sherpa-onnx despite
+  the name: Tauri renders it as `- sdk: {{this}}.framework`, which is for Apple
+  system frameworks, so pointing it at an xcframework yields a nonsense `sdk:`
+  entry rather than a bundled framework. What this project has instead is a
+  `- framework: SherpaOnnxC.xcframework` dependency with `embed: true` written
+  directly into `src-tauri/gen/apple/project.yml`. `embed` is load-bearing: iOS
+  links sherpa-onnx **dynamically** (the crate forces shared linking there), so
+  without it the app builds and then dies at launch, because dyld cannot find the
+  dylib. `scripts/fetch-sherpa.sh --ios` stages the framework at
+  `gen/apple/SherpaOnnxC.xcframework` against a pinned digest, so the path in
+  `project.yml` and that script's staging directory have to agree. A re-init
+  drops the edit with nothing to say so.
+- **Regenerating the iOS project after a build bundles 405 MB of static library
+  into the app.** `project.yml` lists `Externals` as a source path, and the build
+  writes the Rust static library to `Externals/arm64/<config>/libapp.a`. XcodeGen
+  walks that path and treats the `.a` as a file to copy, so any `xcodegen
+  generate` (which is also what `ios init` runs) *after* a build adds "libapp.a
+  in Resources" — and the app then ships the entire build intermediate. It cost
+  405 MB uncompressed and took the IPA from **46 MB to 163 MB**. A fresh `ios
+  init` never sees it, because `Externals/` is empty until something has been
+  built, which is exactly why it is easy to hit once and never notice. The source
+  entry now carries `excludes: ["**/libapp.a"]` so a regeneration is safe; the
+  library is still linked, because that comes from the `dependencies` entry and
+  not from the directory walk. If the app ever balloons again, look here first.
+- **Both mobile targets need their own pinned sherpa-onnx artefact, and
+  `with-cargo-env.sh` has to know which.** `sherpa-onnx-sys` forces shared
+  linking on Android as well as iOS, so `SHERPA_ONNX_LIB_DIR` pointing at the
+  macOS *static* libraries panics the build script with "No shared runtime
+  libraries found in …" — for `tauri android build` exactly as for iOS. iOS gets
+  a lib directory (`fetch-sherpa.sh --ios`), Android an archive directory
+  (`fetch-sherpa.sh --android`, through `SHERPA_ONNX_ARCHIVE_DIR`, so the crate
+  picks the ABI matching the architecture being built). The choice is made from
+  the command's arguments, because the `--target` triple is constructed inside
+  Tauri and never visible to the wrapper — and it matches target triples as well
+  as CLI subcommands, since a bare `ios`/`android` word misses
+  `cargo check --target aarch64-linux-android`, which then fails with that same
+  misleading panic.
+- **The crate cannot stage either mobile artefact into this project itself.** Its
+  `find_tauri_project_dir` looks for `tauri.conf.json` in `target_dir.parent()`,
+  which assumes the default `src-tauri/target/`. This project sets
+  `CARGO_TARGET_DIR=<repo>/.cargo-target`, so that parent is the repository root,
+  the lookup finds nothing, and the copy is **silently skipped** — for the iOS
+  xcframework and for Android's jniLibs alike. Both are therefore staged by
+  `scripts/fetch-sherpa.sh`. Android's staging copies into the existing per-ABI
+  directories rather than over them, because Gradle's own build leaves a symlink
+  to `libhanzi_tutor_lib.so` in the very same place.
 - **A signing identity's parenthetical is not the team ID.** `cargo-mobile2`
   reports `Apple Development: someone@example.com (Y38YQNR57Q)`; passing that
   value as `APPLE_DEVELOPMENT_TEAM` gives `No Account for Team "Y38YQNR57Q"`.

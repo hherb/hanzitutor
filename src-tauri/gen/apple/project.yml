@@ -30,7 +30,16 @@ targets:
     sources:
       - path: Sources
       - path: Assets.xcassets
+      # The build writes the Rust static library here, and this entry makes
+      # XcodeGen walk the directory — so without the exclusion a regeneration
+      # *after* a build picks `libapp.a` up as a file to copy and bundles 405 MB
+      # of build intermediate into the app. A fresh `ios init` never sees it,
+      # because `Externals/` is empty until something has been built. The
+      # dependency below still links the library; this only stops the directory
+      # walk from also treating it as a resource.
       - path: Externals
+        excludes:
+          - "**/libapp.a"
       - path: hanzi-tutor_iOS
       - path: assets
         buildPhase: resources
@@ -72,6 +81,17 @@ targets:
     dependencies:
       - framework: libapp.a
         embed: false
+      # sherpa-onnx is a *dynamic* framework on iOS, not a static library: the
+      # crate forces shared linking there, so unlike the macOS build it cannot be
+      # folded into the app binary. It therefore has to be linked *and*
+      # embedded — with only the link, the app builds and then dies at launch,
+      # because dyld cannot find the dylib at run time.
+      #
+      # Staged here by `scripts/fetch-sherpa.sh --ios`, which checks it against a
+      # pinned digest first. That script and this path have to agree.
+      - framework: SherpaOnnxC.xcframework
+        embed: true
+        codeSign: true
       - sdk: CoreGraphics.framework
       - sdk: Metal.framework
       - sdk: MetalKit.framework
