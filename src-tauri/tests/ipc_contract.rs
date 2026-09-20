@@ -1604,3 +1604,79 @@ fn a_truncated_recording_says_so_in_the_detail() {
         "an uncapped recording must not claim it was capped"
     );
 }
+
+/// A sync rewrites schedules in the database, so the open store has to be reloaded.
+///
+/// Without the reload the store keeps the document from before the sync, and its
+/// next `save` — which every review performs — writes those stale cards back over
+/// the synced ones. This test does the whole shape of it: practise, sync a peer's
+/// attempt in, watch the open store go stale, reload, and see it agree again.
+#[test]
+fn a_reloaded_schedule_store_agrees_with_what_a_sync_wrote() {
+    let dir = data_dir("sync-reload");
+    let state = AppState::load(Some(dir.clone())).expect("the dataset should decode");
+    let db = state.db.clone().expect("a data directory means a database");
+
+    // One practice attempt, saved as the app saves it.
+    let before_due;
+    {
+        let mut progress = state.lock_progress();
+        progress
+            .store
+            .record_at('好', 88.0, "2026-09-19T09:00:00Z")
+            .unwrap();
+        assert!(progress.save().is_none(), "the attempt should be stored");
+        let card = progress.store.card('好').unwrap();
+        assert_eq!(card.attempts, 1);
+        before_due = card.due.clone();
+    }
+
+    // A peer's attempt, left in a folder as a shard the way a phone would.
+    let shared = data_dir("sync-reload-store");
+    let remote = hanzi_sync::FolderStore::open(&shared).unwrap();
+    let peer = hanzi_sync::MergedAttempt {
+        device_id: "phone".to_string(),
+        seq: 1,
+        ch: "好".to_string(),
+        at: "2026-09-20T09:00:00Z".to_string(),
+        score: 91.0,
+        rating: hanzi_core::Rating::from_score(91.0),
+    };
+    hanzi_sync::write_attempts(&remote, "phone", &[peer]).unwrap();
+
+    // Sync: this pulls the phone's attempt and rebuilds the schedule in the
+    // database — two attempts now, and a due date that moved.
+    let summary = hanzi_sync::sync(&db, &remote).unwrap();
+    assert_eq!(summary.pulled, 1);
+    assert_eq!(summary.recomputed, 1, "the schedule should have been rebuilt");
+
+    // The open store has not noticed, which is the hazard: it still holds one
+    // attempt and the due date that followed from it alone.
+    {
+        let progress = state.lock_progress();
+        let card = progress.store.card('好').unwrap();
+        assert_eq!(
+            card.attempts, 1,
+            "the in-memory schedule is stale until it is reloaded"
+        );
+        assert_eq!(card.due, before_due, "and so is its due date");
+    }
+
+    // Reload, and it agrees with the database again.
+    {
+        let mut progress = state.lock_progress();
+        assert!(progress.reload(&db), "the reload should succeed");
+        let card = progress.store.card('好').unwrap();
+        assert_eq!(
+            card.attempts, 2,
+            "and now it holds both devices' attempts"
+        );
+        assert_ne!(
+            card.due, before_due,
+            "the synced schedule is a different one, which is the whole point"
+        );
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&shared).ok();
+}

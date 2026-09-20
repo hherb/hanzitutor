@@ -895,9 +895,26 @@ pub fn sync_connect_finish(sync: State<'_, SyncService>, code: String) -> Result
 }
 
 /// Sync now.
+///
+/// Takes the app state as well as the sync service, and that is the whole reason
+/// this command is more than a forward: a sync rebuilds schedules in the database,
+/// while the open practice store still holds the document from before it. Its next
+/// `save` — which every review performs — would write those stale cards back over
+/// the synced ones. So the store is reloaded, on failure as well as success,
+/// because a sync that died partway through `recompute` may still have written
+/// some of them.
 #[tauri::command]
-pub fn sync_now(sync: State<'_, SyncService>) -> Result<SyncView, String> {
-    sync.now()
+pub fn sync_now(
+    state: State<'_, AppState>,
+    sync: State<'_, SyncService>,
+) -> Result<SyncView, String> {
+    let outcome = sync.now();
+    if let Some(db) = &state.db {
+        // `lock_progress` rather than `.lock()`: a poisoned mutex must not be the
+        // reason a schedule stays stale.
+        state.lock_progress().reload(db);
+    }
+    outcome
 }
 
 /// Forget the account, here and on Dropbox's side.

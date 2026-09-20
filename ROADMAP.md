@@ -1388,13 +1388,19 @@ place they do:
   discard the part the log never held. It also skips a card the fold already agrees
   with, so a sync that changes nothing reports that it changed nothing and
   `Summary::is_empty` means what it says.
-- **The caller must reload its schedule store after a sync.** A `ProgressStore`
-  holds the document in memory and writes through it, so an open store is stale the
-  moment sync rewrites the `progress_card` rows, and its next `save` — which every
-  review performs — would write the stale card back. It is recoverable rather than
-  fatal, because the log kept every attempt and the next sync rebuilds from it, but
-  it is a silently wrong schedule until then. There is a test for the hazard and for
-  the recovery.
+- **The schedule store is reloaded after a sync, and `sync_now` is what does it.**
+  A `ProgressStore` holds the document in memory and writes through it, so an open
+  store goes stale the moment a sync rewrites the `progress_card` rows — and its
+  next `save`, which every review performs, would write the stale card back over the
+  synced one. That is why `sync_now` takes the `AppState` as well as the sync
+  service: it is not a forward, it is the reload. It reloads on failure too, since a
+  sync that died partway through `recompute` may still have written some of them.
+  The damage was always recoverable — the log kept every attempt and the next sync
+  rebuilt from it — but it was a silently wrong due date until then, which is the
+  kind of failure worth a command taking two pieces of state rather than one. A
+  store already in its failed state is left alone: refusing to save is the point of
+  that state, and reviving it because the database happened to read this time would
+  undo a decision the reader has not made.
 
 Five more tests in `crates/hanzi-sync/tests/two_devices.rs`, against two real
 SQLite databases and one folder: they converge on one schedule; each device
@@ -1512,7 +1518,7 @@ one that carries the weight does the whole pass: connect against a fake token
 endpoint, keep the refresh token, practise a character, sync over a real directory,
 find nothing to do the second time, then disconnect and prove the token is gone.
 
-The suite is green at 368 tests, with 4 more ignored unless a microphone or the
+The suite is green at 369 tests, with 4 more ignored unless a microphone or the
 speech model is present.
 
 **The settings screen.** A fifth row in the settings panel — the fourth was the

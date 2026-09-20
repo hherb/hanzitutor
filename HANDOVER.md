@@ -1548,11 +1548,17 @@ downstream of them is covered by the IPC tests, which drive
   the adapter are equally load-bearing: sync publishes **`Db::own_attempts`**, never
   `Db::attempts` — after one sync the log holds a peer's work too, and publishing
   that under this device's name would relabel it, which is the identity the merge
-  rests on; and **a caller must reload its `ProgressStore` after a sync**, because
-  the store holds the card document in memory and its next `save` (which every
-  review performs) would otherwise write its stale snapshot back over the synced
-  schedule. That one is recoverable — the log kept every attempt and the next sync
-  rebuilds from it — but it is a silently wrong schedule until then. Two
+  rests on; and **the `ProgressStore` is reloaded after every sync, by `sync_now`**,
+  because the store holds the card document in memory and its next `save` (which
+  every review performs) would otherwise write its stale snapshot back over the
+  synced schedule. That is why `sync_now` takes the `AppState` as well as the sync
+  service — if that parameter looks unused, it is not, and removing it puts the bug
+  back. The reload runs on failure as well as success, because a sync that died
+  partway through `recompute` may still have written some schedules, and it leaves a
+  store that is already in its *failed* state alone, since refusing to save is the
+  point of that state. The damage is recoverable either way — the log kept every
+  attempt and the next sync rebuilds from it — but it is a silently wrong due date
+  until then. Two
   properties already in the code decide the whole design, so do not "improve" them
   away: `attempt` is append-only — a grow-only set, which merges with no conflict
   to resolve — and `Sm2::review` is pure, so a card is a *fold over the log*

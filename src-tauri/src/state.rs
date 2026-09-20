@@ -209,6 +209,42 @@ impl Persisted<ProgressStore> {
     pub fn save(&mut self) -> Option<String> {
         self.save_with(ProgressStore::save)
     }
+
+    /// Re-read the schedule from the study database, returning whether it worked.
+    ///
+    /// Needed after a sync, and this is not a tidiness measure. A sync rewrites the
+    /// `progress_card` rows underneath this in-memory document, so the open store
+    /// goes on showing the pre-sync schedules — and its next `save`, which every
+    /// review performs, writes those stale cards back over the synced ones. The
+    /// damage heals on the following sync, because the attempt log kept everything
+    /// and a schedule is derived from it, but until then a learner is looking at a
+    /// due date that is simply wrong.
+    ///
+    /// Nothing is lost by reloading: every review saves as it is made, so there is
+    /// never an unsaved change to discard.
+    ///
+    /// A store already in its failed state is **left alone**, because refusing to
+    /// save is the whole point of that state — quietly handing back a working store
+    /// because the database happened to be readable at this moment would undo a
+    /// decision the reader has not made yet.
+    pub fn reload(&mut self, db: &Db) -> bool {
+        const NOUN: &str = "practice progress";
+        if self.load_error.is_some() {
+            return false;
+        }
+        match ProgressStore::open_with(Box::new(db.clone())) {
+            Ok(store) => {
+                self.store = store;
+                true
+            }
+            // It read at startup and does not now. Say so rather than carry on with
+            // a document that is no longer what the database holds.
+            Err(error) => {
+                *self = Self::failed(ProgressStore::in_memory(), self.path.clone(), NOUN, error);
+                false
+            }
+        }
+    }
 }
 
 /// Where the reader was in the course.
