@@ -13,8 +13,12 @@ debug
 .cargo-target/
 
 # Gradle's home, kept in-tree for the same reason: the default is `~/.gradle`,
-# and compiling the Android Kotlin only needs `-g .gradle-home` to avoid it.
+# which a sandboxed build cannot write. See HANDOVER §6 for the working command —
+# the wrapper cannot run this way, the unpacked launcher can.
 .gradle-home/
+# Kotlin's incremental-compilation cache, left by every Gradle build of the
+# Android project and never wanted in the repository.
+.kotlin/
 
 # --- Python ---------------------------------------------------------------
 # Byte-code for the helper scripts in scripts/, written whenever one of them
