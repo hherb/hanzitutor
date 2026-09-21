@@ -142,7 +142,8 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Dataset pipeline | Done | 9,574 characters, 13 MB artifact |
 | IPC surface | Done | contract tests asserting exact JSON key sets |
 | Drawing canvas | Done, human-confirmed | trace + recall modes, colour-coded feedback; the practice column is anchored under the header and sized by the window, so a tone or a grading report beside it can neither move nor resize the board (row-pinned `.workspace` + `scrollbar-gutter`; measured at 1180×840 — §6) |
-| Board control row | Done, checked as a render | the mock-up's layout: three named cards (Writing help / Pronunciation / Drawing), each a glyph on a tinted disc with its short name under it; one row on a 390 px phone — three cards 103 + 130 + 96 of the 366 px the stage gives them, the row 109 px tall — and one row at 1280 px; the microphone is the only solid red, the bin the only soft one, and the commit button the only solid accent. Rendered through the scratch entry in §6 at 390×900 and 1280×900, in four states: nothing drawn, one stroke drawn, graded, and mid-review (which is the one that adds the Back card) |
+| Board control row | Done, checked as a render | the mock-up's layout: three cards — the tools grouped as writing help, pronunciation and drawing — each a glyph on a tinted disc with its short name under it, centred under the board; one row on a 390 px phone (three cards 103 + 104 + 96 of the 366 px the stage gives them, the row 74 px tall) and one row at 1280 px. **No captions**: the set names live on the cards as `aria-label`, which cost nothing on screen. The microphone is the only solid red, the bin the only soft one, the commit button the only solid accent. Rendered through the scratch entry in §6 at 390×900 and 1280×900, in four states: nothing drawn, one stroke drawn, graded, and mid-review (the one that adds the Back card) |
+| Board chrome | Removed on purpose | the "ⓘ How this works" disclosure and the sentence under the controls are gone — see the onboarding item in [`ROADMAP.md`](ROADMAP.md). What is left under the row is one `.hint` paragraph, rendered **only** when a control is disabled and there is no tooltip on a phone to say why, which is the one job nothing else does |
 | Stroke-order animation (M7) | Done | pen sweeps each centre-line, the outline revealed behind it; band width measured per stroke; confirmed by window capture |
 | Input ergonomics (M8) | Done, human-confirmed | click-to-draw, on by default where there is a hover and remembered once chosen — the preference lives on the settings screen, having been a switch on the control row until the row was redesigned; both paths produce identical geometry; driven with synthetic pointer events, and the trackpad behaviour confirmed by hand |
 | Pronunciation | Done on macOS and iOS | 19 tests; the iOS voice list is pinned from the simulator's log; the voice preference outranks the automatic choice but yields to the environment override, and falls back rather than going silent; human-confirmed hearing 的 on both |
@@ -552,18 +553,20 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
     (`pinyin::heard_against`), never as characters, never with tone marks, and
     never with a hotwords file pointed at the expected answer. The tone comes from
     the pitch contour and from nowhere else.
-28. **A control's accessible name contains the word printed on it.** Every button
-    on the board's control row carries a visible name now — Hint, Strokes, Listen,
-    Hold to speak, Undo, Clear, Back, Show target, Check/Next — and WCAG 2.5.3 is
-    the reason `aria-label` reads `"Strokes: watch the character written one
-    stroke at a time"` rather than the sentence it used to be: a voice-control user
-    has to be able to say what they can see, and an `aria-label` that replaced the
-    visible word broke exactly that. Where the visible text is enough on its own,
-    there is **no** `aria-label` at all and the element's own content is the name —
-    which is why the Show target switch deliberately has none. The long sentence
-    did not go away; it moved to `title`, which is a description once a name
-    exists, and the reason a disabled control cannot be used still rides on the
-    `.hint` under the row.
+28. **A control's accessible name contains the words printed on it.** Every button
+    on the board's control row carries a visible name — Hint, Strokes, Listen,
+    (hold…), Undo, Clear, Back, Show target, Check/Next — and WCAG 2.5.3 is the
+    reason `aria-label` reads `"Strokes: watch the character written one stroke at
+    a time"` rather than the sentence it used to be: a voice-control user has to be
+    able to say what they can see, and an `aria-label` that replaced the visible
+    word broke exactly that. Where the visible text is enough on its own, there is
+    **no** `aria-label` at all and the element's own content is the name — which is
+    why the Show target switch deliberately has none. The comparison is on the
+    words, not on the punctuation: the microphone is labelled `(hold…)` and its
+    name is "Hold to speak …", which is the word a user reading that label would
+    say. The long sentence did not go away; it moved to `title`, which is a
+    description once a name exists, and the reason a disabled control cannot be
+    used still rides on the `.hint` under the row.
 
 ## 5. The verification loop
 
@@ -726,11 +729,13 @@ downstream of them is covered by the IPC tests, which drive
   target (`/json/list`) is steadier than creating a target and attaching a
   session, which dropped the socket repeatedly.
   That measurement is what says the current row is **one line on a phone**: three
-  cards 103 + 130 + 96 px inside the 366 px the stage gives them, the row 109 px
-  tall, the commit row under it 44. The same cards wrap to 219 px when the phone
-  is a little narrower, which is the number to watch if a fourth tool is ever
-  added — at 820 px the board column is squeezed to 135 px by the two-column
-  layout above the 760 px breakpoint, and the row breaks there too.
+  cards 103 + 104 + 96 px inside the 366 px the stage gives them — 25 px of margin
+  either side, because the row is centred on the board rather than laid against the
+  left edge — and the row 74 px tall, with the commit row 44 px under it. The same
+  cards wrap to about 150 px when the phone is a little narrower, which is the
+  number to watch if a fourth tool is ever added — at 820 px the board column is
+  squeezed to 135 px by the two-column layout above the 760 px breakpoint, and the
+  row breaks there too.
 - **The stroke-order sweep is a clip, not a fade, and the band's width comes from
   the outline.** `drawSweptStroke` in `render.ts` fills the outline clipped to
   the band the pen has covered. Make the band a constant and you get one of two
@@ -1452,25 +1457,32 @@ downstream of them is covered by the IPC tests, which drive
   the microphone was fine and **的** simply has no judgeable tone — it is a
   neutral-tone particle, and `tone_target` returns `None` for it. The button then
   spelled the reason out in its own label (`No tone to score` / `No microphone`).
-  On a phone the reason is carried by the sentence under the row, the same
-  `.hint` that already explains a missing voice, and `sayBlocked` in `App.svelte`
-  is the one expression the tooltip, the accessible name and the hint all read, so
-  the three cannot drift. A **separate** explanatory paragraph is still the wrong
-  answer — it wraps to its own row and pushes the rest of the controls off the
-  screen — which is why the reason rides on a line that was already there. The
-  row itself has been through three shapes and the constraint never changed:
-  **a control the learner cannot identify is unusable, and a row that is too tall
-  costs the board its height.** It was four wrapped rows of wide labelled buttons
-  (too tall), then bare glyphs with the word in `title` and `aria-label` (short,
-  but on a phone the only thing that explains the control is a tooltip, and there
-  is no tooltip), and it is now the mock-up's shape: a glyph on a tinted disc with
-  its short name under it, two tools to a card, three cards under the board. That
-  is 109 px on a 390 px phone against the 219 px the same cards take when they
-  wrap, and the three cards are 103 + 130 + 96 of the 366 px the stage gives them
-  — so the words are back *and* the row is one line, which neither of the two
-  earlier shapes managed at once. The words are also now the accessible names
-  (`aria-label` starts with the visible word where it is not simply dropped), so
-  a voice-control user can say what is on the button — see §4's label-in-name
+  On a phone the reason is carried by the sentence under the row, the `.hint`, and
+  `sayBlocked` in `App.svelte` is the one expression the tooltip, the accessible
+  name and the hint all read, so the three cannot drift. A **separate** explanatory
+  paragraph is still the wrong answer — it wraps to its own row and pushes the rest
+  of the controls off the screen — which is why the reason rides on a line that was
+  already there. As of the caption removal that line is the `.hint`'s *only* job:
+  it renders when a control is disabled and not otherwise, so on a phone with a
+  working voice and a judgeable tone there is no explanatory text on the board's
+  screen at all. The row itself has been through three shapes and the constraint
+  never changed: **a control the learner cannot identify is unusable, and a row
+  that is too tall costs the board its height.** It was four wrapped rows of wide
+  labelled buttons (too tall), then bare glyphs with the word in `title` and
+  `aria-label` (short, but on a phone the only thing that explains the control is a
+  tooltip, and there is no tooltip), and it is now the mock-up's shape: a glyph on
+  a tinted disc with its short name under it, two tools to a card, three cards
+  centred under the board. That is **74 px** on a 390 px phone, and the words are
+  back *and* the row is one line, which neither of the two earlier shapes managed at
+  once. Two things were cut from the mock-up after using it on a phone: the
+  captions under each card (Writing help, Pronunciation, Drawing), because each
+  cost a line of screen to name what the glyphs and the words under them already
+  said — the names moved onto the cards as `aria-label`, so a screen reader still
+  hears the grouping — and "Hold to speak", which wrapped to two lines and made its
+  card taller than the other two, now "(hold…)" on the button with the sentence in
+  `title` and the accessible name. The words are also the accessible names
+  (`aria-label` contains the visible word wherever the text is not simply dropped),
+  so a voice-control user can say what is on the button — see §4's label-in-name
   note. What the row kept from the icon era: the long sentence stays in `title`
   and `aria-label`, and a disabled control still never explains itself, which is
   the `.hint`'s job.

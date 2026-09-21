@@ -103,16 +103,6 @@
   let voicesLoading = $state(true);
 
   /**
-   * True while the "How this works" explanation is expanded.
-   *
-   * Collapsed by default: on a phone the paragraph is taller than the board's
-   * controls, and what a learner needs in front of them is the board, not an
-   * essay about the grading. The heading is the disclosure, so the explanation
-   * is one tap away and costs one row when it is not wanted.
-   */
-  let showHelp = $state(false);
-
-  /**
    * True while the character's details are unfolded.
    *
    * Only the phone honours it: there the header keeps the reading and the first
@@ -746,10 +736,6 @@
     platform.__hanziHandleBack = () => {
       if (navOpen) {
         navOpen = false;
-        return true;
-      }
-      if (showHelp) {
-        showHelp = false;
         return true;
       }
       return false;
@@ -2275,11 +2261,17 @@
             </div>
           {/if}
 
-          <!-- The board's controls, as three named sets of tools rather than a
-               row of bare glyphs: the words are back, but as a short name under
-               each disc rather than as the wide button that was tried first and
-               cost the board its height. See the CSS for why that is affordable
-               now, and `Icon.svelte` for what the glyphs mean. -->
+          <!-- The board's controls: a glyph on a disc with its short name under
+               it, two or three tools to a card, and the cards centred under the
+               board. See the CSS for why the words are affordable, and
+               `Icon.svelte` for what the glyphs mean.
+
+               The cards used to be captioned — Writing help, Pronunciation,
+               Drawing — and the captions are gone: each cost a line of a phone's
+               screen to name what the glyphs and the words under them already
+               say. The grouping did not go with them, it moved onto the card as
+               `role="group"` with a name, so a screen reader still hears that
+               Undo and Clear are one pair rather than six loose buttons. -->
           <div class="controls">
             <div class="toolgroups">
               <!-- Writing help: what the board shows, and what it can show you.
@@ -2287,104 +2279,104 @@
                    than becoming two buttons: "Hint" is the answer being in
                    sight, and the button is drawn pressed exactly while the faint
                    copy is on the board, so the word and the state agree. -->
-              <div class="toolgroup" role="group" aria-labelledby="tools-writing-help">
-                <div class="tools">
-                  <button
-                    class="tool"
-                    class:on={mode === "trace"}
-                    aria-pressed={mode === "trace"}
-                    aria-label={mode === "trace"
-                      ? "Hint: a faint copy of the character is on the board. Switch to recall"
-                      : "Hint: the character is hidden until you check. Switch to trace, where a faint copy is on the board"}
-                    title={mode === "trace"
-                      ? "Trace: a faint copy is on the board to follow. Press for recall, which hides the character until you press ✓. Either way the board is cleared."
-                      : "Recall: the character is hidden until you press ✓. Press for trace, where a faint copy is on the board. Either way the board is cleared."}
-                    onclick={toggleMode}
-                  >
-                    <span class="tool-glyph">
-                      <Icon name={mode === "trace" ? "eye" : "eye-off"} />
-                    </span>
-                    <span class="tool-word">Hint</span>
-                  </button>
+              <div class="tools" role="group" aria-label="Writing help">
+                <button
+                  class="tool"
+                  class:on={mode === "trace"}
+                  aria-pressed={mode === "trace"}
+                  aria-label={mode === "trace"
+                    ? "Hint: a faint copy of the character is on the board. Switch to recall"
+                    : "Hint: the character is hidden until you check. Switch to trace, where a faint copy is on the board"}
+                  title={mode === "trace"
+                    ? "Trace: a faint copy is on the board to follow. Press for recall, which hides the character until you press ✓. Either way the board is cleared."
+                    : "Recall: the character is hidden until you press ✓. Press for trace, where a faint copy is on the board. Either way the board is cleared."}
+                  onclick={toggleMode}
+                >
+                  <span class="tool-glyph">
+                    <Icon name={mode === "trace" ? "eye" : "eye-off"} />
+                  </span>
+                  <span class="tool-word">Hint</span>
+                </button>
 
-                  <button
-                    class="tool media"
-                    class:on={playing}
-                    aria-pressed={playing}
-                    onclick={toggleStrokeOrder}
-                    disabled={strokeTotal === 0}
-                    aria-label={playing
-                      ? "Strokes: stop the animation where it is"
-                      : "Strokes: watch the character written one stroke at a time"}
-                    title={playing
-                      ? "Stop the animation where it is"
-                      : "Watch the character written, one stroke at a time (S)"}
-                  >
-                    <span class="tool-glyph"><Icon name="play" /></span>
-                    <span class="tool-word">Strokes</span>
-                  </button>
-                </div>
-                <p class="toolgroup-word" id="tools-writing-help">Writing help</p>
+                <button
+                  class="tool media"
+                  class:on={playing}
+                  aria-pressed={playing}
+                  onclick={toggleStrokeOrder}
+                  disabled={strokeTotal === 0}
+                  aria-label={playing
+                    ? "Strokes: stop the animation where it is"
+                    : "Strokes: watch the character written one stroke at a time"}
+                  title={playing
+                    ? "Stop the animation where it is"
+                    : "Watch the character written, one stroke at a time (S)"}
+                >
+                  <span class="tool-glyph"><Icon name="play" /></span>
+                  <span class="tool-word">Strokes</span>
+                </button>
               </div>
 
               <!-- Sound in and sound out: the character read aloud, and the
                    learner reading it back. -->
-              <div class="toolgroup" role="group" aria-labelledby="tools-pronunciation">
-                <div class="tools">
-                  <button
-                    class="tool media"
-                    onclick={hear}
-                    disabled={!character || voice === null}
-                    aria-label="Listen: hear this character pronounced"
-                    title={voice === undefined
-                      ? "Looking for a Chinese voice…"
-                      : voice === null
-                        ? "No Chinese voice is installed, so pronunciation is unavailable"
-                        : `Pronounce this character (${voice})`}
-                  >
-                    <span class="tool-glyph"><Icon name="speaker" /></span>
-                    <span class="tool-word">Listen</span>
-                  </button>
+              <div class="tools" role="group" aria-label="Pronunciation and speaking">
+                <button
+                  class="tool media"
+                  onclick={hear}
+                  disabled={!character || voice === null}
+                  aria-label="Listen: hear this character pronounced"
+                  title={voice === undefined
+                    ? "Looking for a Chinese voice…"
+                    : voice === null
+                      ? "No Chinese voice is installed, so pronunciation is unavailable"
+                      : `Pronounce this character (${voice})`}
+                >
+                  <span class="tool-glyph"><Icon name="speaker" /></span>
+                  <span class="tool-word">Listen</span>
+                </button>
 
-                  <!-- Push to talk. Held, not clicked: the microphone is open only
-                       between press and release, so the system's recording
-                       indicator is lit only while the learner is deliberately
-                       speaking. -->
-                  <button
-                    class="tool record"
-                    class:listening
-                    onpointerdown={(event) => {
-                      event.preventDefault();
-                      // Take the pointer, so that every later event for it comes
-                      // here wherever the finger travels. Without this the browser
-                      // sends `pointerleave` as soon as the button stops being under
-                      // the finger — which it did whenever the result panel above
-                      // appeared or vanished and moved the row — and the recording
-                      // ended the instant it began. Push-to-talk should survive a
-                      // finger that slides, which is why there is no `pointerleave`
-                      // handler here at all.
-                      event.currentTarget.setPointerCapture(event.pointerId);
-                      void startListening();
-                    }}
-                    onpointerup={(event) => {
-                      event.currentTarget.releasePointerCapture(event.pointerId);
-                      void stopListening();
-                    }}
-                    onpointercancel={() => void stopListening()}
-                    oncontextmenu={(event) => event.preventDefault()}
-                    disabled={toneTarget === null || !microphone?.available || toneBusy}
-                    aria-label={listening
-                      ? "Hold to speak — listening, release to score what you said"
-                      : sayBlocked
-                        ? `Hold to speak — ${sayBlocked}`
-                        : "Hold to speak to score the tone you say"}
-                    title={sayBlocked ?? sayPrompt}
-                  >
-                    <span class="tool-glyph"><Icon name="mic" /></span>
-                    <span class="tool-word">Hold to speak</span>
-                  </button>
-                </div>
-                <p class="toolgroup-word" id="tools-pronunciation">Pronunciation</p>
+                <!-- Push to talk. Held, not clicked: the microphone is open only
+                     between press and release, so the system's recording
+                     indicator is lit only while the learner is deliberately
+                     speaking.
+                     The word under it is the gesture rather than the name —
+                     "(hold…)" instead of "Hold to speak", which was wide enough
+                     to wrap to two lines on a phone and made its card taller
+                     than the other two. The sentence it replaced is in `title`
+                     and in the accessible name, both of which begin with "hold",
+                     so nothing that could be said aloud was lost. -->
+                <button
+                  class="tool record"
+                  class:listening
+                  onpointerdown={(event) => {
+                    event.preventDefault();
+                    // Take the pointer, so that every later event for it comes
+                    // here wherever the finger travels. Without this the browser
+                    // sends `pointerleave` as soon as the button stops being under
+                    // the finger — which it did whenever the result panel above
+                    // appeared or vanished and moved the row — and the recording
+                    // ended the instant it began. Push-to-talk should survive a
+                    // finger that slides, which is why there is no `pointerleave`
+                    // handler here at all.
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    void startListening();
+                  }}
+                  onpointerup={(event) => {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                    void stopListening();
+                  }}
+                  onpointercancel={() => void stopListening()}
+                  oncontextmenu={(event) => event.preventDefault()}
+                  disabled={toneTarget === null || !microphone?.available || toneBusy}
+                  aria-label={listening
+                    ? "Hold to speak — listening, release to score what you said"
+                    : sayBlocked
+                      ? `Hold to speak — ${sayBlocked}`
+                      : "Hold to speak to score the tone you say"}
+                  title={sayBlocked ?? sayPrompt}
+                >
+                  <span class="tool-glyph"><Icon name="mic" /></span>
+                  <span class="tool-word">(hold…)</span>
+                </button>
               </div>
 
               <!-- Ink: take the last stroke back, or start again. The two
@@ -2393,82 +2385,70 @@
                    them — that is help with *writing*, so it sits with the hint,
                    which is the other thing that puts the answer in front of you
                    before you have drawn it. -->
-              <div class="toolgroup" role="group" aria-labelledby="tools-drawing">
-                <div class="tools">
-                  <button
-                    class="tool"
-                    onclick={undo}
-                    disabled={strokes.length === 0}
-                    aria-label="Undo the last stroke"
-                    title="Take the last stroke back (⌫)"
-                  >
-                    <span class="tool-glyph"><Icon name="undo" /></span>
-                    <span class="tool-word">Undo</span>
-                  </button>
+              <div class="tools" role="group" aria-label="Drawing">
+                <button
+                  class="tool"
+                  onclick={undo}
+                  disabled={strokes.length === 0}
+                  aria-label="Undo the last stroke"
+                  title="Take the last stroke back (⌫)"
+                >
+                  <span class="tool-glyph"><Icon name="undo" /></span>
+                  <span class="tool-word">Undo</span>
+                </button>
 
-                  <button
-                    class="tool danger"
-                    onclick={reset}
-                    disabled={strokes.length === 0}
-                    aria-label="Clear the board"
-                    title="Clear every stroke off the board"
-                  >
-                    <span class="tool-glyph"><Icon name="trash" /></span>
-                    <span class="tool-word">Clear</span>
-                  </button>
-                </div>
-                <p class="toolgroup-word" id="tools-drawing">Drawing</p>
+                <button
+                  class="tool danger"
+                  onclick={reset}
+                  disabled={strokes.length === 0}
+                  aria-label="Clear the board"
+                  title="Clear every stroke off the board"
+                >
+                  <span class="tool-glyph"><Icon name="trash" /></span>
+                  <span class="tool-word">Clear</span>
+                </button>
               </div>
 
               <!-- Leaving the board. The course has nothing to leave — the way
                    out of the course is the sidebar — so this is drawn only where
-                   the practice started from a list of your own, and the caption
-                   under the card names what it goes back to. -->
+                   the practice started from a list of your own. It is a card of
+                   one and carries no group name, because a group of one is not a
+                   group; the button's own name says where it goes. -->
               {#if source !== "course"}
-                <div class="toolgroup" role="group" aria-labelledby="tools-leave">
-                  <div class="tools">
-                    {#if source === "vocabulary"}
-                      <button
-                        class="tool"
-                        onclick={stopPractising}
-                        aria-label="Back to your vocabulary list"
-                        title="Back to your vocabulary list"
-                      >
-                        <span class="tool-glyph"><Icon name="back" /></span>
-                        <span class="tool-word">Back</span>
-                      </button>
-                    {:else if source === "words"}
-                      <button
-                        class="tool"
-                        onclick={stopPractising}
-                        aria-label="Back to the word list"
-                        title="Back to the word list"
-                      >
-                        <span class="tool-glyph"><Icon name="back" /></span>
-                        <span class="tool-word">Back</span>
-                      </button>
-                    {:else}
-                      <button
-                        class="tool"
-                        onclick={stopReview}
-                        aria-label="Stop this review session"
-                        title="Stop reviewing — what you have done so far is kept"
-                      >
-                        <span class="tool-glyph"><Icon name="back" /></span>
-                        <span class="tool-word">Back</span>
-                      </button>
-                    {/if}
-                  </div>
-                  <p class="toolgroup-word" id="tools-leave">
-                    {source === "vocabulary"
-                      ? "Vocabulary"
-                      : source === "words"
-                        ? "Word list"
-                        : "Review"}
-                  </p>
+                <div class="tools">
+                  {#if source === "vocabulary"}
+                    <button
+                      class="tool"
+                      onclick={stopPractising}
+                      aria-label="Back to your vocabulary list"
+                      title="Back to your vocabulary list"
+                    >
+                      <span class="tool-glyph"><Icon name="back" /></span>
+                      <span class="tool-word">Back</span>
+                    </button>
+                  {:else if source === "words"}
+                    <button
+                      class="tool"
+                      onclick={stopPractising}
+                      aria-label="Back to the word list"
+                      title="Back to the word list"
+                    >
+                      <span class="tool-glyph"><Icon name="back" /></span>
+                      <span class="tool-word">Back</span>
+                    </button>
+                  {:else}
+                    <button
+                      class="tool"
+                      onclick={stopReview}
+                      aria-label="Stop this review session"
+                      title="Stop reviewing — what you have done so far is kept"
+                    >
+                      <span class="tool-glyph"><Icon name="back" /></span>
+                      <span class="tool-word">Back</span>
+                    </button>
+                  {/if}
                 </div>
               {/if}
-
             </div>
 
             <!-- How much has been drawn, whether the target is marked, and the
@@ -2558,28 +2538,29 @@
             <p class="note">{statusMessage}</p>
           {/if}
 
-          <p class="hint">
-            {#if voice === null}
-              No Chinese voice is installed, so the Listen button is disabled.
-              Add one in System Settings → Accessibility → Spoken Content →
-              System Voice → Manage Voices.
-            {:else if sayBlocked !== null && microphone !== undefined}
-              {sayBlocked} — so Hold to speak, which scores a spoken tone, is
-              disabled.
-            {:else if source !== "course" && entryCharacters.length > 1}
-              Write the word one character at a time. Its score is the average
-              across its characters, so each one has to be right.
-            {:else if source === "review"}
-              This came due for review. Write it from memory, then press ✓ —
-              how well you do sets when you see it again.
-            {:else if mode === "trace"}
-              A faint copy of the character is on the board: trace over it in the
-              correct stroke order.
-            {:else}
-              Write the character from memory, then press ✓. Press S to see the
-              stroke order.
-            {/if}
-          </p>
+          <!-- Only a reason, never an instruction.
+               This line used to carry a sentence in every state — trace over the
+               faint copy, write from memory, this came due for review — and those
+               are gone: they spent a row of a phone's screen telling a learner
+               something the board in front of them already shows, and the
+               onboarding wizard that is being built is where they belong.
+               What stays is the one job nothing else can do. On a phone there is
+               no hover, so a greyed-out button has no tooltip to say why it is
+               greyed out; when everything works this paragraph is not rendered at
+               all, and when something is disabled it is the only place the reason
+               appears. See HANDOVER §6. -->
+          {#if voice === null || (sayBlocked !== null && microphone !== undefined)}
+            <p class="hint">
+              {#if voice === null}
+                No Chinese voice is installed, so the Listen button is disabled.
+                Add one in System Settings → Accessibility → Spoken Content →
+                System Voice → Manage Voices.
+              {:else}
+                {sayBlocked} — so Hold to speak, which scores a spoken tone, is
+                disabled.
+              {/if}
+            </p>
+          {/if}
         </section>
 
         <aside class="feedback">
@@ -2591,40 +2572,16 @@
                stroke-by-stroke verdict was pushed below the fold whenever a tone
                had been scored, which is exactly when comparing your writing with
                the reference matters most. -->
+          <!-- Only the report. There was a "How this works" disclosure here that
+               explained the four measures and listed the keyboard shortcuts, and
+               it is gone on purpose: on a phone it was a row of chrome above the
+               sentence under the controls, and both are being replaced by an
+               onboarding wizard, which is the only place an explanation can be
+               read once and then get out of the way. Until that exists the
+               measures are still named on the report itself, and the grading is
+               described in full in README.md. -->
           {#if report}
             <FeedbackPanel {report} />
-          {:else}
-            <div class="empty">
-              <button
-                class="help-toggle"
-                type="button"
-                aria-expanded={showHelp}
-                aria-controls="how-it-works"
-                onclick={() => (showHelp = !showHelp)}
-              >
-                <span class="info" aria-hidden="true">ⓘ</span>
-                How this works
-                <span class="chevron" class:open={showHelp} aria-hidden="true">›</span>
-              </button>
-              {#if showHelp}
-                <div id="how-it-works" class="help-body">
-                  <p>
-                    Your strokes are compared with the reference on four measures:
-                    shape, placement, ink and order — whether each stroke is the
-                    right kind of stroke in the right place, whether as much ink
-                    went down as the character needs (a stroke traced correctly but
-                    drawn far too thin is not legible), and whether they were
-                    written in sequence. Writing a legible character in the wrong
-                    order is reported as exactly that.
-                  </p>
-                  <p class="keys">
-                    <kbd>Enter</kbd> check · <kbd>S</kbd> stroke order ·
-                    <kbd>H</kbd> hear it · <kbd>⌫</kbd> undo ·
-                    <kbd>←</kbd> <kbd>→</kbd> move
-                  </p>
-                </div>
-              {/if}
-            </div>
           {/if}
 
           <!-- A tone that was scored, under the report, and the reason one could
@@ -2907,23 +2864,23 @@
      what keeps the three captions on one line — "Hold to speak" is two lines on a
      phone and the other cards are one, and a caption that sat at a different
      height on each card read as three unrelated boxes. */
+  /* Centred under the board, not laid against the left edge: the board above is
+     centred in the stage, and a row that starts at the left margin while the
+     square it belongs to starts 20 px in reads as belonging to something else.
+     The cards stretch to the tallest of them, so the discs sit on one line even
+     though the microphone's is larger than the rest. */
   .toolgroups {
     display: flex;
     align-items: stretch;
+    justify-content: center;
     flex-wrap: wrap;
     gap: 8px;
   }
-  .toolgroup {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-  }
-  /* The card fills the stretched group, so the caption under it lands on the
-     group's baseline rather than just under the card. */
+  /* One card: its tools, and nothing else. The set's name is on it as
+     `aria-label` rather than printed under it — the captions that used to sit
+     there cost a line of a phone's screen each to say what the glyphs and the
+     words under them already said. */
   .tools {
-    flex: 1;
     display: flex;
     align-items: stretch;
     padding: 5px 6px;
@@ -2931,12 +2888,6 @@
     border-radius: 13px;
     background: var(--surface);
     box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
-  }
-  .toolgroup-word {
-    margin: 0;
-    font-size: 0.72rem;
-    color: var(--muted);
-    white-space: nowrap;
   }
   /* A tool: the disc, then its name. The name is what the border used to be
      drawn around, which is why it is allowed to wrap — a wrapped name costs a
@@ -3218,68 +3169,6 @@
   .feedback {
     position: sticky;
     top: 0;
-  }
-
-  .empty {
-    padding: 16px;
-    border: 1px dashed var(--line);
-    border-radius: 12px;
-    background: var(--surface);
-  }
-  /* The explanation is a disclosure rather than a wall of text: the heading is
-     the button, and the panel is one quiet row until it is asked for. */
-  .help-toggle {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    width: 100%;
-    padding: 0;
-    border: 0;
-    background: none;
-    font: inherit;
-    font-size: 0.9rem;
-    font-weight: 650;
-    color: var(--muted-strong);
-    text-align: left;
-    cursor: pointer;
-  }
-  .help-toggle:hover {
-    color: var(--accent-ink);
-  }
-  .help-toggle .info {
-    font-size: 0.95rem;
-    color: var(--accent);
-  }
-  .help-toggle .chevron {
-    margin-left: auto;
-    color: var(--muted);
-    transition: transform 0.15s ease;
-  }
-  .help-toggle .chevron.open {
-    transform: rotate(90deg);
-  }
-  .help-body {
-    margin-top: 10px;
-  }
-  .empty p {
-    margin: 0 0 10px;
-    font-size: 0.84rem;
-    line-height: 1.5;
-    color: var(--muted-strong);
-  }
-  .keys {
-    color: var(--muted) !important;
-    font-size: 0.76rem !important;
-    margin-bottom: 0 !important;
-  }
-  kbd {
-    padding: 1px 5px;
-    border: 1px solid var(--line);
-    border-bottom-width: 2px;
-    border-radius: 5px;
-    background: var(--bg);
-    font-family: inherit;
-    font-size: 0.72rem;
   }
 
   .error {
@@ -3583,9 +3472,6 @@
     .tool-word {
       max-width: 68px;
     }
-    .toolgroup-word {
-      font-size: 0.72rem;
-    }
     .switch {
       min-height: 44px;
     }
@@ -3601,19 +3487,6 @@
     .slots :global(button) {
       min-width: 54px;
       min-height: 54px;
-    }
-
-    /* A phone has no Enter, S, H or arrow keys to document. */
-    .keys {
-      display: none;
-    }
-    /* The disclosure is a comfortable target, and the panel loses some of its
-       padding so the collapsed row does not read as a stray box. */
-    .help-toggle {
-      min-height: 44px;
-    }
-    .empty {
-      padding: 10px 14px;
     }
 
     /* The character and its reading, compact enough to leave the board room. */

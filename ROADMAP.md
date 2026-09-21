@@ -785,9 +785,17 @@ Small, independently shippable, roughly in value order:
   find anything outside the linear course.
 - **Import / export the vocabulary list** — CSV and JSON, so the list is not
   trapped in one machine's app data.
-- **Keyboard shortcut help** — a `?` overlay; the shortcuts exist but are only
-  documented inside the "How this works" disclosure (which is collapsed by
-  default as of the iOS work, so on a phone they are two taps away).
+- **Keyboard shortcut help** — a `?` overlay. The shortcuts exist and nothing in
+  the app now documents them: the "How this works" disclosure that listed them was
+  removed with the rest of the board's chrome, so this is the only route left.
+- **An onboarding wizard** — where the board's explanation went. The "How this
+  works" disclosure and the sentence under the controls were removed to give a
+  phone back the height they took, on the understanding that what they taught —
+  the four grading measures, and that a faint copy is there to trace — belongs in
+  something read once at the start rather than in a row that is on screen for ever.
+  Until it is built, the measures are named on the report itself and described in
+  full in [`README.md`](README.md), and the only sentence left on the board's
+  screen is the one that says why a disabled control is disabled.
 - **Dark mode** — the canvas is deliberately paper-white, so this needs thought
   rather than a colour swap.
 - **UI scale / accessibility** — larger text and a bigger board; the board already
