@@ -23,6 +23,7 @@ use crate::capture::{Recorder, Recording};
 use crate::commands::{
     SpeechTarget, ToneResult, ToneSyllableResult, VoiceOption, VoicesView, LESSON_SIZE,
 };
+use crate::say::Say;
 use crate::speech::Speaker;
 
 /// The compact artifact produced by `hanzi-core`'s `prepare-data` binary.
@@ -411,6 +412,12 @@ pub struct AppState {
     /// file opened and no socket touched until the settings screen installs one.
     /// See `asr.rs`.
     pub asr: Asr,
+    /// Speech synthesis, for a phrase with no bundled recording.
+    ///
+    /// Holds nothing until the learner installs the model, exactly like `asr`.
+    /// See `say.rs` for why the app offers this at all when the platform
+    /// synthesiser usually answers.
+    pub say: Say,
     /// Behind a mutex because every mutation is read-modify-write and must be
     /// persisted as a whole document.
     pub vocab: Mutex<VocabState>,
@@ -518,6 +525,7 @@ impl AppState {
             speech,
             capture: Recorder::default(),
             asr: Asr::new(data_dir.as_deref()),
+            say: Say::new(data_dir.as_deref()),
             course,
             vocab: Mutex::new(vocab),
             progress: Mutex::new(progress),
@@ -1146,6 +1154,12 @@ pub fn resolve_data_dir(app: &AppHandle, cli: Option<PathBuf>) -> Result<PathBuf
 /// `TextToSpeech` engine on Android. Nothing waits for the answer, and a machine
 /// whose preference names a voice it does not have falls back to the automatic
 /// choice inside [`Speaker::set_voice`] rather than failing here.
+///
+/// The same thread then primes the output path ([`Speaker::prime`]), which on iOS
+/// means building the synthesiser and starting the audio route while nothing is
+/// being spoken — see the note on `speech::audio_ready` for the crackle that made
+/// that worth doing. It happens here, after the voice is resolved, so the slow
+/// part of the warm-up is still the part nobody is waiting on.
 fn warm_voice(speaker: Arc<Speaker>, preferred: Option<String>) {
     std::thread::spawn(move || {
         speaker.set_voice(preferred.as_deref());
@@ -1155,6 +1169,7 @@ fn warm_voice(speaker: Arc<Speaker>, preferred: Option<String>) {
                 "[speech] no Chinese voice installed; pronunciation will be unavailable"
             ),
         }
+        speaker.prime();
     });
 }
 

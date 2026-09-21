@@ -88,11 +88,70 @@ const FLAT_ST: f32 = 1.2;
 /// this the two shapes are not distinguishable and the verdict is `Uncertain`.
 const DECIDE_MARGIN: f32 = 0.25;
 
-/// Fewer voiced frames than this and there is nothing to judge.
-const MIN_VOICED_FRAMES: usize = 6;
+/// How much periodic voice a segment must hold before a tone can be read from
+/// it. Shorter than this and it was a click, not a syllable.
+///
+/// One judgement, written once, in milliseconds, and turned into a frame count by
+/// [`min_voiced_frames`]. It used to be two constants — this and a
+/// `MIN_VOICED_FRAMES = 6` beside it — and they drifted apart as the hop changed:
+/// six frames is 25 ms at this hop, so the frame guard was several times weaker
+/// than the duration guard it was supposed to stand beside, and neither was
+/// derived from the hop it is measured with.
+///
+/// **30 ms, and the road here — 90 → 60 → 50 → 30 — is the point.**
+///
+/// A fourth tone is the shortest tone Mandarin has, and 是 is a long `sh` followed
+/// by a short vowel. What this is compared against is not the vowel's length,
+/// though: a frame counts only when its whole analysis window is periodic (see
+/// [`track_pitch`]), so the `voiced_ms` measured from a syllable runs short of the
+/// sound by the window's edges.
+///
+/// The first two steps were argued from synthetic contours, and the second was
+/// still wrong. What settled it was a real voice: five rounds of a natural-rate 是
+/// through `records_from_the_real_microphone`, after the window was fixed, measured
+/// **41, 47, 69, 78 ms — and one outlier at 6 ms.** A gate at 50 ms sat in the
+/// middle of that spread: it refused two perfectly good attempts, one of them by a
+/// single frame, and the 6 ms outlier was going to be refused at any threshold
+/// worth having.
+///
+/// **That is the rule this should have been set by from the beginning: a gate
+/// placed inside the distribution of correct attempts will refuse correct
+/// attempts, however carefully the number is argued for.** It belongs *below* the
+/// distribution, where its only job is rejecting what is not speech — a click, a
+/// lip smack, a chair creak. 30 ms is ten frames at this hop, and those frames
+/// overlap: their windows cover about 53 ms of signal between them, against the
+/// one or two frames a transient manages.
+///
+/// **Confirmed on the next run**: seven more rounds of a natural-rate 是 scored
+/// seven times, margins +17 to +67 ms, nothing refused. The distribution has since
+/// been 15–31 frames, so 30 ms leaves the whole of it clear — and a gate at the
+/// old 50 ms would have refused two of those seven.
+///
+/// Public because it is the number to hold a real voice against: the
+/// `records_from_the_real_microphone` test in `src-tauri` prints the voicing it
+/// measured beside this floor.
+pub const MIN_VOICED_MS: u32 = 30;
 
-/// Shorter than this and it was a click, not a syllable.
-const MIN_VOICED_MS: u32 = 90;
+/// A floor under [`min_voiced_frames`], in frames.
+///
+/// A hop fine enough to divide the floor down to one frame would let a single
+/// voiced frame pass as a syllable, so the derived count never goes below this
+/// however the track was built.
+const MIN_VOICED_FLOOR_FRAMES: usize = 4;
+
+/// [`MIN_VOICED_MS`] as a number of frames, for the hop this track was built at.
+///
+/// The one place the duration floor becomes a frame count, so that
+/// [`contour_in`] and the syllable splitter ask the same question of the same
+/// track. The splitter needs it as much as the scorer does: a boundary placed so
+/// that it cuts out a segment the scorer then refuses is a syllable the learner
+/// said and the app threw away, which reads as a bug rather than as a property of
+/// their speech.
+pub fn min_voiced_frames(track: &PitchTrack) -> usize {
+    let hop_ms = track.hop as f32 * 1000.0 / track.sample_rate as f32;
+    let by_duration = (MIN_VOICED_MS as f32 / hop_ms).ceil() as usize;
+    MIN_VOICED_FLOOR_FRAMES.max(by_duration)
+}
 
 /// Points the contour is resampled to before comparison.
 ///
@@ -121,7 +180,28 @@ pub struct PitchFrame {
 /// and these bounds rather than configured, so they cannot contradict them.
 #[derive(Clone, Copy, Debug)]
 pub struct PitchConfig {
-    /// Lowest fundamental to look for. Below a low male voice.
+    /// Lowest fundamental to look for.
+    ///
+    /// **This is also what sets the analysis window**, because YIN needs two
+    /// periods at the longest lag it searches: `window = 2 · sr / f_min`. So it is
+    /// not only "how low a voice can be tracked", it is "how much pitch movement
+    /// can be seen inside one frame" — and 60 Hz bought the first at the cost of
+    /// the second.
+    ///
+    /// At 60 Hz the window is 33 ms, and a **fourth tone said at a normal rate does
+    /// not hold a period across 33 ms**: it falls far enough that the difference
+    /// function never dips under YIN's threshold, the frames come back unvoiced,
+    /// and the syllable is refused for having no voice in it. Measured on a
+    /// synthetic 是 with an 80 ms vowel, 60 Hz found **11 voiced frames and scored
+    /// nothing**; at 80 Hz, where the window is 25 ms, the same signal gave
+    /// **22 frames and 69 ms of voicing** — enough to judge. A tone 4 is the
+    /// shortest and fastest-moving tone Mandarin has, so it is the case that
+    /// suffered.
+    ///
+    /// 80 Hz rather than lower or higher, from the same measurements: a 90 Hz male
+    /// voice still tracks correctly at 80 (84 ms of voicing on a 100 ms vowel), and
+    /// **stops tracking at 100** (0 ms) — the search range has to stay under the
+    /// lowest voice this will meet, and 90 Hz is about as low as speech goes.
     pub f_min: f32,
     /// Highest fundamental to look for. Above a child's or a high female voice,
     /// and above the range any Mandarin tone uses.
@@ -136,7 +216,7 @@ pub struct PitchConfig {
 impl Default for PitchConfig {
     fn default() -> Self {
         Self {
-            f_min: 60.0,
+            f_min: 80.0,
             f_max: 500.0,
             threshold: 0.15,
             silence_rms: 0.008,
@@ -215,7 +295,16 @@ pub fn track_pitch(samples: &[f32], sample_rate: u32, cfg: &PitchConfig) -> Pitc
     // window in which a period at `f_min` is still visible at the largest lag.
     let tau_max = (sr / cfg.f_min).ceil() as usize;
     let window = (tau_max * 2).max(tau_min * 4);
-    let hop = (window / 4).max(1);
+    // Eight windows per window, not four.
+    //
+    // The hop is what sets a contour's resolution in *time*, and a short syllable
+    // is the case that needs it: at four, the whole of a conversational 是 is
+    // about a dozen frames — barely more points than `CONTOUR_POINTS` — so
+    // `normalise_shape` was interpolating more of the contour than it measured.
+    // Overlapping the windows twice as far costs a factor of two in the YIN inner
+    // loop, and a recording is capped at ten seconds, so the price is paid in
+    // milliseconds on a phone.
+    let hop = (window / 8).max(1);
 
     let mut frames = Vec::new();
     if samples.len() < window {
@@ -426,7 +515,8 @@ pub fn contour_in(track: &PitchTrack, first: usize, last: usize) -> Option<Conto
         })
         .collect();
 
-    if indices.len() < MIN_VOICED_FRAMES {
+    let minimum = min_voiced_frames(track);
+    if indices.len() < minimum {
         return None;
     }
 
@@ -452,11 +542,15 @@ pub fn contour_in(track: &PitchTrack, first: usize, last: usize) -> Option<Conto
             None
         });
     }
+    // Drop the frames the estimator got wrong before anything is built from
+    // them. Done before the gap fill, so a dropped frame becomes one of the gaps
+    // that fill already knows how to handle.
+    reject_outliers(&mut gaps);
     interpolate_gaps(&mut gaps);
     for v in gaps.iter().flatten() {
         log_f0.push(*v);
     }
-    if log_f0.len() < MIN_VOICED_FRAMES {
+    if log_f0.len() < minimum {
         return None;
     }
 
@@ -481,6 +575,55 @@ pub fn contour_in(track: &PitchTrack, first: usize, last: usize) -> Option<Conto
         voiced_ms,
         span_ms,
     })
+}
+
+/// How far a frame may sit from its neighbours before it is read as a
+/// mis-measurement rather than as pitch, in semitones.
+///
+/// Within one syllable the pitch moves smoothly. A fourth tone falls its whole
+/// twelve semitones over 150–300 ms, which is well under **one** semitone between
+/// frames twelve milliseconds apart, so a frame several semitones from its
+/// neighbours is not something a voice did.
+const OUTLIER_ST: f32 = 4.0;
+
+/// Half-width, in frames, of the window the local median is taken over. Four
+/// frames is about 12 ms, over which a real contour moves by a fraction of a
+/// semitone.
+const OUTLIER_WINDOW: usize = 4;
+
+/// Drop frames that sit implausibly far from their neighbours.
+///
+/// **Why this is not cosmetic.** `range_st` is `max - min` over the contour, so a
+/// single wrong frame sets it — and [`Contour::is_flat`], which decides whether a
+/// tone is settled by the flatness rule or handed to the shape comparison, is
+/// decided by `range_st`. A hand test on 中国人 measured segments of 166 ms
+/// reporting **27.4 semitones**, more than two octaves, with the raw track jumping
+/// between 83 and 441 Hz and 4 to 12 discontinuities per segment. One loud bad
+/// frame turned a level tone 1 into "heard falling". A synthetic probe built from
+/// that shape reproduces it: the segments with jumps are exactly the segments with
+/// impossible ranges, and the ones with no jumps have ranges of 1 to 5 semitones.
+///
+/// The frame is dropped rather than replaced, so it becomes a gap and
+/// [`interpolate_gaps`] fills it from its neighbours — which is the value it
+/// should have had. A *consistent* octave error is deliberately left alone: the
+/// contour has its mean removed before comparison, so a track that sits an octave
+/// out throughout has the right shape, and only the jumps do damage.
+fn reject_outliers(values: &mut [Option<f32>]) {
+    let measured = values.to_vec();
+    for (index, value) in measured.iter().enumerate() {
+        let Some(value) = *value else { continue };
+        let from = index.saturating_sub(OUTLIER_WINDOW);
+        let to = (index + OUTLIER_WINDOW + 1).min(measured.len());
+        let mut neighbours: Vec<f32> = measured[from..to].iter().flatten().copied().collect();
+        if neighbours.len() < 3 {
+            continue;
+        }
+        neighbours.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = neighbours[neighbours.len() / 2];
+        if (value - median).abs() * 12.0 > OUTLIER_ST {
+            values[index] = None;
+        }
+    }
 }
 
 /// Fill `None`s by linear interpolation in whatever domain the values are in,
@@ -922,13 +1065,6 @@ fn score_contour(contour: &Contour, expected_tone: u8) -> ToneAttempt {
 /// the syllable break.
 const VOICED_CUT_PENALTY: f32 = 1.0;
 
-/// Shortest a syllable may be, in frames.
-///
-/// Tied to [`MIN_VOICED_FRAMES`] on purpose: a segment shorter than this cannot
-/// hold enough voice to be judged, so splitting one out would only produce a
-/// syllable that is then reported as inaudible.
-const MIN_SYLLABLE_FRAMES: usize = MIN_VOICED_FRAMES;
-
 /// Per-frame cost of cutting between two frames.
 ///
 /// Unvoiced frames are free (they are the syllable breaks); voiced frames cost
@@ -944,25 +1080,65 @@ fn cut_cost(track: &PitchTrack) -> Vec<f32> {
 
 /// Choose where to divide `first..=last` into `count` syllables.
 ///
-/// Returns the `count - 1` boundary frames, ascending, or `None` when the span is
-/// too short to hold that many syllables at [`MIN_SYLLABLE_FRAMES`] each.
+/// Returns the `count - 1` boundary frames, ascending, or `None` when the span
+/// cannot hold that many syllables — see the two floors below.
+///
+/// `min_len` is [`min_voiced_frames`] at the call site, and so is `min_voiced`.
+/// They are separate arguments because they say different things and only happen
+/// to have the same value: **how long a segment must be, and how much voice it
+/// must contain.**
 ///
 /// A shortest-path search rather than picking the `count - 1` cheapest frames
-/// outright, because those may all sit in one gap: the search enforces the
-/// minimum syllable length, so the boundaries have to be spread out. Cost is the
-/// sum of the frame costs the cuts land on.
+/// outright, because those may all sit in one gap. Cost is the sum of the frame
+/// costs the cuts land on.
+///
+/// ## The voice floor is the one that matters, and it was missing
+///
+/// A frame-length floor alone does not stop the search from **cutting twice in the
+/// same silence**, and that is exactly what it did on a real voice. A long quiet
+/// stretch is the cheapest place in a recording to put a boundary, so with two
+/// boundaries to place the search put both of them inside it, `min_len` apart —
+/// the minimum the rule allowed. The learner then got a middle "syllable" of
+/// 31 ms holding no voice at all, reported as "I could not hear syllable 2
+/// clearly", and a third segment holding two syllables' worth of pitch: a hand
+/// test on 中国人 measured one segment at 750 ms with a 26-semitone range. Six
+/// rounds of 是不是 out of eight and four of 中国人 out of seven did this.
+///
+/// **A syllable has a vowel in it.** Requiring each segment to hold `min_voiced`
+/// frames of voice expresses that, and it makes cutting twice in a silence
+/// impossible — the segment between the two cuts would have no voice in it. What
+/// survives is a boundary at each *end* of the silence, which is what a listener
+/// hears as the syllable break.
 fn find_boundaries(
+    track: &PitchTrack,
     cost: &[f32],
     first: usize,
     last: usize,
     count: usize,
     min_len: usize,
+    min_voiced: usize,
 ) -> Option<Vec<usize>> {
     let cuts = count.checked_sub(1)?;
     if cuts == 0 {
         return Some(Vec::new());
     }
     if last + 1 < first + count * min_len {
+        return None;
+    }
+
+    // `voiced_before[i]` is the number of voiced frames before frame `i`, so the
+    // voice in a segment is one subtraction. The raw flag, not the loudness-gated
+    // count `contour_in` ends up using: the gate is measured against a segment's
+    // own peak, which is not known until the split is chosen.
+    let mut voiced_before = vec![0usize; track.frames.len() + 1];
+    for (index, frame) in track.frames.iter().enumerate() {
+        voiced_before[index + 1] =
+            voiced_before[index] + usize::from(frame.voiced && frame.hz > 0.0);
+    }
+    let voice_in = |from: usize, to: usize| voiced_before[to] - voiced_before[from];
+
+    // Cheap necessary condition, so a hopeless span is refused before the search.
+    if voice_in(first, last + 1) < count * min_voiced {
         return None;
     }
 
@@ -983,16 +1159,19 @@ fn find_boundaries(
         }
 
         // `winner` is the running minimum of the previous row over every legal
-        // predecessor. Because the set of predecessors only grows as `i` grows,
-        // one pass over the row is enough: no rescanning per `i`.
+        // predecessor. Both constraints cut the legal set down to a *prefix* of
+        // the row — a frame too close is too close for every later one too, and a
+        // frame with too little voice behind it is too early for every later one
+        // too — so the set only grows as `i` grows and one pass is still enough.
         let mut winner = INF;
         let mut winner_at = None;
-        let mut previous = first + (j - 1) * min_len;
+        let mut previous = first;
         for i in lo..=hi {
-            // The predecessor must leave a full syllable before this one, so it
-            // can sit no later than `i - min_len`.
-            let reachable = i - min_len;
-            while previous <= reachable {
+            let far_enough = i.saturating_sub(min_len);
+            // The predecessor must leave a whole syllable — voice included —
+            // between itself and this boundary.
+            let enough_voice = voiced_before[i].saturating_sub(min_voiced);
+            while previous <= far_enough && voiced_before[previous] <= enough_voice {
                 if best[j - 1][previous] < winner {
                     winner = best[j - 1][previous];
                     winner_at = Some(previous);
@@ -1006,8 +1185,9 @@ fn find_boundaries(
         }
     }
 
-    // The last boundary also has to leave a full syllable after it. This is the
-    // constraint the naive "pick the cheapest frames" approach cannot express.
+    // The last boundary also has to leave a whole syllable after it, voice
+    // included. This is the constraint the naive "pick the cheapest frames"
+    // approach cannot express.
     let lo = first + cuts * min_len;
     let hi = last + 1 - min_len;
     if lo > hi {
@@ -1016,6 +1196,9 @@ fn find_boundaries(
     let mut winner = INF;
     let mut at = None;
     for (i, value) in best[cuts].iter().enumerate().skip(lo).take(hi - lo + 1) {
+        if voice_in(i, last + 1) < min_voiced {
+            continue;
+        }
         if *value < winner {
             winner = *value;
             at = Some(i);
@@ -1185,12 +1368,18 @@ pub fn analyze(samples: &[f32], sample_rate: u32, expected: &[u8]) -> ToneReport
     }
 
     let cost = cut_cost(&track);
+    // One floor in two forms: a segment has to be at least this long, and has to
+    // hold at least this much voice in it. See `find_boundaries` for why the
+    // second is not implied by the first.
+    let syllable_floor = min_voiced_frames(&track);
     let Some(boundaries) = find_boundaries(
+        &track,
         &cost,
         first,
         last,
         expected.len(),
-        MIN_SYLLABLE_FRAMES,
+        syllable_floor,
+        syllable_floor,
     ) else {
         let mut report = ToneReport::silent(
             expected.to_vec(),
@@ -1380,15 +1569,54 @@ pub fn analyze_tone(samples: &[f32], sample_rate: u32, expected_tone: u8) -> Ton
 mod tests {
     use super::*;
 
+    /// A voice with jitter in it, which is the difference between this suite and
+    /// a real one.
+    ///
+    /// [`say`] and [`say_at`] are perfect tones with three steady harmonics, and
+    /// YIN finds a period in those almost anywhere — so a test built on them
+    /// measures what the estimator does to a *signal generator*, not to a person.
+    /// Every short-syllable test in this file passed while a real 是 was being
+    /// refused on a phone. This adds the cycle-to-cycle variation real phonation
+    /// has, which is what makes a window that is too long fail.
+    ///
+    /// Deterministic, so a failure is reproducible.
+    fn say_rough(base: f32, len: usize, semitones: &[(f32, f32)], pad_ms: u32) -> Vec<f32> {
+        let sr = TARGET_SAMPLE_RATE as f32;
+        let pad = (sr * pad_ms as f32 / 1000.0) as usize;
+        let mut out = vec![0.0f32; pad];
+        let mut phase = 0.0f32;
+        let mut state = 4242u32;
+        for i in 0..len {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let jitter = ((state >> 9) as f32 / 4_194_304.0 - 1.0) * 0.02;
+            let t = i as f32 / len as f32;
+            let st = sample_anchors(semitones, t);
+            let hz = base * (2.0f32).powf(st / 12.0) * (1.0 + jitter);
+            out.push(
+                0.35 * (phase * std::f32::consts::TAU).sin()
+                    + 0.12 * (phase * std::f32::consts::TAU * 2.0).sin()
+                    + 0.05 * (phase * std::f32::consts::TAU * 3.0).sin(),
+            );
+            phase += hz / sr;
+        }
+        out.extend(vec![0.0f32; pad]);
+        out
+    }
+
     /// A sine wave whose frequency follows a contour, with silence either side.
     ///
     /// The true F0 is known by construction, which is the only reason a pitch
     /// estimator can be tested at all.
     fn say(len: usize, semitones: &[(f32, f32)], pad_ms: u32) -> Vec<f32> {
+        say_at(180.0, len, semitones, pad_ms)
+    }
+
+    /// The same, at a chosen fundamental — a low male voice is the case
+    /// [`PitchConfig::f_min`] has to stay under, so it needs to be sayable.
+    fn say_at(base: f32, len: usize, semitones: &[(f32, f32)], pad_ms: u32) -> Vec<f32> {
         let sr = TARGET_SAMPLE_RATE as f32;
         let pad = (sr * pad_ms as f32 / 1000.0) as usize;
         let mut out = vec![0.0f32; pad];
-        let base = 180.0f32;
         let mut phase = 0.0f32;
         for i in 0..len {
             let t = i as f32 / len as f32;
@@ -1651,24 +1879,108 @@ mod tests {
     /// before speaking and releases after — and its position is what fixes where
     /// the fricatives land, which the boundary tests assert against.
     fn say_word(syllables: &[(f32, f32)], per_ms: u32, gap_ms: u32) -> Vec<f32> {
+        let even: Vec<(f32, f32, u32)> = syllables
+            .iter()
+            .map(|(from, to)| (*from, *to, per_ms))
+            .collect();
+        say_word_at(&even, gap_ms)
+    }
+
+    /// The same, with each syllable given its own length.
+    ///
+    /// Real words are not made of equal syllables: the middle one of a
+    /// three-syllable word is usually the shortest and the most reduced, which is
+    /// exactly the case the scoring floor used to throw away. A helper that can
+    /// only build even words cannot express the failure.
+    fn say_word_at(syllables: &[(f32, f32, u32)], gap_ms: u32) -> Vec<f32> {
         let sr = TARGET_SAMPLE_RATE as f32;
         let mut out = vec![0.0f32; (sr * 0.05) as usize];
-        for (index, (from, to)) in syllables.iter().enumerate() {
+        for (index, (from, to, per_ms)) in syllables.iter().enumerate() {
             if index > 0 {
                 out.extend(fricative(gap_ms, sr));
             }
-            let len = (sr * per_ms as f32 / 1000.0) as usize;
-            let mut phase = 0.0f32;
-            for i in 0..len {
-                let t = i as f32 / len as f32;
-                let st = from + (to - from) * t;
-                let hz = 180.0 * (2.0f32).powf(st / 12.0);
-                out.push(0.35 * (phase * std::f32::consts::TAU).sin());
-                phase += hz / sr;
-            }
+            out.extend(tone(*from, *to, *per_ms));
         }
         out.extend(vec![0.0f32; (sr * 0.05) as usize]);
         out
+    }
+
+    /// A word whose syllables are separated by *silence* of a given length rather
+    /// than by a fricative — a learner pausing between them.
+    ///
+    /// The distinction matters: silence is the cheapest thing in a recording to
+    /// put a boundary on, so it is what provokes the splitter into cutting twice
+    /// in the same gap.
+    fn say_word_pausing(syllables: &[(f32, f32, u32)], pause_ms: u32) -> Vec<f32> {
+        let sr = TARGET_SAMPLE_RATE as f32;
+        let mut out = vec![0.0f32; (sr * 0.05) as usize];
+        for (index, (from, to, per_ms)) in syllables.iter().enumerate() {
+            if index > 0 {
+                out.extend(vec![0.0f32; (sr * pause_ms as f32 / 1000.0) as usize]);
+            }
+            out.extend(tone(*from, *to, *per_ms));
+        }
+        out.extend(vec![0.0f32; (sr * 0.05) as usize]);
+        out
+    }
+
+    /// One voiced syllable: a contour from `from` to `to` semitones over `per_ms`.
+    fn tone(from: f32, to: f32, per_ms: u32) -> Vec<f32> {
+        let sr = TARGET_SAMPLE_RATE as f32;
+        let len = (sr * per_ms as f32 / 1000.0) as usize;
+        let mut out = Vec::with_capacity(len);
+        let mut phase = 0.0f32;
+        for i in 0..len {
+            let t = i as f32 / len as f32;
+            let st = from + (to - from) * t;
+            let hz = 180.0 * (2.0f32).powf(st / 12.0);
+            out.push(0.35 * (phase * std::f32::consts::TAU).sin());
+            phase += hz / sr;
+        }
+        out
+    }
+
+    /// The splitter must not put two boundaries in the same silence.
+    ///
+    /// **This is the failure a real voice found and no synthetic test did.** A long
+    /// quiet stretch is the cheapest place in a recording to put a boundary, so
+    /// with two boundaries to place, the search put both of them inside it,
+    /// `min_len` apart — the least the frame-length rule allowed. The learner got a
+    /// middle "syllable" of 31 ms holding no voice, reported as "I could not hear
+    /// syllable 2 clearly", and a third segment holding two syllables' worth of
+    /// pitch. Six rounds of 是不是 out of eight, and four of 中国人 out of seven,
+    /// did exactly this.
+    ///
+    /// What stops it is requiring voice in every segment: two cuts inside one
+    /// silence leave a segment with none in it, and a syllable has a vowel.
+    #[test]
+    fn a_silence_between_two_syllables_is_not_cut_twice() {
+        let samples = say_word_pausing(
+            &[(-2.0, 2.0, 180), (1.0, 4.0, 140), (1.0, 1.0, 220)],
+            260,
+        );
+        let report = analyze(&samples, TARGET_SAMPLE_RATE, &[2, 2, 1]);
+
+        assert_eq!(
+            report.boundaries_ms.len(),
+            2,
+            "the word must still be divided: {}",
+            report.detail
+        );
+        let gap = report.boundaries_ms[1] - report.boundaries_ms[0];
+        assert!(
+            gap > 100,
+            "the boundaries are {gap} ms apart, so the middle syllable is a sliver: {:?}",
+            report.boundaries_ms
+        );
+        for syllable in &report.syllables {
+            assert!(
+                syllable.attempt.voiced_ms > 0,
+                "every syllable must have voice in it, and syllable {} has none: {}",
+                syllable.position,
+                syllable.attempt.detail
+            );
+        }
     }
 
     #[test]
@@ -1742,6 +2054,189 @@ mod tests {
             report.boundaries_ms
         );
         assert_eq!(report.verdict, ToneVerdict::Match, "{}", report.detail);
+    }
+
+    /// The reported failure this fixes: 是 at a conversational rate.
+    ///
+    /// A fourth tone is the shortest tone Mandarin has, and 是 is a long `sh`
+    /// followed by a vowel of roughly 80–150 ms. The floor used to be 90 ms of
+    /// *measured* voicing, and a frame is only counted when its whole 33 ms
+    /// window is periodic, so a vowel this short never reached it: the learner
+    /// was told "I could not hear enough voice to judge" about a syllable they
+    /// had plainly said, and speaking slowly — which stretches the vowel — was
+    /// the only way through. See `MIN_VOICED_MS`.
+    #[test]
+    fn a_short_syllable_at_a_speaking_rate_is_scored_rather_than_refused() {
+        let samples = say_word_at(&[(4.0, -4.0, 80)], 60);
+        let attempt = analyze_tone(&samples, TARGET_SAMPLE_RATE, 4);
+        assert_eq!(attempt.verdict, ToneVerdict::Match, "{}", attempt.detail);
+        assert_eq!(attempt.heard_tone, Some(4));
+    }
+
+    /// The shape a fourth tone actually has, and why the window had to shrink.
+    ///
+    /// Every other test here falls *evenly*, and an even fall was measured
+    /// perfectly well by the 33 ms window that `f_min = 60` bought — which is why
+    /// they all passed while an ordinary 是 was being refused. A real tone 4 is
+    /// `51`: it stays high and then drops hard, so inside one 33 ms window the
+    /// pitch moves far enough that no lag in it holds a period. YIN returned
+    /// unvoiced for every frame, and the syllable came back as "I could not hear
+    /// enough voice to judge" rather than as a wrong tone. At 80 Hz the window is
+    /// 25 ms and the fall is visible inside it.
+    ///
+    /// **This test is the one that fails if the window goes back.** It is the
+    /// regression the hand test on a real voice found; the even-fall tests above
+    /// it cannot see it.
+    #[test]
+    fn a_short_syllable_with_a_fast_fall_is_heard_at_all() {
+        // 1280 samples is 80 ms: an ordinary 是, not a careful one. 200 Hz and a
+        // 4 → 2 → −6 semitone shape is what a real fourth tone looks like — high,
+        // then a hard drop — and `say_rough` because a perfect tone does not
+        // reproduce the failure.
+        let samples = say_rough(200.0, 1280, &[(0.0, 4.0), (0.5, 2.0), (1.0, -6.0)], 50);
+        let attempt = analyze_tone(&samples, TARGET_SAMPLE_RATE, 4);
+        assert_eq!(attempt.verdict, ToneVerdict::Match, "{}", attempt.detail);
+        assert_eq!(attempt.heard_tone, Some(4));
+    }
+
+    /// Raising `f_min` to see a fast fall has a floor of its own.
+    ///
+    /// This is what keeps the window from shrinking further: `f_min` is the
+    /// lowest fundamental the lag search covers, and a voice below it is tracked
+    /// at the wrong octave or not at all. 90 Hz is about as low as speech goes —
+    /// it tracks correctly at 80 Hz and collapses at 100, which is why the window
+    /// is 25 ms rather than the 20 ms that would suit a fast fall even better.
+    #[test]
+    fn a_low_voice_is_still_tracked() {
+        let samples = say_at(90.0, 2560, &[(0.0, 0.0), (1.0, 0.0)], 50);
+        let attempt = analyze_tone(&samples, TARGET_SAMPLE_RATE, 1);
+        assert_eq!(attempt.verdict, ToneVerdict::Match, "{}", attempt.detail);
+        assert!(
+            (attempt.median_hz - 90.0).abs() < 6.0,
+            "expected about 90 Hz, got {:.0}",
+            attempt.median_hz
+        );
+    }
+
+    /// A single mis-measured frame must not decide what a syllable sounds like.
+    ///
+    /// **This is the shape the hand test found**, built directly from its numbers:
+    /// segments of 166 ms reporting 27.4 semitones, with the raw track jumping
+    /// between 83 and 441 Hz and 4 to 12 discontinuities in a segment. Across six
+    /// rounds of 中国人 the segments with jumps were exactly the segments with
+    /// impossible ranges, and the one segment with no jumps in every round had a
+    /// range of 1 to 5 semitones.
+    ///
+    /// `range_st` is `max - min` over the contour and `Contour::is_flat` is
+    /// decided by it, so one bad frame was enough to turn a level tone 1 into
+    /// "heard falling" — which is what the learner was told, repeatedly.
+    #[test]
+    fn one_frame_at_the_wrong_frequency_does_not_set_the_range() {
+        let mut frames: Vec<PitchFrame> = (0..80)
+            .map(|_| PitchFrame {
+                hz: 180.0,
+                voiced: true,
+                rms: 0.1,
+            })
+            .collect();
+        // Two frames at three times the frequency, which is what the real tracks
+        // did: 83–441 Hz and 133–433 Hz around a median near 145.
+        frames[30].hz = 540.0;
+        frames[58].hz = 540.0;
+        let track = PitchTrack {
+            frames,
+            hop: 50,
+            sample_rate: TARGET_SAMPLE_RATE,
+        };
+
+        let contour = contour_in(&track, 0, 79).expect("80 frames of clear voice");
+        assert!(
+            contour.range_st < 2.0,
+            "one bad frame set the range to {:.1} st",
+            contour.range_st
+        );
+        assert!(
+            contour.is_flat(),
+            "a level tone must still read as level: {:.1} st",
+            contour.range_st
+        );
+        assert!(
+            (contour.median_hz - 180.0).abs() < 1.0,
+            "the median must ignore them too, got {:.0} Hz",
+            contour.median_hz
+        );
+    }
+
+    /// The other half of the same report: the middle of a three-syllable word.
+    ///
+    /// 180 / 80 / 220 ms is the shape of a word like 对不起 — the middle syllable
+    /// is the shortest and the most reduced, so it was the first to fall under
+    /// the floor. It came back as "I could not hear syllable 2 clearly" while the
+    /// split itself was correct, which is what made it look like a segmentation
+    /// bug rather than a measurement floor.
+    #[test]
+    fn a_three_syllable_word_whose_middle_is_short_is_scored_throughout() {
+        let samples = say_word_at(&[(-2.0, 2.0, 180), (1.0, 4.0, 80), (1.0, 1.0, 220)], 50);
+        let report = analyze(&samples, TARGET_SAMPLE_RATE, &[2, 2, 1]);
+
+        assert_eq!(report.boundaries_ms.len(), 2, "the word must still be divided");
+        let scored = report
+            .syllables
+            .iter()
+            .filter(|s| s.attempt.verdict == ToneVerdict::Match)
+            .count();
+        assert_eq!(scored, 3, "every syllable should be scored: {}", report.detail);
+    }
+
+    /// The splitter and the scorer answer to the same floor.
+    ///
+    /// They used to be a frame count and a millisecond figure with nothing tying
+    /// them together, so the splitter could cut out a segment it was satisfied
+    /// with and the scorer then refuse it — a syllable the learner said, that the
+    /// app had just decided was long enough, reported as inaudible.
+    #[test]
+    fn the_splitter_will_not_cut_out_a_segment_the_scorer_would_refuse() {
+        let track = track_pitch(
+            &say(8000, &[(0.0, 0.0), (1.0, 0.0)], 50),
+            TARGET_SAMPLE_RATE,
+            &PitchConfig::default(),
+        );
+        let floor = min_voiced_frames(&track);
+        let hop_ms = track.hop as f32 * 1000.0 / track.sample_rate as f32;
+
+        assert!(floor >= MIN_VOICED_FLOOR_FRAMES, "{floor} frames");
+        assert!(
+            floor as f32 * hop_ms >= MIN_VOICED_MS as f32,
+            "{floor} frames at {hop_ms:.2} ms is under the {MIN_VOICED_MS} ms floor"
+        );
+    }
+
+    /// The floor came down, but not past a transient.
+    ///
+    /// This is the guard the lowering had to keep: 40 ms of perfect tone is not a
+    /// syllable, and 160 ms of it is. The window between the two is where the
+    /// judgement lives, and it is deliberately not asserted to the millisecond —
+    /// see the note on `MIN_VOICED_MS` about calibrating against a real voice.
+    #[test]
+    fn the_floor_still_refuses_something_too_short_to_be_a_syllable() {
+        // Deliberately far from the floor rather than near it. A 40 ms tone would
+        // have been the more obvious fixture and a worse test: it lands within a
+        // few milliseconds of the gate, so it would break on any nudge and would
+        // not say which side was wrong. The floor's job is to tell a *transient*
+        // from a syllable, and that is what is asserted.
+        let transient = say(320, &[(0.0, 0.0), (1.0, 0.0)], 0);
+        assert_eq!(
+            analyze_tone(&transient, TARGET_SAMPLE_RATE, 1).verdict,
+            ToneVerdict::Uncertain,
+            "20 ms of tone must not be scored as a syllable"
+        );
+
+        let spoken = say(2560, &[(0.0, 0.0), (1.0, 0.0)], 0);
+        assert_eq!(
+            analyze_tone(&spoken, TARGET_SAMPLE_RATE, 1).verdict,
+            ToneVerdict::Match,
+            "160 ms of tone is a syllable and must be scored"
+        );
     }
 
     #[test]

@@ -236,10 +236,12 @@ audio leaves the machine. The voice is chosen automatically: mainland Mandarin
 (`zh_CN`) is preferred and, within that, the long-standing `Tingting` voice,
 with other Chinese locales as fallbacks. If no Chinese voice is installed the
 control is disabled with an explanation rather than reading the character aloud
-in English. On iOS the audio session is taken for each utterance and released
-again the moment it ends, so the pronunciation is audible even with the
+in English. On iOS the audio session is taken for each utterance and released a
+few seconds after it ends, so the pronunciation is audible even with the
 Ring/Silent switch on — while anything else that was playing is ducked rather
-than stopped.
+than stopped. The short hold is deliberate: giving the session straight back left
+the audio route cold at the start of the next word, which was heard as a crackle
+on the first tap and not on the second.
 
 Which voice is used is a **setting**: the Settings screen lists the Chinese voices
 this machine has, with their locales, and a *Hear it* button to choose one by ear.

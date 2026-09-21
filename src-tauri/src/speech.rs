@@ -7,11 +7,14 @@
 //! Both backends pick a voice with the same rule ([`pick_voice`]), so the
 //! mainland-Mandarin preference is one decision rather than two.
 //!
-//! On iOS the audio session is taken for the duration of an utterance and given
-//! back when it ends. That is not decoration: under the default session category
-//! iOS mutes speech synthesis whenever the Ring/Silent switch is on, so a tap on
-//! an explicit pronunciation button produced nothing on a phone while the very
-//! same build spoke perfectly on the simulator, which has no such switch.
+//! On iOS the audio session is taken for an utterance and given back a few
+//! seconds after it ends, rather than the instant it ends. That is not
+//! decoration: under the default session category iOS mutes speech synthesis
+//! whenever the Ring/Silent switch is on, so a tap on an explicit pronunciation
+//! button produced nothing on a phone while the very same build spoke perfectly
+//! on the simulator, which has no such switch. The *hold* is the other half —
+//! see [`audio_ready`] for why handing the session straight back made the next
+//! word crackle.
 //!
 //! The **character** is spoken rather than its pinyin: `say` has a Chinese
 //! lexicon, so handing it 汉 produces the Mandarin reading, whereas handing an
@@ -251,6 +254,21 @@ impl Speaker {
         }
     }
 
+    /// Get the platform's output path ready before the learner asks for it.
+    ///
+    /// A no-op everywhere but iOS, where there is something expensive and
+    /// glitch-prone to do in advance — see [`audio_ready`]. Called from the voice
+    /// warm-up thread rather than from startup, so none of it is on the path that
+    /// shows the first screen.
+    pub fn prime(&self) {
+        #[cfg(target_os = "ios")]
+        if let Err(problem) = audio_ready() {
+            // Not fatal and not worth a dialog: a cold route costs the crackle
+            // fix, not the speech. `speak_on_main` takes the session again.
+            eprintln!("[speech] could not warm the audio route: {problem}");
+        }
+    }
+
     /// Stop the current utterance, if any.
     ///
     /// On macOS that means killing the `say` process and reaping it; on iOS,
@@ -415,6 +433,9 @@ fn speak_on_main(text: &str, name: &str) -> Result<(), String> {
             // the Ring/Silent switch the way it was before this call.
             eprintln!("[speech] could not take the audio session: {problem}");
         }
+        // This utterance owns the session now, so any hold timer still counting
+        // down from the last one must not hand it back mid-word.
+        take_session();
         // The synthesiser is cloned out of the `thread_local` rather than the
         // borrow being held across the call: speaking may run a delegate
         // callback on this very thread, and that callback borrows `SPEECH`
@@ -431,14 +452,14 @@ fn speak_on_main(text: &str, name: &str) -> Result<(), String> {
     })
 }
 
-/// Hand the audio session back once an utterance is over.
+/// Start the countdown that gives the audio session back after an utterance.
 ///
-/// The delegate reports both endings — finished and cancelled — but the session
-/// is only released when the queue really is quiet. [`Speaker::speak`] stops the
+/// The delegate reports both endings — finished and cancelled — but the hold is
+/// only armed when the queue really is quiet. [`Speaker::speak`] stops the
 /// previous utterance before starting the next, and AVFoundation may deliver
-/// that cancellation after its replacement has already begun; releasing the
-/// session then would cut the new word off mid-syllable. That order is also why
-/// this never holds a borrow of `SPEECH` while it asks.
+/// that cancellation after its replacement has already begun; arming a release
+/// then would race the word now being spoken. That order is also why this never
+/// holds a borrow of `SPEECH` while it asks.
 ///
 /// "Quiet" is `Some(false)`, not "not true": a `None` means the callback did not
 /// arrive on the thread that owns the synthesizer — an empty `SPEECH` was just
@@ -453,11 +474,18 @@ fn utterance_ended() {
         })
     });
     if still_speaking == Some(false) {
-        release_session();
+        hold_session_then_release();
     }
 }
 
 /// Stop whatever is being spoken, on the main thread.
+///
+/// Nothing here hands the session back. Stopping something fires the
+/// cancellation callback, which arms the hold; stopping nothing has no callback
+/// to fire and nothing to give back, because whatever is holding the session —
+/// the last utterance, or [`audio_ready`] — is already counting down. Releasing
+/// here would be the cold start this file now exists to avoid, since
+/// [`Speaker::speak`] stops before it speaks.
 #[cfg(target_os = "ios")]
 fn stop_on_main() {
     with_main(|| {
@@ -472,15 +500,7 @@ fn stop_on_main() {
             return;
         };
         // SAFETY: on the main thread, and the clone keeps the object alive.
-        let speaking = unsafe { synthesizer.isSpeaking() };
-        // SAFETY: as above.
         unsafe { synthesizer.stopSpeakingAtBoundary(AVSpeechBoundary::Immediate) };
-        // Stopping nothing fires no delegate callback, so without this the
-        // session would stay active — and other audio ducked — after a `stop`
-        // that had nothing left to cut off.
-        if !speaking {
-            release_session();
-        }
     });
 }
 
@@ -526,6 +546,88 @@ fn release_session() {
             AVAudioSessionSetActiveOptions::NotifyOthersOnDeactivation,
         );
     }
+}
+
+/// How long the audio session outlives the last utterance, in milliseconds.
+///
+/// Zero is the old behaviour — hand the session back the instant the word ends —
+/// and it is what left the route cold at the start of the next one. Holding it
+/// has a cost, because anything the app ducked stays ducked for this long, so it
+/// is a few seconds rather than "until the app goes away": long enough to cover a
+/// learner drilling the same character, short enough that their music is back to
+/// volume before they have moved on.
+#[cfg(target_os = "ios")]
+const SESSION_HOLD_MS: u64 = 4_000;
+
+/// Which utterance the session currently belongs to.
+///
+/// Every take and every arm bumps it. A timer that wakes to find the counter
+/// moved on knows a newer utterance has already claimed the session and leaves it
+/// alone. Without that, the timer armed by the previous word could release the
+/// session out from under the word being spoken now — the same failure the
+/// `isSpeaking` check guards against, one step further out in time.
+#[cfg(target_os = "ios")]
+static SESSION_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Claim the session for the utterance about to be spoken, cancelling any
+/// pending release.
+///
+/// Called on the main thread, like everything else that touches the session.
+#[cfg(target_os = "ios")]
+fn take_session() {
+    SESSION_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Arm the delayed release. See [`SESSION_HOLD_MS`].
+///
+/// The wait happens on a thread of its own and the work is done back on the main
+/// thread, where the check and the release cannot be interleaved with a
+/// [`take_session`] — a tap that lands while this is asleep must win.
+#[cfg(target_os = "ios")]
+fn hold_session_then_release() {
+    let generation = SESSION_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(SESSION_HOLD_MS));
+        with_main(move || {
+            if SESSION_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == generation {
+                release_session();
+            }
+        });
+    });
+}
+
+/// Build the synthesiser and start the audio route before anyone needs them.
+///
+/// **Why this exists.** On the phone, the first tap on "Hear it" after a period
+/// of silence crackled, and a second tap on the same character was clean.
+/// Nothing about the utterance differed; what differed is that the first tap paid
+/// for three things at once, back to back, with the word already being rendered
+/// into an audio unit that had not finished starting: constructing the
+/// `AVSpeechSynthesizer`, activating the `AVAudioSession` for `playback`, and
+/// bringing the output hardware out of its idle power state. AVFoundation begins
+/// feeding buffers as soon as `speakUtterance` returns, and a buffer rendered
+/// before the hardware is running is heard as a crackle. Doing those three before
+/// there is any speech to lose leaves the first tap nothing to pay for.
+///
+/// The session is handed back by the same idle timer an utterance uses, so this
+/// does not duck the learner's music for the life of the app — only for
+/// [`SESSION_HOLD_MS`] after launch, when nothing is playing to duck anyway. A
+/// tap arriving after that window still meets a cold route; holding the session
+/// indefinitely would fix that too, at the price of keeping the learner's music
+/// down the whole time they are practising.
+#[cfg(target_os = "ios")]
+fn audio_ready() -> Result<(), String> {
+    with_main(|| {
+        // Building the synthesiser is the part that only has to happen once.
+        SPEECH.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let _ = slot.get_or_insert_with(Speech::new);
+        });
+        engage_session()?;
+        take_session();
+        hold_session_then_release();
+        Ok(())
+    })
 }
 
 /// An utterance for `text`, spoken in the voice called `name`.

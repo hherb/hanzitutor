@@ -1016,20 +1016,29 @@ downstream of them is covered by the IPC tests, which drive
   a `Result`) crosses back. On iOS the `Utterance` field does not exist at all:
   the macOS backend holds a `say` process, iOS holds nothing, which is why the
   struct has a `#[cfg]` on that field.
-- **iOS speech takes the audio session, and gives it back.** The device build
-  spoke on the simulator and was silent on the phone with no error anywhere,
-  because the default `soloAmbient` category is muted by the Ring/Silent switch —
-  and the simulator cannot reproduce that, having no such switch. Pronunciation
-  now sets `playback` + `spokenAudio` + `duckOthers` for the duration of an
-  utterance and deactivates the session (`notifyOthersOnDeactivation`) when the
-  synthesizer reports it finished or cancelled. A deliberate tap on "Hear it" is
-  therefore audible whatever the switch says, while a learner's music is ducked
-  rather than stopped and returns to volume when the word ends. Two details are
-  load-bearing:
-  * The session is released only when `isSpeaking` is false. `Speaker::speak`
-    stops the previous utterance before starting the next, and AVFoundation may
-    deliver that cancellation *after* its replacement has begun: releasing
-    unconditionally then cuts the new word off mid-syllable.
+- **iOS speech takes the audio session, and gives it back — a few seconds later.**
+  The device build spoke on the simulator and was silent on the phone with no
+  error anywhere, because the default `soloAmbient` category is muted by the
+  Ring/Silent switch — and the simulator cannot reproduce that, having no such
+  switch. Pronunciation now sets `playback` + `spokenAudio` + `duckOthers` for an
+  utterance and deactivates the session (`notifyOthersOnDeactivation`)
+  `SESSION_HOLD_MS` after the synthesizer reports it finished or cancelled. A
+  deliberate tap on "Hear it" is therefore audible whatever the switch says, while
+  a learner's music is ducked rather than stopped and returns to volume shortly
+  after the word ends. **The hold is not slack: handing the session straight back
+  powered the route down between words, and the next one crackled** — see "The
+  crackle on the first word, and not the second". Four details are load-bearing:
+  * The hold is armed only when `isSpeaking` is false. `Speaker::speak` stops the
+    previous utterance before starting the next, and AVFoundation may deliver that
+    cancellation *after* its replacement has begun: releasing then cuts the new
+    word off mid-syllable.
+  * `SESSION_GENERATION` is what makes a stale timer stand down. Every utterance
+    bumps it through `take_session`; a timer that wakes to find it moved on leaves
+    the session alone. Both the check and the release run on the main thread, where
+    `take_session` runs, so a tap landing while the timer sleeps wins.
+  * `stop_on_main` deliberately releases nothing. The cancellation callback arms
+    the hold, and `Speaker::speak` stops before it speaks — releasing there would
+    be the cold route the hold exists to avoid.
   * `AVSpeechSynthesizer.delegate` is a **weak** property, which is why the
     synthesizer lives in a `Speech` struct beside its `Retained` delegate rather
     than alone in the `thread_local`. The delegate is ordinary Rust with no
@@ -2083,18 +2092,353 @@ tone, which is why the function takes the characters as well as the tones.
 word-level phenomenon; a per-character loop cannot see it, and that was the whole
 reason words were out of scope until now.
 
-### The first thing to do: hear it with a real voice
+### Hearing it with a real voice — done, and it changed five things
 
 The engine is tested against synthetic contours whose true F0 is known by
-construction, which is the only way to test a pitch tracker — but **no human
-recording has ever been through it**. The development environment's terminal has
-no microphone permission, so every capture there comes back silent (§6). Until
-someone speaks into the running app, the score constants are unvalidated.
+construction, which is the only way to test a pitch tracker — but for a long time
+**no human recording had ever been through it**, and this section was the standing
+instruction to go and get one. It has now happened: seven rounds of 是, ten of
+是不是 and seven of 中国人, all said at a natural rate into
+`records_from_the_real_microphone`.
 
-Characters and words are **human-confirmed** — 不对 was the first word tried, and
-it scored both tones with the sandhi explained. What is still untuned is the
-*scoring constants*, which have never been fitted to a real voice, and
-segmentation's behaviour on words that run together (see the limits below).
+**What it found is the argument for doing it.** The synthetic suite passed the
+whole time, and four things were wrong in ways no synthetic test could see — an
+analysis window too long to hold a fourth tone, a frame guard tied to nothing, a
+scoring floor sitting inside the spread of correct attempts, and a splitter that
+cut a word twice inside one silence. Each was fixed by reading a real measurement
+rather than by reasoning further from a model; **two of the four fixes proposed
+before the recordings arrived were wrong**, and the whole-word bug was not visible
+at all until a word was actually said.
+
+The 是 run, after the first three fixes: **seven rounds, all seven scored**, margins
++17 to +67 ms over the floor, six of the seven judging a falling tone correctly at
+64–95.
+
+The word runs are where it fell apart, and the account is in "The splitter that cut
+twice in the same silence". Single characters are in good shape; **words are the
+open work.**
+
+What is still untuned:
+
+- **Segmentation on words.** The double-cut is fixed, but a boundary can still land
+  in the wrong place: in the rounds that split badly, a segment holding two
+  syllables' worth of pitch (a 750 ms "syllable", a 26-semitone range) is judged
+  against the shape of one tone. That is the largest remaining source of wrong
+  scores.
+- **The scoring constants.** Correct falls scored anywhere from 64 to 95, and one
+  round in thirteen measured as level when the learner believed they had said a
+  fourth tone. Whether that is a lapse, a variation in how the fall is measured, or
+  `SCORE_DECAY_ST` being wrong has not been established.
+
+Both need the same treatment, and `records_from_the_real_microphone` is the
+instrument. Note for whoever runs it next: it takes the **character or word** on
+`HANZI_TUTOR_TONE_TEST`, prints per-syllable voicing and the split points, and the
+split points are the first thing to look at.
+
+### The analysis window that could not see a fourth tone
+
+**The report:** on both phones, a short word like 是 was refused outright unless it
+was said very slowly, and in a three-syllable word the middle syllable was rarely
+recognised.
+
+**The first diagnosis was wrong, and the way it was wrong is the lesson.** It
+looked like a minimum-duration gate: `contour_in` refuses any segment with less
+than `MIN_VOICED_MS` of measured voicing, and that number is not the length of the
+sound — a frame counts only when its whole analysis window holds a period, so the
+measurement runs short of the vowel. Lowering the gate from 90 ms to 60 ms and
+halving the hop looked like the fix, and on the synthetic 是 it was. **Then it was
+tried on a real voice, and three of six attempts were still refused** — with
+`voiced 10`, `13` and `11` frames where the floor wanted 15.
+
+What those rounds show is that the frames were never there to count. `f_min = 60`
+is what chooses the analysis window, because YIN searches two periods at the
+longest lag it covers: 60 Hz buys a **33 ms** window. A real fourth tone is `51` —
+it stays high and then drops hard — and **the pitch moves far enough inside 33 ms
+that no lag in the window holds a period**. YIN returned unvoiced for every frame,
+so the syllable was refused for having no voice in it. It was never a threshold
+that was set too high; it was a measurement that was not being made.
+
+Measured on a synthetic 是 whose vowel is 80 ms, with the fast fall a real tone 4
+has:
+
+| `f_min` | Window | Voiced frames | Measured |
+| --- | --- | --- | --- |
+| 60 Hz (old) | 33 ms | 11 | **refused** |
+| 80 Hz | 25 ms | 22 | 69 ms |
+| 100 Hz | 20 ms | 27 | 68 ms |
+
+So the window is 25 ms — `f_min = 80`, not lower and not higher. Lower leaves the
+fast fall invisible; **higher stops tracking a low voice at all**, which is what
+the same probe found: a 90 Hz male voice measured 84 ms at `f_min = 80` and **0 ms
+at 100**. `a_low_voice_is_still_tracked` pins that, and it is the test that has to
+fail before anyone shortens the window further.
+
+Five changes, all in `crates/hanzi-core/src/tone.rs`:
+
+| Change | Before | After |
+| --- | --- | --- |
+| `PitchConfig::f_min` — which sets the window | 60 Hz, window 33 ms | 80 Hz, window 25 ms |
+| `MIN_VOICED_MS` | 90 ms | 30 ms |
+| The frame guard | A separate `MIN_VOICED_FRAMES = 6`, unrelated to the hop | `min_voiced_frames`, derived from `MIN_VOICED_MS` and the hop |
+| `track_pitch`'s hop | `window / 4` = 8.3 ms | `window / 8` = 3.1 ms |
+| The splitter's floor | `MIN_SYLLABLE_FRAMES = 6` frames = 50 ms, length only | `min_voiced_frames`, as both a length floor *and* a voice floor — see "The splitter that cut twice in the same silence" |
+
+The splitter row was a latent bug rather than a tuning choice: it guaranteed 50 ms
+segments while the scorer asked for 90 ms, so it could cut out a syllable and then
+refuse it. Anything that changes one floor has to change the other, which is why
+they are now one function.
+
+**The tests could not see any of this, and that is worth knowing.** Every
+short-syllable test here builds its voice with `say`/`say_at` — a perfect tone with
+three steady harmonics, which YIN finds a period in almost anywhere. All 32 passed
+while a real 是 was being refused on a phone. `say_rough` adds the cycle-to-cycle
+jitter real phonation has, and
+`a_short_syllable_with_a_fast_fall_is_heard_at_all` is built on it: **flip
+`f_min` back to 60 and that test fails with the learner's exact message.** The
+even-fall tests cannot see it, because an even fall is measured perfectly well
+through a 33 ms window — which is precisely why they all passed.
+
+### The floor belongs below the distribution, not inside it
+
+After the window fix, the same voice gave five more rounds of a natural-rate 是.
+Their measured voicing:
+
+| round | voiced frames | measured | margin against 50 ms |
+| --- | --- | --- | --- |
+| 1 | 2 | refused | — |
+| 2 | 15 | 47 ms | **−3** |
+| 3 | 13 | 41 ms | **−7** |
+| 4 | 22 | 69 ms | +19 |
+| 5 | 25 | 78 ms | +28 |
+
+Rounds 2 and 3 are good 是 — a native-rate fourth tone, at peak levels as high as
+any other round — and the gate refused them, one of them by a single frame. Round 4
+and 5 scored `Match 88.0` and `Match 92.8` with clean falling contours.
+
+**A gate at 50 ms sat in the middle of the spread of correct attempts.** That is
+the whole error, and it is the third version of this constant:
+
+| | Value | What the reasoning was | Why it was wrong |
+| --- | --- | --- | --- |
+| 1 | 90 ms | A 是 vowel is 80–150 ms | Measured voicing runs short of the vowel |
+| 2 | 60 ms | Measured runs ~15 ms short, so allow for it | Argued from synthetic contours, which are not a voice |
+| 3 | 50 ms | The window fix would lift real attempts clear | The window fix helped, and 50 ms was *still* inside the spread |
+| 4 | **30 ms** | Below the distribution; its only job is rejecting transients | — |
+
+`MIN_VOICED_MS = 30` is ten frames at this hop, and those frames overlap: their
+windows cover about 53 ms of signal between them, against the one or two frames a
+transient manages. At 30 ms every one of the five rounds above is scored except the
+2-frame outlier, which is correctly refused at any threshold worth having.
+
+**The rule to take from this: a gate placed inside the distribution of correct
+attempts will refuse correct attempts, however carefully the number is argued for.**
+Every step before the last was argued from a model — a synthetic vowel, an
+arithmetic correction, a probe on a signal generator. None of them could have
+settled it, and each looked convincing at the time. The measurement that settled it
+took one person saying 是 five times into a microphone.
+
+Two things were tested against the same data and **ruled out**, which is worth
+knowing before anyone re-opens them:
+
+- **The 16 kHz resampler.** `resample` decimates a 48 kHz phone capture by linear
+  interpolation, with no anti-alias filter, and its own doc comment calls the
+  aliasing "a cosmetic problem for pitch". It is not the problem here: a synthetic
+  是 through 16 kHz direct, through 48 kHz clean, and through 48 kHz with a
+  broadband noise floor measured identically (22/69, 29/91, 42/131 voiced
+  frames/ms). A real resampler is still wanted for the ASR path, but not for this.
+- **YIN's threshold.** Loosening it from 0.15 to 0.25 gains about 15% more frames
+  on a jittery vowel and calls neither white noise nor a fricative voiced at 0.30,
+  so it is safe and it is a real lever. It is left at 0.15 because the floor was the
+  binding problem and changing both at once would have made the next measurement
+  unattributable. **If a voice still falls short, this is the next thing to move.**
+
+The instrument is the interactive `#[ignore]`d `records_from_the_real_microphone`
+test, which prints the voicing measured beside the floor, as a margin, and takes
+its measurement from `contour_in` rather than from the report — the report zeroes
+those fields when it refuses, so reading them there printed "voicing 0 ms" about a
+recording that had just been counted ten voiced frames.
+
+```text
+HANZI_TUTOR_TONE_TEST=是 HANZI_TUTOR_TONE_SECS=3 \
+  cargo test -p hanzi-tutor --lib -- --ignored --nocapture records_from_the_real_microphone
+```
+
+### The splitter that cut twice in the same silence
+
+Single characters were fixed by the window and the floor. **Words were still
+broken, and the hand test said so immediately.** On 是不是, six rounds of eight
+reported a middle syllable of zero voicing — "I could not hear syllable 2 clearly"
+— and on 中国人, four of seven did.
+
+The tell was in `split after:`. The two boundaries were **31 to 34 ms apart**, and
+31.25 ms is exactly what `min_voiced_frames` comes to at this hop. The search was
+placing both cuts at the least separation the rule allowed.
+
+**Why.** A boundary's cost is the frame's RMS, plus a penalty if the frame carries
+voice. The cheapest place in any recording is a quiet stretch, so with two
+boundaries to place, the search put both of them inside one silence — which costs
+almost nothing — rather than one at each end of it, which would cost a real
+consonant. A *frame-length* floor cannot prevent that: two cuts 31 ms apart in a
+260 ms silence satisfy it comfortably.
+
+The damage is worse than a missing syllable. The middle segment held no voice, so
+it was refused; and the third segment then held **two syllables' worth** of pitch.
+The hand test has a segment of 750 ms reported as one syllable, with a 26-semitone
+range — the contour of a whole word being judged against the shape of one tone.
+
+**The fix, and why it is the right shape.** A syllable has a vowel in it. Each
+segment must now hold at least `min_voiced` frames of *voice*, not merely that many
+frames; two cuts inside one silence leave a segment with no voice in it, so that
+placement becomes impossible. What survives is a boundary at each end of the
+silence, which is what a listener hears as the break.
+
+`find_boundaries` takes that as a second argument beside the length floor. They
+have the same value at the call site and are deliberately still two parameters,
+because they say different things — how long a segment must be, and how much voice
+it must contain — and the first does not imply the second. Both constraints shrink
+the legal predecessors to a *prefix* of the DP row, so the single-pass running
+minimum still works; the prefix-sum of the voiced flag is what makes the voice
+constraint expressible as a subtraction.
+
+`a_silence_between_two_syllables_is_not_cut_twice` pins it, built with
+`say_word_pausing` — silence between the syllables, because a fricative does not
+provoke this. **Disable the voice floor and that test fails with "the boundaries
+are 32 ms apart, so the middle syllable is a sliver: [184, 216]"**, which is the
+hand test's own number.
+
+**It worked, and the next run measured it.** Nine more rounds of 中国人 after the
+change, against seven before it:
+
+| | before | after |
+| --- | --- | --- |
+| Gap between the two boundaries | 32, 32, 87, 103 ms in 4 of 7 rounds | 344–709 ms in 9 of 9 |
+| Rounds with a syllable at 0 ms voicing | 4 of 7 | 0 of 9 |
+| Syllables at 0 ms voicing | 4 of 21 | 0 of 27 |
+
+Every gap is now wide enough to hold a syllable and every syllable has voice in it.
+That symptom is gone.
+
+**The next problem is not segmentation, and it is where the wrong scores come
+from.** The same run reported contour ranges of 26.7 semitones over 188 ms and 27.8
+over 306 ms. A semitone is a semitone: 26.7 of them is more than two octaves, and
+no voice moves two octaves in a fifth of a second — at durations that are one
+ordinary syllable, so the split is not the explanation either.
+
+That leaves the pitch *tracker*, and the likely shape of it is an **octave error**:
+YIN locking onto half the true frequency, which is what creaky voice at the end of
+a syllable provokes, and which shows up as exactly one octave — twelve semitones —
+in a range. A single such frame is enough, because `range_st` is `max − min` over
+the contour, so one outlier sets it, and `Contour::is_flat` keys off `range_st`.
+That would explain the tone 1 results in the same run: 中 came back `Match 85.0`
+with ranges of 0.9 and 1.1 st, and `OffTarget` with ranges of 1.5 to 3.4 st. The
+gap between 1.1 and 1.5 semitones is doing a lot of work.
+
+**Confirmed, on the next run.** The diagnostic was added, six more rounds of 中国人
+were said, and the correlation is exact:
+
+| | segment 1 | segment 2 | segment 3 |
+| --- | --- | --- | --- |
+| tracking jumps | **0, 0, 0, 0, 0, 0** | 6, 12, 9, 4, 4, 3 | 0, 4, 0, 2, 3, 4 |
+| range | 2.4, 3.0, 1.2, 2.1, 2.4, 4.6 st | 3.4, 4.7, **27.4**, 19.8, 19.8, 13.3 st | 6.3, 11.6, 9.6, 18.6, 9.7, 13.2 st |
+
+The segment with no jumps in every single round is the segment with a sane range.
+Every impossible range sits on a segment with jumps, and the Hz spans are things a
+voice cannot do: **83–441 Hz**, 133–433 Hz, 136–429 Hz — a factor of three, inside
+166 ms, around a median near 145 Hz.
+
+**The fix is in the contour, not the tracker.** `range_st` is `max − min`, so one
+wrong frame sets it, and `Contour::is_flat` — which decides whether a tone is
+settled by the flatness rule or handed to the shape comparison — is decided by
+`range_st`. One loud bad frame was therefore enough to turn a level tone 1 into
+"heard falling", which is what the learner was told again and again.
+
+`reject_outliers` drops any frame more than four semitones from the median of its
+neighbours, before the gap fill, so a dropped frame becomes a gap that
+`interpolate_gaps` already knows how to fill from the frames either side. Four
+semitones is generous by a wide margin: a fourth tone falls its whole twelve over
+150–300 ms, which is well under **one** semitone between frames twelve milliseconds
+apart. A *consistent* octave error is deliberately left alone — the contour has its
+mean removed before comparison, so a track that is an octave out throughout has the
+right shape, and only the jumps do damage.
+
+`one_frame_at_the_wrong_frequency_does_not_set_the_range` pins it, built straight
+from those numbers: a level track with two frames at three times the frequency.
+**Disable the rejection and it fails with "one bad frame set the range to 8.6 st"**
+— seven times `FLAT_ST`, so a level tone could never read as level again.
+
+**Measured on the next run**, five more rounds of 中国人 against the six before it:
+
+| | before | after |
+| --- | --- | --- |
+| Tracking jumps | 51 | 8 |
+| Largest range | 27.4 st | 9.2 st |
+| Segments over 10 st | 7 of 18 | 0 of 15 |
+| Impossible Hz spans | 83–441, 133–433, 136–429, 143–442 … | 81–184, in 1 of 15 |
+
+The verdicts changed character with it. Before, a level 中 was told "heard falling"
+off a range set by one frame. Now 中 reports ranges of 1.6 to 3.1 st, and is
+`Match` when it held and `OffTarget`/`Uncertain` when it drifted — a statement
+about the learner's tone 1 rather than about the estimator. **That is the difference
+that matters: the numbers are now about the voice.**
+
+**What is left.** The eight survivors are not spread evenly — they sit in 人, the
+final syllable, where creak is most likely. That is structural rather than a matter
+of tuning: `reject_outliers` catches an *isolated* frame, and a **run** of wrong
+frames is self-consistent, so the local median agrees with them. Widening the
+window would outvote a longer run at the cost of starting to read a real
+fourth-tone fall as movement; the honest fix is the tracker one below.
+
+**Left on the table, deliberately.** The tracker still makes the jumps; this stops
+them reaching the score. The root cause is that YIN runs frame by frame with no
+knowledge of the frame before it, so nothing stops it choosing a different
+multiple of the period — and creak at the end of a syllable is what provokes it. A
+continuity constraint (preferring the candidate lag nearest the previous frame's
+estimate) would fix it at source and improve `median_hz` as well. It is a larger
+change to the estimator, the tests for which are all synthetic, so it wants its own
+round with a real voice rather than being bolted on here.
+
+### The crackle on the first word, and not the second
+
+**The report:** on the iPhone, the first tap on a character's pronunciation often
+crackled, and the same character tapped again was clean. Android was unaffected.
+
+That is a warm-up problem, and `speech.rs` is where it lives. Every utterance did
+four expensive things back to back: `Speaker::speak` called `stop()` first, which
+on iOS released the audio session when nothing was speaking; then `engage_session`
+set the category and activated it; then the `AVSpeechSynthesizer` was constructed
+lazily on the first tap; then `speakUtterance` was called immediately. AVFoundation
+feeds buffers into the audio unit as soon as that call returns, and a buffer
+rendered before the route has finished starting is heard as a crackle. The second
+tap met a warm synthesiser and a route that had not yet powered down, which is
+exactly the "run it a second time" the report describes.
+
+Two changes:
+
+- **The session is held for `SESSION_HOLD_MS` (4 s) instead of being handed back
+  the instant a word ends.** A `SESSION_GENERATION` counter makes a stale timer
+  stand down when a new utterance has already claimed the session — the same
+  failure the `isSpeaking` check guards, one step further out in time. The timer
+  does its check and its release on the main thread, where `take_session` runs, so
+  a tap landing while it sleeps wins.
+- **`Speaker::prime`** builds the synthesiser and starts the route before anyone
+  asks, from the existing background voice warm-up thread. That is what makes the
+  *first* tap warm rather than only the second.
+
+`stop_on_main` no longer releases anything: the hold is armed by the cancellation
+callback, and `Speaker::speak` stops before it speaks, so releasing there was the
+cold start itself. The cost is that anything the app ducked stays ducked for four
+seconds rather than resuming the moment the word ends; a tap arriving after that
+window still meets a cold route, and holding the session for the app's whole
+foreground life would fix that too — at the price of keeping the learner's music
+down the entire time they practise.
+
+**Not changed, and worth knowing:** `audio.ts`'s `playSamples` builds a fresh
+`AudioContext` per utterance at the synthesis model's own rate (44100 Hz) and
+closes it on `ended`. That path is used only by the Phrases panel for a phrase
+with no bundled recording, so it is not what the character button was doing — but
+a cold context and a close-on-end are the same class of glitch and would be the
+next thing to look at if a crackle turns up on a *phrase* rather than a character.
+
 
 ### A timing bug to not repeat
 
@@ -2110,18 +2454,31 @@ falls inside the voiced span, so the two cannot drift apart again. If you add a
 new timing field, give it the same baseline.
 
 Two ways in. Through the app: hold **Hold to say it** on the practice screen and
-release. Or from a terminal, which also prints the contour statistics:
+release; the tone panel's *Voiced* figure is the same number this test prints. Or
+from a terminal, which also prints the contour statistics:
 
 ```bash
 ./scripts/with-cargo-env.sh cargo test -p hanzi-tutor --lib -- --ignored --nocapture \
   records_from_the_real_microphone
 ```
 
-That test opens the device, records 1.5 s and prints the peak level, the median
-pitch and the verdict. **A peak level of `0.0000` means the terminal has no
-microphone permission**, not that the code is broken — the app bundle is a
-separate process with its own grant, so it can work there while this does not.
-Say a syllable while it runs and check that the verdict is sensible.
+**That test waits for you**, and it did not always. As first written it opened the
+device the moment the process did and was finished inside two seconds, so the
+report was "no chance to speak before it finishes" — and the recording it scored
+was room tone. It now prints a prompt and records nothing until Enter, then says
+`>>> RECORDING — say X now <<<`, records, and prints the measurement; Enter again
+repeats, `q` finishes. Two things about it are load-bearing and easy to undo: the
+prompt is written with `println!` and never `print!`, because Rust's stdout is
+line-buffered and an unflushed prompt sits in the buffer while `read_line` blocks;
+and the device is opened *before* the prompt to speak rather than after it, so
+nobody talks into a microphone that is still opening.
+
+It prints the peak level, the median pitch, the voicing, the floor it was judged
+against and the margin between them. **A peak level of `0.0000` (or anything under
+the printed silence gate) means nothing reached the analyser** — either nobody
+spoke or the terminal has no microphone permission. The two are worth telling
+apart, because the app bundle is a separate process with its own grant and can
+work there while the terminal does not.
 
 ### The four numbers that are judgement, not measurement
 
@@ -2131,7 +2488,7 @@ calibrated against synthetic contours:
 | Constant | What it is |
 | --- | --- |
 | `SCORE_DECAY_ST` | How fast the score falls off with shape distance. A wrong tone currently scores in the 20s–50s and a match in the 90s |
-| `FLAT_ST` | Below this peak-to-peak span, in semitones, a contour is "level" |
+| `FLAT_ST` | Below this peak-to-peak span, in semitones, a contour is "level". Its input is `range_st`, which is `max − min` — see `reject_outliers` for why one bad frame must not be allowed to reach it |
 | `DECIDE_MARGIN` | How much closer one tone must be before the difference is called real rather than "uncertain" |
 | `FLAT_MATCH_SCORE` / `FLAT_OFF_TARGET_SCORE` | What a level contour scores, since a level tone is settled by a rule rather than by a distance |
 
@@ -2140,10 +2497,18 @@ Two more, for the word path:
 | Constant | What it is |
 | --- | --- |
 | `VOICED_CUT_PENALTY` | What it costs to put a syllable boundary inside voiced speech. Larger than any plausible RMS, so a boundary prefers an unvoiced frame — which is where a consonant is, and where a listener hears the break |
-| `MIN_SYLLABLE_FRAMES` | Shortest segment the splitter will make. Tied to `MIN_VOICED_FRAMES`, because a shorter segment could not hold enough voice to be judged |
+| `min_voiced_frames` | Shortest segment the splitter will make, and the floor the scorer applies, in one function. Derived from `MIN_VOICED_MS` and the hop. Used twice — as a length floor and as a *voice* floor, the second being what stops it cutting twice in one silence |
+
+And the floor itself, which is *not* one of the four judgement constants above:
+
+| Constant | What it is |
+| --- | --- |
+| `MIN_VOICED_MS` | How much measured voicing a segment needs before a tone can be read from it. 30 ms, after 90 → 60 → 50 → 30 — see "The floor belongs below the distribution" for why every step but the last was wrong. Public, because the `records_from_the_real_microphone` test prints it beside what a real voice measured |
 
 Re-tune these only against real recordings, and say in the commit what they were
-tuned against.
+tuned against. `MIN_VOICED_MS` is the one that has now been re-tuned *without*
+one, from arithmetic and synthetic contours; the test named above is the
+instrument for correcting that.
 
 ### Three decisions that look wrong and are deliberate
 
