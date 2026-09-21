@@ -1777,12 +1777,16 @@ bundle/dmg/Hanzi Tutor_0.3.0_aarch64.dmg
 | Characters, words, stroke geometry | `include_bytes!` in `src-tauri/src/state.rs` | ~13 MB |
 | Interface font, Noto Sans SC | Vite, from `src/assets/fonts/`, via `src/app.css` | ~17 MB |
 | SQLite, for the study store | compiled from the amalgamation by `libsqlite3-sys` | ~1.5 MB |
-| Twelve licence notices, as text | `bundle.resources` → `Contents/Resources/licences/` | ~65 KB |
+| Fifteen licence notices, as text | `bundle.resources` → `Contents/Resources/licences/` | ~180 KB |
 
-The app makes no network requests at all — there is no HTTP client anywhere in the
-dependency graph — so "everything the reader needs" is a claim that has to hold at
+Two things in the app can open a socket, and **both are off until the learner
+chooses them**: `asr.rs`, which downloads the optional speech model only when the
+settings button is pressed, and `sync.rs`, which reaches the learner's own Dropbox
+once they have connected an account — and then keeps doing it at launch and on
+return, which is why it asks whether there is a network before it tries. That
+matters here because "everything the reader needs is inside the app" has to hold at
 build time, which is why the artifact and the font are committed rather than
-fetched.
+fetched; it does not mean the app never talks to anything.
 
 ### The notices are pinned three ways
 

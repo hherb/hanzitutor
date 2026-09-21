@@ -1261,9 +1261,15 @@ appears, it should displace this one.
   work without the permission, so it moved into the main manifest, and the privacy
   policy and the Play listing were restated in the same change rather than left
   claiming there are no network requests. Nothing about what the app *collects*
-  changed — it collects nothing and sends nothing — but "no INTERNET permission"
+  changed — it collects nothing, and it sends nothing to the developer — but "no
+  INTERNET permission"
   is no longer available as evidence, and anyone re-using that argument should
-  know it.
+  know it. **M13 owed the same restatement and was late with it**: syncing sends
+  the learner's study data to a Dropbox account they connect themselves, and the
+  privacy policy and the listing went on saying "nothing is transmitted" and "the
+  only network request the app can make" until it was corrected — with the Data
+  safety answers flagged for reconfirmation in the Play Console rather than changed
+  silently.
 - **The download was never exercised on Android or iOS.** It is verified end to
   end on macOS. The permission change above is exactly the class of thing that
   only shows up on a device, so a signed release APK should have *Download and

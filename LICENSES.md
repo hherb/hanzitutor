@@ -351,7 +351,17 @@ font's reserved name is `Source`, not `Noto`, so no rename is required.
    source named there stays reachable, and that the vendored copy really is
    unmodified. If you patch anything under the GPL, that patch becomes yours to
    publish.
-6. **Do not bundle the speech model without reading its terms.** This app fetches
+6. **Re-check this set rather than trusting it.** A dependency added since the last
+   release can bring a licence with it — that is exactly how the espeak-ng
+   obligation above went unnoticed for three milestones — so this project re-reads
+   this file and
+   [`docs/research/ANDROID_LICENCE_ATTRIBUTION.md`](docs/research/ANDROID_LICENCE_ATTRIBUTION.md)
+   before every shippable release. What has to hold is narrower than completeness:
+   **nothing shipped may be under a licence this project's AGPL-3.0-only cannot
+   live with.** At this commit nothing is: the set is Apache-2.0, MIT, the Arphic
+   Public License, CC BY-SA 4.0, the SIL OFL, public domain, and the
+   GPL-3.0-or-later that §13 permits.
+7. **Do not bundle the speech model without reading its terms.** This app fetches
    it for the learner rather than shipping it, which is why its licence is
    recorded above rather than satisfied here. An offline installer, a mirror or a
    pre-seeded cache changes that, and the FunASR model agreement is not a free
