@@ -45,12 +45,18 @@ than left implicit.
 | Model inference, ONNX Runtime | [onnxruntime](https://github.com/microsoft/onnxruntime) | MIT |
 | Text-to-phoneme front end, `espeak-ng` (**mobile builds only**) | [espeak-ng](https://github.com/espeak-ng/espeak-ng), vendored by sherpa-onnx 1.13.8 | GPL-3.0-or-later |
 | The Android app's libraries: AndroidX, Material, Kotlin | [AndroidX](https://developer.android.com/jetpack/androidx) and [Material](https://github.com/material-components/material-components-android) | Apache-2.0 |
+| Graded phrases: HSK 1–2 sentences, pinyin, translations | [no7z/hsk-sentences-audio](https://huggingface.co/datasets/no7z/hsk-sentences-audio) | CC BY-SA 4.0 |
+| Graded readers: passages with word-aligned pinyin and gloss | [harukicoder/hsk30-graded-readers](https://huggingface.co/datasets/harukicoder/hsk30-graded-readers) | CC BY 4.0 |
+| The bundled pronunciation clips (MP3) | Synthesised by this project with MeloTTS | MIT (model) |
 
 The first six rows are compacted by `prepare-data` into one generated artifact,
 `crates/hanzi-core/data/hanzi.bin.gz`, which `src-tauri/src/state.rs` embeds with
 `include_bytes!`. That artifact **is committed** (about 13 MB) so that a clone,
 and CI, build without downloading the 33 MB of upstream text. Removing the
 artifact removes all third-party data from the build.
+
+The last three rows are the **pronunciation audio**, which is a separate pipeline
+with a separate artifact. See "The pronunciation clips" below.
 
 The font is committed at `src/assets/fonts/NotoSansSC-VF.ttf` (about 17 MB) and
 is copied into the frontend bundle by Vite. See "Fonts in the UI" below.
@@ -315,6 +321,64 @@ permits bundling and redistribution and requires the licence to travel with the
 font. It ships as `licences/OFL-1.1.txt`. Noto is derived from Adobe's Source Han
 Sans, which is why the OFL file carries Adobe's copyright line as well; the
 font's reserved name is `Source`, not `Noto`, so no rename is required.
+
+### The pronunciation clips — MeloTTS, and where the sentences come from
+
+The phrase screen plays short recordings of graded phrases. They are **synthetic
+speech**, generated when the app was built, and three separate things have to be
+accounted for: the model that spoke, the text that was spoken, and the files
+themselves.
+
+**The model is MeloTTS, MIT.** `licences/MIT-MeloTTS.txt` carries the licence as
+published with the ONNX conversion this project uses, naming MyShell.ai. The
+model is **not compiled into the app and not downloaded by it**: a build that
+wants to synthesise runs `scripts/fetch-tts.sh`, which fetches it into
+`.melo-tts/` and checks every file against a SHA-256 recorded in that script. The
+clips are a product of the model, which is why the notice ships anyway.
+
+It is worth recording how that licence was established, because the first answer
+was wrong. The Hugging Face API reports **no licence at all** for the conversion
+repository (`cardData: null`), and an earlier draft of this file concluded the
+weights were of unknown licence and treated that as an accepted risk. It is not:
+the repository contains a `LICENSE` file that the card simply does not surface,
+and it is MIT. The general lesson is that "the metadata does not say" is not the
+same as "the publisher granted nothing", and the two lead to opposite decisions —
+one is a reason to go and read the file, the other a reason to stop.
+
+**The sentences are two corpora under two different licences, kept apart.**
+
+* `no7z/hsk-sentences-audio` — the HSK 1–2 sentences, their pinyin and their
+  English translations, under **CC BY-SA 4.0**. This is the same share-alike
+  licence the CC-CEDICT definitions already carry, and the same consequences
+  follow: the extracted text and anything built from it stay under CC BY-SA 4.0,
+  which does not reach the program code.
+* `harukicoder/hsk30-graded-readers` — the reading passages with word-aligned
+  pinyin and gloss, under **CC BY 4.0**. Attribution only, no share-alike. Its
+  full legal text ships as `licences/CC-BY-4.0.txt`.
+
+They are stored under separate directories and listed separately on the phrase
+screen so that what a learner is hearing always has one attributable source. A
+merged list would make it possible to ship one set under the other's notice.
+
+**No third-party audio is redistributed.** This is the part worth being explicit
+about, because the obvious reading of the first corpus is wrong. The `no7z`
+dataset ships its own MP3s, synthesised with **CosyVoice2-0.5B** under Apache-2.0
+— and this project does not use them. Every clip in the app was generated here
+with MeloTTS, for two reasons: the voice that ships is then the same voice the
+app synthesises with on demand, and CosyVoice2 and its dependency chain stay out
+of this app's obligations entirely. Its notice is reproduced inside
+`licences/NO7Z-hsk-sentences-audio.txt` only so the upstream chain of provenance
+stays legible.
+
+**The upstream level labels are not treated as authoritative.** The `no7z`
+project claims none of its sentences contain vocabulary above their own level.
+Re-grading all 4,354 of its records against this app's own bundled word list
+found about 5% carrying a token above their label. The app therefore presents a
+level as a rough band rather than a fact. The same caution applies to the graded
+readers, whose own datasheet records that its author hit the shelf target 61.8%
+of the time — and to HSK grading in general, because the two official HSK 3.0
+documents disagree on a large share of their shared vocabulary. The research
+behind both numbers is in `docs/research/`.
 
 ## Before you distribute
 

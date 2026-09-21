@@ -1707,6 +1707,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hanzi-say"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sherpa-onnx",
+]
+
+[[package]]
 name = "hanzi-store"
 version = "0.3.0"
 dependencies = [
@@ -1739,6 +1748,7 @@ dependencies = [
  "cpal",
  "dispatch2",
  "hanzi-core",
+ "hanzi-say",
  "hanzi-store",
  "hanzi-sync",
  "objc2",

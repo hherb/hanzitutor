@@ -751,3 +751,89 @@ export type AutoSync =
   | { outcome: "offline"; reason: string }
   | { outcome: "synced"; view: SyncView }
   | { outcome: "failed"; reason: string };
+
+// ---- Graded phrase audio -------------------------------------------------
+
+/**
+ * One phrase's two clips, as root-relative URLs the webview can play.
+ *
+ * Produced by `scripts/synthesize-audio.py`'s Rust replacement, whose manifest
+ * is written to `public/audio/<source>/manifest.json`. See
+ * `crates/hanzi-say/src/bin/synthesize_audio.rs`.
+ */
+export interface PhraseAudio {
+  normal: string;
+  slow: string;
+}
+
+/** One graded phrase with its clips. */
+export interface GradedPhrase {
+  id: string;
+  /**
+   * HSK level for the graded sentences, or a reader shelf name
+   * (`newbie`, `beginner`, …) for the graded readers. A string rather than a
+   * number because the two corpora do not use the same scale.
+   */
+  level: string;
+  text: string;
+  pinyin: string;
+  translation: string;
+  audio: PhraseAudio;
+  /** Total bytes of both clips, for the size line on the licences screen. */
+  bytes: number;
+}
+
+/**
+ * One corpus's clips.
+ *
+ * The two corpora are shipped and read separately because their licences differ
+ * — `no7z` is CC BY-SA 4.0 and `harukicoder` is CC BY 4.0 — so a merged list
+ * would make it easy to attribute one set under the other's notice.
+ */
+export interface AudioManifest {
+  source: string;
+  /** Model directory that produced the clips, for provenance. */
+  model: string;
+  /** Speeds written, normal first (e.g. `[1.0, 0.7]`). */
+  speeds: number[];
+  phrases: GradedPhrase[];
+}
+
+// ---- On-device speech synthesis -----------------------------------------
+
+/**
+ * How the synthesis model is doing, and what it would cost to install.
+ *
+ * Deliberately shaped like [`AsrStatus`]: both are an optional model the learner
+ * downloads from the settings screen, and a second screen inventing its own
+ * vocabulary for the same idea would be two things to learn instead of one.
+ * The difference is the size — this is about 58 MB against the recogniser's
+ * 163 MB — and that it arrives as a handful of files rather than one archive.
+ */
+export interface SayStatus {
+  /** `absent` — never asked for; `downloading`; `installed`; `failed`. */
+  state: "absent" | "downloading" | "installed" | "failed";
+  /** True when the model is on disk and usable. */
+  installed: boolean;
+  /** What the model is called, so the screen can name it up front. */
+  name: string;
+  /** Total bytes to fetch. */
+  bytes: number;
+  /** The licence the weights are under, stated before the download. */
+  licence: string;
+  /** Bytes fetched so far, while `state` is `downloading`. */
+  downloaded: number;
+  /** One plain sentence, worded by the Rust side. */
+  detail: string;
+}
+
+/**
+ * What the synthesiser produced for one phrase: mono samples and their rate.
+ *
+ * Samples rather than an encoded file because the frontend already has a
+ * decoder, and because a raw buffer needs no container.
+ */
+export interface SpokenAudio {
+  samples: number[];
+  sampleRate: number;
+}

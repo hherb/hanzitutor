@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hanzi-core", "crates/hanzi-store", "crates/hanzi-sync", "src-tauri"]
+members = ["crates/hanzi-core", "crates/hanzi-store", "crates/hanzi-sync", "crates/hanzi-say", "src-tauri"]
 
 [workspace.package]
 version = "0.3.0"

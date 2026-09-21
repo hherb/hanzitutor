@@ -14,6 +14,7 @@ use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::asr::AsrStatus;
+use crate::say::SayStatus;
 use crate::capture::MicrophoneStatus;
 use crate::licences::{AppInfo, LicenceNotice};
 use crate::state::{AppState, ProgressState, VocabState};
@@ -533,6 +534,80 @@ pub fn asr_install(state: State<'_, AppState>) -> Result<(), String> {
 pub fn asr_remove(state: State<'_, AppState>) -> Result<AsrStatus, String> {
     state.asr.remove()?;
     Ok(state.asr.status())
+}
+
+// ---- Speech synthesis -----------------------------------------------------
+
+/// Longest phrase the synthesised path will speak, in characters.
+///
+/// The bundled clips are single phrases and the platform voice is meant for a
+/// word or a sentence, so this is a ceiling rather than a target. It exists
+/// because the alternative to a limit is one tap turning into a minute of audio
+/// on a device that is already busy, and because the answer comes back through
+/// one IPC message.
+const SAY_MAX_CHARS: usize = 120;
+
+/// Whether the synthesis model is installed, and how to describe one that is not.
+///
+/// Always answers, whatever the state: the settings screen has to be able to say
+/// what *would* be downloaded — how large, under which licence — before the
+/// learner has agreed to any of it.
+#[tauri::command]
+pub fn say_status(state: State<'_, AppState>) -> SayStatus {
+    state.say.status()
+}
+
+/// Fetch and verify the synthesis model.
+///
+/// Like [`asr_install`], this is opt-in and never on a path a learner must take.
+/// It blocks until the files are on disk; the settings screen calls it from a
+/// background task and polls [`say_status`] for progress.
+#[tauri::command]
+pub fn say_install(state: State<'_, AppState>) -> Result<(), String> {
+    state.say.install()
+}
+
+/// Delete the synthesis model, and report the resulting state.
+#[tauri::command]
+pub fn say_remove(state: State<'_, AppState>) -> Result<SayStatus, String> {
+    state.say.remove()?;
+    Ok(state.say.status())
+}
+
+/// What the synthesiser produced: mono samples and the rate to play them at.
+///
+/// Samples rather than an encoded file because the frontend already has a decoder
+/// — the same `<audio>` element the bundled clips go through — and because a raw
+/// buffer can be played without a container. It is also the shape the pitch
+/// contour already travels in, so the IPC boundary gains no new kind of payload.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpokenAudio {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+}
+
+/// Speak `text` with the installed model.
+///
+/// Answers `None` when no model is installed, which is how the app ships. That is
+/// not a failure: the caller falls back to the platform synthesiser, and nothing
+/// is reported as an error for a feature the learner never asked for.
+#[tauri::command]
+pub fn say_speak(state: State<'_, AppState>, text: String) -> Result<Option<SpokenAudio>, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("There is nothing to speak.".to_string());
+    }
+    if trimmed.chars().count() > SAY_MAX_CHARS {
+        return Err(format!(
+            "That is longer than this can speak at once ({} characters).",
+            SAY_MAX_CHARS
+        ));
+    }
+    Ok(state.say.speak(trimmed)?.map(|(samples, sample_rate)| SpokenAudio {
+        samples,
+        sample_rate,
+    }))
 }
 
 // ---- Personal vocabulary list ---------------------------------------------

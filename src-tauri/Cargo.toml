@@ -53,6 +53,11 @@ hanzi-core = { path = "../crates/hanzi-core" }
 hanzi-store = { path = "../crates/hanzi-store" }
 # Cross-device sync: the shard format, the merge, the fold and the Dropbox client.
 hanzi-sync = { path = "../crates/hanzi-sync" }
+# Speech synthesis, for a phrase with no bundled recording (see `say.rs`). It
+# shares `sherpa-onnx` with the recognition stack, so the voice that made the
+# bundled clips is the voice the app speaks with, and no new native dependency
+# enters the build.
+hanzi-say = { path = "../crates/hanzi-say" }
 cpal = "0.18"
 
 # Speech recognition (ROADMAP.md M12). `sherpa-onnx` is the toolkit's own crate,

@@ -18,7 +18,9 @@ import type {
   ProgressView,
   ReviewView,
   SettingsPatch,
+  SayStatus,
   SettingsView,
+  SpokenAudio,
   SpeechTarget,
   SyncView,
   ToneResult,
@@ -314,6 +316,37 @@ export const asrInstall = () => invoke<void>("asr_install");
 
 /** Delete the recognition model, returning the state that leaves behind. */
 export const asrRemove = () => invoke<AsrStatus>("asr_remove");
+
+// ---- On-device speech synthesis -------------------------------------------
+//
+// The same shape as the recognition model above, and for the same reasons: an
+// optional download the learner starts by hand, polled for progress while it
+// runs. See `say.rs` for why the app offers this when the system synthesiser
+// usually answers.
+
+/** Whether the synthesis model is installed, and what installing it would cost. */
+export const sayStatus = () => invoke<SayStatus>("say_status");
+
+/**
+ * Fetch and verify the synthesis model.
+ *
+ * Blocks until the files are on disk, so callers run it from a background task
+ * and follow `sayStatus` for progress — as `asrInstall` does.
+ */
+export const sayInstall = () => invoke<void>("say_install");
+
+/** Delete the synthesis model, and report the resulting state. */
+export const sayRemove = () => invoke<SayStatus>("say_remove");
+
+/**
+ * Speak `text` with the installed model.
+ *
+ * Resolves `null` when no model is installed, which is how the app ships — not
+ * an error, just a fallback to the platform synthesiser.
+ */
+export const saySpeak = (text: string) =>
+  invoke<SpokenAudio | null>("say_speak", { text });
+
 
 // ---- cross-device sync ------------------------------------------------------
 

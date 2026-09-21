@@ -1,0 +1,31 @@
+[package]
+name = "hanzi-say"
+description = "Mandarin speech synthesis, for the graded phrase audio the app plays and ships"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+# The same toolkit crate, at the same version, that `src-tauri` already links for
+# speech recognition. Its `OfflineTts` is the VITS front end MeloTTS runs on, so
+# the model that synthesises the build-time clips is executed by the runtime the
+# app already carries. That is the whole reason this is Rust rather than a
+# Python inference stack: build-time and on-device synthesis are one
+# implementation, and the audio a learner hears is produced by the code that
+# generated the files.
+#
+# Its `sherpa-onnx-sys` build script downloads a prebuilt native archive unless
+# `SHERPA_ONNX_LIB_DIR` is set, so build through `scripts/with-cargo-env.sh`,
+# which sets it to the digest-pinned copy `scripts/fetch-sherpa.sh` unpacked.
+sherpa-onnx = "1.13.8"
+
+[[bin]]
+name = "synthesize-audio"
+path = "src/bin/synthesize_audio.rs"
+
+[[bin]]
+name = "verify-audio"
+path = "src/bin/verify_audio.rs"

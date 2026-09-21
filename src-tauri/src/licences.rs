@@ -323,6 +323,65 @@ pub const NOTICES: &[LicenceNotice] = &[
         bundle_path: "licences/Apache-2.0.txt",
         text: include_str!("../../licences/Apache-2.0.txt"),
     },
+    // ---- pronunciation audio ------------------------------------------------
+    LicenceNotice {
+        id: "melo-tts",
+        title: "MeloTTS — speech synthesis for the pronunciation clips",
+        licence: "MIT",
+        source: "https://github.com/myshell-ai/MeloTTS, and the ONNX conversion \
+                 at https://huggingface.co/csukuangfj/vits-melo-tts-zh_en",
+        covers: "The model that synthesised every bundled pronunciation clip, and \
+                 that the app will use to speak a phrase it has no clip for. It is \
+                 not compiled into the app and not downloaded by it: \
+                 scripts/fetch-tts.sh fetches it for a build, pinning each file by \
+                 SHA-256. The clips it produces are a product of the model, which \
+                 is why this notice travels with the app.",
+        file: "licences/MIT-MeloTTS.txt",
+        bundle_path: "licences/MIT-MeloTTS.txt",
+        text: include_str!("../../licences/MIT-MeloTTS.txt"),
+    },
+    LicenceNotice {
+        id: "phrases-no7z",
+        title: "Graded sentences with audio — no7z/hsk-sentences-audio",
+        licence: "CC BY-SA 4.0",
+        source: "https://huggingface.co/datasets/no7z/hsk-sentences-audio",
+        covers: "The text of the HSK-graded sentences the phrase screen \
+                 practises: the simplified Chinese, its pinyin and its English \
+                 translation. This is an adaptation of upstream's CC BY-SA 4.0 \
+                 data and stays under that licence. **The audio is not \
+                 upstream's**: this app regenerates it with MeloTTS and does not \
+                 redistribute the CosyVoice2 clips the dataset ships, so \
+                 CosyVoice2 is not an obligation this app carries.",
+        file: "licences/NO7Z-hsk-sentences-audio.txt",
+        bundle_path: "licences/NO7Z-hsk-sentences-audio.txt",
+        text: include_str!("../../licences/NO7Z-hsk-sentences-audio.txt"),
+    },
+    LicenceNotice {
+        id: "phrases-harukicoder",
+        title: "HSK 3.0 graded readers — harukicoder/hsk30-graded-readers",
+        licence: "CC BY 4.0",
+        source: "https://huggingface.co/datasets/harukicoder/hsk30-graded-readers",
+        covers: "The reading passages on the phrase screen, word-aligned with \
+                 pinyin and gloss. Attribution only — this licence has no \
+                 share-alike condition, unlike the material beside it. Upstream \
+                 ships no audio; the clips are this app's own.",
+        file: "licences/HARUKICODER-hsk30-graded-readers.txt",
+        bundle_path: "licences/HARUKICODER-hsk30-graded-readers.txt",
+        text: include_str!("../../licences/HARUKICODER-hsk30-graded-readers.txt"),
+    },
+    LicenceNotice {
+        id: "cc-by",
+        title: "Creative Commons Attribution 4.0 — legal text",
+        licence: "CC BY 4.0",
+        source: "https://creativecommons.org/licenses/by/4.0/legalcode",
+        covers: "The full legal text of the licence the graded readers are under, \
+                 which the licence itself requires to be distributed with the \
+                 work. Its counterpart for the share-alike material above is \
+                 catalogued separately.",
+        file: "licences/CC-BY-4.0.txt",
+        bundle_path: "licences/CC-BY-4.0.txt",
+        text: include_str!("../../licences/CC-BY-4.0.txt"),
+    },
 ];
 
 /// The notices the Licences screen shows, in catalogue order.

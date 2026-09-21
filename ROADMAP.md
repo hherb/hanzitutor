@@ -25,6 +25,7 @@ See [`HANDOVER.md`](HANDOVER.md) for how to build, test and verify; see
 | M10 | Durable study store (SQLite) | The JSON format caps the attempt log the grading work needs | M | **done** |
 | M11 | Tone practice (speech recognition, model-free) | Tone is the error handwriting cannot see, and it needs no model | L | **done** |
 | M12 | Speech recognition: text (optional download) | Recognise *what* was said, which needs a ~155 MB model the user installs from settings | L | **done** |
+| M14 | Graded phrase audio (MeloTTS) | The app can pronounce graded phrases in one consistent voice, and speak any phrase on demand | L | **in progress** |
 
 ---
 
@@ -2075,6 +2076,107 @@ without it.
 
 ---
 
+## M14 — Graded phrase audio
+
+**Status: in progress.** The build-time clips and the on-device path are built
+and tested; the app-level check has not been done.
+
+Pronunciation so far has been the *operating system's* synthesiser
+([`src-tauri/src/speech.rs`](src-tauri/src/speech.rs)). That is the right default
+— it needs no download and no model — but it has two gaps the research had
+already recorded: a desktop build has no backend at all (M6), and a device can
+have the language without a voice installed. A graded course also wants something
+different from arbitrary speech: the *same* voice on every platform, saying a
+fixed, curated list of phrases, so that a learner is not comparing their
+pronunciation against a different speaker every time they switch machines.
+
+### What shipped
+
+- **A Rust synthesis crate**, `crates/hanzi-say`, wrapping `sherpa-onnx`'s
+  `OfflineTts` — the same toolkit crate and version `src-tauri` already links for
+  recognition. The build-time clips and any on-demand speech therefore come from
+  one implementation rather than two that drift.
+- **`scripts/fetch-phrases.sh`** fetches the two corpora, pinned by SHA-256, into
+  `data/phrases/` (gitignored). `scripts/fetch-tts.sh` fetches the MeloTTS
+  weights the same way into `.melo-tts/`, checking every file against a recorded
+  digest and refusing an unpinned one.
+- **`synthesize-audio`**, a binary that turns a corpus into MP3s plus a
+  `manifest.json`, and **`scripts/check-audio.py`**, the gate that runs before
+  those clips are committed.
+- **The clips themselves** under `public/audio/<corpus>/`, committed, because a
+  clone should build and run without a 58 MB model download.
+- **An on-device path** ([`src-tauri/src/say.rs`](src-tauri/src/say.rs)) for a
+  phrase with no clip, following M12's rules exactly: opt-in, verified against a
+  pinned digest, nothing degraded without it.
+- **The notices**: both corpora and the model are in `licences/`, catalogued in
+  `licences.rs` and recorded in `LICENSES.md`.
+
+### Why the corpora are kept apart
+
+`no7z/hsk-sentences-audio` (HSK 1–6 sentences, pinyin, translations) is
+**CC BY-SA 4.0**; `harukicoder/hsk30-graded-readers` (102 readers as 1,185
+word-aligned sentences) is **CC BY 4.0**. Separate directories, separate
+manifests, separate tabs in the interface — a merged list would make it possible
+to ship one set under the other's notice.
+
+**Only the text is used, so far.** The `no7z` dataset also publishes its own
+MP3s, synthesised with CosyVoice2, and this app has been regenerating every clip
+with MeloTTS instead — so that the voice that ships is the voice the app can
+synthesise, and CosyVoice2 drops out of the licence catalogue entirely.
+
+**That trade is now in doubt, because MeloTTS mispronounces about 7.5% of these
+phrases** while the dataset's own CosyVoice2 audio scored 0% on the same sample
+with the same recogniser. The defect is in the syllables produced, not the
+signal, so no level or duration check can see it; a pronunciation tutor cannot
+ship it. The measurements, what was ruled out, and the options are in
+[`docs/research/MELOTTS_PRONUNCIATION_ACCURACY.md`](docs/research/MELOTTS_PRONUNCIATION_ACCURACY.md).
+A decision has not been taken yet, and the bundled clips are **not** final.
+
+### Four defects the work turned up, and how each was found
+
+These are recorded because every one of them was invisible in the source and
+would have shipped:
+
+1. **The model is very quiet.** MeloTTS returns peaks around 0.06–0.08 — about
+   −22 dBFS. Written out unchanged, a clip is audible only with the volume at
+   maximum, and everything audible at that gain is the noise floor. Found by
+   measuring the raw model output after a listener reported crackle. Fixed by
+   normalising each utterance to a peak of 0.7.
+2. **Splitting on punctuation produced clicks.** The first chunker cut on every
+   sentence mark and glued the pieces with no crossfade, so each phrase's prosody
+   restarted at the join. Fixed by sending a whole phrase to the model and
+   splitting only when the text is over 60 characters.
+3. **An exclamation mark truncates the model.** `谢谢你！不客气。` came back as
+   0.96 s with the first clause missing; `谢谢你。不客气。` is 1.57 s and complete;
+   `谢谢你！` alone returns 0.12 s of digital silence. Fixed by rewriting `！` to
+   `。` for synthesis while the learner still reads the original text. Found only
+   because an early ASR round-trip had transcribed the phrase as just
+   `不客气。` — which was recorded at the time as an "ASR artefact" and was in
+   fact the model dropping a phrase.
+4. **`num_threads` made synthesis 45% slower.** Asking for one thread per core
+   (16 here) measured 3.40 s per clip against 2.31 s at four threads: the model
+   is small enough that extra threads synchronise rather than compute. Found by
+   comparing the batch's rate against an earlier measured figure. Fixed at four,
+   with the measurements recorded beside the constant.
+
+The silence guard that came out of (3) is worth naming: output below a peak of
+1e-3 is a distinct `Silent` error rather than a shipped clip, checked *before*
+normalisation so a silent buffer cannot become amplified hiss.
+
+### What is deliberately not done
+
+- **No third-party audio is redistributed**, from either corpus.
+- **The upstream level labels are not treated as authoritative.** The `no7z`
+  project claims no sentence contains vocabulary above its own level; re-grading
+  all 4,354 against this app's own word list found about 5% carrying a token
+  above it. The readers' own datasheet records that its shelf target was hit
+  61.8% of the time. Both are presented as bands, and the two official HSK 3.0
+  documents disagree on a large share of their shared vocabulary anyway.
+- **The graded readers' audio is not finished**, and its size is a live question:
+  1,185 sentences is about 172 minutes of audio against the phrases' 76.
+
+---
+
 ## Explicitly out of scope
 
 To keep the project honest about what it is:
@@ -2096,5 +2198,9 @@ To keep the project honest about what it is:
 - **Speech recognition for tones is no longer out of scope** — it is M11 and it
   has shipped, for characters and words, with no model. Recognising *text* was
   M12 and has now shipped too, as an optional model the learner installs from the
-  settings screen; the app still downloads nothing on its own. The system TTS
-  already covers the output side.
+  settings screen; the app still downloads nothing on its own.
+- **Speech *synthesis* is no longer out of scope either** — it is M14. The system
+  synthesiser is still what speaks text the learner types, and still needs no
+  model; M14 adds a fixed set of graded recordings that ship with the app, plus
+  an optional second model for a phrase with no recording. The rule M12 set is
+  unchanged: nothing is fetched unless the learner presses something.

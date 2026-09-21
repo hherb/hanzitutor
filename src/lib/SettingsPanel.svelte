@@ -25,6 +25,7 @@
   import * as api from "./api";
   import type {
     AsrStatus,
+    SayStatus,
     BoardSize,
     Pace,
     SettingsPatch,
@@ -210,6 +211,70 @@
   const asrPercent = $derived(
     asr && asr.downloadBytes > 0
       ? Math.min(100, Math.round((asr.downloaded / asr.downloadBytes) * 100))
+      : 0,
+  );
+
+  // ---- Speaking phrases -----------------------------------------------------
+  //
+  // The second optional model, and the same rules: nothing about the app depends
+  // on it, it downloads only when pressed, and every file is checked against a
+  // recorded digest. It exists for the case the platform cannot cover — a
+  // device with no Chinese system voice — and it is the *same* voice the bundled
+  // recordings were made with, so a learner does not hear two different speakers.
+
+  /** The backend's answer, or `null` until the first one arrives. */
+  let say = $state<SayStatus | null>(null);
+  let sayBusy = $state(false);
+  let sayError = $state<string | null>(null);
+
+  async function refreshSay() {
+    try {
+      say = await api.sayStatus();
+    } catch (cause) {
+      sayError = `Could not ask about the speech model: ${cause}`;
+    }
+  }
+
+  onMount(() => void refreshSay());
+
+  // Same polling shape as the recognition model: the download runs on its own
+  // thread and reports through `say_status`, and the cleanup stops the timer so
+  // nothing polls once it has finished or failed.
+  $effect(() => {
+    if (say?.state !== "downloading") return;
+    const timer = setInterval(() => void refreshSay(), 400);
+    return () => clearInterval(timer);
+  });
+
+  async function installSay() {
+    sayBusy = true;
+    sayError = null;
+    try {
+      await api.sayInstall();
+      await refreshSay();
+    } catch (cause) {
+      sayError = `The speech model could not be fetched: ${cause}`;
+    } finally {
+      sayBusy = false;
+    }
+  }
+
+  async function removeSay() {
+    sayBusy = true;
+    sayError = null;
+    try {
+      say = await api.sayRemove();
+    } catch (cause) {
+      sayError = `The speech model could not be removed: ${cause}`;
+    } finally {
+      sayBusy = false;
+    }
+  }
+
+  /** How far along the synthesis download is, 0..100. */
+  const sayPercent = $derived(
+    say && say.bytes > 0
+      ? Math.min(100, Math.round((say.downloaded / say.bytes) * 100))
       : 0,
   );
 
@@ -608,6 +673,64 @@
         {/if}
         {#if asrError}
           <p class="warning">{asrError}</p>
+        {/if}
+      </div>
+    </div>
+
+    <!-- Speaking a phrase with no recording ------------------------------- -->
+    <div class="row">
+      <div class="what">
+        <span class="name" id="set-say">Speaking phrases with no recording</span>
+        <span class="why">
+          Phrases that ship with a recording need nothing here. For anything else
+          the app asks the operating system to speak, which is what it has always
+          done. What the system cannot promise is that a Chinese voice is
+          <em>installed</em>: a desktop build has no speech at all, and a device can
+          have the language without a voice. This model answers that case, and it is
+          the same voice the bundled recordings were made with, so you hear one
+          speaker rather than two. It is optional, it is only fetched when you press
+          the button, and every file is checked against a recorded digest.
+        </span>
+      </div>
+      <div class="how">
+        {#if say === null}
+          <span class="status">Asking whether a speech model is installed…</span>
+        {:else}
+          {#if say.state === "downloading"}
+            <div
+              class="progress"
+              role="progressbar"
+              aria-valuenow={sayPercent}
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-label="Downloading the speech synthesis model"
+            >
+              <div class="bar" style="width: {sayPercent}%"></div>
+            </div>
+          {:else}
+            <div class="voicerow">
+              {#if say.installed}
+                <button class="try" onclick={() => void removeSay()} disabled={sayBusy}>
+                  {sayBusy ? "Removing…" : "Remove the model"}
+                </button>
+              {:else}
+                <button class="try" onclick={() => void installSay()} disabled={sayBusy}>
+                  {sayBusy ? "Starting…" : "Download and install"}
+                </button>
+              {/if}
+            </div>
+          {/if}
+
+          <span class="status">{say.detail}</span>
+          <span class="status fine">
+            <strong>{say.name}</strong> — {mb(say.bytes)} to fetch, under the
+            <strong>{say.licence}</strong> licence. The weights are not
+            redistributed with this app; they are fetched for you from their
+            publisher, and the notice is on the licences screen.
+          </span>
+        {/if}
+        {#if sayError}
+          <p class="warning">{sayError}</p>
         {/if}
       </div>
     </div>

@@ -1,0 +1,12 @@
+CosyVoice3 build environment — what it took (Python 3.12, macOS arm64)
+torch==2.3.1 torchaudio==2.3.1 (download.pytorch.org/whl/cpu has the arm64 wheel)
+numpy==1.26.4 transformers==4.51.3 librosa soundfile onnxruntime==1.18.0
+HyperPyYAML omegaconf hydra-core conformer diffusers x-transformers wetext inflect
+protobuf==4.25 wget gdown rich openai-whisper lightning==2.2.4
+matplotlib==3.7.5 pyworld==0.3.4 modelscope==1.20.0
+setuptools<81   <- pkg_resources; 84 dropped it, and lightning needs it
+openai-whisper: the pinned 20231117 will NOT build on py3.12; 20250625 does
+model files needed: llm.pt flow.pt hift.pt campplus.onnx speech_tokenizer_v3.onnx
+                    CosyVoice-BlankEN/{config.json,merges.txt,vocab.json,model.safetensors}
+                    cosyvoice3.yaml   <- AutoModel detects the model type from this
+5.1 GB, not 9.7: llm.rl.pt and the flow ONNX copies are not loaded by CosyVoice3

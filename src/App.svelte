@@ -12,6 +12,7 @@
   import LessonSidebar from "./lib/LessonSidebar.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
+  import PhrasesPanel from "./lib/PhrasesPanel.svelte";
   import SettingsPanel from "./lib/SettingsPanel.svelte";
   import TonePanel from "./lib/TonePanel.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
@@ -44,7 +45,7 @@
 
   type Mode = "trace" | "recall";
   /** Which of the five top-level screens is showing. */
-  type View = "course" | "vocabulary" | "words" | "settings" | "about";
+  type View = "course" | "vocabulary" | "words" | "phrases" | "settings" | "about";
   /** Where the current practice session draws its characters from. */
   type Source = "course" | "vocabulary" | "review" | "words";
 
@@ -643,6 +644,7 @@
       character !== null &&
       !(view === "vocabulary" && source !== "vocabulary") &&
       !(view === "words" && source !== "words") &&
+      view !== "phrases" &&
       view !== "settings" &&
       view !== "about",
   );
@@ -2140,6 +2142,8 @@
         onPractise={practiseWords}
         onAddToList={addWordToList}
       />
+    {:else if view === "phrases"}
+      <PhrasesPanel />
     {:else if view === "settings"}
       <SettingsPanel
         {settings}

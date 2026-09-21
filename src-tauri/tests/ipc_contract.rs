@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use hanzi_core::{GradeOptions, Point, ProgressStore, ReviewSource, VocabStore};
-use hanzi_tutor_lib::{AppState, REVIEW_LIMIT};
+use hanzi_tutor_lib::{AppState, SpokenAudio, REVIEW_LIMIT};
 
 fn state() -> AppState {
     // `None` keeps the study documents in memory, so tests never touch the
@@ -800,6 +800,63 @@ fn the_asr_status_serialises_with_camel_case_fields() {
         "the model is larger unpacked than compressed, and the screen says both"
     );
     assert!(!json["licence"].as_str().unwrap().is_empty());
+}
+
+#[test]
+fn the_say_status_serialises_with_camel_case_fields() {
+    // The same contract as `asr_status` above, and the same failure mode if it
+    // drifts: the settings screen renders the whole download row from this
+    // object, so a renamed field shows a blank line rather than an error. The
+    // two differ in shape — this model arrives as several files rather than one
+    // archive, so it has no `unpackedBytes` and no single `url`.
+    let state = state();
+    let json = serde_json::to_value(state.say.status()).unwrap();
+    expect_keys(
+        &json,
+        &[
+            "state",
+            "installed",
+            "name",
+            "bytes",
+            "licence",
+            "downloaded",
+            "detail",
+        ],
+    );
+
+    // A test has no data directory, so nothing can be installed — which is also
+    // how the app ships, and the state the screen has to render first.
+    assert_eq!(json["state"], serde_json::json!("absent"));
+    assert_eq!(json["installed"], serde_json::json!(false));
+    // What the learner is told *before* agreeing to the download: the size and
+    // the licence. Both must be present when nothing has been fetched.
+    assert!(
+        json["bytes"].as_u64().unwrap() > 0,
+        "the size must be stated up front: {json}"
+    );
+    assert_eq!(json["licence"], serde_json::json!("MIT"));
+    assert_eq!(json["downloaded"], serde_json::json!(0));
+    // And the sentence the screen shows instead of assembling one itself.
+    assert!(
+        json["detail"].as_str().unwrap().contains("MB"),
+        "the detail line should state the cost: {}",
+        json["detail"]
+    );
+}
+
+#[test]
+fn spoken_audio_serialises_with_camel_case_fields() {
+    // What `say_speak` returns. `sampleRate` is camelCase like everything else,
+    // and it is not optional: playing the samples at the wrong rate is heard as
+    // the wrong pitch and speed, so the client has to receive it.
+    let spoken = SpokenAudio {
+        samples: vec![0.0, 0.5, -0.5],
+        sample_rate: 44_100,
+    };
+    let json = serde_json::to_value(spoken).unwrap();
+    expect_keys(&json, &["samples", "sampleRate"]);
+    assert_eq!(json["sampleRate"], serde_json::json!(44_100));
+    assert_eq!(json["samples"].as_array().unwrap().len(), 3);
 }
 
 #[test]

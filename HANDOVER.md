@@ -227,6 +227,11 @@ crates/hanzi-core/          grading engine. No Tauri, no UI, no platform code.
   src/time.rs               ISO-8601 formatting, parsing, date arithmetic
   src/bin/prepare_data.rs   upstream data -> compact artifact (feature = "prepare")
   examples/selfcheck.rs     whole-dataset measurement and tolerance tuning
+crates/hanzi-say/           speech synthesis, wrapping sherpa-onnx's OfflineTts.
+  src/lib.rs                the model, normalisation, the silence guard, chunking
+  src/sentences.rs          reading the two graded corpora into one Phrase shape
+  src/bin/synthesize_audio.rs   corpus -> MP3 clips + manifest.json (build time).
+                            Also the only place that needs ffmpeg. See §10
 crates/hanzi-store/         the study database: SQLite, and nothing else.
                             Separate from the engine so the engine keeps no
                             native dependency
@@ -282,6 +287,51 @@ scripts/                    fetch-data, with-cargo-env, tauri-cli, build-release
 dependencies. That is what makes the engine testable without a window, and what
 will let it run behind a mobile shell or a CLI unchanged. Anything that needs the
 window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
+
+## 3a. Working conventions
+
+Two rules about long jobs, learned the hard way while generating the HSK phrase
+audio (M14). Both are about not wasting the operator's time.
+
+### Long runs are given to the operator, not run here
+
+**Anything expected to take more than about ten minutes is printed, not started.**
+Give the command, say what it will do, and let the operator run it in their own
+terminal where they can watch the progress, stop it, and see it fail.
+
+The reason is not politeness. A long job started in the background is invisible
+while it runs, so the operator cannot tell a slow job from a hung one, cannot see
+a warning scroll past, and cannot interrupt it when something looks wrong. In the
+phrase-audio work this mattered concretely: the run printed *"synthesis text …
+too short than prompt text … this may lead to bad performance"* on nearly every
+phrase — a real voice-consistency risk — and it was buried in a log nobody was
+watching until the end.
+
+Short jobs, and anything a test or a check needs, still run directly. This is
+about *long* work: corpus synthesis, model downloads, whole-suite runs.
+
+### Anything over ten minutes checkpoints every item
+
+A pass over many items must be **resumable**, saving each item's result as it is
+produced, so that an interruption costs the work in flight rather than the whole
+run.
+
+The phrase-audio run is the cautionary example: its first revision wrote a single
+manifest at the very end, so stopping it after 421 of 1,638 items would have
+discarded every one of them. Hours of compute, thrown away by a `Ctrl-C` — and
+the same is true of a crash, a laptop sleeping, or a sandbox being torn down.
+
+The shape to use:
+
+* write each item's output as soon as it exists, under the final name;
+* record it in a **progress file** written after each item, so a re-run can skip
+  what is already done and verified;
+* make skipping safe by checking the artifact, not just the bookkeeping — a
+  truncated file must not be mistaken for a finished one;
+* summarise only at the end, and say what was skipped.
+
+`crates/hanzi-say/src/bin/synthesize_audio.rs` and
+`scripts/cosyvoice-say.py` need this and did not have it at the time of writing.
 
 ## 4. Invariants — do not break these
 

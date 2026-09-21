@@ -33,6 +33,13 @@ __pycache__/
 # only when the learner asks, and lives in the application data directory.
 .sherpa-onnx/
 
+# The MeloTTS weights pronunciation audio is synthesised with, fetched by
+# scripts/fetch-tts.sh and pinned there by digest. ~58 MB, a build input for the
+# same reason as the libraries above. It is not shipped inside the app: the
+# clips it produces are, and the model only reaches a device if a learner
+# chooses to download it — see LICENSES.md.
+.melo-tts/
+
 # --- Frontend ------------------------------------------------------------
 node_modules/
 dist/
@@ -43,6 +50,11 @@ dist/
 # The ~33 MB of upstream text is not committed: it can always be re-fetched
 # with `pnpm run fetch-data`.
 data/raw/
+
+# The graded phrase corpora, ~5.6 MB, re-fetched with `pnpm run fetch-phrases`.
+# Not committed for the same reason as above: only the audio derived from them
+# ships, and that IS committed (public/audio/).
+data/phrases/
 
 # The compact artifact IS committed — crates/hanzi-core/data/hanzi.bin.gz is
 # ~13 MB. It used to be generated-only, which meant a fresh clone (and CI) had

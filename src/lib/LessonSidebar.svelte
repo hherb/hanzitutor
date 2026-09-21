@@ -1,19 +1,21 @@
 <script lang="ts">
   /**
-   * Navigation for the five screens.
+   * Navigation for the six screens.
    *
    * Course: the built-in frequency-ordered lessons, one lesson open at a time,
    * with how much of each has been practised and what is due for review.
    * Vocabulary: the user's own groups, acting as the filter for the list panel.
    * Words: the HSK dictionary, filtered by level.
+   * Phrases: graded phrases with bundled pronunciation, for listening and
+   * repetition practice.
    * Settings: the learner's own preferences.
    * About: what the app is, and the licence notices it ships under.
    */
   import type { Lesson, LevelCount, ProgressCard, ReviewView, VocabEntry } from "./types";
 
   interface Props {
-    view: "course" | "vocabulary" | "words" | "settings" | "about";
-    onSwitchView: (view: "course" | "vocabulary" | "words") => void;
+    view: "course" | "vocabulary" | "words" | "phrases" | "settings" | "about";
+    onSwitchView: (view: "course" | "vocabulary" | "words" | "phrases") => void;
     lessons: Lesson[];
     activeLesson: number;
     activeCharacter: string | null;
@@ -154,6 +156,9 @@
     </button>
     <button class:on={view === "words"} onclick={() => onSwitchView("words")}>
       HSK words
+    </button>
+    <button class:on={view === "phrases"} onclick={() => onSwitchView("phrases")}>
+      Phrases
     </button>
   </div>
 
