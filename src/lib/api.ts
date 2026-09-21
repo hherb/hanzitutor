@@ -12,15 +12,16 @@ import type {
   GradeReport,
   Lesson,
   LicenceNotice,
+  MarkedTone,
   Point,
   MicrophoneStatus,
   ProgressView,
   ReviewView,
   SettingsPatch,
   SettingsView,
+  SpeechTarget,
   SyncView,
   ToneResult,
-  ToneTarget,
   TextLookup,
   VocabOutcome,
   VocabView,
@@ -127,6 +128,23 @@ export const log = (message: string) => invoke<void>("webview_log", { message })
  * reading and per-character hints, with the meaning left for the user.
  */
 export const lookupText = (text: string) => invoke<TextLookup>("lookup_text", { text });
+
+/**
+ * Write a tone mark into the syllable the cursor is in.
+ *
+ * The pinyin tone row's one call. `tone` is `1`..`4`, or `5` for the neutral
+ * tone, which takes a mark off. Which syllable the cursor selects and which
+ * letter in it takes the mark are the Rust side's rules, next to the code that
+ * reads those marks back, so writing one and reading it cannot disagree.
+ *
+ * `caret` is a **character** offset, not the UTF-16 index `selectionStart`
+ * gives: convert before calling, and convert the returned `caret` back before
+ * setting the selection. The two agree for everything in the basic plane, which
+ * is all pinyin is, but a field that accepted anything else would otherwise put
+ * the cursor one place off.
+ */
+export const markTone = (text: string, caret: number, tone: number) =>
+  invoke<MarkedTone>("mark_tone", { text, caret, tone });
 
 export const vocabulary = () => invoke<VocabView>("vocabulary");
 
@@ -238,16 +256,17 @@ export const licenceNotices = () => invoke<LicenceNotice[]>("licence_notices");
 // ---- tone practice ---------------------------------------------------------
 
 /**
- * The tones to practise for a character or word, or `null` when nothing can
- * score it.
+ * What the microphone can do with the text on the board.
  *
- * Takes the text rather than one character, so a word is scored as a word — which
- * is what makes tone sandhi work, since it happens between the syllables of a
- * word. `null` covers text the dataset does not know, more than a few syllables,
- * and anything with no judgeable tone. Disable the control on `null` rather than
- * offering a recording that would always come back unjudged.
+ * Two independent answers. `tone` is null for text longer than a word, for a
+ * reading that will not divide one syllable per character, and for characters the
+ * dataset does not know; `recognize` says whether a recognition model is
+ * installed. The control is offered when either is true, because text with no
+ * tone target can still be recognised and tell the learner whether they were
+ * understood.
  */
-export const toneTarget = (text: string) => invoke<ToneTarget | null>("tone_target", { text });
+export const speechTarget = (text: string) =>
+  invoke<SpeechTarget>("speech_target", { text });
 
 /** Whether the microphone can be used, and at what rate. */
 export const microphoneStatus = () => invoke<MicrophoneStatus>("microphone_status");
@@ -259,12 +278,14 @@ export const microphoneStatus = () => invoke<MicrophoneStatus>("microphone_statu
 export const listenStart = () => invoke<void>("listen_start");
 
 /**
- * Stop listening and score what was heard against the tones of `text`.
+ * Stop listening and judge what was heard against `text`.
  *
- * `text` is what was on screen while the learner spoke; the tones are derived
- * from it by the Rust side rather than sent from here, so the recording cannot be
- * scored against a sequence the interface invented. The detail sentence is worded
- * by the Rust side too; show it as it comes back.
+ * `text` is what was on screen while the learner spoke; it is resolved to tones
+ * or to readings by the Rust side rather than sent from here, so the recording
+ * cannot be judged against a sequence the interface invented. A short word comes
+ * back with `toneScored` true and a judgement per syllable; a longer phrase comes
+ * back with it false and the transcription as the answer. The detail sentence is
+ * worded by the Rust side too; show it as it comes back.
  */
 export const listenStop = (text: string) => invoke<ToneResult>("listen_stop", { text });
 

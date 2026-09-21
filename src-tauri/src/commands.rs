@@ -283,7 +283,21 @@ pub struct ToneSyllableResult {
 pub struct ToneResult {
     /// One entry per syllable, in the order they were spoken, always the same
     /// length as the target's syllables.
+    ///
+    /// **Empty when no tone was scored at all**, which is what happens for text
+    /// longer than a word: `tone_scored` is false and `heard` carries the whole
+    /// answer. The interface reads `tone_scored` rather than this length, so the
+    /// two cannot be confused for one another.
     pub syllables: Vec<ToneSyllableResult>,
+    /// True when the pitch was measured and `syllables` holds a judgement per
+    /// syllable.
+    ///
+    /// False for text tone practice refuses — longer than a word, or a reading
+    /// that will not divide — where the recording is recognised instead. The
+    /// panel then hides the tone half entirely rather than showing a score of
+    /// zero, which would read as "you said it perfectly flat" instead of "this
+    /// was not measured".
+    pub tone_scored: bool,
     pub verdict: ToneVerdict,
     /// Mean of the scores of the syllables that could be scored; `0` when none
     /// could. On the same 0..=100 scale and the same bands as a handwriting
@@ -317,24 +331,45 @@ pub struct ToneResult {
     pub heard_error: Option<String>,
 }
 
-/// The tones a character or word should be practised with, or `None` when there
-/// is nothing this can score.
+/// What the microphone can do with the text currently on the board.
 ///
-/// Takes the **text** rather than one character, so that a word is scored as a
-/// word — which is what makes tone sandhi work, since it happens between the
-/// syllables of a word (你好 is spoken 2 + 3, not the dictionary's 3 + 3).
+/// Two independent answers, and the interface needs both before it can decide
+/// whether to offer the control at all:
 ///
-/// `None` covers text the dataset does not fully know, a reading that will not
-/// divide into one syllable per character, more than a few syllables, and
-/// anything with no tone that can be judged at all. The interface disables the
-/// control on `None` rather than offering a recording it would then refuse.
+/// - `tone` is the tones to score against, from [`AppState::tone_target`]. It is
+///   `None` for text longer than a word, for a reading that will not divide into
+///   one syllable per character, and for characters the dataset does not know.
+/// - `recognize` says whether a recognition model is installed, which is what
+///   makes a recording worth taking when there is no `tone`.
 ///
-/// The reading is resolved here rather than in the frontend so that the rules —
+/// The microphone is offered when either is true. Text where neither holds — a
+/// phrase too long for tone practice on a device with no model — is the one case
+/// a button would produce nothing for, and the interface says so instead of
+/// offering it. That pair is the whole reason this answer is one call rather than
+/// a target and a separate question about the model.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeechTarget {
+    /// The tones to score against, or `None` when the tone half will not run.
+    pub tone: Option<ToneTarget>,
+    /// True when a recognition model is installed, so text with no `tone` can
+    /// still be answered with a transcription.
+    pub recognize: bool,
+}
+
+/// What the microphone can do with `text`, and whether recognition is available.
+///
+/// One call rather than two so the two halves are read together: the model can be
+/// installed or removed from the settings screen while a character is on the
+/// board, and a target fetched separately from the model's state could be paired
+/// with the wrong answer.
+///
+/// The tones are resolved here rather than in the frontend so that the rules —
 /// which diacritic means which tone, what counts as one syllable, when sandhi
 /// applies — live in one place, next to the code that scores against them.
 #[tauri::command]
-pub fn tone_target(state: State<'_, AppState>, text: String) -> Option<ToneTarget> {
-    state.tone_target(&text)
+pub fn speech_target(state: State<'_, AppState>, text: String) -> SpeechTarget {
+    state.speech_target(&text)
 }
 
 /// Whether the microphone can be used, and at what rate.
@@ -442,26 +477,27 @@ pub fn listen_start(state: State<'_, AppState>) -> Result<(), String> {
     state.capture.start()
 }
 
-/// Stop listening and score what was heard against the tones of `text`.
+/// Stop listening and judge what was heard against `text`.
 ///
-/// The text is what was on screen while the learner spoke, and the tones are
-/// derived from it here rather than being sent by the frontend: that keeps one
-/// source of truth, and it means the recording cannot be scored against a
-/// sequence the interface made up.
+/// Two kinds of judgement come back through one result, because they come from
+/// one recording. A word short enough to divide is scored on tone and read back
+/// as syllables; anything longer is recognised alone, with `tone_scored` false and
+/// the transcription carrying the answer. See [`AppState::score_speech`].
 ///
-/// The recorder is stopped **before** the text is resolved. If the text turned
-/// out not to be scorable, returning early with the microphone still open would
-/// leave it recording until the app was quit.
+/// The text is what was on screen while the learner spoke, and it is resolved
+/// here rather than being sent by the frontend: that keeps one source of truth,
+/// and it means the recording cannot be judged against a sequence the interface
+/// made up.
+///
+/// The recorder is stopped **before** the text is resolved, so that a recording
+/// is never left running while the text is looked up. The command no longer has a
+/// refusal: text that cannot be tone-scored is recognised instead, and text that
+/// can be neither is not offered a button in the first place — see
+/// [`speech_target`].
 #[tauri::command]
 pub fn listen_stop(state: State<'_, AppState>, text: String) -> Result<ToneResult, String> {
     let recording = state.capture.stop()?;
-    match state.tone_target(&text) {
-        Some(target) => Ok(state.score_tones(&recording, &target)),
-        None => Err(format!(
-            "There is no tone sequence to score {text} against. Practise a single character \
-             or a short word."
-        )),
-    }
+    Ok(state.score_speech(&recording, &text))
 }
 
 // ---- Speech recognition (ROADMAP.md M12) ----------------------------------
@@ -500,6 +536,44 @@ pub fn asr_remove(state: State<'_, AppState>) -> Result<AsrStatus, String> {
 }
 
 // ---- Personal vocabulary list ---------------------------------------------
+
+/// A reading with a tone mark written into one syllable of it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarkedTone {
+    /// The reading, with the mark written in.
+    pub text: String,
+    /// Where the cursor should land, a **character** offset into `text`.
+    pub caret: usize,
+}
+
+/// Write a tone mark into the syllable the cursor is in.
+///
+/// This is the pinyin field's tone key row. Typing `xuexi` on a phone is easy and
+/// typing `xuéxí` is not — the accented vowels are two taps each on a keyboard
+/// that hides them — so a key rewrites the syllable under the cursor instead of
+/// inserting a bare accented vowel and leaving the learner to put it in the right
+/// place. Which syllable that is, and which letter in it takes the mark, are
+/// `pinyin.rs`'s rules: the same module that reads those marks back, so writing
+/// one and reading it cannot disagree. `5` is the neutral tone, and it takes a
+/// mark off.
+///
+/// `caret` is a **character** offset, not the UTF-16 index `selectionStart`
+/// reports; the caller converts, because only it knows which of the two it has.
+///
+/// An error is a real answer — the cursor was on a separator, or the syllable had
+/// nothing a mark can sit on — and the interface shows it rather than looking as
+/// though the key did nothing.
+#[tauri::command]
+pub fn mark_tone(text: String, caret: usize, tone: u8) -> Result<MarkedTone, String> {
+    hanzi_core::pinyin::mark_tone_at(&text, caret, tone)
+        .map(|(text, caret)| MarkedTone { text, caret })
+        .ok_or_else(|| {
+            "No syllable under the cursor can take a tone mark. Type the reading first, \
+             then put the cursor in the syllable you want to mark."
+                .to_string()
+        })
+}
 
 /// Resolve a character or word for the add form.
 ///

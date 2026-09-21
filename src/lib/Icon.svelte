@@ -39,7 +39,9 @@
     | "plus"
     | "back"
     | "tick"
-    | "next";
+    | "next"
+    | "practise"
+    | "pencil";
 
   interface Props {
     name: IconName;
@@ -119,6 +121,18 @@
   {:else if name === "next"}
     <path d="M4.6 12h14.8" />
     <path d="M13 5.4 19.6 12 13 18.6" />
+  {:else if name === "practise"}
+    <!-- Practise: the board, opened on one entry. A dumbbell is the shape study
+         apps use for "drill this", and it is deliberately not a second writing
+         tool — a brush and a pencil at 1em are the same smudge, so "write it"
+         and "edit it" would take a guess to tell apart. -->
+    <path d="M6.6 8.6v6.8M3.4 10.4v3.2M17.4 8.6v6.8M20.6 10.4v3.2M6.6 12h10.8" />
+  {:else if name === "pencil"}
+    <!-- Edit: the pencil that means "change this" everywhere. It edits the
+         entry's reading, meaning and group, which is not the same thing as
+         writing the character — hence the dumbbell for that. -->
+    <path d="M4.4 19.6l.8-3.4 9.9-9.9 2.6 2.6-9.9 9.9-3.4.8Z" />
+    <path d="M12.6 8.9l2.6 2.6" />
   {/if}
 </svg>
 

@@ -188,6 +188,19 @@ export interface TextLookup {
 }
 
 /**
+ * A reading with a tone mark written into one syllable of it.
+ *
+ * `caret` is where the cursor should land afterwards, as a **character** offset
+ * into `text` — not the UTF-16 index an `HTMLInputElement` reports. The pinyin
+ * tone row is the one place the two numbers meet, so it is the panel's job to
+ * convert on the way in and on the way out; see `api.markTone`.
+ */
+export interface MarkedTone {
+  text: string;
+  caret: number;
+}
+
+/**
  * One item in the personal vocabulary list.
  *
  * `text` may be a single character or a word. Single characters get their pinyin
@@ -490,6 +503,23 @@ export interface ToneTarget {
   detail: string;
 }
 
+/**
+ * What the microphone can do with the text currently on the board.
+ *
+ * Two independent answers, because the two halves of an attempt can run
+ * separately. `tone` is null for text longer than a word, for a reading that
+ * will not divide one syllable per character, and for characters the dataset
+ * does not know. `recognize` says whether a recognition model is installed,
+ * which is what makes a recording worth taking when there is no tone target.
+ *
+ * The microphone is offered when either is true. Text where neither holds is the
+ * one case a button would produce nothing for, and `sayBlocked` says so.
+ */
+export interface SpeechTarget {
+  tone: ToneTarget | null;
+  recognize: boolean;
+}
+
 /** One syllable's worth of a scored utterance. */
 export interface ToneSyllableResult extends TargetSyllable {
   /** Which syllable this is, counting from 1. */
@@ -498,13 +528,24 @@ export interface ToneSyllableResult extends TargetSyllable {
 }
 
 /**
- * A scored character or word.
+ * A judged character, word or longer phrase.
  *
- * `syllables` always has one entry per syllable of the target, whatever was
- * heard, so the interface can pair them with the characters without guessing.
+ * `syllables` has one entry per syllable of the target, whatever was heard, so
+ * the interface can pair them with the characters without guessing — **unless no
+ * tone was scored at all**, which is what `toneScored` reports. For text longer
+ * than a word the pitch is not measured, `syllables` is empty, and `detail` says
+ * why rather than carrying a judgement. Do not read a score from an empty list:
+ * zero would look like a perfectly flat attempt instead of an unmeasured one.
  */
 export interface ToneResult {
   syllables: ToneSyllableResult[];
+  /**
+   * True when the pitch was measured, so `syllables` holds one judgement per
+   * syllable. False when the text was too long to divide into syllables and the
+   * recording was recognised instead: the panel then shows the transcription
+   * alone, with no tone header and no charts.
+   */
+  toneScored: boolean;
   verdict: ToneVerdict;
   /** Mean of the scoreable syllables, 0..100; 0 when none could be scored. */
   score: number;

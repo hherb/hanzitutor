@@ -7,11 +7,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use hanzi_core::{
-    build_lessons, build_queue, now_iso8601, BoardSize, CursorStore, CursorView, Dataset, Pace,
-    ProgressStore, ProgressView, ReviewView, SettingsStore, SettingsView, VocabStore, VocabView,
+    build_lessons, build_queue, now_iso8601, BoardSize, CursorStore, CursorView, Dataset, Grade,
+    Pace, ProgressStore, ProgressView, ReviewView, SettingsStore, SettingsView, ToneVerdict,
+    VocabStore, VocabView,
 };
 use hanzi_core::pinyin::{
-    heard_against, tone_target as build_tone_target, Heard, ToneTarget,
+    heard_against_readings, syllables, tone_target as build_tone_target, Heard, ToneTarget,
 };
 use hanzi_core::tone::analyze;
 use hanzi_store::Db;
@@ -19,7 +20,9 @@ use tauri::{AppHandle, Manager};
 
 use crate::asr::Asr;
 use crate::capture::{Recorder, Recording};
-use crate::commands::{ToneResult, ToneSyllableResult, VoiceOption, VoicesView, LESSON_SIZE};
+use crate::commands::{
+    SpeechTarget, ToneResult, ToneSyllableResult, VoiceOption, VoicesView, LESSON_SIZE,
+};
 use crate::speech::Speaker;
 
 /// The compact artifact produced by `hanzi-core`'s `prepare-data` binary.
@@ -590,8 +593,10 @@ impl AppState {
     ///
     /// `None` for anything longer than [`MAX_TONE_SYLLABLES`], for text the
     /// dataset does not fully know, and for a reading that cannot be divided into
-    /// one syllable per character. The interface disables the control on `None`
-    /// rather than offering a recording it would then have to refuse.
+    /// one syllable per character. `None` means only that the *tones* cannot be
+    /// judged: the readings may still be known, and recognition can still answer
+    /// for the recording — see [`Self::wanted_readings`] and
+    /// [`Self::score_speech`].
     pub fn tone_target(&self, text: &str) -> Option<ToneTarget> {
         let characters: Vec<char> = text.chars().collect();
         if characters.is_empty() || characters.len() > MAX_TONE_SYLLABLES {
@@ -616,6 +621,62 @@ impl AppState {
         build_tone_target(text, &readings.join("'"))
     }
 
+    /// The readings a transcription of `text` is read against, one per character.
+    ///
+    /// This is the half of [`Self::tone_target`] that recognition needs, and it
+    /// is deliberately **not** limited to a word. Tone scoring stops at
+    /// [`MAX_TONE_SYLLABLES`] because a longer run's syllable boundaries cannot
+    /// be found from the recording — but a learner can still be told which
+    /// syllables a model heard in a phrase, and that comparison needs exactly
+    /// this list and nothing about pitch.
+    ///
+    /// The reading is resolved the way a target's is: the dictionary's
+    /// **whole-word** entry first, because that is what picks the right reading
+    /// for a polyphone, then each character's own first reading, as the course
+    /// teaches. The word's reading is used only when it divides into exactly one
+    /// syllable per character — a split this app got wrong would mis-align every
+    /// comparison after it.
+    ///
+    /// **Empty** when the dataset cannot read a character. That is not an error:
+    /// the transcription is still worth showing, it just has nothing to be
+    /// compared against.
+    pub fn wanted_readings(&self, text: &str) -> Vec<String> {
+        let characters: Vec<char> = text.chars().collect();
+        if characters.is_empty() {
+            return Vec::new();
+        }
+
+        if characters.len() > 1 {
+            if let Some(word) = self.dataset.word(text) {
+                if let Some(list) = syllables(&word.pinyin) {
+                    if list.len() == characters.len() {
+                        return list.into_iter().map(|s| s.text).collect();
+                    }
+                }
+            }
+        }
+
+        characters
+            .iter()
+            .map(|ch| self.dataset.get(*ch)?.pinyin.first().cloned())
+            .collect::<Option<Vec<String>>>()
+            .unwrap_or_default()
+    }
+
+    /// What the microphone can do with `text`, as the interface needs it.
+    ///
+    /// The two halves are read together rather than as two commands: the model can
+    /// be installed or removed while a character sits on the board, and a target
+    /// fetched separately from the model's state could be paired with the wrong
+    /// answer. Either half being present is enough to offer the control — see
+    /// [`SpeechTarget`].
+    pub fn speech_target(&self, text: &str) -> SpeechTarget {
+        SpeechTarget {
+            tone: self.tone_target(text),
+            recognize: self.asr.status().installed,
+        }
+    }
+
     /// Read a recording as syllables, when a recognition model is installed.
     ///
     /// `Ok(None)` whenever no model is installed — the state every fresh install
@@ -624,16 +685,52 @@ impl AppState {
     /// instead of it. Tone practice is the feature this app has always had, and
     /// it must not become hostage to a 228 MB file.
     ///
-    /// The transcription's reading is resolved the same way a target's is: from
-    /// the dictionary's **whole-word** entry when there is one, because that is
-    /// what picks the right reading for a polyphone, and from the characters
-    /// otherwise. It is then read against the target by
-    /// [`hanzi_core::pinyin::heard_against`], which is where the comparison rules
-    /// — readings rather than characters, tone set aside — live and are tested.
+    /// The transcription is read against the target's own readings, and the
+    /// sentence under it may refer to the tone panel below — see
+    /// [`Self::recognize_readings`] for the form that has no tone panel.
     pub fn recognize(
         &self,
         recording: &Recording,
         target: &ToneTarget,
+    ) -> Result<Option<Heard>, String> {
+        let wanted: Vec<String> = target.syllables.iter().map(|s| s.reading.clone()).collect();
+        self.transcribe_against(recording, &wanted, true)
+    }
+
+    /// Read a recording as syllables and compare it against readings that are
+    /// known without a tone target.
+    ///
+    /// This is what a phrase longer than a word is judged by. It is
+    /// [`Self::recognize`] with readings rather than a target, because the target
+    /// is exactly what does not exist there: the tones cannot be scored, but the
+    /// syllables the learner was asked for are still known. The comparison rules
+    /// are the same — readings rather than characters, tone set aside — so the
+    /// answer is the same transcription either way, worded for a panel with no
+    /// tone half under it.
+    ///
+    /// `Ok(None)` and `Err` mean what they do in [`Self::recognize`].
+    pub fn recognize_readings(
+        &self,
+        recording: &Recording,
+        wanted: &[String],
+    ) -> Result<Option<Heard>, String> {
+        self.transcribe_against(recording, wanted, false)
+    }
+
+    /// Ask the model what it heard and read that against `wanted`.
+    ///
+    /// One place both entry points go through, so the transcription and the
+    /// reading of it cannot drift apart. `tone_follows` only picks the wording of
+    /// the sentence under the transcription — see [`heard_against_readings`].
+    ///
+    /// The transcription's own reading is resolved from the dataset the way a
+    /// target's is: the **whole-word** entry when there is one, because that picks
+    /// the right reading for a polyphone, and the characters otherwise.
+    fn transcribe_against(
+        &self,
+        recording: &Recording,
+        wanted: &[String],
+        tone_follows: bool,
     ) -> Result<Option<Heard>, String> {
         let Some(text) = self.asr.recognize(&recording.samples, recording.sample_rate)? else {
             return Ok(None);
@@ -641,10 +738,15 @@ impl AppState {
         if text.is_empty() {
             // The model was asked and heard nothing it could write down. That is
             // a real answer about the recording, not a missing one.
-            return Ok(Some(heard_against("", "", target)));
+            return Ok(Some(heard_against_readings("", "", wanted, tone_follows)));
         }
         let reading = self.dataset.lookup_text(&text).pinyin;
-        Ok(Some(heard_against(&text, &reading, target)))
+        Ok(Some(heard_against_readings(
+            &text,
+            &reading,
+            wanted,
+            tone_follows,
+        )))
     }
 
     /// Score one recording against the tones that were asked for.
@@ -714,6 +816,82 @@ impl AppState {
             median_hz: report.median_hz,
             heard,
             heard_error,
+            tone_scored: true,
+        }
+    }
+
+    /// Score one recording as completely as the text on the board allows.
+    ///
+    /// The text decides which half runs, not the learner: a word short enough to
+    /// divide is scored on tone *and* read back, while a longer phrase has no
+    /// tone score to give and is recognised alone. Refusing the recording
+    /// outright — which is what the button used to do past four syllables — threw
+    /// away the answer the model could still give, and that answer ("did it
+    /// understand me at all") is worth more than the tone was.
+    pub fn score_speech(&self, recording: &Recording, text: &str) -> ToneResult {
+        match self.tone_target(text) {
+            Some(target) => self.score_tones(recording, &target),
+            None => self.recognition_only(recording, text),
+        }
+    }
+
+    /// What a recording says about text too long for tone scoring.
+    ///
+    /// The pitch is not analysed at all. Dividing a run longer than a word into
+    /// syllables is the step that cannot be trusted — that is the whole reason
+    /// tone scoring stops where it does — and a tone score against a wrong
+    /// division is worse than none, because it tells a learner their pitch was
+    /// wrong when it was the app that cut the recording in the wrong place.
+    ///
+    /// What is left is the transcription, read against the readings the learner
+    /// was asked for. That needs no pitch and answers the question this half
+    /// exists for. With no model installed it is `None`, and the caller is
+    /// expected not to have offered the recording at all — see `speech_target`.
+    fn recognition_only(&self, recording: &Recording, text: &str) -> ToneResult {
+        let wanted = self.wanted_readings(text);
+        let (heard, heard_error) = match self.recognize_readings(recording, &wanted) {
+            Ok(heard) => (heard, None),
+            Err(message) => (None, Some(message)),
+        };
+
+        // Two different refusals reach here, and telling them apart matters: one
+        // is a deliberate limit on how much can be divided, and the other is a
+        // gap in the dataset. A learner told the wrong one goes looking for the
+        // wrong fix.
+        let characters = text.chars().count();
+        let mut detail = if characters > MAX_TONE_SYLLABLES {
+            format!(
+                "{text} is {characters} characters, longer than the {MAX_TONE_SYLLABLES}-syllable \
+                 word tone practice scores: the breaks between those syllables cannot be found \
+                 from the recording, so no tone was judged."
+            )
+        } else {
+            format!(
+                "The readings for {text} could not be lined up one per character, so no tone \
+                 was judged."
+            )
+        };
+        if recording.truncated {
+            detail.push_str(&format!(
+                " (The recording hit the {}-second limit, so only the start was judged.)",
+                crate::capture::MAX_RECORD_SECS
+            ));
+        }
+
+        ToneResult {
+            syllables: Vec::new(),
+            verdict: ToneVerdict::Uncertain,
+            score: 0.0,
+            grade: Grade::Fair,
+            detail,
+            sandhi_applied: false,
+            boundaries_ms: Vec::new(),
+            voiced_ms: 0,
+            span_ms: 0,
+            median_hz: 0.0,
+            heard,
+            heard_error,
+            tone_scored: false,
         }
     }
 

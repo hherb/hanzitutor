@@ -25,6 +25,8 @@
 //! checks the result against the number of characters, so a reading this gets
 //! wrong is refused rather than scored.
 
+use std::ops::Range;
+
 use serde::{Deserialize, Serialize};
 
 /// One syllable of a reading.
@@ -148,21 +150,33 @@ fn is_separator(ch: char) -> bool {
     matches!(ch, '\'' | ' ' | '-' | '·' | '/' | ',')
 }
 
-/// Split one run of letters into syllables.
-fn split_run(run: &str) -> Vec<String> {
+/// Split one run of letters into syllables, keeping where each one sits.
+///
+/// The span is in characters from the start of `run`, and it exists for the
+/// pinyin tone key: "which syllable is the cursor in" cannot be answered from
+/// the syllables alone. Nothing else here wants it, which is why the plain
+/// [`syllables`] is still the function everything reads.
+fn split_run_spans(run: &str) -> Vec<(String, usize, usize)> {
     let chars: Vec<char> = run.chars().collect();
     let mut out = Vec::new();
     let mut current = String::new();
+    let mut start = 0;
     let mut i = 0;
 
     while i < chars.len() {
         if !is_vowel(chars[i]) {
+            if current.is_empty() {
+                start = i;
+            }
             current.push(chars[i]);
             i += 1;
             continue;
         }
 
         // A vowel run, then at most one coda: `n`, `ng`, or `r`.
+        if current.is_empty() {
+            start = i;
+        }
         current.push(chars[i]);
         let mut j = i + 1;
         while j < chars.len() && is_vowel(chars[j]) {
@@ -195,12 +209,12 @@ fn split_run(run: &str) -> Vec<String> {
             }
         }
 
-        out.push(std::mem::take(&mut current));
+        out.push((std::mem::take(&mut current), start, j));
         i = j;
     }
 
     if !current.is_empty() {
-        out.push(current);
+        out.push((current, start, chars.len()));
     }
     out
 }
@@ -226,23 +240,197 @@ fn syllable_tone(text: &str) -> Option<u8> {
 /// syllable. Apostrophes, spaces and hyphens are hard boundaries, which is what
 /// makes `xi'an` two syllables and `xian` one.
 pub fn syllables(reading: &str) -> Option<Vec<Syllable>> {
-    let reading = reading.trim();
-    if reading.is_empty() {
+    Some(
+        syllables_with_spans(reading)?
+            .into_iter()
+            .map(|(syllable, _)| syllable)
+            .collect(),
+    )
+}
+
+/// Split a reading into its syllables, and say where each one sits.
+///
+/// [`syllables`] is this without the spans. The tone key needs them: it rewrites
+/// the syllable the cursor is in, so it has to know which characters that is,
+/// and rebuilding the position by searching for the syllable's text would go
+/// wrong the moment a reading contains the same syllable twice — `xuexí` does.
+///
+/// Offsets are in **characters** from the start of `reading`, matching
+/// [`str::chars`] rather than the UTF-16 index a browser reports; the caller
+/// converts, because only it knows which of the two it is holding.
+pub fn syllables_with_spans(reading: &str) -> Option<Vec<(Syllable, Range<usize>)>> {
+    if reading.trim().is_empty() {
         return None;
     }
 
     let mut out = Vec::new();
-    for run in reading.split(is_separator) {
-        if run.is_empty() {
-            continue;
+    let mut run = String::new();
+    let mut run_start = 0;
+
+    for (index, ch) in reading.chars().enumerate() {
+        if is_separator(ch) {
+            if !run.is_empty() {
+                push_run(&mut out, &run, run_start)?;
+                run.clear();
+            }
+            run_start = index + 1;
+        } else {
+            if run.is_empty() {
+                run_start = index;
+            }
+            run.push(ch);
         }
-        for text in split_run(run) {
-            let tone = syllable_tone(&text)?;
-            out.push(Syllable { text, tone });
-        }
+    }
+    if !run.is_empty() {
+        push_run(&mut out, &run, run_start)?;
     }
 
     (!out.is_empty()).then_some(out)
+}
+
+/// Read one run's syllables into `out`, with their spans in the whole reading.
+///
+/// `None` when any of them cannot be read as a syllable, which is [`syllables`]'s
+/// rule and has to stay one rule.
+fn push_run(
+    out: &mut Vec<(Syllable, Range<usize>)>,
+    run: &str,
+    run_start: usize,
+) -> Option<()> {
+    for (text, from, to) in split_run_spans(run) {
+        let tone = syllable_tone(&text)?;
+        out.push((Syllable { text, tone }, run_start + from..run_start + to));
+    }
+    Some(())
+}
+
+// ---------------------------------------------------------------------------
+// Writing a tone mark
+// ---------------------------------------------------------------------------
+
+/// Write `tone` onto one syllable, in the place a pinyin tone mark belongs.
+///
+/// The placement is the standard rule rather than a choice: `a` takes the mark
+/// if there is one, then `o`, then `e`, and failing all three the last of
+/// `i`/`u`/`ü` — which is what puts the mark on the `u` of `iu` and the `i` of
+/// `ui`, the two cases a learner gets wrong by hand.
+///
+/// The syllable is reduced to plain letters first, so a syllable that already
+/// carries a tone is **changed** rather than stacked on, and a neutral tone (5)
+/// is written as the syllable with no mark at all. That is the whole reason this
+/// lives next to [`syllables`] rather than in the interface: a mark written one
+/// way and read back another would be two rules for one thing.
+///
+/// `None` for a tone outside `1..=5`, and for a syllable with nothing a mark can
+/// sit on.
+pub fn mark_syllable(syllable: &str, tone: u8) -> Option<String> {
+    if !(1..=5).contains(&tone) {
+        return None;
+    }
+    let plain: Vec<char> = syllable.chars().map(plain_vowel).collect();
+    if tone == 5 {
+        return Some(plain.into_iter().collect());
+    }
+
+    let target = plain
+        .iter()
+        .position(|ch| matches!(ch, 'a' | 'A'))
+        .or_else(|| plain.iter().position(|ch| matches!(ch, 'o' | 'O')))
+        .or_else(|| plain.iter().position(|ch| matches!(ch, 'e' | 'E')))
+        .or_else(|| {
+            plain
+                .iter()
+                .rposition(|ch| matches!(ch, 'i' | 'I' | 'u' | 'U' | 'ü' | 'Ü' | 'v' | 'V'))
+        })
+        .or_else(|| plain.iter().rposition(|ch| matches!(ch, 'n' | 'N' | 'm' | 'M')))?;
+
+    let mut out = String::with_capacity(syllable.len());
+    for (index, ch) in plain.iter().enumerate() {
+        if index == target {
+            out.push(with_tone(*ch, tone)?);
+        } else {
+            out.push(*ch);
+        }
+    }
+    Some(out)
+}
+
+/// Write a tone onto the syllable the cursor is in.
+///
+/// `caret` is a **character** offset into `reading`, matching [`str::chars`] and
+/// not the UTF-16 index a browser reports — the caller converts, because only it
+/// knows which of the two it has. A caret at the end of a syllable belongs to
+/// that syllable, which is what makes "type `xue`, tap tone 2" work; a caret at
+/// the *start* of one belongs to it too, so a cursor placed before a syllable
+/// can still mark it.
+///
+/// Returns the rewritten reading and where the cursor should land. A mark
+/// replaces one letter with one letter, so that is where it already was. `None`
+/// when no syllable holds the cursor, or when [`mark_syllable`] refuses the one
+/// that does.
+pub fn mark_tone_at(reading: &str, caret: usize, tone: u8) -> Option<(String, usize)> {
+    let syllables = syllables_with_spans(reading)?;
+    let (syllable, span) = syllables
+        .iter()
+        .find(|(_, span)| caret > span.start && caret <= span.end)
+        .or_else(|| syllables.iter().find(|(_, span)| caret == span.start))?;
+
+    let marked = mark_syllable(&syllable.text, tone)?;
+    let characters: Vec<char> = reading.chars().collect();
+    let mut out: String = characters[..span.start].iter().collect();
+    out.push_str(&marked);
+    out.extend(characters[span.end..].iter());
+    Some((out, caret))
+}
+
+/// The plain letter under a tone mark, so a mark can be moved or taken off.
+///
+/// The nasal forms are here too: 嗯 is `ń`, and a tone key that could not touch
+/// it would be a key that quietly did nothing on one of the commonest words.
+fn plain_vowel(ch: char) -> char {
+    match ch {
+        'ā' | 'á' | 'ǎ' | 'à' => 'a',
+        'ē' | 'é' | 'ě' | 'è' => 'e',
+        'ī' | 'í' | 'ǐ' | 'ì' => 'i',
+        'ō' | 'ó' | 'ǒ' | 'ò' => 'o',
+        'ū' | 'ú' | 'ǔ' | 'ù' => 'u',
+        'ǖ' | 'ǘ' | 'ǚ' | 'ǜ' => 'ü',
+        'ń' | 'ň' | 'ǹ' => 'n',
+        'ḿ' => 'm',
+        other => other,
+    }
+}
+
+/// The same letter carrying `tone`, or `None` when it cannot carry one.
+///
+/// The nasal forms follow [`marked_tone`], which is the table this has to agree
+/// with: `ń` is the shape it reads as tone 1, and it has no tone-2 nasal at all,
+/// so one is refused here rather than invented. `v` is marked as `ü` — the
+/// dataset and CC-CEDICT write the umlaut, and a learner typing `nv` means 女.
+fn with_tone(ch: char, tone: u8) -> Option<char> {
+    // Marking a neutral tone is a different job — the syllable with no mark —
+    // and is handled before this is reached. The guard is here so the index
+    // below cannot underflow if that ever stops being true.
+    if !(1..=4).contains(&tone) {
+        return None;
+    }
+    let index = (tone - 1) as usize;
+    match ch.to_ascii_lowercase() {
+        'a' => Some(['ā', 'á', 'ǎ', 'à'][index]),
+        'e' => Some(['ē', 'é', 'ě', 'è'][index]),
+        'i' => Some(['ī', 'í', 'ǐ', 'ì'][index]),
+        'o' => Some(['ō', 'ó', 'ǒ', 'ò'][index]),
+        'u' => Some(['ū', 'ú', 'ǔ', 'ù'][index]),
+        'ü' | 'v' => Some(['ǖ', 'ǘ', 'ǚ', 'ǜ'][index]),
+        'n' => match tone {
+            1 => Some('ń'),
+            3 => Some('ň'),
+            4 => Some('ǹ'),
+            _ => None,
+        },
+        'm' => (tone == 1).then_some('ḿ'),
+        _ => None,
+    }
 }
 
 /// The tone a single-syllable reading carries, or `None` when it cannot be read.
@@ -490,6 +678,35 @@ impl Heard {
 /// of step**, because a split this module got wrong would be reported to the
 /// learner as a syllable they mispronounced.
 pub fn heard_against(heard: &str, reading: &str, target: &ToneTarget) -> Heard {
+    let wanted: Vec<String> = target.syllables.iter().map(|s| s.reading.clone()).collect();
+    heard_against_readings(heard, reading, &wanted, true)
+}
+
+/// Read a transcription against the readings that were wanted, one per
+/// character.
+///
+/// This is the general form of [`heard_against`], and it exists because
+/// recognition does not need a tone target. A phrase longer than a word has no
+/// target — its syllable boundaries cannot be found from the recording, so no
+/// tone is scored — but the syllables the learner was asked for are still known,
+/// and a transcription can still be read against them. That is what lets the
+/// microphone answer for text tone practice refuses.
+///
+/// `wanted` holds one raw reading per character, tone marks and all; they are
+/// reduced with [`base`] here, exactly as a target's are. An **empty** `wanted`
+/// means there was nothing to compare against — the dataset could not read every
+/// character — and the transcription is reported on its own rather than compared
+/// against nothing.
+///
+/// `tone_follows` says whether a tone judgement is shown under this
+/// transcription. It only picks the wording: with no tone panel below, telling
+/// the learner "the tone below is unaffected" would point at nothing.
+pub fn heard_against_readings(
+    heard: &str,
+    reading: &str,
+    wanted: &[String],
+    tone_follows: bool,
+) -> Heard {
     let characters: Vec<char> = heard.chars().collect();
     let list = syllables(reading).unwrap_or_default();
     let aligned = !characters.is_empty() && list.len() == characters.len();
@@ -499,7 +716,7 @@ pub fn heard_against(heard: &str, reading: &str, target: &ToneTarget) -> Heard {
     } else {
         Vec::new()
     };
-    let wanted: Vec<String> = target.syllables.iter().map(|s| base(&s.reading)).collect();
+    let wanted: Vec<String> = wanted.iter().map(|reading| base(reading)).collect();
 
     let syllables: Vec<HeardSyllable> = heard_syllables
         .iter()
@@ -516,28 +733,52 @@ pub fn heard_against(heard: &str, reading: &str, target: &ToneTarget) -> Heard {
     let wanted_text = wanted.join(" ");
 
     let detail = if heard.trim().is_empty() {
-        "Nothing was recognised in that recording. The tone below is still judged \
-         from the pitch, which does not need a transcription."
-            .to_string()
+        if tone_follows {
+            "Nothing was recognised in that recording. The tone below is still judged \
+             from the pitch, which does not need a transcription."
+                .to_string()
+        } else {
+            "Nothing was recognised in that recording.".to_string()
+        }
+    } else if wanted.is_empty() {
+        format!(
+            "Heard {}. The words on the board could not all be read from the dataset, \
+             so what was heard was not compared against them.",
+            heard.trim()
+        )
     } else if !aligned {
         format!(
             "The transcription ({}) could not be divided into one syllable per character, \
-             so it was not read against what was asked for. The tone below is unaffected.",
-            heard.trim()
+             so it was not read against what was asked for.{}",
+            heard.trim(),
+            if tone_follows {
+                " The tone below is unaffected."
+            } else {
+                ""
+            }
         )
     } else if !same_count {
         format!(
-            "Heard {base_text} — {} syllable{} where {wanted_text} ({}) was asked for. \
-             The tone below is still judged from the pitch.",
+            "Heard {base_text} — {} syllable{} where {wanted_text} ({}) was asked for.{}",
             wanted.len(),
             if wanted.len() == 1 { "" } else { "s" },
             wanted.len(),
+            if tone_follows {
+                " The tone below is still judged from the pitch."
+            } else {
+                ""
+            }
         )
     } else if matched == syllables.len() {
         format!(
             "Heard {base_text}: the syllable{} asked for. What was heard is a transcription, \
-             not a judgement of the tone — the tone below is measured from the pitch.",
+             not a judgement of the tone.{}",
             if syllables.len() == 1 { "" } else { "s" },
+            if tone_follows {
+                " The tone below is measured from the pitch."
+            } else {
+                ""
+            }
         )
     } else {
         let wrong: Vec<String> = syllables
@@ -546,8 +787,7 @@ pub fn heard_against(heard: &str, reading: &str, target: &ToneTarget) -> Heard {
             .map(|s| format!("{} where {} was asked for", s.base, s.wanted))
             .collect();
         format!(
-            "Heard {base_text} ({}) — {}. The tone below is measured from the pitch, not \
-             from this transcription.",
+            "Heard {base_text} ({}) — {}.{}",
             wrong.join(", "),
             if matched == 0 {
                 "none of that is the syllable wanted".to_string()
@@ -557,6 +797,11 @@ pub fn heard_against(heard: &str, reading: &str, target: &ToneTarget) -> Heard {
                     matched,
                     syllables.len()
                 )
+            },
+            if tone_follows {
+                " The tone below is measured from the pitch, not from this transcription."
+            } else {
+                ""
             }
         )
     };
@@ -858,5 +1103,132 @@ mod tests {
         assert!(heard.text.is_empty());
         assert!(heard.detail.contains("Nothing was recognised"), "{}", heard.detail);
         assert!(heard.detail.contains("tone"), "{}", heard.detail);
+    }
+
+    #[test]
+    fn a_transcription_is_read_against_readings_with_no_tone_target() {
+        // Six characters, so no target exists — but the readings wanted are
+        // still known, which is the whole point of the general form.
+        let wanted: Vec<String> = ["xiè", "xie", "nǐ", "de", "bāng", "zhù"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let heard = heard_against_readings("谢谢你的帮助", "xièxienǐdebāngzhù", &wanted, false);
+        assert_eq!(heard.syllables.len(), 6);
+        assert!(heard.same_count);
+        assert!(heard.all_matched(), "{}", heard.detail);
+        assert!(
+            !heard.detail.contains("tone below"),
+            "with no tone panel under it the sentence must not point at one: {}",
+            heard.detail
+        );
+    }
+
+    #[test]
+    fn a_transcription_with_nothing_to_read_against_is_still_reported() {
+        // The dataset could not read one of the characters, so there is no
+        // wanted reading to compare with. The transcription is still the answer.
+        let heard = heard_against_readings("你好", "nǐhǎo", &[], false);
+        assert_eq!(heard.text, "你好");
+        assert_eq!(heard.base, "ni hao");
+        assert!(heard.syllables.is_empty());
+        assert!(!heard.same_count);
+        assert!(!heard.detail.contains("tone below"), "{}", heard.detail);
+        assert!(heard.detail.contains("not compared"), "{}", heard.detail);
+    }
+
+    #[test]
+    fn heard_against_and_the_reading_form_agree() {
+        // The tone path is the reading path with the target's own readings, so
+        // the two must not be able to drift apart.
+        let target = tone_target("四", "sì").expect("四 is a target");
+        let wanted: Vec<String> = target.syllables.iter().map(|s| s.reading.clone()).collect();
+        assert_eq!(
+            heard_against("是", "shì", &target),
+            heard_against_readings("是", "shì", &wanted, true)
+        );
+    }
+
+    #[test]
+    fn splitting_keeps_each_syllables_place_in_the_reading() {
+        let spans = syllables_with_spans("xuéxí").expect("xuéxí splits");
+        assert_eq!(
+            spans
+                .iter()
+                .map(|(syllable, span)| (syllable.text.as_str(), span.clone()))
+                .collect::<Vec<_>>(),
+            vec![("xué", 0..3), ("xí", 3..5)]
+        );
+        // The same syllable twice is the case searching for its text gets wrong.
+        let spans = syllables_with_spans("xuexue").expect("xuexue splits");
+        assert_eq!(spans[0].1, 0..3);
+        assert_eq!(spans[1].1, 3..6);
+        // Separators are not part of any syllable, and the offsets are counted
+        // through them.
+        let spans = syllables_with_spans("xī'ān").expect("xī'ān splits");
+        assert_eq!(spans[0].1, 0..2);
+        assert_eq!(spans[1].1, 3..5);
+        assert!(syllables_with_spans("  ").is_none());
+    }
+
+    #[test]
+    fn a_tone_mark_lands_where_pinyin_puts_it() {
+        assert_eq!(mark_syllable("xue", 2).as_deref(), Some("xué"));
+        assert_eq!(mark_syllable("hao", 3).as_deref(), Some("hǎo"));
+        // No `a`, `o` or `e`, so the last vowel takes it: `iu` marks the `u` and
+        // `ui` marks the `i`, which is the pair a learner gets wrong by hand.
+        assert_eq!(mark_syllable("liu", 4).as_deref(), Some("liù"));
+        assert_eq!(mark_syllable("dui", 4).as_deref(), Some("duì"));
+        // `o` beats `e` when there is no `a`.
+        assert_eq!(mark_syllable("xiong", 2).as_deref(), Some("xióng"));
+        // `v` is the way a plain keyboard writes `ü`.
+        assert_eq!(mark_syllable("nv", 3).as_deref(), Some("nǚ"));
+        assert_eq!(mark_syllable("nü", 3).as_deref(), Some("nǚ"));
+        // Tapping a second tone changes the mark rather than stacking one.
+        assert_eq!(mark_syllable("xué", 4).as_deref(), Some("xuè"));
+        // A neutral tone is the syllable with no mark at all.
+        assert_eq!(mark_syllable("xué", 5).as_deref(), Some("xue"));
+        // 嗯, whose syllable has no vowel letter in it.
+        assert_eq!(mark_syllable("n", 3).as_deref(), Some("ň"));
+        assert_eq!(mark_syllable("n", 2), None, "there is no tone-2 nasal");
+        // Nothing a mark can sit on, and a tone that is not a tone.
+        assert_eq!(mark_syllable("", 1), None);
+        assert_eq!(mark_syllable("x", 1), None);
+        assert_eq!(mark_syllable("xue", 0), None);
+        assert_eq!(mark_syllable("xue", 6), None);
+    }
+
+    #[test]
+    fn a_tone_key_marks_the_syllable_the_cursor_is_in() {
+        // Typing a syllable and tapping a tone marks what was just typed.
+        assert_eq!(
+            mark_tone_at("xuexi", 5, 2),
+            Some(("xuexí".to_string(), 5))
+        );
+        // A cursor placed inside an earlier syllable marks that one.
+        assert_eq!(
+            mark_tone_at("xuexí", 2, 2),
+            Some(("xuéxí".to_string(), 2))
+        );
+        // At a boundary the caret belongs to the syllable it ends, which is what
+        // makes marking left to right work.
+        assert_eq!(
+            mark_tone_at("xuexi", 3, 1),
+            Some(("xuēxi".to_string(), 3))
+        );
+        // Neutral takes a mark off again.
+        assert_eq!(
+            mark_tone_at("xuéxí", 5, 5),
+            Some(("xuéxi".to_string(), 5))
+        );
+        // A cursor in no syllable at all, and text with no syllable in it.
+        assert_eq!(mark_tone_at(" xue", 0, 2), None);
+        assert_eq!(mark_tone_at("", 0, 2), None);
+        // The mark is written and read back as the same tone, which is the whole
+        // reason both halves live in this module.
+        for tone in 1..=4u8 {
+            let marked = mark_tone_at("ma", 2, tone).expect("ma can take a tone");
+            assert_eq!(tone_from_pinyin(&marked.0), Some(tone), "{}", marked.0);
+        }
     }
 }

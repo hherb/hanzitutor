@@ -12,7 +12,9 @@ mod speech;
 mod state;
 mod sync;
 
-pub use commands::{LevelCount, VocabOutcome, VoiceOption, VoicesView, WordSearchView};
+pub use commands::{
+    LevelCount, MarkedTone, VocabOutcome, VoiceOption, VoicesView, WordSearchView,
+};
 pub use licences::{AppInfo, LicenceNotice};
 pub use asr::{Asr, AsrStatus, InstallState};
 pub use capture::{MicrophoneStatus, Recorder, Recording};
@@ -101,7 +103,7 @@ pub fn run() {
             commands::stop_speaking,
             commands::speech_status,
             commands::voices,
-            commands::tone_target,
+            commands::speech_target,
             commands::microphone_status,
             commands::listen_start,
             commands::listen_stop,
@@ -109,6 +111,7 @@ pub fn run() {
             commands::asr_install,
             commands::asr_remove,
             commands::lookup_text,
+            commands::mark_tone,
             commands::vocabulary,
             commands::vocab_add,
             commands::vocab_update,

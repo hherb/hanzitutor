@@ -736,6 +736,44 @@ downstream of them is covered by the IPC tests, which drive
   number to watch if a fourth tool is ever added — at 820 px the board column is
   squeezed to 135 px by the two-column layout above the 760 px breakpoint, and the
   row breaks there too.
+- **A page cannot change the phone's keyboard, and the vocabulary form must not
+  pretend otherwise.** Entering a word means three scripts in three fields —
+  hanzi, Latin pinyin, English meaning — and the obvious wish is for the keyboard
+  to follow the field. It cannot. No web API switches an input method's language:
+  `lang` is a hint, and Chromium's Android WebView does not even pass it on —
+  `ImeUtils.computeEditorInfo` fills in `inputType`, the autocorrect flags and
+  `imeOptions`, and never `EditorInfo.hintLocales` — while `inputmode` has no
+  `latin` value (its keywords are `none`, `text`, `decimal`, `numeric`, `tel`,
+  `search`, `email`, `url`; none of them names a language). Android gives an app
+  no public API to pick an input-method subtype either, so the keyboard's own
+  language key is the only switch. `VocabularyPanel.svelte` therefore sets `lang`
+  on each field for the screen reader and the spell checker — which is what the
+  attribute is actually for — and otherwise leaves the layout alone. Do not add
+  an attribute expecting the keyboard to move.
+- **The pinyin tone key writes the mark; the interface never guesses where it
+  goes.** Typing `xuéxí` on a phone is two taps per accented vowel on a keyboard
+  that hides them, so `VocabularyPanel.svelte` has a tone row that calls
+  `mark_tone`. The placement rule — `a`, then `o`, then `e`, then the last of
+  `i`/`u`/`ü`, which is what puts the mark on the `u` of `iu` and the `i` of
+  `ui` — lives in `pinyin.rs`, beside the code that reads those marks back,
+  because a mark written one way and read another is two rules for one thing. The
+  caret crosses the boundary as a **character** offset, not the UTF-16 index
+  `selectionStart` reports, and the panel converts both ways. Do not move the rule
+  into TypeScript, and do not "simplify" it into inserting a bare accented vowel:
+  the whole point is that the learner does not have to know which letter takes it.
+- **A phone's 360 px is the panel's 320 px, and the vocabulary card was measured,
+  not guessed.** `main` is padded 20 px a side, so the width to design against is
+  the viewport minus 40. With three 30 px glyph buttons in the row, the group chip
+  and the practice record left the reading column **zero** width at 320 px — the
+  card fitted and the reading vanished, which is the worse failure because the
+  reading is what the row is for. The chip and the record now sit under the
+  reading in `.meta` where they may wrap, and the glyph is capped at 34 % so a
+  six-character entry cannot take the row. Re-measure with a scratch entry before
+  adding a fourth thing to that row. The same card's action key is
+  `enterkeyhint="next"` on the first three fields and `done` on the last, with
+  `advance()` moving focus, so the key does what its label says; a key pressed
+  during an IME composition is left to the keyboard, because that is what commits
+  a candidate.
 - **The stroke-order sweep is a clip, not a fade, and the band's width comes from
   the outline.** `drawSweptStroke` in `render.ts` fills the outline clipped to
   the band the pen has covered. Make the band a constant and you get one of two
@@ -1454,8 +1492,10 @@ downstream of them is covered by the IPC tests, which drive
 - **On a phone there is no tooltip, so a control that cannot be used has to say
   why somewhere the learner will look.** This cost a round of confusion: the
   microphone button was greyed out and read as a microphone fault, when in fact
-  the microphone was fine and **的** simply has no judgeable tone — it is a
-  neutral-tone particle, and `tone_target` returns `None` for it. The button then
+  the microphone was fine and **的** was believed to have no judgeable tone — it is
+  a neutral-tone particle. (It is scored now, on being level; see §9. The button's
+  remaining reasons are a missing microphone and text no half can answer.) The
+  button then
   spelled the reason out in its own label (`No tone to score` / `No microphone`).
   On a phone the reason is carried by the sentence under the row, the `.hint`, and
   `sayBlocked` in `App.svelte` is the one expression the tooltip, the accessible
@@ -1953,6 +1993,12 @@ nothing is transcribed, there is no model, and nothing is downloaded. ROADMAP M1
 is the scope, M12 is the part that would need a model; §6 of
 `docs/research/ASR_TTS_CLAUDE_RESEARCH.md` is the argument.
 
+An utterance is judged in **two independent halves**, and they do not share a
+precondition. The pitch is scored when the text is a word short enough to divide;
+the transcription is compared when a model is installed and the readings are
+known. Either can happen without the other, which is what `ToneResult.toneScored`
+reports — see "A phrase with no tone target" below.
+
 ### Two modules, and the seam between them
 
 | Module | What it owns | Why there |
@@ -2107,6 +2153,51 @@ than "level", duration is the thing to add — it is the part of a neutral tone 
 listener actually hears — and it would need real recordings to calibrate, which
 this module still has none of.
 
+### A phrase with no tone target is recognised, not refused
+
+Tone scoring stops at `MAX_TONE_SYLLABLES` because a longer run's syllable
+boundaries cannot be found from energy alone. That refusal is right, and it is
+still a refusal of the *tone score*. It was briefly a refusal of the whole
+attempt: the microphone button was disabled whenever there was no `ToneTarget`, and
+`listen_stop` returned an error for the same text. The text a personal vocabulary
+list collects is exactly the text this hits — a six-character phrase from a
+coursebook is longer than a word — so the model could be installed, idle, while
+the entry the learner most wanted to say could not be recorded.
+
+The fix is a seam, not a new feature. `heard_against` needed a `ToneTarget` only
+to get at the readings wanted for each character; the tones were never used for
+the comparison (they are dropped from both sides — that is what `base` is for).
+`heard_against_readings` takes those readings directly, and
+`AppState::wanted_readings` resolves them for any text the dataset can read,
+using the word's own entry when it divides and the characters otherwise — the same
+resolution `tone_target` does, minus the tones and minus the length cap.
+
+What changed, in the order the recording meets it:
+
+- `speech_target` answers with **`tone`** (the target, or none) and **`recognize`**
+  (whether a model is installed). The button is offered when either is true, so a
+  long phrase on a device with no model is still disabled — with the reason, in
+  `sayBlocked` as always — because recording it would produce an empty answer.
+- `listen_stop` never errors for the text. It scores the pitch when there is a
+  target and otherwise transcribes, returning `toneScored: false`. The refusal
+  message ("practise a single character or a short word") is gone.
+- `TonePanel.svelte` branches on `toneScored`: the heading, badge, charts, key and
+  pitch statistics are the tone half, and a recognition-only result shows none of
+  them. **Never render a zero score for an unmeasured attempt** — it reads as "you
+  said it perfectly flat" rather than "this was not measured", which is why the
+  flag exists instead of an empty `syllables` being sniffed for.
+- `SpeechTarget.recognize` is read again when the screen changes, not only when the
+  text does: the model can be installed on the settings screen while a character
+  sits on the board, and the answer for that same text changes when it is.
+
+Two things to keep true if this is touched again. The **readings** path must keep
+the alignment rule — a reading that does not divide into one syllable per
+character is refused rather than compared out of step — because a wrong split
+reports a syllable the learner never said. And an empty `wanted` list is a
+legitimate state, not an error: it means the dataset could not read a character, so
+the transcription is shown without a comparison (`heard_against_readings` handles
+that case explicitly).
+
 ### Android capture: `cpal`'s AAudio input starts and then never calls back
 
 **Android does not use `cpal` for capture, and this is why.** `capture.rs` uses
@@ -2215,10 +2306,12 @@ say in one run what took three rebuilds to infer.
 - **`Recording` must stay `Debug`**, because `Recorder::stop()`'s error path uses
   `unwrap_err()`. That only fails in the `--lib` test target, so `cargo check`
   will not catch its removal.
-- **A neutral-tone syllable is carried but never scored.** It appears in the
-  target and in the result, and `ToneReport::finish` excludes it from the
-  aggregate so that 妈妈 is still judged on 妈. A target where *nothing* is
-  scorable (的 on its own) is refused entirely, which is what disables the button.
+- **A neutral-tone syllable is carried, and judged only on being level.** It
+  appears in the target and in the result; what can and cannot be seen from one
+  syllable is `tone::NEUTRAL_LIMIT`, and the learner is told it. Text past four
+  syllables is the case with no tone half at all, and it is recognised instead —
+  the button is disabled only when there is neither a target nor a model, which is
+  the one board a recording would answer nothing about.
 - **Segmentation will cut where you did not mean it to.** Two syllables that run
   together with no consonant between them — a vowel-initial second syllable — have
   no unvoiced frame to cut at, and the search falls back to the quietest frame,
@@ -2226,10 +2319,14 @@ say in one run what took three rebuilds to infer.
   is the difference between a learner seeing a puzzling score and seeing that the
   app mis-heard where the syllables were. Anything that improves this should
   improve it *here*, and the tests to extend are the `say_word` ones.
-- **A `ToneResult` must always carry one entry per syllable of the target.** The
-  interface zips them positionally against the characters and readings. `analyze`
-  guarantees the length; if a change ever breaks that, the IPC test
-  `a_tone_result_carries_one_entry_per_syllable` is what should catch it.
+- **A `ToneResult` carries one entry per syllable of the target when
+  `toneScored` is true.** The interface zips them positionally against the
+  characters and readings, and `analyze` guarantees the length on that path. With
+  no target — text longer than a word — the list is empty and the transcription is
+  the whole answer. **Read `toneScored`, never the list's length**, or a long
+  phrase will be treated as a silent attempt; the IPC test
+  `a_tone_result_carries_one_entry_per_syllable` covers the tone path and
+  `text_too_long_for_tones_is_recognised_instead` covers the other.
 - **The verdict words live in Rust, not in the panel.** `TonePanel.svelte` styles
   `detail`; it must not reword it, or the same judgement will be expressed in two
   places that drift.

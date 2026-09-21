@@ -1429,6 +1429,157 @@ fn every_offered_target_has_something_to_score() {
     }
 }
 
+/// A phrase longer than a word is recognised rather than refused.
+///
+/// This is the change the microphone button needed: it used to be disabled past
+/// [`MAX_TONE_SYLLABLES`], and `listen_stop` refused the recording, so a
+/// learner's own six-character vocabulary could not be spoken at all. The pitch
+/// is still not judged — that is the cap's real reason — but the transcription
+/// is the answer, and it needs no target.
+#[test]
+fn text_too_long_for_tones_is_recognised_instead() {
+    let state = state();
+    let recording = hanzi_tutor_lib::Recording {
+        samples: vec![0.0; 16_000],
+        sample_rate: 16_000,
+        device: "test".into(),
+        truncated: false,
+    };
+    let result = state.score_speech(&recording, "谢谢你的帮助");
+
+    assert!(
+        !result.tone_scored,
+        "past a word there is no tone judgement to give"
+    );
+    assert!(
+        result.syllables.is_empty(),
+        "an unmeasured attempt must not carry a score per syllable"
+    );
+    assert!(
+        result.detail.contains("6 characters") && result.detail.contains("no tone was judged"),
+        "the sentence must name the limit that was hit: {}",
+        result.detail
+    );
+    // No model is installed in a test, so there is nothing to show under the
+    // transcription — and that is not a failure.
+    assert!(result.heard.is_none());
+    assert!(result.heard_error.is_none());
+
+    // A short word still takes the tone path, so the fallback did not swallow it.
+    let word = state.score_speech(&recording, "你好");
+    assert!(word.tone_scored);
+    assert_eq!(word.syllables.len(), 2);
+
+    // The cap note is not the tone path's alone: a recognition-only answer that
+    // only saw part of the utterance has to say so too.
+    let capped = hanzi_tutor_lib::Recording {
+        samples: vec![0.0; 16_000],
+        sample_rate: 16_000,
+        device: "test".into(),
+        truncated: true,
+    };
+    let capped = state.score_speech(&capped, "谢谢你的帮助");
+    assert!(
+        capped.detail.contains("10-second limit"),
+        "a capped recording must say it was capped: {}",
+        capped.detail
+    );
+}
+
+/// The readings recognition is read against reach past the tone limit.
+///
+/// The tone target stops at a word because the recording cannot be divided any
+/// further; the readings do not stop, and that is what lets a longer phrase be
+/// answered at all.
+#[test]
+fn readings_are_resolved_beyond_the_tone_limit() {
+    let state = state();
+    assert_eq!(
+        state.wanted_readings("谢谢你的帮助").len(),
+        6,
+        "one reading per character, target or no target"
+    );
+    // A word's own reading is used when it divides, so a polyphone is resolved
+    // with its context rather than guessed one character at a time.
+    assert_eq!(state.wanted_readings("学习").len(), 2);
+    // A character the dataset does not know leaves nothing to compare against.
+    // That is reported, not guessed at — see `heard_against_readings`.
+    assert!(state.wanted_readings("€").is_empty());
+    assert!(state.wanted_readings("").is_empty());
+}
+
+/// Text with no tone target is only offerable when recognition can answer.
+///
+/// The pair `speech_target` returns is what the interface gates on. In a test no
+/// model is ever installed, which is the state every fresh install is in — so
+/// this locks the "tone only" half of the pair and the reason it exists.
+#[test]
+fn a_long_phrase_has_no_target_and_no_model_in_a_test() {
+    let state = state();
+    assert!(
+        state.tone_target("谢谢你的帮助").is_none(),
+        "the tone half stops at a word"
+    );
+    assert!(
+        !state.asr.status().installed,
+        "a test has no model on disk, so recognition cannot be offered"
+    );
+}
+
+/// The shape of the microphone capability, as the TypeScript client reads it.
+///
+/// The button gates on this pair, so both keys have to be present even when one
+/// is empty: a missing key reads as `undefined` and a `null` as a real answer,
+/// which is the same trap the `heard`/`heardError` pair guards against.
+#[test]
+fn a_speech_target_carries_both_halves() {
+    let state = state();
+
+    let long = serde_json::to_value(state.speech_target("谢谢你的帮助")).unwrap();
+    expect_keys(&long, &["tone", "recognize"]);
+    assert!(
+        long["tone"].is_null(),
+        "the tone half stops at a word: {}",
+        long["tone"]
+    );
+    assert_eq!(
+        long["recognize"], false,
+        "no model is installed in a test, which is what leaves this board unofferable"
+    );
+
+    let word = serde_json::to_value(state.speech_target("你好")).unwrap();
+    assert_eq!(
+        word["tone"]["syllables"].as_array().unwrap().len(),
+        2,
+        "a word still carries its tones alongside the recognition answer"
+    );
+}
+
+/// The shape of a tone-marked reading, as the TypeScript client reads it.
+///
+/// The pinyin key row writes into a field and then has to put the cursor back,
+/// so `caret` is part of the contract rather than a convenience, and it is a
+/// character offset — the panel converts to and from the UTF-16 index the DOM
+/// reports.
+#[test]
+fn a_marked_tone_serialises_with_camel_case_fields() {
+    let marked = hanzi_tutor_lib::MarkedTone {
+        text: "xué".to_string(),
+        caret: 3,
+    };
+    let json = serde_json::to_value(&marked).unwrap();
+    expect_keys(&json, &["text", "caret"]);
+    assert_eq!(json["text"], "xué");
+    assert_eq!(json["caret"], 3);
+
+    // The rule `mark_tone` is a wrapper over, through the same entry it calls:
+    // the shape above is worth nothing if the transform does not hold.
+    assert_eq!(
+        hanzi_core::pinyin::mark_tone_at("xuexi", 3, 2),
+        Some(("xuéxi".to_string(), 3))
+    );
+}
+
 /// The shape of a target, as the TypeScript client reads it.
 #[test]
 fn a_tone_target_serialises_with_camel_case_fields() {
@@ -1471,6 +1622,7 @@ fn a_tone_result_carries_one_entry_per_syllable() {
         &json,
         &[
             "syllables",
+            "toneScored",
             "verdict",
             "score",
             "grade",
@@ -1483,6 +1635,10 @@ fn a_tone_result_carries_one_entry_per_syllable() {
             "heard",
             "heardError",
         ],
+    );
+    assert_eq!(
+        json["toneScored"], true,
+        "a word is scored on tone, so the panel must draw its charts"
     );
 
     // The two recognition keys are part of the contract even when there is

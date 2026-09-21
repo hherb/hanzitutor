@@ -706,10 +706,13 @@ rather than only how much.
   goodness-of-pronunciation score; that needs Kaldi-style machinery, which is a
   much larger undertaking. The interface must not imply otherwise. In particular
   the app can say *which syllable* was wrong, not which sound in it.
-- **Nothing longer than a word.** Up to four syllables. A sentence's syllables run
+- **No tone score past a word.** Up to four syllables. A sentence's syllables run
   together with no consonant to cut at, so the boundaries cannot be found from
-  energy alone, and it is refused rather than divided into four pieces and scored
-  as though the pieces were words.
+  energy alone, and the pitch is not judged rather than measured against a
+  division that may be wrong. A longer phrase can still be recorded once the
+  recognition model is installed: the syllables you were asked for are known
+  either way, so the panel reads back what was heard and shows no tone score at
+  all — rather than a zero, which would read as a perfectly flat attempt.
 - **No neutral tone.** It is short and its pitch is set by the syllable before it,
   so it is reported but not scored. A word containing one is still judged on its
   other syllables, which is why 妈妈 works.
@@ -785,6 +788,13 @@ things are deliberate rather than incidental:
   are unusual input for a recogniser, so a learner may occasionally be told a
   correct syllable was wrong. That is the safe direction to be wrong in, and the
   tone verdict is unaffected either way.
+- **A phrase longer than a word is recognised but not tone-scored.** The tone half
+  stops at four syllables because the *recording* cannot be divided any further;
+  the comparison does not need that division, only the readings wanted for each
+  character, which are known for anything the dataset can read. So a long entry
+  from your own vocabulary list is spoken and read back, with the tone half absent
+  rather than zero — and with no model installed the microphone stays disabled for
+  it, with the reason on screen, because there would be nothing to show.
 
 ### On a phone
 

@@ -58,6 +58,23 @@ What shipped:
 - JSON export and import (lossless; merge or replace) plus CSV export, through
   native file dialogs.
 
+**Follow-up: the card grew a third action, and the phone row was the constraint.**
+
+An entry had Edit and Remove as words; Practise is now the third action, and all
+three are glyphs so they hold one row. Making them fit turned out to be a layout
+change rather than a smaller button: at a 360 px phone the panel is 320 px
+(`main` is padded 20 px a side), and three actions beside the group chip and the
+practice record left the reading column **zero** width — the card fitted and the
+reading vanished. The chip and the record moved under the reading, where they
+wrap, and the glyph is capped so a long entry cannot take the row.
+
+Alongside it, the pinyin field gained a tone key row, because `xuéxí` is two taps
+per accented vowel on a phone: `mark_tone` writes the mark into the syllable at
+the cursor, with the placement rule in `pinyin.rs` beside the code that reads
+those marks back. Each field's action key now advances to the next rather than
+submitting, so the key does what `enterkeyhint` says it does. See HANDOVER §6 for
+both, and for why the keyboard's *language* is the one thing an app cannot touch.
+
 Deliberately left out, and why:
 
 - **CSV import** — CSV export exists for spreadsheets but there is no matching
@@ -1030,23 +1047,28 @@ microphone.
 - `src-tauri/src/capture.rs` — `cpal` capture, downmixed to mono, opened on
   button-press and dropped on release. Short, because the interesting part is the
   analyser.
-- Four commands. `tone_target` and `listen_stop` both take the **text** being
+- Four commands. `speech_target` and `listen_stop` both take the **text** being
   practised rather than a single character, so a word is scored as a word and the
-  tones are derived in Rust rather than sent from the interface.
+  tones are derived in Rust rather than sent from the interface. `speech_target`
+  also reports whether a recognition model is installed, which is the other half
+  of whether the microphone has anything to answer with.
 - `src/lib/TonePanel.svelte` — the learner's contour drawn over the expected
   shape, which is the part that teaches. The wording of the judgement comes from
   Rust; the panel only styles it.
-- A push-to-talk control on the practice screen, disabled with a reason when
-  there is no microphone or no scorable tone.
+- A push-to-talk control on the practice screen, disabled with a reason only when
+  there is no microphone, or when there is neither a tone to score nor a
+  recognition model to read the text back.
 
 **What is not in this milestone.**
 
 - **Recognising text.** "You said `sì` where `shì` was wanted" needs a Mandarin
   ASR model. That is M12, and it is where the 155 MB download belongs.
-- **Longer than a word.** Up to four syllables. A sentence's syllables run
-  together with no consonant to cut at, so the boundaries cannot be found from
-  energy alone; it is refused rather than divided into four pieces and scored as
-  though the pieces were words.
+- **Tone-scoring longer than a word.** Up to four syllables. A sentence's
+  syllables run together with no consonant to cut at, so the boundaries cannot be
+  found from energy alone; the pitch is not judged rather than divided into four
+  pieces and scored as though the pieces were words. **Recognition still runs for
+  that text** — the syllables the learner was asked for are known whether or not
+  their tones can be judged — which is the follow-up noted under M12.
 - **The neutral tone.** Short, and pitched by the syllable before it, so it is
   carried in the target and reported but not scored. A word containing one is
   still judged on its other syllables, which is why 妈妈 works.
@@ -1161,6 +1183,15 @@ exercise and a pronunciation exercise.
 - `crates/hanzi-core/src/pinyin.rs` gained `base` and `heard_against`: the
   comparison rules — readings rather than characters, tone stripped from both sides
   — plus the wording, in the module that already owns what a reading is.
+- **The comparison no longer needs a tone target.** `heard_against_readings` reads
+  a transcription against the readings a learner was asked for, with or without
+  the tones; `AppState::wanted_readings` resolves those readings for any text, not
+  only a word. That is what lets a phrase longer than four syllables — the text
+  tone practice deliberately refuses — still be spoken and read back. `listen_stop`
+  no longer returns an error for it: the result carries `toneScored: false` and the
+  transcription is the answer. `speech_target` reports the tone target and whether
+  a model is installed together, which is what the microphone button gates on, so
+  it is offered for a long phrase exactly when recognition can answer for it.
 - A settings row that states the address, both sizes and the licence **before** the
   button, then shows real progress and a retryable failure. Polled rather than
   event-driven, because the app has no event channel and one command that answers
@@ -1232,6 +1263,27 @@ would **not** be compatible with bundling the weights or shipping a pre-seeded
 cache. Anyone who wants to do that must read the agreement and decide for
 themselves. If a permissively-licensed Chinese model of comparable accuracy
 appears, it should displace this one.
+
+**Follow-up: a phrase with no tone target is recognised, not refused.**
+
+By the end of M12 the two halves of an attempt were still joined at the wrong
+place. Tone scoring stops at four syllables because the recording cannot be
+divided any further, and the microphone button was disabled whenever there was no
+target — so a learner's own six-character vocabulary, which is exactly the text a
+personal word list collects, could not be recorded at all. The model was installed
+and idle for it.
+
+The halves are now independent. A target needs tones; a *comparison* needs only
+the readings wanted for each character, and those are known for any text the
+dataset can read. So `listen_stop` scores the pitch when it can and otherwise
+returns the transcription alone, `toneScored` says which happened, and the panel
+shows the tone half only when there is one. The button is offered when either half
+can run — gated on `recognize`, because a long phrase on a device with no model
+would record into an empty answer — and the reason it is not is said in the same
+one expression as before.
+
+What is still refused: the tone score. That refusal is the point of the cap, and
+this change does not weaken it.
 
 **Known limits, stated rather than hidden.**
 

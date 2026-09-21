@@ -206,12 +206,27 @@
    */
   let microphone = $state<MicrophoneStatus | null | undefined>(undefined);
   /**
-   * What the tones should be, or `null` when nothing can score this text — more
-   * than a word, or not in the dataset. It used to be `null` for a neutral-tone
-   * reading as well, which is why the most common character in the language had
-   * a tone button that could not be pressed.
+   * What the tones should be, or `null` when the pitch cannot be judged for this
+   * text — longer than a word, or a reading that will not divide one syllable per
+   * character. It used to be `null` for a neutral-tone reading as well, which is
+   * why the most common character in the language had a tone button that could
+   * not be pressed.
+   *
+   * `null` no longer disables the microphone on its own: a recognition model can
+   * still answer for the same recording. See `recognizeReady`.
    */
   let toneTarget = $state<ToneTarget | null>(null);
+  /**
+   * Whether a recognition model is installed, so a recording of text with no
+   * `toneTarget` still has an answer.
+   *
+   * Fetched with the target rather than separately, because the two decide
+   * together whether the microphone is offered and a stale pair would offer it
+   * for text nothing could judge. Re-asked when the text changes and when the
+   * screen does, so a model installed on the settings screen is noticed on the
+   * way back to the board.
+   */
+  let recognizeReady = $state(false);
   /** The last judgement, or `null` before anything has been said. */
   let toneResult = $state<ToneResult | null>(null);
   /** True between pressing and releasing the button. */
@@ -502,18 +517,22 @@
    */
   const toneText = $derived(currentItem?.text ?? character?.ch ?? "");
   /**
-   * What the microphone button offers to score, when there is anything to score.
+   * What the microphone button offers to judge, when there is anything to judge.
    *
    * The syllables are named rather than left to "it": on a phone there is no
    * tooltip, so a button that only says "hold to say" leaves the learner
-   * guessing what the microphone is listening for.
+   * guessing what the microphone is listening for. When there are no tones to
+   * name — text longer than a word — the promise is the transcription instead of
+   * a tone, which is what that recording is actually for.
    */
   const sayPrompt = $derived(
-    toneTarget === null
-      ? ""
-      : `Hold and say ${toneText} — ${toneTarget.syllables
+    toneTarget !== null
+      ? `Hold and say ${toneText} — ${toneTarget.syllables
           .map((s) => (s.spoken === 5 ? "neutral" : `tone ${s.spoken}`))
-          .join(", ")}${toneTarget.sandhiApplied ? " as it is spoken in this word" : ""}`,
+          .join(", ")}${toneTarget.sandhiApplied ? " as it is spoken in this word" : ""}`
+      : recognizeReady && toneText
+        ? `Hold and say ${toneText} — the model will read back what it heard`
+        : "",
   );
   /**
    * Why the microphone button cannot be used, or `null` when it can.
@@ -522,17 +541,22 @@
    * button's tooltip, its accessible name, and the hint under the row. The hint
    * is what carries the reason on a phone, where an icon has no room for the
    * sentence the old text label used to spell out and there is no hover to put
-   * a tooltip on. Two reasons are worth telling apart: 的 is a neutral-tone
-   * particle with nothing to score, which is not the learner's fault and not
-   * fixable, whereas a missing microphone is.
+   * a tooltip on.
+   *
+   * The microphone needs *something* to answer with: a tone to score, or a
+   * recognition model to read the syllables back. Text with neither — longer
+   * than a word, or not in the dataset, on a device with no model — is the one
+   * case where recording would produce nothing, and it is the only gap left
+   * that disables the control. A missing microphone is told apart because it is
+   * fixable and the other is not.
    */
   const sayBlocked = $derived(
     microphone === undefined
       ? "Looking for a microphone…"
       : microphone === null || !microphone.available
         ? (microphone?.detail ?? "No microphone is available")
-        : toneTarget === null
-          ? "Nothing on this board has a tone to score (too long to score, or a neutral-tone particle like 的)"
+        : toneTarget === null && !recognizeReady
+          ? "Nothing on this board can be judged from a recording: it is too long for tone practice, or not in the dataset, and no recognition model is installed"
           : null,
   );
   /** Code-point split, matching Rust's `chars()`. */
@@ -953,32 +977,60 @@
     void loadCharacter(next, charCursor);
   });
 
-  // Follow what is being practised: ask which tones it should be judged against.
+  // Follow what is being practised: ask what the microphone can do with it.
   // Both the pending result and any recording in flight belong to the *previous*
   // text, so they are dropped rather than shown against the new one — a tone
   // score next to the wrong word is worse than no score.
+  //
+  // `speechText` is the text the answer on screen belongs to. A plain `let`, not
+  // state: it is a guard for "did the text change", not something rendered.
+  let speechText = "";
   $effect(() => {
     const text = toneText;
-    toneResult = null;
-    toneError = null;
+    // Read so that the effect re-runs when the screen changes. The recognition
+    // model can be installed or removed on the settings screen while a character
+    // sits on the board, and the answer for the *same* text changes when it is —
+    // which the text alone would never notice.
+    const screen = view;
+    void screen;
     if (!text) {
       toneTarget = null;
+      recognizeReady = false;
+      speechText = "";
       return;
+    }
+    // Only a change of text invalidates the judgement on screen. Coming back
+    // from another screen re-asks about the model but leaves the result alone,
+    // because the recording it belongs to is still the one on the board.
+    if (text !== speechText) {
+      speechText = text;
+      toneResult = null;
+      toneError = null;
     }
     let current = true;
     void api
-      .toneTarget(text)
-      .then((target) => {
-        if (current) toneTarget = target;
+      .speechTarget(text)
+      .then(({ tone, recognize }) => {
+        if (current) {
+          toneTarget = tone;
+          recognizeReady = recognize;
+        }
+        // The line names both halves, because which one is missing is the whole
+        // question when the microphone is unavailable for a board.
         void api.log(
-          target
-            ? `tone target ${text}: ${target.syllables.map((s) => s.spoken).join("+")}` +
-                (target.sandhiApplied ? " (after sandhi)" : "")
-            : `tone target ${text}: not scorable`,
+          `speech target ${text}: ` +
+            (tone
+              ? `tones ${tone.syllables.map((s) => s.spoken).join("+")}` +
+                (tone.sandhiApplied ? " (after sandhi)" : "")
+              : "not tone-scorable") +
+            (recognize ? ", recognition installed" : ", no recognition model"),
         );
       })
       .catch(() => {
-        if (current) toneTarget = null;
+        if (current) {
+          toneTarget = null;
+          recognizeReady = false;
+        }
       });
     return () => {
       current = false;
@@ -993,7 +1045,10 @@
    * the device's start-up. A press that never releases is capped in Rust.
    */
   async function startListening() {
-    if (toneTarget === null || listening || toneBusy) return;
+    // The same reason the button is disabled, read again here: a pointer event
+    // can still arrive on a control that has just become disabled, and opening
+    // the device for a board nothing can judge is the failure this guards.
+    if (sayBlocked !== null || listening || toneBusy) return;
     toneError = null;
     // The previous judgement is deliberately *left on screen*. Clearing it here
     // removed the tone panel from the document, the page got shorter, and every
@@ -2366,12 +2421,14 @@
                   }}
                   onpointercancel={() => void stopListening()}
                   oncontextmenu={(event) => event.preventDefault()}
-                  disabled={toneTarget === null || !microphone?.available || toneBusy}
+                  disabled={sayBlocked !== null || toneBusy}
                   aria-label={listening
-                    ? "Hold to speak — listening, release to score what you said"
+                    ? "Hold to speak — listening, release to hear what was read back"
                     : sayBlocked
                       ? `Hold to speak — ${sayBlocked}`
-                      : "Hold to speak to score the tone you say"}
+                      : toneTarget !== null
+                        ? "Hold to speak to score the tone you say"
+                        : "Hold to speak and be told whether the model understands you"}
                   title={sayBlocked ?? sayPrompt}
                 >
                   <span class="tool-glyph"><Icon name="mic" /></span>
@@ -2555,9 +2612,12 @@
                 No Chinese voice is installed, so the Listen button is disabled.
                 Add one in System Settings → Accessibility → Spoken Content →
                 System Voice → Manage Voices.
+              {:else if toneTarget === null && !recognizeReady}
+                {sayBlocked} — so Hold to speak is disabled. A recognition model,
+                installed from Settings, would let a phrase longer than a word be
+                read back.
               {:else}
-                {sayBlocked} — so Hold to speak, which scores a spoken tone, is
-                disabled.
+                {sayBlocked} — so Hold to speak is disabled.
               {/if}
             </p>
           {/if}

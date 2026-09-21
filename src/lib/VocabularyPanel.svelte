@@ -7,6 +7,9 @@
    * actually taking. An entry's text may be a single character or a word.
    */
   import type { CharacterHint, TextLookup, VocabEntry, VocabView } from "./types";
+  import Icon from "./Icon.svelte";
+  import * as api from "./api";
+  import { tick } from "svelte";
 
   /** `null` selects everything, `""` the unfiled entries, otherwise a group. */
   export type Selection = string | null;
@@ -66,6 +69,79 @@
    * state: it is a guard, not something the interface renders.
    */
   let lastText = "";
+
+  // ---- the fields themselves ----------------------------------------------
+  /**
+   * The draft inputs, in the order the keyboard's action key walks them.
+   *
+   * `group` has no entry here beyond the ref: it is the last field, so its action
+   * key submits the form rather than advancing, which is what `done` promises.
+   */
+  let textInput = $state<HTMLInputElement | null>(null);
+  let pinyinInput = $state<HTMLInputElement | null>(null);
+  let meaningInput = $state<HTMLInputElement | null>(null);
+  let groupInput = $state<HTMLInputElement | null>(null);
+
+  /**
+   * The tone keys, one per tone, labelled with the mark each one writes.
+   *
+   * The label is a sample rather than the vowel it will land on: which vowel
+   * takes the mark is `pinyin.rs`'s rule, and the learner should not have to know
+   * it. The name is spelled out for a tooltip and a screen reader, because "ā" on
+   * its own does not say "first tone".
+   */
+  const TONES = [
+    { tone: 1, mark: "ā", name: "First tone (high level)" },
+    { tone: 2, mark: "á", name: "Second tone (rising)" },
+    { tone: 3, mark: "ǎ", name: "Third tone (dipping)" },
+    { tone: 4, mark: "à", name: "Fourth tone (falling)" },
+    { tone: 5, mark: "a", name: "Neutral tone (no mark)" },
+  ] as const;
+
+  /**
+   * Write a tone into the syllable the cursor is in.
+   *
+   * The caret is converted both ways between the DOM's UTF-16 offset and the
+   * character offset the Rust side works in. They agree for pinyin, which is all
+   * this field is for, but the conversion is what keeps them from disagreeing on
+   * a field that was pasted into.
+   */
+  async function applyTone(tone: number) {
+    const field = pinyinInput;
+    if (!field) return;
+    const typed = field.value.slice(0, field.selectionStart ?? field.value.length);
+    const caret = [...typed].length;
+    try {
+      const marked = await api.markTone(field.value, caret, tone);
+      pinyin = marked.text;
+      // A mark written by hand is the learner's, so the dataset stops
+      // overwriting it — the same rule as typing in the field.
+      pinyinEdited = true;
+      formError = null;
+      await tick();
+      const at = [...marked.text].slice(0, marked.caret).join("").length;
+      // The keyboard must stay open and the cursor must land where the next tone
+      // belongs, or the row is four taps and a re-aim instead of four taps.
+      field.focus();
+      field.setSelectionRange(at, at);
+    } catch (cause) {
+      formError = `Could not write the tone mark: ${cause}`;
+    }
+  }
+
+  /**
+   * Move to the next field when the keyboard's action key is pressed.
+   *
+   * The key says what it will do — `enterkeyhint` — so on every field but the
+   * last it advances, and on the last the form submits, which is what `done`
+   * promises. A key pressed in the middle of an IME composition belongs to the
+   * keyboard, because that is what commits a candidate, so it is left alone.
+   */
+  function advance(event: KeyboardEvent, next: HTMLInputElement | null) {
+    if (event.key !== "Enter" || event.isComposing) return;
+    event.preventDefault();
+    next?.focus();
+  }
 
   // ---- group management ---------------------------------------------------
   let newGroup = $state("");
@@ -212,41 +288,107 @@
     <div class="row">
       <label class="field text">
         <span>Character or word</span>
+        <!-- The language attributes below are the only language signal a page can
+             give: they tell a screen reader which voice to use and a spell
+             checker which dictionary to reach for. They do **not** switch the
+             operating system's keyboard — no page can, and Android's WebView
+             does not even pass them to the input method (see HANDOVER §6). The
+             system keyboard's own language key is what changes the layout, so
+             the fields are arranged to need it as little as possible: the
+             character here, Latin pinyin beside it, English meaning after. -->
         <input
+          bind:this={textInput}
           bind:value={text}
           placeholder="学习"
           lang="zh-Hans"
           autocomplete="off"
+          autocapitalize="off"
           spellcheck="false"
+          enterkeyhint="next"
+          onkeydown={(event) => advance(event, pinyinInput)}
         />
       </label>
       <label class="field">
         <span>Pinyin</span>
+        <!-- Tagged as pinyin rather than as Chinese on purpose: this field holds
+             the romanisation (`xuéxí`), so a Chinese input method would put 学习
+             in it, which is not a reading. -->
         <input
+          bind:this={pinyinInput}
           bind:value={pinyin}
           oninput={() => (pinyinEdited = true)}
           placeholder="xuéxí"
+          lang="zh-Latn-pinyin"
           autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          enterkeyhint="next"
+          onkeydown={(event) => advance(event, meaningInput)}
         />
       </label>
       <label class="field wide">
         <span>Meaning</span>
         <input
+          bind:this={meaningInput}
           bind:value={meaning}
           oninput={() => (meaningEdited = true)}
           placeholder="to study"
+          lang="en"
           autocomplete="off"
+          autocapitalize="off"
+          spellcheck="true"
+          enterkeyhint="next"
+          onkeydown={(event) => advance(event, groupInput)}
         />
       </label>
       <label class="field">
         <span>Group</span>
-        <input bind:value={group} list="vocab-groups" placeholder="Lesson 3" autocomplete="off" />
+        <input
+          bind:this={groupInput}
+          bind:value={group}
+          list="vocab-groups"
+          placeholder="Lesson 3"
+          lang="en"
+          autocomplete="off"
+          autocapitalize="words"
+          spellcheck="false"
+          enterkeyhint="done"
+        />
         <datalist id="vocab-groups">
           {#each view.groups as name (name)}
             <option value={name}></option>
           {/each}
         </datalist>
       </label>
+    </div>
+
+    <!-- The tone keys. Typing `xuéxí` on a phone is two taps per accented vowel
+         on a keyboard that hides them, so the app writes the mark into the
+         syllable the cursor is in instead. `onmousedown` is prevented so the
+         pinyin field keeps the keyboard: without it the first tap blurs the
+         field and closes it, and the second tap is aimed at a form that has
+         moved. The key is disabled with an empty field, because there is nothing
+         to mark — the reason is the empty box itself, so no sentence is owed. -->
+    <div
+      class="tones"
+      role="group"
+      aria-label="Write a tone on the pinyin syllable at the cursor"
+    >
+      <span class="tones-label">Tone</span>
+      {#each TONES as option (option.tone)}
+        <button
+          type="button"
+          onpointerdown={(event) => event.preventDefault()}
+          onmousedown={(event) => event.preventDefault()}
+          onclick={() => void applyTone(option.tone)}
+          disabled={busy || !pinyin}
+          aria-label={option.name}
+          title={`${option.name} — writes the mark into the syllable at the cursor`}
+        >
+          {option.mark}
+        </button>
+      {/each}
+      <span class="tones-note">Marks the syllable at the cursor.</span>
     </div>
 
     {#if hints.length > 1}
@@ -354,19 +496,55 @@
           <span class="reading">
             <span class="pinyin">{entry.pinyin || "—"}</span>
             <span class="meaning">{entry.meaning || "—"}</span>
+            <!-- The group and the practice record sit under the reading rather
+                 than beside it. Beside it they were two more fixed columns, and
+                 with three actions in the row the reading was squeezed to nothing
+                 on a phone — the one thing the row exists to show. Here they wrap
+                 among themselves and cost the reading no width. -->
+            <span class="meta">
+              {#if entry.group}
+                <span class="chip">{entry.group}</span>
+              {/if}
+              <span class="stats" title="attempts and best score">
+                {entry.attempts === 0
+                  ? "not practised"
+                  : `${entry.attempts}× · best ${Math.round(entry.bestScore ?? 0)}`}
+              </span>
+            </span>
           </span>
-          {#if entry.group}
-            <span class="chip">{entry.group}</span>
-          {/if}
-          <span class="stats" title="attempts and best score">
-            {entry.attempts === 0
-              ? "not practised"
-              : `${entry.attempts}× · best ${Math.round(entry.bestScore ?? 0)}`}
-          </span>
+          <!-- Three actions, as glyphs so they hold one row on a phone, where two
+               word buttons already crowded the reading. The words are not lost:
+               each button's accessible name says what it acts on and its tooltip
+               what it does. Practise leads, because writing the entry is what the
+               list is for; Remove is last and carries the danger colour, because
+               it is the one that cannot be undone. -->
           <span class="row-actions">
-            <button onclick={() => startEdit(entry)} disabled={busy}>Edit</button>
-            <button class="danger" onclick={() => onRemove(entry.id)} disabled={busy}>
-              Remove
+            <button
+              class="icon"
+              onclick={() => onPractise([entry])}
+              disabled={busy}
+              aria-label={`Practise ${entry.text}`}
+              title="Practise this entry on the board"
+            >
+              <Icon name="practise" />
+            </button>
+            <button
+              class="icon"
+              onclick={() => startEdit(entry)}
+              disabled={busy}
+              aria-label={`Edit ${entry.text}`}
+              title="Edit the reading, meaning or group"
+            >
+              <Icon name="pencil" />
+            </button>
+            <button
+              class="icon danger"
+              onclick={() => onRemove(entry.id)}
+              disabled={busy}
+              aria-label={`Remove ${entry.text}`}
+              title="Remove this entry"
+            >
+              <Icon name="trash" />
             </button>
           </span>
         </li>
@@ -503,6 +681,27 @@
     outline: 2px solid var(--accent);
     outline-offset: 1px;
   }
+
+  /* The tone keys: small, close together, and under the fields they write into. */
+  .tones {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .tones-label,
+  .tones-note {
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+  .tones button {
+    width: 32px;
+    height: 30px;
+    padding: 0;
+    font-size: 1rem;
+    line-height: 1;
+  }
+
   .actions {
     display: flex;
     align-items: center;
@@ -607,7 +806,7 @@
   .entries li {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     padding: 9px 12px;
     border: 1px solid var(--line);
     border-radius: 10px;
@@ -617,7 +816,12 @@
     font-family: var(--hanzi-font);
     font-size: 1.5rem;
     line-height: 1.1;
+    /* Wide enough for two characters, which most entries are, and bounded so a
+       six-character entry wraps here instead of taking the reading's width. */
+    flex: 0 1 auto;
     min-width: 2.4em;
+    max-width: 34%;
+    overflow-wrap: anywhere;
     color: var(--muted-strong);
   }
   .reading {
@@ -630,6 +834,11 @@
     font-size: 0.88rem;
     font-weight: 550;
     color: var(--accent-ink);
+    /* A long reading ellipsises rather than setting the column's minimum, so it
+       can never be what pushes the actions off the row. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .meaning {
     font-size: 0.8rem;
@@ -637,6 +846,16 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* The group and the practice record, under the reading and wrapping among
+     themselves — the one place in the card that may grow downward. */
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    min-width: 0;
+    margin-top: 2px;
   }
   .chip {
     padding: 2px 8px;
@@ -653,11 +872,20 @@
     white-space: nowrap;
   }
   .row-actions {
+    flex: none;
     display: flex;
-    gap: 6px;
+    gap: 4px;
   }
+  /* Glyph buttons, so three actions fit the row where two word buttons already
+     crowded it. `font-size` is the glyph size — every icon is drawn at 1em — and
+     the box is a thumb-sized target so none of the three needs careful aim. */
   .row-actions button {
-    padding: 4px 9px;
-    font-size: 0.76rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    font-size: 1.05rem;
   }
 </style>

@@ -13,6 +13,13 @@
    * useful rather than just scored: it says *which* syllable was wrong, which a
    * single aggregate number cannot.
    *
+   * **The drawing is also the half that can be absent.** Text longer than a word
+   * is not scored on tone at all — its syllable boundaries cannot be found from
+   * the recording — and what comes back is the transcription alone. That case is
+   * `toneScored: false`: the heading, the badge and the charts all go, and what
+   * is left is what the model heard. Showing a zero score there would read as a
+   * perfectly flat attempt rather than an unmeasured one.
+   *
    * The wording of the judgement comes from the Rust side and is not reworded
    * here: `verdict` picks the styling, `detail` is the sentence.
    */
@@ -90,15 +97,34 @@
   );
 
   /**
+   * True when the transcription was actually read against what was asked for.
+   *
+   * With nothing to compare — the board's characters could not all be read — the
+   * words are a transcription alone. That must not be styled as a failure: there
+   * is no comparison to have failed, and a red edge would say the learner got it
+   * wrong when the app is the one that could not line the text up.
+   */
+  const heardCompared = $derived(
+    result.heard !== null && result.heard.syllables.length > 0,
+  );
+
+  /**
    * What to call the recognition, in words.
    *
    * Deliberately about *syllables* and never about pronunciation. A recogniser
    * repairs a learner's errors toward the likely word — that is what its language
    * model is for — so a match here is not praise and must not read as any. The
    * sentence under it, worded in Rust, says the same thing at length.
+   *
+   * With no syllables to compare — the transcription could not be read against
+   * the board, or nothing was said at all — there is no comparison to name, so
+   * this says only what happened rather than claiming a difference.
    */
   const heardLabel = $derived.by(() => {
     if (result.heard === null) return "";
+    if (result.heard.syllables.length === 0) {
+      return result.heard.text ? "transcribed" : "nothing recognised";
+    }
     const many = result.heard.syllables.length > 1;
     return heardAllMatched
       ? `heard the ${many ? "syllables" : "syllable"} asked for`
@@ -106,10 +132,15 @@
   });
 </script>
 
-<section class="tone" class:uncertain={result.verdict === "uncertain"}>
+<section class="tone" class:uncertain={result.toneScored && result.verdict === "uncertain"}>
   <header>
-    <h3>Tone</h3>
-    {#if result.verdict === "uncertain"}
+    <!-- The heading says which judgement this is. For text longer than a word
+         there is no tone judgement, and a "Tone" heading over a transcription
+         would promise one. -->
+    <h3>{result.toneScored ? "Tone" : "Recognition"}</h3>
+    {#if !result.toneScored}
+      <span class="badge uncertain">Not measured</span>
+    {:else if result.verdict === "uncertain"}
       <span class="badge uncertain">Not sure</span>
     {:else}
       <span class="badge {result.grade}">{GRADE_LABEL[result.grade]}</span>
@@ -124,7 +155,7 @@
        most learners will never install one and the panel they had before is
        still complete. -->
   {#if result.heard}
-    <div class="words" class:off={!heardAllMatched}>
+    <div class="words" class:off={heardCompared && !heardAllMatched}>
       <div class="words-head">
         <span class="words-tag">Recognised</span>
         {#if result.heard.text}
@@ -153,60 +184,66 @@
     </div>
   {:else if result.heardError}
     <p class="words-error">
-      The syllables could not be recognised this time: {result.heardError} The tone
-      above was measured from the pitch and is unaffected.
+      The syllables could not be recognised this time: {result.heardError}
+      {#if result.toneScored}The tone above was measured from the pitch and is unaffected.{/if}
     </p>
   {/if}
 
-  <div class="syllables">
-    {#each result.syllables as syllable (syllable.position)}
-      <figure class="syllable" class:wrong={syllable.attempt.verdict === "off_target"}>
-        <figcaption>
-          <span class="glyph" lang="zh-Hans">{syllable.ch}</span>
-          <span class="reading">{syllable.reading}</span>
-          <span class="expected">{label(syllable)}</span>
-        </figcaption>
 
-        <svg
-          viewBox="0 0 {WIDTH} {HEIGHT}"
-          role="img"
-          aria-label={`Your pitch for ${syllable.ch} against the shape of tone ${syllable.spoken}`}
-        >
-          <!-- Five faint bands for the classical five-level scale the tones are
-               described on: decoration, but it gives the eye something to judge
-               the two lines against. -->
-          {#each [0.1, 0.3, 0.5, 0.7, 0.9] as level}
-            <line
-              class="level"
-              x1={PAD}
-              x2={WIDTH - PAD}
-              y1={PAD + (1 - level) * (HEIGHT - PAD * 2)}
-              y2={PAD + (1 - level) * (HEIGHT - PAD * 2)}
-            />
-          {/each}
+  <!-- The charts, the key and the pitch statistics are all the tone half. A
+       recognition-only result has none of them and must not draw an empty
+       frame: `toneScored` false means the pitch was never looked at. -->
+  {#if result.toneScored}
+    <div class="syllables">
+      {#each result.syllables as syllable (syllable.position)}
+        <figure class="syllable" class:wrong={syllable.attempt.verdict === "off_target"}>
+          <figcaption>
+            <span class="glyph" lang="zh-Hans">{syllable.ch}</span>
+            <span class="reading">{syllable.reading}</span>
+            <span class="expected">{label(syllable)}</span>
+          </figcaption>
 
-          <polyline class="reference" points={line(syllable.attempt.reference)} />
-          {#if syllable.attempt.contour.length > 1}
-            <polyline class="heard" points={line(syllable.attempt.contour)} />
-          {/if}
-        </svg>
-      </figure>
-    {/each}
-  </div>
+          <svg
+            viewBox="0 0 {WIDTH} {HEIGHT}"
+            role="img"
+            aria-label={`Your pitch for ${syllable.ch} against the shape of tone ${syllable.spoken}`}
+          >
+            <!-- Five faint bands for the classical five-level scale the tones are
+                 described on: decoration, but it gives the eye something to judge
+                 the two lines against. -->
+            {#each [0.1, 0.3, 0.5, 0.7, 0.9] as level}
+              <line
+                class="level"
+                x1={PAD}
+                x2={WIDTH - PAD}
+                y1={PAD + (1 - level) * (HEIGHT - PAD * 2)}
+                y2={PAD + (1 - level) * (HEIGHT - PAD * 2)}
+              />
+            {/each}
 
-  <div class="key">
-    <span><i class="swatch reference"></i> the tone</span>
-    {#if result.syllables.some((s) => s.attempt.contour.length > 1)}
-      <span><i class="swatch heard"></i> you</span>
-    {/if}
-    {#if showSummary}
-      <span class="hint">
-        One chart per syllable, so you can see which one went wrong.
-      </span>
-    {/if}
-  </div>
+            <polyline class="reference" points={line(syllable.attempt.reference)} />
+            {#if syllable.attempt.contour.length > 1}
+              <polyline class="heard" points={line(syllable.attempt.contour)} />
+            {/if}
+          </svg>
+        </figure>
+      {/each}
+    </div>
 
-  {#if result.voicedMs > 0}
+    <div class="key">
+      <span><i class="swatch reference"></i> the tone</span>
+      {#if result.syllables.some((s) => s.attempt.contour.length > 1)}
+        <span><i class="swatch heard"></i> you</span>
+      {/if}
+      {#if showSummary}
+        <span class="hint">
+          One chart per syllable, so you can see which one went wrong.
+        </span>
+      {/if}
+    </div>
+  {/if}
+
+  {#if result.toneScored && result.voicedMs > 0}
     <dl class="stats">
       <div>
         <dt>Pitch</dt>
