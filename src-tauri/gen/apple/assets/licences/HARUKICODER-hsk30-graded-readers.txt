@@ -1,0 +1,60 @@
+Licence and attribution — HSK 3.0 graded readers
+================================================
+
+Source
+------
+harukicoder/hsk30-graded-readers
+https://huggingface.co/datasets/harukicoder/hsk30-graded-readers
+
+Corpus: 102 texts, 1,185 sentences, word-aligned with pinyin and gloss, on six
+difficulty shelves. Version 1.1, released 2026.
+
+Author
+------
+Alvaro Serrano, as the reading corpus for pinyora.com, a free Mandarin reading
+site. No external funding.
+
+Licence
+-------
+Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/
+
+Attribution, as the licence requires: **Alvaro Serrano / pinyora.com —
+"HSK 3.0 Graded Reader Corpus", licensed CC BY 4.0.**
+
+Unlike the CC-CEDICT-derived material this app carries, this licence has **no
+share-alike condition** — it requires attribution and nothing further. The
+licence's full legal text ships with the app as `CC-BY-4.0.txt`.
+
+Changes made by Hanzi Tutor
+---------------------------
+* Extracted a subset of the sentences.
+* Generated audio for them with MeloTTS through sherpa-onnx. The upstream corpus
+  ships no audio at all.
+* Wrote the text into `public/audio/harukicoder/manifest.json`.
+
+Nothing was re-levelled, retranslated or otherwise edited.
+
+What the text is, and is not
+----------------------------
+The upstream datasheet is explicit on two points, and they are repeated here
+because they bear on how a learner should read these texts:
+
+* **The passages were drafted with the assistance of large language models**,
+  then reviewed, edited, re-levelled and in several cases rewritten by the
+  author. They are pedagogical material written to a level target, **not a
+  sample of naturally occurring Chinese.**
+* **The shelf is a band, not a point claim.** Measured against the HSK 3.0
+  character standard, the author hit the shelf target 61.8% of the time,
+  overshooting on the easy shelves and undershooting on the hard ones.
+
+This app therefore presents the shelf as a rough guide and does not label a
+reader text with an exact level. The two official HSK 3.0 documents disagree on
+a large share of their shared vocabulary, so no exact number would be defensible
+in any case. See `docs/research/HSK_SENTENCE_SOURCES_LICENSING.md` and
+`docs/research/SENTENCE_CORPORA_LICENCES.md`.
+
+No audio came from upstream
+---------------------------
+This dataset ships no audio. Every clip in this app was synthesised by Hanzi
+Tutor with MeloTTS, whose notice is catalogued separately.

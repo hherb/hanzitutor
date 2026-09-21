@@ -1,0 +1,67 @@
+MeloTTS — speech synthesis for the bundled pronunciation clips
+==============================================================
+
+Source
+------
+MeloTTS by MyShell.ai
+https://github.com/myshell-ai/MeloTTS
+
+The ONNX conversion this app uses, and that `scripts/fetch-tts.sh` pins by
+digest:
+https://huggingface.co/csukuangfj/vits-melo-tts-zh_en
+
+Licence
+-------
+MIT. The model repository carries this licence file naming MyShell.ai as the
+copyright holder, and the upstream project is MIT.
+
+What this app takes from it
+---------------------------
+The model weights, run through `sherpa-onnx`'s `OfflineTts` to speak a phrase the
+app has no recording for — the **on-device** path, `src-tauri/src/say.rs`.
+
+**It no longer makes the bundled clips.** An earlier revision of this app
+synthesised `public/audio/` with MeloTTS; an ASR sweep found it mispronouncing
+about one HSK-1 phrase in five (46 of 208 where the reference audio failed 15), so
+the bundled audio is now made with CosyVoice 3 at build time. MeloTTS was kept for
+on demand speech because it is 53 MB and runs on the `sherpa-onnx` library the app
+already links, which CosyVoice — 5 GB and Python-only — cannot do on a phone.
+See `docs/research/MELOTTS_PRONUNCIATION_ACCURACY.md`.
+
+The `no7z/hsk-sentences-audio` dataset shipped its own MP3s, synthesised with
+CosyVoice2-0.5B under Apache-2.0, and this app does not redistribute those either
+— it generates its own with CosyVoice 3. The two-sentence summary is: **CosyVoice 3
+makes the clips, MeloTTS speaks live.**
+
+The full licence text, as published with the model
+--------------------------------------------------
+Copyright (c) 2024 MyShell.ai
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+How the model is obtained
+-------------------------
+It is **not** bundled with the app and is not compiled in. `scripts/fetch-tts.sh`
+downloads it to `.melo-tts/` for a build that synthesises clips, checking every
+file against a SHA-256 recorded in that script. The app itself never downloads
+it: a learner who wants the app to speak an arbitrary phrase uses the operating
+system's own synthesiser, which needs nothing.
+
+The clips that *are* bundled are a product of this model, which is why this
+notice travels with the app.
