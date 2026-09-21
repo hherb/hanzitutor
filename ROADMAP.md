@@ -472,10 +472,10 @@ extends it with no button held, and a second click ends it. The state machine
 lives in `src/lib/PracticeCanvas.svelte`; `App.svelte` owns the setting.
 
 It first shipped as a quick switch on the board's control row, beside the
-*corrections* checkbox. Neither is a labelled control there any more: the row is
-icons only, so that a phone keeps two rows instead of four and the board keeps
-the height it needs, and the preference is set on the settings screen — the one
-place with room for the sentence that explains what the two gestures are.
+*corrections* checkbox. The preference has since moved to the settings screen —
+the one place with room for the sentence that explains what the two gestures are
+— and the corrections toggle is now the row's labelled **Show target** switch, so
+nothing left on the row needs a paragraph to explain it.
 
 What shipped:
 

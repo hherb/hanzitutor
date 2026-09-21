@@ -4,16 +4,19 @@
    *
    * These exist because the board's control row is the one part of the screen
    * that was spending width on words rather than on the board. Four wrapped rows
-   * of labelled buttons sat under a square board on a phone and cost the board
-   * the height it needed. A glyph costs a fixed 44 px however long its name is,
-   * so the same controls fit in one row on a wide window and two on a phone.
+   * of wide labelled buttons sat under a square board on a phone and cost the
+   * board the height it needed, and the row became glyphs for a while.
    *
-   * The word did not go away, it moved: every button that draws one of these
-   * carries the label in `title` for a pointer and in `aria-label` for a screen
-   * reader. On a phone, where there is no hover at all, the sentence under the
-   * row ([`App.svelte`]'s `.hint`) is what explains a control that cannot be
-   * used and why — which is the same rule the old text labels followed, and the
-   * reason a disabled button is never silent.
+   * The word is back, in the form the mock-up set it: a glyph on a tinted disc
+   * with its short name under it, two tools to a card, three cards under the
+   * board. That is a word again, but not the wide button that started this — the
+   * name is one line of small text under the disc rather than the thing the
+   * border is drawn around, so a card is about as wide as two thumbs and the
+   * whole set is one row on a phone and one on a window. The long sentence did
+   * not come back either: `title` and `aria-label` still carry it for a pointer
+   * and a screen reader, and on a phone the sentence under the row
+   * ([`App.svelte`]'s `.hint`) is still what explains a control that cannot be
+   * used and why, which is the reason a disabled button is never silent.
    *
    * Every shape is drawn here rather than taken from an icon set. The app ships
    * a pinned list of licence notices with a test that fails when the list and
@@ -28,14 +31,13 @@
   type IconName =
     | "eye"
     | "eye-off"
-    | "ear"
-    | "mouth"
-    | "stroke-order"
+    | "speaker"
+    | "mic"
+    | "play"
     | "undo"
     | "trash"
     | "plus"
     | "back"
-    | "target"
     | "tick"
     | "next";
 
@@ -67,27 +69,31 @@
     <path d="M2.6 12C5.1 7.9 8.2 5.9 12 5.9s6.9 2 9.4 6.1c-2.5 4.1-5.6 6.1-9.4 6.1S5.1 16.1 2.6 12Z" />
     <circle cx="12" cy="12" r="2.8" />
     <path d="M4.4 19.6 19.6 4.4" />
-  {:else if name === "ear"}
-    <!-- Hear it: the character read aloud. An ear rather than a speaker,
-         because a speaker says "sound comes out of this machine" and the thing
-         being offered is listening to the pronunciation. -->
-    <path
-      d="M8 9.9a4.5 4.5 0 0 1 9 0c0 2.1-1.3 3.2-2.3 4.4-.8 1-1 1.7-1 2.6a2.4 2.4 0 0 1-4.6 1"
-    />
-    <path d="M10.8 10.1a1.6 1.6 0 0 1 3.2 0v.7a1.4 1.4 0 0 1-1.4 1.4" />
-  {:else if name === "mouth"}
-    <!-- Hold to say: an open mouth, because the learner does the talking. -->
-    <path d="M3.8 9.6h16.4c0 4.9-3.6 8.8-8.2 8.8s-8.2-3.9-8.2-8.8Z" />
-    <path d="M9.3 14.4c.7-1.3 4.7-1.3 5.4 0" />
-  {:else if name === "stroke-order"}
-    <!-- Stroke order: 1, 2, 3 being written, in that order. The numerals are
-         drawn as strokes rather than set in text — at 24 px three digits have
-         to keep their shape whatever font the platform would have handed us. -->
-    <path d="M3.7 4.2L5.9 2.4V11.4" />
-    <path d="M9.6 4.9A2.4 2.4 0 0 1 12.0 2.6C14.1 2.8 14.3 5.1 11.8 7.1L9.6 11.2H14.7" />
-    <path d="M15.5 4.8A2.2 2.2 0 0 1 17.9 2.6C19.9 2.7 20.1 4.8 18.1 6.3C20.1 7.8 19.9 11.2 17.9 11.2A2.2 2.2 0 0 1 15.5 8.9" />
-    <path d="M20.2 20.6L16.0 18.6L5.2 18.6L5.2 22.6L16.0 22.6Z" />
-    <path d="M8.4 18.6L8.4 22.6" />
+  {:else if name === "speaker"}
+    <!-- Listen: the character read aloud. A speaker with sound coming out of it,
+         which is what the mock-up draws. It replaced an ear, and the reasoning
+         for the ear is worth keeping because it has not stopped being true — a
+         speaker says "sound comes out of this machine" where the thing on offer
+         is listening to the pronunciation. What outweighs it is the word now
+         printed under the glyph: "Listen" beside a speaker is read at a glance,
+         while an ear on its own had to be guessed at. -->
+    <path d="M4.2 9.4h3.1l4.6-3.8v12.8l-4.6-3.8H4.2Z" />
+    <path d="M15.4 9.4a3.7 3.7 0 0 1 0 5.2" />
+    <path d="M18 6.9a7.2 7.2 0 0 1 0 10.2" />
+  {:else if name === "mic"}
+    <!-- Hold to speak: the learner does the talking, so the glyph is the
+         microphone that is open exactly while the button is held. -->
+    <path d="M12 3.4a2.7 2.7 0 0 1 2.7 2.7v5.3a2.7 2.7 0 0 1-5.4 0V6.1A2.7 2.7 0 0 1 12 3.4Z" />
+    <path d="M6 11.4v.5a6 6 0 0 0 12 0v-.5" />
+    <path d="M12 17.9v2.8" />
+    <path d="M8.8 20.7h6.4" />
+  {:else if name === "play"}
+    <!-- Strokes: watch the character written one stroke at a time, so the glyph
+         is the play triangle that means that everywhere. It replaced three
+         written numerals, which is a fine mnemonic for someone who already knows
+         what the button does and a puzzle to everyone else; the word under it
+         now names the thing being played. -->
+    <path d="M9.2 5.8 18.4 12l-9.2 6.2Z" />
   {:else if name === "undo"}
     <!-- Undo: the arrow that means "take the last thing back" everywhere. -->
     <path d="M4.4 9.6h9.4a5.4 5.4 0 0 1 0 10.8H8.6" />
@@ -103,16 +109,11 @@
     <path d="M12 5.2v13.6M5.2 12h13.6" />
   {:else if name === "back"}
     <!-- Leaving the board: back to the list, or out of a review session. An
-         arrow out rather than a word, because the destination is in the
-         tooltip and the direction is the same whichever list it is. -->
+         arrow out rather than a picture of the destination, because the
+         direction is the same whichever list it is — the caption under the card
+         is what names where it goes. -->
     <path d="M19.4 12H4.6" />
     <path d="M11 5.4 4.4 12l6.6 6.6" />
-  {:else if name === "target"}
-    <!-- Corrections: where the strokes should have been. A target says
-         "accuracy", which is what pressing Check measures. -->
-    <circle cx="12" cy="12" r="7.4" />
-    <circle cx="12" cy="12" r="2.6" />
-    <path d="M12 2.4v3.2M12 18.4v3.2M2.4 12h3.2M18.4 12h3.2" />
   {:else if name === "tick"}
     <path d="M4.6 12.6 9.6 17.6 19.4 6.4" />
   {:else if name === "next"}

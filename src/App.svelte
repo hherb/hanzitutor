@@ -2275,216 +2275,282 @@
             </div>
           {/if}
 
+          <!-- The board's controls, as three named sets of tools rather than a
+               row of bare glyphs: the words are back, but as a short name under
+               each disc rather than as the wide button that was tried first and
+               cost the board its height. See the CSS for why that is affordable
+               now, and `Icon.svelte` for what the glyphs mean. -->
           <div class="controls">
-            <!-- What the board shows. Trace and recall are opposites, so one
-                 toggle says what the two segments it replaces said, in half the
-                 width: the eye is the answer in sight, the same eye struck
-                 through is the answer hidden. -->
-            <div class="cluster" role="group" aria-label="Board view">
-              <button
-                class="icon"
-                class:on={mode === "recall"}
-                aria-pressed={mode === "recall"}
-                aria-label={mode === "trace"
-                  ? "Trace mode: a faint copy of the character is on the board. Switch to recall"
-                  : "Recall mode: the character is hidden until you check. Switch to trace"}
-                title={mode === "trace"
-                  ? "Trace: a faint copy is on the board to follow. Press for recall, which hides the character until you press ✓. Either way the board is cleared."
-                  : "Recall: the character is hidden until you press ✓. Press for trace, where a faint copy is on the board. Either way the board is cleared."}
-                onclick={toggleMode}
-              >
-                <Icon name={mode === "trace" ? "eye" : "eye-off"} />
-              </button>
-            </div>
-
-            <!-- Sound in and sound out: the character read aloud, and the
-                 learner reading it back. -->
-            <div class="cluster" role="group" aria-label="Pronunciation and speaking">
-              <button
-                class="icon"
-                onclick={hear}
-                disabled={!character || voice === null}
-                aria-label="Hear this character pronounced"
-                title={voice === undefined
-                  ? "Looking for a Chinese voice…"
-                  : voice === null
-                    ? "No Chinese voice is installed, so pronunciation is unavailable"
-                    : `Pronounce this character (${voice})`}
-              >
-                <Icon name="ear" />
-              </button>
-
-              <!-- Push to talk. Held, not clicked: the microphone is open only
-                   between press and release, so the system's recording
-                   indicator is lit only while the learner is deliberately
-                   speaking. -->
-              <button
-                class="icon say"
-                class:listening
-                onpointerdown={(event) => {
-                  event.preventDefault();
-                  // Take the pointer, so that every later event for it comes
-                  // here wherever the finger travels. Without this the browser
-                  // sends `pointerleave` as soon as the button stops being under
-                  // the finger — which it did whenever the result panel above
-                  // appeared or vanished and moved the row — and the recording
-                  // ended the instant it began. Push-to-talk should survive a
-                  // finger that slides, which is why there is no `pointerleave`
-                  // handler here at all.
-                  event.currentTarget.setPointerCapture(event.pointerId);
-                  void startListening();
-                }}
-                onpointerup={(event) => {
-                  event.currentTarget.releasePointerCapture(event.pointerId);
-                  void stopListening();
-                }}
-                onpointercancel={() => void stopListening()}
-                oncontextmenu={(event) => event.preventDefault()}
-                disabled={toneTarget === null || !microphone?.available || toneBusy}
-                aria-label={listening
-                  ? "Listening — release to score what you said"
-                  : (sayBlocked ?? `Hold to say ${toneText}`)}
-                title={sayBlocked ?? sayPrompt}
-              >
-                <Icon name="mouth" />
-              </button>
-            </div>
-
-            <!-- Ink: watch the character written, take the last stroke back, or
-                 start again. The three gestures on the board itself, in the
-                 order they are reached for. -->
-            <div class="cluster" role="group" aria-label="Writing">
-              <button
-                class="icon"
-                class:on={playing}
-                aria-pressed={playing}
-                onclick={toggleStrokeOrder}
-                disabled={strokeTotal === 0}
-                aria-label={playing
-                  ? "Stop the stroke-order animation"
-                  : "Show the character written stroke by stroke"}
-                title={playing
-                  ? "Stop the animation where it is"
-                  : "Watch the character written, one stroke at a time (S)"}
-              >
-                <Icon name="stroke-order" />
-              </button>
-              <button
-                class="icon"
-                onclick={undo}
-                disabled={strokes.length === 0}
-                aria-label="Undo the last stroke"
-                title="Take the last stroke back (⌫)"
-              >
-                <Icon name="undo" />
-              </button>
-              <button
-                class="icon"
-                onclick={reset}
-                disabled={strokes.length === 0}
-                aria-label="Clear the board"
-                title="Clear every stroke off the board"
-              >
-                <Icon name="trash" />
-              </button>
-            </div>
-
-            <!-- Leaving the board. The course has nothing to leave — the way out
-                 of the course is the sidebar — so this is drawn only where the
-                 practice started from a list of your own. -->
-            {#if source !== "course"}
-              <div class="cluster">
-                {#if source === "vocabulary"}
+            <div class="toolgroups">
+              <!-- Writing help: what the board shows, and what it can show you.
+                   Trace and recall are opposites, so they stay one toggle rather
+                   than becoming two buttons: "Hint" is the answer being in
+                   sight, and the button is drawn pressed exactly while the faint
+                   copy is on the board, so the word and the state agree. -->
+              <div class="toolgroup" role="group" aria-labelledby="tools-writing-help">
+                <div class="tools">
                   <button
-                    class="icon"
-                    onclick={stopPractising}
-                    aria-label="Back to your vocabulary list"
-                    title="Back to your vocabulary list"
+                    class="tool"
+                    class:on={mode === "trace"}
+                    aria-pressed={mode === "trace"}
+                    aria-label={mode === "trace"
+                      ? "Hint: a faint copy of the character is on the board. Switch to recall"
+                      : "Hint: the character is hidden until you check. Switch to trace, where a faint copy is on the board"}
+                    title={mode === "trace"
+                      ? "Trace: a faint copy is on the board to follow. Press for recall, which hides the character until you press ✓. Either way the board is cleared."
+                      : "Recall: the character is hidden until you press ✓. Press for trace, where a faint copy is on the board. Either way the board is cleared."}
+                    onclick={toggleMode}
                   >
-                    <Icon name="back" />
+                    <span class="tool-glyph">
+                      <Icon name={mode === "trace" ? "eye" : "eye-off"} />
+                    </span>
+                    <span class="tool-word">Hint</span>
                   </button>
-                {:else if source === "words"}
+
                   <button
-                    class="icon"
-                    onclick={stopPractising}
-                    aria-label="Back to the word list"
-                    title="Back to the word list"
+                    class="tool media"
+                    class:on={playing}
+                    aria-pressed={playing}
+                    onclick={toggleStrokeOrder}
+                    disabled={strokeTotal === 0}
+                    aria-label={playing
+                      ? "Strokes: stop the animation where it is"
+                      : "Strokes: watch the character written one stroke at a time"}
+                    title={playing
+                      ? "Stop the animation where it is"
+                      : "Watch the character written, one stroke at a time (S)"}
                   >
-                    <Icon name="back" />
+                    <span class="tool-glyph"><Icon name="play" /></span>
+                    <span class="tool-word">Strokes</span>
                   </button>
-                {:else}
-                  <button
-                    class="icon"
-                    onclick={stopReview}
-                    aria-label="Stop this review session"
-                    title="Stop reviewing — what you have done so far is kept"
-                  >
-                    <Icon name="back" />
-                  </button>
-                {/if}
+                </div>
+                <p class="toolgroup-word" id="tools-writing-help">Writing help</p>
               </div>
-            {/if}
 
-            <!-- How much has been drawn, whether the corrections are marked, and
-                 ✓. The first is the state and the last is the action of the same
-                 judgement, so all three are one group: they wrap to the next line
+              <!-- Sound in and sound out: the character read aloud, and the
+                   learner reading it back. -->
+              <div class="toolgroup" role="group" aria-labelledby="tools-pronunciation">
+                <div class="tools">
+                  <button
+                    class="tool media"
+                    onclick={hear}
+                    disabled={!character || voice === null}
+                    aria-label="Listen: hear this character pronounced"
+                    title={voice === undefined
+                      ? "Looking for a Chinese voice…"
+                      : voice === null
+                        ? "No Chinese voice is installed, so pronunciation is unavailable"
+                        : `Pronounce this character (${voice})`}
+                  >
+                    <span class="tool-glyph"><Icon name="speaker" /></span>
+                    <span class="tool-word">Listen</span>
+                  </button>
+
+                  <!-- Push to talk. Held, not clicked: the microphone is open only
+                       between press and release, so the system's recording
+                       indicator is lit only while the learner is deliberately
+                       speaking. -->
+                  <button
+                    class="tool record"
+                    class:listening
+                    onpointerdown={(event) => {
+                      event.preventDefault();
+                      // Take the pointer, so that every later event for it comes
+                      // here wherever the finger travels. Without this the browser
+                      // sends `pointerleave` as soon as the button stops being under
+                      // the finger — which it did whenever the result panel above
+                      // appeared or vanished and moved the row — and the recording
+                      // ended the instant it began. Push-to-talk should survive a
+                      // finger that slides, which is why there is no `pointerleave`
+                      // handler here at all.
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                      void startListening();
+                    }}
+                    onpointerup={(event) => {
+                      event.currentTarget.releasePointerCapture(event.pointerId);
+                      void stopListening();
+                    }}
+                    onpointercancel={() => void stopListening()}
+                    oncontextmenu={(event) => event.preventDefault()}
+                    disabled={toneTarget === null || !microphone?.available || toneBusy}
+                    aria-label={listening
+                      ? "Hold to speak — listening, release to score what you said"
+                      : sayBlocked
+                        ? `Hold to speak — ${sayBlocked}`
+                        : "Hold to speak to score the tone you say"}
+                    title={sayBlocked ?? sayPrompt}
+                  >
+                    <span class="tool-glyph"><Icon name="mic" /></span>
+                    <span class="tool-word">Hold to speak</span>
+                  </button>
+                </div>
+                <p class="toolgroup-word" id="tools-pronunciation">Pronunciation</p>
+              </div>
+
+              <!-- Ink: take the last stroke back, or start again. The two
+                   gestures on the board itself, in the order they are reached
+                   for. Watching the character written is deliberately not one of
+                   them — that is help with *writing*, so it sits with the hint,
+                   which is the other thing that puts the answer in front of you
+                   before you have drawn it. -->
+              <div class="toolgroup" role="group" aria-labelledby="tools-drawing">
+                <div class="tools">
+                  <button
+                    class="tool"
+                    onclick={undo}
+                    disabled={strokes.length === 0}
+                    aria-label="Undo the last stroke"
+                    title="Take the last stroke back (⌫)"
+                  >
+                    <span class="tool-glyph"><Icon name="undo" /></span>
+                    <span class="tool-word">Undo</span>
+                  </button>
+
+                  <button
+                    class="tool danger"
+                    onclick={reset}
+                    disabled={strokes.length === 0}
+                    aria-label="Clear the board"
+                    title="Clear every stroke off the board"
+                  >
+                    <span class="tool-glyph"><Icon name="trash" /></span>
+                    <span class="tool-word">Clear</span>
+                  </button>
+                </div>
+                <p class="toolgroup-word" id="tools-drawing">Drawing</p>
+              </div>
+
+              <!-- Leaving the board. The course has nothing to leave — the way
+                   out of the course is the sidebar — so this is drawn only where
+                   the practice started from a list of your own, and the caption
+                   under the card names what it goes back to. -->
+              {#if source !== "course"}
+                <div class="toolgroup" role="group" aria-labelledby="tools-leave">
+                  <div class="tools">
+                    {#if source === "vocabulary"}
+                      <button
+                        class="tool"
+                        onclick={stopPractising}
+                        aria-label="Back to your vocabulary list"
+                        title="Back to your vocabulary list"
+                      >
+                        <span class="tool-glyph"><Icon name="back" /></span>
+                        <span class="tool-word">Back</span>
+                      </button>
+                    {:else if source === "words"}
+                      <button
+                        class="tool"
+                        onclick={stopPractising}
+                        aria-label="Back to the word list"
+                        title="Back to the word list"
+                      >
+                        <span class="tool-glyph"><Icon name="back" /></span>
+                        <span class="tool-word">Back</span>
+                      </button>
+                    {:else}
+                      <button
+                        class="tool"
+                        onclick={stopReview}
+                        aria-label="Stop this review session"
+                        title="Stop reviewing — what you have done so far is kept"
+                      >
+                        <span class="tool-glyph"><Icon name="back" /></span>
+                        <span class="tool-word">Back</span>
+                      </button>
+                    {/if}
+                  </div>
+                  <p class="toolgroup-word" id="tools-leave">
+                    {source === "vocabulary"
+                      ? "Vocabulary"
+                      : source === "words"
+                        ? "Word list"
+                        : "Review"}
+                  </p>
+                </div>
+              {/if}
+
+            </div>
+
+            <!-- How much has been drawn, whether the target is marked, and the
+                 action of the same judgement, so all three are one row: they wrap
                  together rather than leaving the count stranded above the button
-                 it belongs to. Whether corrections show sits beside ✓ because
-                 that is the moment it starts to matter — everything to its left
-                 acts on the attempt before it is graded.
-                 The group is also what takes up the slack on the line it lands
-                 on, which is why there is no separate spacer: it is what holds
-                 the count and ✓ against the right edge, on one line or two. -->
-            <div class="cluster commit">
+                 it belongs to. Whether the target shows sits beside that button
+                 because that is the moment it starts to matter — everything on
+                 the cards above acts on the attempt before it is graded.
+                 The row also takes the slack on the line it lands on, which is
+                 why there is no separate spacer: `space-between` is what holds
+                 the count against the left edge and the two controls against the
+                 right, on one line or two. -->
+            <div class="commit">
               <span class="count" title={report
                 ? `${report.givenStrokes} of ${report.expectedStrokes} strokes were graded; ignored stray marks are not counted`
                 : `${strokes.length} marks drawn, ${strokeTotal} strokes expected`}>
-                {report ? report.givenStrokes : strokes.length} / {strokeTotal}
+                {report ? report.givenStrokes : strokes.length} of {strokeTotal}
+                {strokeTotal === 1 ? "stroke" : "strokes"}
               </span>
 
-              <button
-                class="icon"
-                class:on={showCorrections}
-                aria-pressed={showCorrections}
-                aria-label="Mark the corrections on the board"
-                title={showCorrections
-                  ? "The strokes you missed or misplaced are marked on the board, over your own. Press to hide them."
-                  : "Corrections are hidden. Press to mark the strokes you missed or misplaced, over your own."}
-                onclick={() => (showCorrections = !showCorrections)}
-              >
-                <Icon name="target" />
-              </button>
+              <div class="commit-actions">
+                <!-- A switch rather than the tinted target the toggle used to be:
+                     the word it now carries needs something for its two states to
+                     live in, and a glyph drawn tinted or untinted was never
+                     legible as "on" on a phone. It is the only accent-filled
+                     control here that is not the commit button, so it is kept
+                     small — the solid accent on this row is still the thing to
+                     press. It is left without an `aria-label` on purpose: the
+                     visible words are its name, which is what a voice-control
+                     user has to be able to say. -->
+                <button
+                  class="switch"
+                  role="switch"
+                  aria-checked={showCorrections}
+                  onclick={() => (showCorrections = !showCorrections)}
+                  title={showCorrections
+                    ? "The strokes you missed or misplaced are marked on the board, over your own. Press to hide them."
+                    : "Corrections are hidden. Press to mark the strokes you missed or misplaced, over your own."}
+                >
+                  <span class="switch-word">Show target</span>
+                  <span class="switch-track" aria-hidden="true">
+                    <span class="switch-thumb"></span>
+                  </span>
+                </button>
 
-              {#if report && !sessionDone}
-                <button
-                  class="primary icon"
-                  onclick={advance}
-                  aria-label={source === "course"
-                    ? "Next character"
-                    : charCursor + 1 < entryCharacters.length
-                      ? "Next character of this entry"
-                      : "Finish this entry"}
-                  title={source === "course"
-                    ? "Next character (Enter)"
-                    : charCursor + 1 < entryCharacters.length
-                      ? "Next character of this entry (Enter)"
-                      : "Finish this entry (Enter)"}
-                >
-                  <Icon name="next" />
-                </button>
-              {:else if !sessionDone}
-                <button
-                  class="primary icon"
-                  onclick={check}
-                  disabled={strokes.length === 0 || grading}
-                  aria-label={grading ? "Checking your writing…" : "Check your writing"}
-                  title={grading
-                    ? "Checking your writing…"
-                    : "Check your writing against the character (Enter)"}
-                >
-                  <Icon name="tick" />
-                </button>
-              {/if}
+                {#if report && !sessionDone}
+                  <button
+                    class="primary"
+                    onclick={advance}
+                    aria-label={source === "course"
+                      ? "Next character"
+                      : charCursor + 1 < entryCharacters.length
+                        ? "Next character of this entry"
+                        : "Finish this entry"}
+                    title={source === "course"
+                      ? "Next character (Enter)"
+                      : charCursor + 1 < entryCharacters.length
+                        ? "Next character of this entry (Enter)"
+                        : "Finish this entry (Enter)"}
+                  >
+                    <span class="primary-glyph"><Icon name="next" /></span>
+                    <span
+                      >{source === "course" || charCursor + 1 < entryCharacters.length
+                        ? "Next"
+                        : "Finish"}</span
+                    >
+                  </button>
+                {:else if !sessionDone}
+                  <button
+                    class="primary"
+                    onclick={check}
+                    disabled={strokes.length === 0 || grading}
+                    aria-label={grading ? "Checking your writing…" : "Check your writing"}
+                    title={grading
+                      ? "Checking your writing…"
+                      : "Check your writing against the character (Enter)"}
+                  >
+                    <span class="primary-glyph"><Icon name="tick" /></span>
+                    <span>{grading ? "Checking…" : "Check"}</span>
+                  </button>
+                {/if}
+              </div>
             </div>
           </div>
 
@@ -2494,11 +2560,11 @@
 
           <p class="hint">
             {#if voice === null}
-              No Chinese voice is installed, so the ear button is disabled. Add
-              one in System Settings → Accessibility → Spoken Content → System
-              Voice → Manage Voices.
+              No Chinese voice is installed, so the Listen button is disabled.
+              Add one in System Settings → Accessibility → Spoken Content →
+              System Voice → Manage Voices.
             {:else if sayBlocked !== null && microphone !== undefined}
-              {sayBlocked} — so the mouth button, which scores a spoken tone, is
+              {sayBlocked} — so Hold to speak, which scores a spoken tone, is
               disabled.
             {:else if source !== "course" && entryCharacters.length > 1}
               Write the word one character at a time. Its score is the average
@@ -2822,100 +2888,185 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* The board's tools.
+     They were bare glyphs for a while, because four wrapped rows of wide
+     labelled buttons left a phone no room for the board. The words are back, in
+     the form the mock-up sets them: a glyph on a tinted disc with a short name
+     under it, two tools to a card, and the card's own name under that. The card
+     is what makes the words affordable this time — it is one flex item a little
+     over two thumbs wide, so the whole set is a single row on a phone instead of
+     the four the wide buttons took. The long sentence still lives in `title` and
+     `aria-label`; a word on a button is only ever the name of the thing. */
   .controls {
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    gap: 10px;
+  }
+  /* Cards are flex items, so a row breaks between toolsets and never inside one:
+     undo and clear belong on the same card. They stretch to the tallest, which is
+     what keeps the three captions on one line — "Hold to speak" is two lines on a
+     phone and the other cards are one, and a caption that sat at a different
+     height on each card read as three unrelated boxes. */
+  .toolgroups {
+    display: flex;
+    align-items: stretch;
     flex-wrap: wrap;
     gap: 8px;
   }
-  /* A cluster is one flex item, so the row breaks between groups of related
-     controls instead of in the middle of one: undo and clear belong on the same
-     line, and a bare row of ten buttons would happily separate them. */
-  .cluster {
+  .toolgroup {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
+    min-width: 0;
   }
-  .controls button {
-    padding: 7px 13px;
+  /* The card fills the stretched group, so the caption under it lands on the
+     group's baseline rather than just under the card. */
+  .tools {
+    flex: 1;
+    display: flex;
+    align-items: stretch;
+    padding: 5px 6px;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: 13px;
     background: var(--surface);
+    box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+  }
+  .toolgroup-word {
+    margin: 0;
+    font-size: 0.72rem;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  /* A tool: the disc, then its name. The name is what the border used to be
+     drawn around, which is why it is allowed to wrap — a wrapped name costs a
+     line of the card rather than a wider card. */
+  .tool {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+    padding: 4px 7px;
+    border: 0;
+    border-radius: 9px;
+    background: none;
     font: inherit;
-    font-size: 0.84rem;
+    font-size: 0.72rem;
+    line-height: 1.15;
     color: var(--muted-strong);
+    text-align: center;
     cursor: pointer;
   }
-  /* An icon button is square, and the glyph is sized off the font so the phone
-     can draw the same artwork larger without a second copy: `Icon.svelte` is
-     `1em` wide. */
-  .controls button.icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 38px;
-    height: 34px;
-    padding: 0;
-    font-size: 21px;
+  /* The hairline between two tools of one card, drawn as tall as the discs
+     rather than as tall as the card. */
+  .tool + .tool::before {
+    content: "";
+    position: absolute;
+    top: 5px;
+    left: 0;
+    width: 1px;
+    height: 32px;
+    background: var(--line);
   }
-  .controls button:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent-ink);
+  .tool-glyph {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--hover);
+    /* The glyph is `1em`, so this one number sizes the artwork. */
+    font-size: 18px;
+    color: var(--muted-strong);
   }
-  .controls button:disabled {
+  .tool-word {
+    max-width: 74px;
+  }
+  .tool:hover:not(:disabled) .tool-glyph {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .tool:disabled {
     opacity: 0.45;
     cursor: default;
   }
-  .controls button.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
-    font-weight: 600;
-  }
-  .controls button.primary:hover:not(:disabled) {
-    background: var(--accent-ink);
-    color: #fff;
-  }
-  /* A toggle that is on: recall rather than trace, or corrections showing. Tinted
-     rather than filled, so the one solid accent on the row stays the primary
-     action — Check — and "which of these is pressed" is still legible without
-     competing with it. */
-  .controls button.icon.on {
+  /* The two tools that play something — the animation, the pronunciation — carry
+     the accent at rest, because they are the two that make the character move or
+     speak and the mock-up draws them that way. The disc is *soft*, so the only
+     solid accent on the screen is still the one that commits the attempt. */
+  .tool.media .tool-glyph {
     background: var(--accent-soft);
-    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .tool.media {
     color: var(--accent-ink);
   }
-  .controls button.primary.icon {
-    width: 46px;
+  /* Engaged: the disc goes soft accent and takes a ring. It is deliberately not
+     filled. The tool that starts engaged is Hint — trace mode puts the faint copy
+     on the board before anything has been drawn — so a solid accent there would
+     be the loudest thing on the screen at rest and would compete with the button
+     that commits the attempt. The ring is also what separates "this tool is on"
+     from the soft disc that a tool which *plays* something wears at rest. */
+  .tool.on .tool-glyph {
+    background: var(--accent-soft);
+    color: var(--accent);
+    box-shadow: inset 0 0 0 2px var(--accent);
   }
-
-  /* Push to talk. Green while the microphone is open, and pulsing, because the
-     word "Listening…" that used to say so is gone: an icon cannot spell out
-     that it is recording, so the colour and the movement have to. */
-  .controls button.say {
-    /* The page scrolls, and a finger held still on a button inside a scrolling
-       page is a gesture the browser wants to claim: it sends `pointercancel`
-       once it decides the touch is a scroll, and `pointercancel` ends the
-       recording. Saying the button owns its own touches is what stops a held
-       press from being cancelled a fraction of a second after it starts — which
-       is what "I hold it and it stops immediately" turned out to be, after the
-       layout shift had been ruled out. The layout no longer shifts on press
-       either, now that the label is a fixed-width glyph, but this is what keeps
-       a sliding finger recording. */
+  .tool.on {
+    color: var(--accent-ink);
+  }
+  /* The microphone: the one solid red disc, because it is the thing being done,
+     and it is open only while it is held. */
+  .tool.record .tool-glyph {
+    width: 40px;
+    height: 40px;
+    background: var(--danger);
+    color: #fff;
+    box-shadow: 0 0 0 3px var(--danger-soft);
+  }
+  /* The bin: the same red on a soft disc, because it is the thing being risked
+     rather than the thing being done. */
+  .tool.danger .tool-glyph {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
+  .tool.danger {
+    color: var(--danger-ink);
+  }
+  /* Hover, restated at the weight that beats the plain hover rule above: without
+     these two the discs that are not grey would turn accent blue under a
+     pointer. */
+  .tool.record:hover:not(:disabled) .tool-glyph {
+    background: var(--danger-ink);
+  }
+  .tool.danger:hover:not(:disabled) .tool-glyph {
+    background: var(--danger-hover);
+  }
+  /* Push to talk. The pointer guards are not cosmetic: the page scrolls, and a
+     finger held still on a button inside a scrolling page is a gesture the
+     browser wants to claim — it sends `pointercancel` once it decides the touch
+     is a scroll, and `pointercancel` ends the recording. Saying the button owns
+     its own touches is what stops a held press from being cancelled a fraction of
+     a second after it starts, which is what "I hold it and it stops immediately"
+     turned out to be. The other held-finger gesture is a long press on text: at
+     about half a second Android takes the pointer for its selection gesture and
+     cancels ours — measured at 555 ms — and the practice board has guarded
+     against that all along. */
+  .tool.record {
     touch-action: none;
-    /* And the *other* gesture a held finger starts: a long press on text. At
-       about half a second Android takes the pointer for its selection gesture
-       and cancels ours — measured at 555 ms, which is why this is not a
-       cosmetic rule. The practice board has guarded against it all along; a
-       push-to-talk button needs it for the same reason. */
     user-select: none;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
   }
-  .controls button.say.listening {
-    background: #2f6f4f;
-    border-color: #2f6f4f;
-    color: #fff;
+  /* Listening. The disc darkens and the halo grows rather than turning green the
+     way it did while the microphone was a plain glyph: red is what this button is
+     now, so "recording" has to be a change *within* red, and the halo is what
+     carries it to the corner of the eye. */
+  .tool.record.listening .tool-glyph {
+    background: var(--danger-ink);
+    box-shadow: 0 0 0 6px var(--danger-soft);
     animation: listening 1.1s ease-in-out infinite;
   }
   @keyframes listening {
@@ -2924,7 +3075,7 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .controls button.say.listening {
+    .tool.record.listening .tool-glyph {
       animation: none;
     }
   }
@@ -2944,19 +3095,107 @@
   .feedback > :global(.tone) {
     margin-top: 12px;
   }
-  /* The last group takes the rest of the line and keeps its own controls at the
-     right edge, whether the row fits on one line or wraps: the count and ✓ are
-     where the eye goes after a stroke, and a fixed place for them is worth more
-     than the few pixels a spacer would leave. `auto` basis rather than `0`, so
-     wrapping still measures the group by what is in it. */
-  .cluster.commit {
-    flex: 1 1 auto;
-    justify-content: flex-end;
+  /* The count, the target switch and the button that commits the attempt are one
+     row, and `space-between` is what holds the count against the left edge and
+     the two controls against the right whether it fits on one line or wraps:
+     the count and the button are the state and the action of the same judgement,
+     so they wrap as a unit rather than stranding the count above its button. */
+  .commit {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+  }
+  .commit-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-left: auto;
   }
   .count {
     font-size: 0.8rem;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
+  }
+  /* Show target. The words are part of the button rather than a label beside it,
+     so the name a voice-control user says and the state the switch shows cannot
+     drift apart. */
+  .switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: 0.8rem;
+    color: var(--muted-strong);
+    cursor: pointer;
+  }
+  .switch-track {
+    display: inline-flex;
+    align-items: center;
+    width: 40px;
+    height: 24px;
+    padding: 2px;
+    border-radius: 999px;
+    background: #cbd5e1;
+    transition: background 120ms ease;
+  }
+  .switch-thumb {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgb(15 23 42 / 25%);
+    transition: transform 120ms ease;
+  }
+  .switch[aria-checked="true"] .switch-track {
+    background: var(--accent);
+  }
+  .switch[aria-checked="true"] .switch-thumb {
+    transform: translateX(16px);
+  }
+  /* The commit button: the one solid accent, with its word on it. It is what the
+     mock-up puts at the end of the row, and it is the only control here that is
+     the same size as the thing it does. */
+  .primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 40px;
+    padding: 0 16px;
+    border: 1px solid var(--accent);
+    border-radius: 11px;
+    background: var(--accent);
+    font: inherit;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #fff;
+    cursor: pointer;
+  }
+  .primary-glyph {
+    display: grid;
+    place-items: center;
+    font-size: 19px;
+  }
+  .primary:hover:not(:disabled) {
+    background: var(--accent-ink);
+    border-color: var(--accent-ink);
+  }
+  .primary:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  /* After the rules it overrides, and not beside the listening animation above:
+     the switch's transitions are declared below that block, and a reduced-motion
+     rule of the same specificity that came first would simply lose. */
+  @media (prefers-reduced-motion: reduce) {
+    .switch-track,
+    .switch-thumb {
+      transition: none;
+    }
   }
 
   .hint {
@@ -3311,25 +3550,49 @@
     }
 
     /* Fingers, not a pointer: every control reaches a comfortable target, and
-       the glyph grows with it. */
+       the glyph grows with it. The disc is 34 px and the name under it carries
+       the tool past 44, so the target is comfortable without the card having to
+       grow for the tools whose name is a single word.
+       These numbers are also what makes the three cards one row on a 390 px
+       phone — 332 px of the 366 the stage gives them. That is the whole reason
+       the words can come back: they are a second line inside a narrow card, not
+       the thing the card is measured around. */
     .controls {
-      gap: 7px;
+      gap: 9px;
     }
-    .controls .cluster {
-      gap: 7px;
+    .toolgroups {
+      gap: 6px;
     }
-    .controls button {
+    .tools {
+      padding: 4px 5px;
+    }
+    .tool {
       min-height: 44px;
-      padding: 10px 14px;
-      font-size: 0.95rem;
+      padding: 4px;
+      font-size: 0.72rem;
     }
-    .controls button.icon,
-    .controls button.primary.icon,
-    .controls button.icon.on {
-      width: 44px;
-      height: 44px;
-      padding: 0;
-      font-size: 25px;
+    .tool-glyph {
+      width: 34px;
+      height: 34px;
+      font-size: 19px;
+    }
+    .tool + .tool::before {
+      top: 5px;
+      height: 34px;
+    }
+    .tool-word {
+      max-width: 68px;
+    }
+    .toolgroup-word {
+      font-size: 0.72rem;
+    }
+    .switch {
+      min-height: 44px;
+    }
+    .primary {
+      min-height: 44px;
+      padding: 0 18px;
+      font-size: 1rem;
     }
     .nav button {
       min-height: 44px;

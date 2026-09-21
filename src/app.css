@@ -32,6 +32,17 @@
   --accent: #2563eb;
   --accent-ink: #1d4ed8;
   --accent-soft: #eff6ff;
+  /* Red is carried by exactly two controls, and they are the two that cannot be
+     taken back: the microphone, which is open while it is held, and the bin,
+     which throws the whole board away. Both are drawn with the same red the
+     mock-up used for them, and they are told apart by weight rather than hue —
+     the microphone is a *solid* disc because it is the thing being done, the
+     bin a soft one because it is the thing being risked. Nothing else in the
+     interface is red, so red keeps meaning "this one is different". */
+  --danger: #dc2626;
+  --danger-ink: #b91c1c;
+  --danger-soft: #fef2f2;
+  --danger-hover: #fee2e2;
   /* What keeps content clear of the status bar and the home indicator.
      `env()` is iOS's answer and the larger of the two is right on both systems:
      iOS leaves `--inset-*` at 0, while on Android `env(safe-area-inset-*)`
