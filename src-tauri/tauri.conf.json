@@ -46,7 +46,8 @@
       "../licences/SQLite-Public-Domain.txt": "licences/SQLite-Public-Domain.txt",
       "../licences/MIT-rusqlite.txt": "licences/MIT-rusqlite.txt",
       "../licences/Apache-2.0.txt": "licences/Apache-2.0.txt",
-      "../licences/MIT-onnxruntime.txt": "licences/MIT-onnxruntime.txt"
+      "../licences/MIT-onnxruntime.txt": "licences/MIT-onnxruntime.txt",
+      "../licences/GPL-3.0.txt": "licences/GPL-3.0.txt"
     },
     "android": {
       "minSdkVersion": 26

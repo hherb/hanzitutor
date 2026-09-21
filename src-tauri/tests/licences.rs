@@ -131,6 +131,10 @@ fn the_required_licences_are_present_and_are_the_real_texts() {
         ("cc-cedict", "Creative Commons Attribution-ShareAlike 4.0"),
         ("cc-by-sa", "Attribution-ShareAlike 4.0 International"),
         ("font", "SIL OPEN FONT LICENSE"),
+        // Not a permissive licence, and the reason it is checked here rather than
+        // left to the compiler: it arrives inside a prebuilt native archive that
+        // only the mobile builds link whole. See the notice's own text.
+        ("espeak-ng", "GNU GENERAL PUBLIC LICENSE"),
     ];
 
     let ids: BTreeSet<&str> = NOTICES.iter().map(|n| n.id).collect();
@@ -155,7 +159,7 @@ fn the_required_licences_are_present_and_are_the_real_texts() {
 
     // The notices that were actually fetched from upstream are the ones whose
     // absence would be a licence breach, so name them explicitly.
-    for id in ["arphic", "lgpl", "cc-by-sa", "font"] {
+    for id in ["arphic", "lgpl", "cc-by-sa", "font", "espeak-ng"] {
         assert!(ids.contains(id), "the {id} notice must ship");
     }
 
@@ -188,6 +192,10 @@ fn the_required_licences_are_present_and_are_the_real_texts() {
     for (id, marker) in [
         ("sherpa-onnx", "Apache License"),
         ("onnxruntime", "Microsoft Corporation"),
+        // The Android set shares the Apache text with cpal and sherpa-onnx, which
+        // is why this one is checked for its *presence* rather than for a licence
+        // of its own: there is no separate file for it to get wrong.
+        ("android-libraries", "Apache License"),
     ] {
         let notice = NOTICES
             .iter()

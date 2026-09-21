@@ -73,6 +73,11 @@ fetch "$HSKVOCAB/LICENSE"           "$LICENCES/MIT-complete-hsk-vocabulary.txt"
 fetch "https://creativecommons.org/licenses/by-sa/4.0/legalcode.txt" \
       "$LICENCES/CC-BY-SA-4.0.txt"
 fetch "$GOOGLEFONTS/OFL.txt"        "$LICENCES/OFL-1.1.txt"
+# The GPL-3.0 text, for espeak-ng. It is not a dependency of this project in any
+# package manager's sense: it is inside the prebuilt sherpa-onnx library that the
+# *mobile* builds link, which is why it is only owed on Android and iOS. See
+# LICENSES.md — the macOS build does not contain it, and the notice says so.
+fetch "https://www.gnu.org/licenses/gpl-3.0.txt" "$LICENCES/GPL-3.0.txt"
 
 # Noto Sans SC, OFL-1.1. Variable weight, so one ~17 MB file covers every weight
 # the interface asks for. The canvas does not use it: it draws the stored vector

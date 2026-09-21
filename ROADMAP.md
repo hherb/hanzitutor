@@ -284,10 +284,12 @@ the screen, `scripts/build-release.sh` is the build.
 What shipped:
 
 - **The notices are a catalogue, not a copy-paste.** `src-tauri/src/licences.rs`
-  names all ten — the app's own AGPL text, this project's provenance record, the
-  Arphic and Make Me a Hanzi pointers, the LGPL, the two MIT texts, the CC-CEDICT
-  attribution, the CC BY-SA 4.0 legal code and the font's OFL — each with what it
-  covers, where it came from and where its bundle copy sits. The text is pulled
+  names every one — the app's own AGPL text, this project's provenance record, the
+  Arphic and Make Me a Hanzi pointers, the LGPL, the MIT texts, the CC-CEDICT
+  attribution, the CC BY-SA 4.0 legal code, the font's OFL, and the *code* notices
+  added since (SQLite, `rusqlite`, `cpal`, `sherpa-onnx`, ONNX Runtime, espeak-ng
+  and the Android libraries) — each with what it covers, where it came from and
+  where its bundle copy sits. The text is pulled
   in with `include_str!`, so it is **compiled into the binary** and cannot go
   missing at packaging time.
 - **`src-tauri/tests/licences.rs` holds the three-way correspondence together.**
@@ -1243,10 +1245,15 @@ appears, it should displace this one.
   platforms rather than fetching them unverified; pinning one is a one-off download
   and a recorded digest, described in its header.
 - **The static archive vendors more than it names.** ONNX Runtime (MIT) and the
-  `kaldi-*` components (Apache-2.0) are linked and their notices ship; `espeak-ng`
-  (GPL-3.0-or-later, speech synthesis only) is verified *absent* from the binary
-  because only the recognition path is used. A future change that starts using
-  sherpa-onnx's TTS must redo that check and add its notice.
+  `kaldi-*` components (Apache-2.0) are linked and their notices ship. `espeak-ng`
+  (GPL-3.0-or-later, speech synthesis only) is *absent from the macOS binary*,
+  because the linker drops what nothing references — and that check was once
+  written down as a claim about the app, which is false on Android and iOS: those
+  builds link an already-linked `libsherpa-onnx` that has espeak-ng inside it, so
+  the APK, the AAB and the iOS framework redistribute GPL code whether or not a
+  line of it runs. Its notice and the GPL-3.0 text now ship with it. The lesson
+  generalises: anything arriving inside a prebuilt mobile binary has to be checked
+  *in that binary*, not in the desktop build. See LICENSES.md.
 - **Android's release build now declares `INTERNET`, which reversed a deliberate
   property.** It used to be scoped to the debug source set so that `aapt2 dump
   permissions` on a signed APK showed only `RECORD_AUDIO`, making "works offline"

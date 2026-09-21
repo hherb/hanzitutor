@@ -1,10 +1,10 @@
 //! The licence and attribution notices that ship with the app.
 //!
-//! Hanzi Tutor's own code is AGPL-3.0, but the **data** it embeds comes from
-//! four upstream projects under four different licences, and every one of them
-//! requires its notice to travel with a redistribution. This module is the
-//! catalogue of those notices, and it is the single source of truth for three
-//! things at once:
+//! Hanzi Tutor's own code is AGPL-3.0, but the **data** it embeds and the
+//! third-party **code** compiled into it come from other people, and every one of
+//! those licences requires its notice to travel with a redistribution. This module
+//! is the catalogue of those notices, and it is the single source of truth for
+//! three things at once:
 //!
 //! 1. what the Licences screen shows the reader,
 //! 2. which files in `licences/` exist, and
@@ -253,10 +253,10 @@ pub const NOTICES: &[LicenceNotice] = &[
                  app does not redistribute; see LICENSES.md for the model's own \
                  terms. The archive vendors several further libraries (ONNX \
                  Runtime, kaldi-native-fbank, kissfft, ssentencepiece and \
-                 others); LICENSES.md records each one, and that espeak-ng — the \
-                 one component of the archive under a copyleft licence — is not \
-                 linked, because only the recognition path is used and not the \
-                 speech synthesiser.",
+                 others); LICENSES.md records each one. One of them, espeak-ng, \
+                 is under a copyleft licence and is redistributed inside the \
+                 **mobile** builds whether or not it is ever called — see the \
+                 notice below, which is the one that has to travel for it.",
         file: "licences/Apache-2.0.txt",
         bundle_path: "licences/Apache-2.0.txt",
         text: include_str!("../../licences/Apache-2.0.txt"),
@@ -273,6 +273,55 @@ pub const NOTICES: &[LicenceNotice] = &[
         file: "licences/MIT-onnxruntime.txt",
         bundle_path: "licences/MIT-onnxruntime.txt",
         text: include_str!("../../licences/MIT-onnxruntime.txt"),
+    },
+    LicenceNotice {
+        id: "espeak-ng",
+        title: "espeak-ng — the text-to-phoneme front end inside the speech engine",
+        licence: "GPL-3.0-or-later",
+        source: "https://github.com/espeak-ng/espeak-ng, vendored by \
+                 https://github.com/k2-fsa/sherpa-onnx v1.13.8. Licence text from \
+                 https://www.gnu.org/licenses/gpl-3.0.txt",
+        covers: "Compiled, and never called — which is not the same as not \
+                 shipped. espeak-ng is speech *synthesis*, and this app only ever \
+                 recognises: no learner action reaches a synthesiser, and the \
+                 model this app offers is a recognition model. That does keep it \
+                 out of the macOS build, where the sherpa-onnx archive's \
+                 components are linked individually and the linker simply drops \
+                 what nothing references. It does **not** keep it out of the \
+                 mobile builds: Android and iOS are handed an already-linked \
+                 `libsherpa-onnx`, so espeak-ng is inside the library that ships \
+                 whether or not a line of it ever runs. GPLv3 §6 conditions \
+                 *conveying* the object code rather than using it, so the licence \
+                 text and a route to the source travel with the app. \
+                 Corresponding Source: espeak-ng is unmodified here, and the \
+                 revision vendored by the sherpa-onnx release named above is \
+                 published in the espeak-ng repository.",
+        file: "licences/GPL-3.0.txt",
+        bundle_path: "licences/GPL-3.0.txt",
+        text: include_str!("../../licences/GPL-3.0.txt"),
+    },
+    LicenceNotice {
+        id: "android-libraries",
+        title: "The Android build's libraries",
+        licence: "Apache-2.0",
+        source: "AndroidX — https://developer.android.com/jetpack/androidx — and \
+                 https://github.com/material-components/material-components-android",
+        covers: "Everything the Android app is built against rather than linked \
+                 into: the AndroidX libraries — biometric, which shows the \
+                 fingerprint prompt; webkit, appcompat and activity, which the \
+                 activity and the webview the interface runs in are built on; and \
+                 lifecycle-process — together with com.google.android.material \
+                 for the theme and the Kotlin standard library and coroutines. \
+                 They are redistributed as compiled bytecode inside the APK and \
+                 the AAB, so Apache-2.0 §4(a) applies to each: the recipient is \
+                 given a copy of the licence, which is this file. None of them \
+                 ships a `NOTICE` of its own, so §4(d) is not triggered. The set \
+                 is the build's rather than this text's — it changes whenever \
+                 build.gradle.kts does, and a library added there belongs in this \
+                 sentence too.",
+        file: "licences/Apache-2.0.txt",
+        bundle_path: "licences/Apache-2.0.txt",
+        text: include_str!("../../licences/Apache-2.0.txt"),
     },
 ];
 

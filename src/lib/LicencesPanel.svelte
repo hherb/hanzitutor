@@ -42,16 +42,24 @@
   </header>
 
   <p class="lede">
-    Everything this app needs is inside it: the character data, the word
-    dictionary, the interface font and every notice below. It makes no network
-    requests and downloads nothing, so the addresses here are shown as text
-    rather than as links — nothing on this screen will open a browser.
+    Everything the course needs is inside it: the character data, the word
+    dictionary, the interface font and every notice below. This screen itself
+    fetches nothing and downloads nothing, so the addresses here are shown as
+    text rather than as links — nothing on this screen will open a browser. Two
+    things elsewhere in the app do reach the network, and both are off until they
+    are asked for: the speech model the settings screen offers to download, and
+    syncing, which is not connected until you connect a Dropbox account of your
+    own.
   </p>
 
   <p class="lede">
-    The application's own code is <strong>AGPL-3.0-only</strong>. The data it
-    embeds comes from four upstream projects under four further licences, and
-    each notice is reproduced in full.
+    The application's own code is <strong>AGPL-3.0-only</strong>. What it bundles
+    or links comes from other people — the data it embeds, the interface font, and
+    the third-party code compiled into it — and every notice is reproduced in
+    full. The catalogue is curated rather than exhaustive: it names the sources
+    whose licences oblige an attribution, not every crate and package in the build
+    graph. <em>Provenance and licences</em> above is the record of how the line was
+    drawn and why.
   </p>
 
   <h3>Notices</h3>

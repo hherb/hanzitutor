@@ -43,6 +43,8 @@ than left implicit.
 | Audio capture, `cpal` | [cpal](https://github.com/RustAudio/cpal) | Apache-2.0 |
 | Speech recognition engine, `sherpa-onnx` 1.13.8 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | Apache-2.0 |
 | Model inference, ONNX Runtime | [onnxruntime](https://github.com/microsoft/onnxruntime) | MIT |
+| Text-to-phoneme front end, `espeak-ng` (**mobile builds only**) | [espeak-ng](https://github.com/espeak-ng/espeak-ng), vendored by sherpa-onnx 1.13.8 | GPL-3.0-or-later |
+| The Android app's libraries: AndroidX, Material, Kotlin | [AndroidX](https://developer.android.com/jetpack/androidx) and [Material](https://github.com/material-components/material-components-android) | Apache-2.0 |
 
 The first six rows are compacted by `prepare-data` into one generated artifact,
 `crates/hanzi-core/data/hanzi.bin.gz`, which `src-tauri/src/state.rs` embeds with
@@ -58,6 +60,18 @@ The notice texts live in [`licences/`](licences/), committed. They are listed in
 shows, and what `tauri.conf.json` copies into the bundle. A test fails if a file
 in `licences/` is not catalogued, if a catalogued file is missing, or if the
 bundle config does not copy exactly that set, so a notice cannot be half-added.
+
+**The catalogue is curated rather than exhaustive, and it is worth saying where the
+line falls.** Every licence the bundled data, the interface font and the
+compiled-in third-party code are under is here in full, but not every dependency
+is *named*: the Rust build graph and the npm tree run into the hundreds, almost all
+of them MIT or Apache-2.0, and both of those texts are already carried — so the
+obligation those licences impose on an unmodified binary, which is to pass the
+licence on, is met by the text rather than by a name. A dependency earns an entry
+of its own when a reader would otherwise be misled about it: a copyleft term, an
+attribution requirement that goes beyond the licence text, a source that arrives
+outside a package manager, or a work a reader can actually recognise in the app.
+That is a judgement, not a threshold, and this paragraph is where it is recorded.
 
 ### Make Me a Hanzi — <https://github.com/skishore/makemeahanzi>
 
@@ -193,15 +207,73 @@ wrong at packaging time:
   bundled `.app` would have to declare as frameworks or fail to launch.
 - **It vendors more than it names.** The archive statically includes several
   further libraries — ONNX Runtime, kaldi-native-fbank and the other `kaldi-*`
-  components, kissfft, `ssentencepiece`, `piper_phonemize`, and `espeak-ng`. The
-  linker keeps only what the recognition path reaches. `espeak-ng` is the one
-  component under a copyleft licence (**GPL-3.0-or-later**, compatible with
-  AGPL-3.0 either way) and it is *speech synthesis only*: **it is verified not to
-  be in the linked binary** — `nm` finds none of its symbols and `strings` finds
-  none of its data — because this app recognises and does not synthesise. If a
-  future change starts using sherpa-onnx's TTS, that verification must be redone
-  and espeak-ng's notice added. The remaining components are permissive
-  (Apache-2.0, MIT, BSD-3-Clause).
+  components, kissfft, `ssentencepiece`, `piper_phonemize`, and `espeak-ng`. Most
+  are permissive (Apache-2.0, MIT, BSD-3-Clause) and are covered by the two
+  notices above. One is not, and it has its own section below.
+
+### espeak-ng is redistributed by the mobile builds
+
+`espeak-ng` is the one component of that archive under a copyleft licence —
+**GPL-3.0-or-later** — and it is *speech synthesis only*, which this app never
+does: it recognises speech, it does not produce it, and no learner action reaches
+a synthesiser.
+
+That was verified once, on macOS, and it is true there. The archive's components
+are linked individually on that platform, so the linker drops what nothing
+references, and neither `nm` nor `strings` finds espeak-ng in the linked binary.
+**It is not true on the mobile targets, and the difference is the whole point.**
+Android and iOS are not given that archive; they are given a `libsherpa-onnx` that
+has already been linked, with espeak-ng inside it. The APK, the AAB and the iOS
+framework therefore redistribute espeak-ng whether or not a line of it ever runs —
+and GPLv3 §6 conditions *conveying* the object code rather than using it, so "we
+never call the synthesiser" is not an answer to it.
+
+The check is easy to repeat, and worth repeating on any sherpa-onnx bump: take
+strings that appear only in `libespeak-ng.a` and look for them in the shipped
+library. In the macOS binary they are absent; in the Android `.so` for every ABI,
+and in the iOS framework, they are present.
+
+What travels for it is [`licences/GPL-3.0.txt`](licences/GPL-3.0.txt), catalogued
+as its own notice so that the Licences screen shows it and the bundle carries it.
+The "Corresponding Source" is the unmodified espeak-ng revision vendored by the
+sherpa-onnx release pinned in [`scripts/fetch-sherpa.sh`](scripts/fetch-sherpa.sh)
+(v1.13.8), published at <https://github.com/espeak-ng/espeak-ng>; nothing in the
+vendored copy is modified, so that repository is the source for the code that ships
+here.
+
+The licence is compatible with this project's own, and it is worth being exact
+about why, because "GPL in an AGPL app" reads worse than it is: **GPLv3 §13 and
+AGPLv3 §13 each expressly permit linking or combining the two into one work and
+conveying the result**, with the combined work's AGPL part staying under the AGPL
+and the GPL part staying under the GPL. So the app remains **AGPL-3.0-only** and
+nothing has to be relicensed. The consequence runs the other way: while espeak-ng
+is inside the mobile binaries, this app cannot be offered under anything more
+permissive than the AGPL.
+
+### The Android build's libraries
+
+The Android app is built against rather than linked into a set of Apache-2.0
+libraries, and they ship as compiled bytecode inside the APK and the AAB:
+**AndroidX** (`biometric`, which shows the fingerprint prompt; `webkit`,
+`appcompat` and `activity`, which the activity and the webview the interface runs
+in are built on; `lifecycle-process`), **com.google.android.material** for the
+theme, and the **Kotlin** standard library and coroutines — along with the
+transitive `androidx.*` artifacts those resolve to.
+
+One licence covers all of them, and it is the same
+[`licences/Apache-2.0.txt`](licences/Apache-2.0.txt) that `cpal` and `sherpa-onnx`
+already use, so the catalogue names them together and nothing new is bundled for
+them. What Apache-2.0 requires of an unmodified binary is §4(a) — that the
+recipients be given a copy of the licence — which the catalogue, the bundle and the
+Licences screen all do. §4(d), the `NOTICE` clause, is conditional on the work
+actually carrying a `NOTICE` file, and none of these does: their repositories ship
+`LICENSE.txt` and no `NOTICE`.
+
+The set is the build's rather than this document's. It is worth reading
+`build.gradle.kts` rather than this list when it matters, and worth knowing that a
+declared version is not always the resolved one — `material:1.12.0` currently
+resolves to 1.13.0 — so a list that has to be exact should be generated from the
+build rather than transcribed from it.
 
 ### The speech model is downloaded, not shipped
 
@@ -259,7 +331,7 @@ font's reserved name is `Source`, not `Noto`, so no rename is required.
    ls "$APP/Contents/Resources/licences"
    ```
 
-   That directory must hold all fourteen files named in
+   That directory must hold all fifteen files named in
    `src-tauri/src/licences.rs`. The in-app screen works even if it does not — the
    text is compiled in — but a redistributor who wants to read the notices out of
    the bundle would be stuck.
@@ -271,7 +343,15 @@ font's reserved name is `Source`, not `Noto`, so no rename is required.
    licence rather than a copyleft one, but it does carry notice obligations; the
    LGPL has its own conditions on the derived `dictionary.txt`; and CC BY-SA is a
    share-alike licence, which is the one with real consequences for derived data.
-5. **Do not bundle the speech model without reading its terms.** This app fetches
+5. **Keep the espeak-ng pointer reachable if you ship a mobile build.** The Android
+   and iOS artifacts redistribute GPL-3.0-or-later code (see "espeak-ng is
+   redistributed by the mobile builds" above), so the licence text and the route to
+   its source have to travel with them — which they do, through the catalogue and
+   the bundle. What a distributor has to keep true is the other half: that the
+   source named there stays reachable, and that the vendored copy really is
+   unmodified. If you patch anything under the GPL, that patch becomes yours to
+   publish.
+6. **Do not bundle the speech model without reading its terms.** This app fetches
    it for the learner rather than shipping it, which is why its licence is
    recorded above rather than satisfied here. An offline installer, a mirror or a
    pre-seeded cache changes that, and the FunASR model agreement is not a free

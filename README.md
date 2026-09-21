@@ -154,12 +154,17 @@ filling in the Console listing, not code. What is not built yet is listed under
   which is what a fresh install has and what lets a trackpad get click-to-draw
   while a stylus gets dragging without anybody deciding.
 - **About and licences.** The fifth screen in the sidebar names the app's own
-  licence and shows the full text of every third-party licence its data, font and
-  compiled-in code are under, with what each source contributes and where the
-  notice sits inside the bundle. It also records the terms of the optional speech
-  model, which this app points at rather than ships. Nothing on it is fetched, and
-  none of the notices depend on a download: it is the receipt for the claims in
-  [Data and licences](#data-and-licences).
+  licence and shows the full text of the third-party licences that travel with it:
+  the embedded datasets, the interface font, and the third-party code compiled or
+  linked into the binary. For each it says what that source contributes and where
+  the notice sits inside the bundle. The catalogue is **curated rather than
+  exhaustive** — it names the sources whose licences oblige an attribution, not
+  every crate and package in the build graph, which run into the hundreds and are
+  almost all MIT or Apache-2.0, and whose licence texts the catalogue carries
+  anyway. `LICENSES.md` draws that line in the same place. It also records the
+  terms of the optional speech model, which this app points at rather than ships.
+  Nothing on it is fetched, and none of the notices depend on a download: it is
+  the receipt for the claims in [Data and licences](#data-and-licences).
 
 ## Quick start
 
@@ -1143,7 +1148,7 @@ that breaks only in the packaged app:
 
 ```bash
 APP=".cargo-target/release/bundle/macos/Hanzi Tutor.app"
-ls "$APP/Contents/Resources/licences"       # fourteen files, named in src-tauri/src/licences.rs
+ls "$APP/Contents/Resources/licences"       # fifteen files, named in src-tauri/src/licences.rs
 ls -lh "$APP/Contents/MacOS/hanzi-tutor"    # ~62 MB: the data, the font and the engine are in here
 codesign -dv --verbose=4 "$APP" 2>&1 | grep -E "Authority|TeamIdentifier"
 open "$APP"                                 # then look at About and licences
@@ -1208,6 +1213,8 @@ carries a notice obligation. See **[LICENSES.md](LICENSES.md)**.
 | The SQLite bindings, `rusqlite` | rusqlite | MIT |
 | Microphone capture, `cpal` | RustAudio/cpal | Apache-2.0 |
 | Speech recognition engine, `sherpa-onnx` | k2-fsa/sherpa-onnx | Apache-2.0 |
+| Text-to-phoneme front end, `espeak-ng` (**mobile builds only**) | espeak-ng, vendored by sherpa-onnx | GPL-3.0-or-later |
+| The Android app's libraries: AndroidX, Material, Kotlin | AndroidX, Material | Apache-2.0 |
 | Model inference, ONNX Runtime | microsoft/onnxruntime | MIT |
 
 **Not bundled, and deliberately so:** the speech **model**. It is 163 MB, the app

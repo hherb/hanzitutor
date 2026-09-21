@@ -170,7 +170,7 @@ HANZI_TUTOR_DATA_DIR="$PWD/.tmp-data" ./.cargo-target/debug/hanzi-tutor 2>&1 \
 # [webview] review queue: 2 due, 2 in this session
 # [webview] drawable characters: 9574
 # [webview] speech: using Tingting (Chinese (China mainland)) (zh_CN)
-# [webview] licences: 14 notices bundled
+# [webview] licences: 17 notices bundled
 # [webview] course cursor: resuming at character 413
 # [webview] character 的: de, 8 strokes
 # [webview] spoke 面
@@ -487,6 +487,20 @@ window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
     instead of a licence breach discovered after shipping. The same file pins the
     version across `Cargo.toml`, `tauri.conf.json` and `package.json`, which
     otherwise drift apart in silence.
+
+    **A notice can be owed for code that is compiled in and never called, and
+    whether it is there can differ by platform.** `espeak-ng` (GPL-3.0-or-later) is
+    inside the prebuilt `sherpa-onnx` library that the Android and iOS builds link,
+    so those artifacts redistribute it even though this app only ever *recognises*
+    speech and never synthesises it; macOS links the same archive's components
+    individually and the linker drops what nothing references. An early `nm` and
+    `strings` check on macOS therefore concluded, correctly, that the desktop
+    binary does not contain it — and that conclusion was then written down as a
+    claim about the app, which the mobile builds make false. So: anything that
+    arrives inside a prebuilt mobile binary has to be checked **in that binary** —
+    the `.so` for each ABI, the iOS framework slice — and a licences test, not a
+    one-off check, is what keeps the answer current. GPLv3 §6 conditions *conveying*
+    the object code rather than using it, so "we never call it" is not an answer.
 
 24. **The bundled font is a file this project licenses, under a name it
     controls.** The interface's Chinese face is Noto Sans SC, committed at
@@ -1816,7 +1830,7 @@ open "$APP"
 A failure of step 1 or 2 is the class of bug the tests cannot see, so it is worth
 doing after any change to `bundle.resources`, the font path or `vite.config.ts`.
 Step 4 also confirms the compiled-in notices reached the interface: the log line
-`[webview] licences: 14 notices bundled` appears on stderr at startup, and the
+`[webview] licences: 17 notices bundled` appears on stderr at startup, and the
 fourth sidebar entry renders them.
 
 ### Releasing it

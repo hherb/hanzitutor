@@ -21,8 +21,9 @@ there is exactly one copy of each to keep current.
 | `OFL-1.1.txt` | Noto Sans SC, the CJK face bundled for the interface | SIL Open Font License 1.1 |
 | `SQLite-Public-Domain.txt` | SQLite, the engine behind the study database — the first piece of third-party *code* in the binary | Public domain |
 | `MIT-rusqlite.txt` | The `rusqlite` bindings, and `libsqlite3-sys` which vendors SQLite | MIT |
-| `Apache-2.0.txt` | `cpal`, which opens the microphone for tone practice, and `sherpa-onnx`, which runs the speech model | Apache-2.0 |
+| `Apache-2.0.txt` | `cpal`, which opens the microphone for tone practice; `sherpa-onnx`, which runs the speech model; and the Android build's libraries — AndroidX, Material and Kotlin | Apache-2.0 |
 | `MIT-onnxruntime.txt` | ONNX Runtime, which executes the speech model. It arrives statically linked inside the `sherpa-onnx` native archive rather than as a crate, so nothing in `Cargo.toml` points at it | MIT |
+| `GPL-3.0.txt` | `espeak-ng`, which the **Android and iOS** builds redistribute inside the prebuilt `sherpa-onnx` library — compiled into it and never called, because this app recognises speech and does not synthesise it | GPL-3.0-or-later |
 
 All of these are fetched verbatim by `scripts/fetch-data.sh` (`CC-CEDICT.txt`,
 `SQLite-Public-Domain.txt`, `MIT-rusqlite.txt` and `MIT-onnxruntime.txt` are
