@@ -1687,6 +1687,12 @@ open items, in the order they should be done:
    Android started at the first entry, and pressing *Sync now* on the iPhone was
    what fixed it. The seam is `hanzi_sync::write_vocab_cursors` and the sync
    service in `src-tauri/src/sync.rs`.
+   **This is the missing half, not a redesign.** The per-group merge,
+   `merge_vocab_cursors`, and its tests already exist and were verified on two
+   databases — do not rework them to make publishing easier. The rule stated under
+   "Why a position that syncs was worth the care" above is what is at stake: a
+   position that publishes without being merged is worse than one that never
+   leaves the device, because it is the failure M13 exists to avoid.
 2. **A progress tag per entry** (asked for, not started). The data is better than
    `attempts`/`bestScore`: every character in an entry has an SM-2 card with an
    interval and a due date, and the schedule is folded from the synced attempt
