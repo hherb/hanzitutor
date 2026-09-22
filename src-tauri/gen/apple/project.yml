@@ -60,8 +60,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.5.7
-        CFBundleVersion: "0.5.7"
+        CFBundleShortVersionString: 0.5.8
+        CFBundleVersion: "0.5.8"
     entitlements:
       path: hanzi-tutor_iOS/hanzi-tutor_iOS.entitlements
     scheme:

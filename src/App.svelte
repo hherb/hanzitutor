@@ -15,6 +15,7 @@
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
   import PhrasesPanel from "./lib/PhrasesPanel.svelte";
   import SettingsPanel from "./lib/SettingsPanel.svelte";
+  import ShortcutCard from "./lib/ShortcutCard.svelte";
   import StartupWizard from "./lib/StartupWizard.svelte";
   import TonePanel from "./lib/TonePanel.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
@@ -22,6 +23,8 @@
   import { INTRO_PAGES, notesFor } from "./lib/startupPages";
   import type { Page } from "./lib/startupPages";
   import { dueLabel } from "./lib/due";
+  import { shortcutFor } from "./lib/shortcuts";
+  import type { ShortcutId } from "./lib/shortcuts";
   import { INK_WIDTH, polylineLength } from "./lib/render";
   import type { Sweep } from "./lib/render";
   import type {
@@ -148,6 +151,16 @@
    * right thing, and because it is what the startup log names.
    */
   let startupSheet = $state<{ kind: "intro" | "notes"; pages: Page[] } | null>(null);
+
+  /**
+   * True while the key list is open.
+   *
+   * Not a sheet and not a screen: the card sits in a corner, leaves the board
+   * visible, and takes nothing away from the keys it lists — which is the whole
+   * point of it (see `lib/ShortcutCard.svelte`). Nothing reads this except the
+   * card's own presence and the two places that open it.
+   */
+  let shortcutsOpen = $state(false);
 
   /**
    * The version this binary is.
@@ -1008,6 +1021,47 @@
       void refreshReview();
     }, 60_000);
 
+    /**
+     * Do what one shortcut says, now that it has been recognised.
+     *
+     * A `switch` over the id rather than a chain of key comparisons, so the card
+     * and the handler cannot disagree about *which keys exist* — only about what
+     * each one does, which is this function. The `never` arm is what makes a new
+     * entry in `SHORTCUTS` without an action here a compile error.
+     */
+    const runShortcut = (id: ShortcutId) => {
+      switch (id) {
+        case "check":
+          if (report) advance();
+          else void check();
+          break;
+        case "undo":
+          undo();
+          break;
+        case "previous":
+          navigate(-1);
+          break;
+        case "next":
+          navigate(1);
+          break;
+        case "strokes":
+          toggleStrokeOrder();
+          break;
+        case "hear":
+          void hear();
+          break;
+        case "help":
+          // Handled by the caller: opening the card is not the same kind of act as
+          // the six keys above, and it must not be swallowed by `preventDefault`
+          // before it has been toggled.
+          break;
+        default: {
+          const unhandled: never = id;
+          void unhandled;
+        }
+      }
+    };
+
     const onKey = (event: KeyboardEvent) => {
       // The vocabulary screen has text fields; never steal their keystrokes.
       const target = event.target as HTMLElement | null;
@@ -1016,7 +1070,9 @@
       // The startup reading covers the board, so the board's own keys must not
       // reach past it: Enter would grade an empty board behind the sheet and S
       // would start an animation nobody can see. Escape dismisses it — the same
-      // act as Back on Android, and the same act as Skip.
+      // act as Back on Android, and the same act as Skip. **A card that leaves
+      // the board visible is not this case**, which is why the key list is a card
+      // and not a sheet (see `ShortcutCard.svelte`).
       if (startupSheet) {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -1025,23 +1081,22 @@
         return;
       }
 
-      const meta = event.metaKey || event.ctrlKey;
-      if (event.key === "Enter") {
+      if (shortcutsOpen && event.key === "Escape") {
         event.preventDefault();
-        if (report) advance();
-        else void check();
-      } else if (event.key === "Backspace" || (meta && event.key.toLowerCase() === "z")) {
-        event.preventDefault();
-        undo();
-      } else if (event.key === "ArrowRight") {
-        navigate(1);
-      } else if (event.key === "ArrowLeft") {
-        navigate(-1);
-      } else if (event.key.toLowerCase() === "s") {
-        toggleStrokeOrder();
-      } else if (event.key.toLowerCase() === "h") {
-        void hear();
+        shortcutsOpen = false;
+        return;
       }
+
+      const shortcut = shortcutFor(event);
+      if (shortcut === null) return;
+      // A key the app acts on is claimed outright: the browser must not also
+      // scroll a list behind the board or re-submit what Enter was pressed in.
+      event.preventDefault();
+      if (shortcut.id === "help") {
+        shortcutsOpen = !shortcutsOpen;
+        return;
+      }
+      runShortcut(shortcut.id);
     };
     window.addEventListener("keydown", onKey);
     return () => {
@@ -2392,9 +2447,13 @@
 -->
 {#snippet characterNav()}
   <div class="nav">
-    <button onclick={nav.back} disabled={nav.first} aria-label="Previous">←</button>
+    <button onclick={nav.back} disabled={nav.first} aria-label="Previous" title="Previous (←)">
+      ←
+    </button>
     <span>{nav.position} / {nav.total}</span>
-    <button onclick={nav.forward} disabled={nav.last} aria-label="Next">→</button>
+    <button onclick={nav.forward} disabled={nav.last} aria-label="Next" title="Next (→)">
+      →
+    </button>
   </div>
 {/snippet}
 
@@ -2457,6 +2516,8 @@
       charactersTotal={stats?.teachable ?? 0}
       {characterLevel}
       onSelectCharacterLevel={navigating((level: number | null) => (characterLevel = level))}
+      {shortcutsOpen}
+      onToggleShortcuts={navigating(() => (shortcutsOpen = !shortcutsOpen))}
       onShowSettings={navigating(() => switchView("settings"))}
       onShowLicences={navigating(() => switchView("about"))}
     />
@@ -2821,7 +2882,7 @@
                     ? "Looking for a Chinese voice…"
                     : voice === null
                       ? "No Chinese voice is installed, so pronunciation is unavailable"
-                      : `Pronounce this character (${voice})`}
+                      : `Pronounce this character (H) — ${voice}`}
                 >
                   <span class="tool-glyph"><Icon name="speaker" /></span>
                   <span class="tool-word">Listen</span>
@@ -3104,6 +3165,14 @@
       </div>
     {/if}
   </main>
+
+  <!-- The key list, in a corner rather than over the board: it exists to be read
+       a line at a time while the keys are pressed, so it must not cover what they
+       act on. Above the panels, below the phone's navigation sheet and the
+       startup reading. -->
+  {#if shortcutsOpen}
+    <ShortcutCard onClose={() => (shortcutsOpen = false)} />
+  {/if}
 
   <!-- The startup reading, over everything. Last in the app so it is above the
        board and the phone's navigation sheet in paint order as well as in

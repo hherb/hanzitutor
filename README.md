@@ -72,6 +72,12 @@ filling in the Console listing, not code. What is not built yet is listed under
 - **Two practice modes.** *Trace* puts a faint copy of the character on the board
   to follow. *Recall* shows only the pinyin and meaning, and grades what you
   write from memory.
+- **Keyboard shortcuts, in a card that does not cover the board.** `?` opens it —
+  there is an entry at the foot of the sidebar too — and it lists Enter to check or
+  move on, ⌫ or ⌘Z to take a stroke back, ← and → to move, S to watch the character
+  written and H to hear it. Because it leaves the board visible and takes no keys
+  away, a shortcut can be read and then tried with the card still open. Escape
+  closes it.
 - **An introduction read once, and what changed after an update.** A first launch
   gets four short pages: what the app is, what Trace and Recall are for, the four
   measures an attempt is graded on, and where the course, the word list and the
@@ -994,6 +1000,8 @@ src/lib/                    Svelte components
   render.ts                 canvas painting, the stroke-order sweep, verdict colours
   WordsPanel.svelte         the HSK word list: search, browse, practise
   CharacterPanel.svelte     the character set: search, a character's page, practise
+  ShortcutCard.svelte       the key list, in a corner rather than over the board
+  shortcuts.ts              the keys themselves, read by the card and the handler
   VocabularyPanel.svelte    the vocabulary list: add, group, export, import
   LessonSidebar.svelte      course, list, word, character and screen navigation
   due.ts                    how a due date is said out loud, for both screens

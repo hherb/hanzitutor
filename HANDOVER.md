@@ -117,10 +117,15 @@ It is a copy, so the real study data is untouched, and `.tmp-*/` is gitignored.
 Two more things save time on the same check. **Open the screen you want to look at
 by changing the default `view` in `App.svelte` for the run** and revert it before
 committing: a synthetic `CGEvent` click is dropped without an accessibility grant,
-so the app cannot be driven from here. And **capture the window rather than the
-screen** — `Quartz.CGWindowListCopyWindowInfo` (pyobjc, already installed) gives
-the `kCGWindowNumber`, and `screencapture -x -o -l<id> out.png` then takes a
-picture of the app alone, with nobody's other windows in it.
+so the app cannot be driven from here. **A key, however, can be**: a temporary line
+in `onMount` doing
+`window.dispatchEvent(new KeyboardEvent("keydown", { key: "s", cancelable: true }))`
+goes through the *real* handler — the same path a pressed key takes, minus the
+browser's default action — which is how the `?` card was checked (that it opens,
+that `S` still animates with it open, and that Escape closes it). And **capture the
+window rather than the screen** — `Quartz.CGWindowListCopyWindowInfo` (pyobjc,
+already installed) gives the `kCGWindowNumber`, and `screencapture -x -o -l<id>
+out.png` then takes a picture of the app alone, with nobody's other windows in it.
 
 Unrelated, and worth knowing anyway: killing the shell that launched the app does
 **not** kill the app. An orphan left behind goes on drawing its window and asking
@@ -232,6 +237,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Dataset pipeline | Done — 9,574 characters with stroke geometry, 7,744 in a frequency-ordered course of 775 lessons, 9,443 HSK 3.0 words, in one committed 13 MB artifact |
 | Drawing canvas | Done, human-confirmed — trace and recall modes, drag and click-to-draw, colour-coded verdicts |
 | Board control row | Done, checked as a render — three cards (writing help, pronunciation, drawing) centred under the board, one row at 390 px and at 1280 px |
+| Board keys | Done — `?` or the sidebar's "Keyboard shortcuts" opens a card in a corner, deliberately not covering the board so a key can be tried while it is open; the keys are data and the handler is exhaustive over them (§6c) |
 | Stroke-order animation (M7) | Done — the pen sweeps each centre-line with the outline revealed behind it |
 | Personal vocabulary list (M1) | Done — groups, drilling, JSON and CSV export, JSON import (merge or replace) |
 | Progress and SRS (M2) | Done — SM-2 behind a `Scheduler` trait; the review queue is drawn from the course and the list together |
@@ -387,6 +393,8 @@ src/
   lib/WordsPanel.svelte     the HSK word list: search, browse, practise
   lib/CharacterPanel.svelte the character set: search, a character's own page
                             (meaning, readings, facts, the words using it), practise
+  lib/ShortcutCard.svelte   the board's keys, in a corner rather than over it (§6c)
+  lib/shortcuts.ts          the keys as data — read by that card and by the handler
   lib/due.ts                due dates in words, shared by the board and that page
   lib/VocabularyPanel.svelte the personal list: groups, entries, import/export
   lib/PhrasesPanel.svelte   graded phrases with their bundled clips
@@ -798,7 +806,9 @@ after each item) both do this now. The shape is the rule, not either file.
     and **`onKey` returns early while `startupSheet` is set**, so the board's
     Enter/S/H/←/→ cannot fire behind a sheet that covers the board — Enter would
     grade an empty canvas and S would animate something nobody can see. The same
-    trap awaits anything else added over the board. **And bumping the version is
+    trap awaits anything else added **over** the board, which means a sheet that
+    *covers* it: the keys card (§6c) is deliberately not that — it leaves the board
+    visible and takes no key away, which is the point of it. **And bumping the version is
     what makes the notes show**: `src/lib/startupPages.ts`'s `NOTES` is keyed by
     version, so it is looked at at that moment and not before (see §8).
 
@@ -2030,6 +2040,48 @@ implementation, and each is the answer to a question that will come back:
 `lib/due.ts` exists because this screen and the board's detail card both say a due
 date out loud, and two copies of "in 5 days" would drift. `App.svelte` imports
 `dueLabel` from there; keep it that way rather than re-adding a local copy.
+
+
+## 6c. The board's keys, and the card that lists them
+
+`?` (`/` also works) opens the key list: `src/lib/ShortcutCard.svelte`, over the
+keys themselves in `src/lib/shortcuts.ts`. It exists because the shortcuts had no
+documentation at all — the "How this works" disclosure that listed them went with
+the rest of the board's chrome. Four things about it are decisions:
+
+- **It is a card, not a sheet, and that is the whole design.** A list of the
+  board's keys cannot live on something that covers the board: the introduction
+  deliberately does not carry it for exactly that reason (`startupPages.ts`), and
+  the same objection would sink a modal `?` dialog. So it sits in a corner
+  (`position: fixed`, `z-index: 20` — above the panels, **below** the phone's
+  navigation sheet at 40 and the startup reading at 50), takes no focus, traps
+  nothing, and suppresses no key. A key can be read and then pressed with the card
+  still open, which is the only version of this that helps. **Do not turn it into a
+  modal, and do not add it to the early-return in `onKey`.** Invariant 31's rule is
+  about a sheet that *covers* the board; a card that leaves it visible is not that.
+- **The keys are data, and the handler is exhaustive over them.** `SHORTCUTS` is
+  the one place a key is named; `shortcutFor` matches it, and `App.svelte`'s
+  `runShortcut` is a `switch` whose `default` assigns to `never`. Adding a key
+  without an action is therefore a **compile error**, not a key that does nothing,
+  and the card cannot name a key the handler has never heard of. Keep it that way:
+  a second copy of the key list in markup is how the two drift.
+- **Plain letters only; chords stay the system's.** `S` and `H` require no ⌘/⌃/⌥,
+  because `⌘H` hides the window on macOS and a board that answered it would swallow
+  the standard shortcut. `⌘Z` is the deliberate exception — that is what undo is.
+  A handled key is now `preventDefault`ed outright (it was only Enter and
+  Backspace before), so the browser does not also scroll a list behind the board;
+  that is why the modifier rule matters rather than being tidiness.
+- **There is a way in that is not the key.** A list of shortcuts nobody can find
+  because they do not know the key that opens it is not help, so the sidebar footer
+  carries "Keyboard shortcuts" beside Settings and About, and it shows as *on*
+  while the card is up.
+
+The order in `onKey` is the thing to preserve when touching this: **text fields
+first** (invariant 9 — a vocabulary field's `Backspace` is the field's), **then the
+startup sheet** (invariant 31 — a covering sheet owns Escape and nothing behind it
+is live), **then Escape closes this card**, and only then the shortcuts
+themselves.
+
 
 ## 7. Open decisions
 

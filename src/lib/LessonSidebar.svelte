@@ -56,6 +56,16 @@
     onSelectCharacterLevel: (level: number | null) => void;
     /** Open the Settings screen. */
     onShowSettings: () => void;
+    /** Whether the key list is showing, so its entry can say so. */
+    shortcutsOpen: boolean;
+    /**
+     * Show or hide the key list.
+     *
+     * In the footer rather than only behind its own key: a list of shortcuts
+     * nobody knows about because the reader does not know the key that opens it
+     * is not help. This is the way in for somebody who has never pressed `?`.
+     */
+    onToggleShortcuts: () => void;
     /** Open the About and licences screen. */
     onShowLicences: () => void;
   }
@@ -86,6 +96,8 @@
     characterLevel,
     onSelectCharacterLevel,
     onShowSettings,
+    shortcutsOpen,
+    onToggleShortcuts,
     onShowLicences,
   }: Props = $props();
 
@@ -354,6 +366,11 @@
     </button>
     <button class:on={view === "about"} onclick={onShowLicences}>
       About and licences
+    </button>
+    <!-- Last, and deliberately not among the screens above: this one opens a card
+         over whatever is showing rather than switching to a screen of its own. -->
+    <button class:on={shortcutsOpen} onclick={onToggleShortcuts}>
+      Keyboard shortcuts
     </button>
   </div>
 </nav>

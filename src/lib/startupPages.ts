@@ -52,7 +52,8 @@ export interface Page {
  * **once at the start** rather than sitting on the screen for ever.
  *
  * Deliberately no keyboard-shortcut list: the board's keys cannot be tried while
- * a sheet covers the board, and that list is the `?` overlay's job (ROADMAP).
+ * a sheet covers the board, so that list is the `?` card's job — a card that
+ * leaves the board visible (`ShortcutCard.svelte`).
  */
 export const INTRO_PAGES: Page[] = [
   {
@@ -183,6 +184,38 @@ export const INTRO_PAGES: Page[] = [
  * short list, and one honest page beats three padded ones.
  */
 export const NOTES: Record<string, Page[]> = {
+  "0.5.8": [
+    {
+      title: "What's new in 0.5.8",
+      lead:
+        "The board's keyboard shortcuts are written down again. Nothing about how " +
+        "your writing is graded has changed, and your practice history, schedule " +
+        "and vocabulary are untouched.",
+      points: [
+        {
+          name: "Press ?",
+          what:
+            "A small card lists every key the board answers to — Enter to check, " +
+            "⌫ or ⌘Z to take a stroke back, ← and → to move, S to watch the " +
+            "character written, H to hear it, and ? for the list itself. Escape " +
+            "closes it.",
+        },
+        {
+          name: "The card does not cover the board",
+          what:
+            "That is the point of it: a key can be read and then pressed straight " +
+            "away, with the card still there. It sits in the corner and takes no " +
+            "keys away from you.",
+        },
+        {
+          name: "Keyboard shortcuts in the sidebar",
+          what:
+            "The same card opens from the bottom of the sidebar, for anybody who " +
+            "did not know there was a key for it.",
+        },
+      ],
+    },
+  ],
   "0.5.7": [
     {
       title: "What's new in 0.5.7",

@@ -696,13 +696,8 @@ Deliberately not done, and why:
 
 Small, independently shippable, still open, roughly in value order:
 
-- **Keyboard shortcut help** — a `?` overlay. The shortcuts exist and nothing in the
-  app now documents them: the "How this works" disclosure that listed them was removed
-  with the rest of the board's chrome, and the introduction that replaced the
-  disclosure deliberately does not list them, because it is a sheet over the board
-  whose keys it would be naming. So this is still the only route left.
-- **Dark mode** — the canvas is deliberately paper-white, so this needs thought rather
-  than a colour swap.
+- **Dark mode** — the canvas is deliberately paper-white, so this needs thought
+  rather than a colour swap.
 - **UI scale / accessibility** — larger text and a bigger board; the board already
   sizes itself from its container.
 - **Tone pairs** — where most learners actually struggle. (The other half of this item
@@ -799,6 +794,22 @@ Already shipped, listed only so they are not re-added as open work:
   teaches thousands of characters no HSK list names; and the screen drills **one**
   character at a time — bulk practice stays the course's job, ten at a time. The
   `?` shortcut overlay above remains open.
+- **Keyboard shortcut help** — built, as the `?` card
+  (`src/lib/ShortcutCard.svelte`, over the keys themselves in
+  `src/lib/shortcuts.ts`). The board's shortcuts existed and nothing documented
+  them: the "How this works" disclosure that had listed them went with the rest of
+  the board's chrome, and the introduction deliberately did not take the list,
+  because a sheet over the board can only name keys the reader cannot try. What
+  still constrains new work: **the card is not a sheet**, and must not become one —
+  it sits in a corner, takes no focus and suppresses no key, which is the whole
+  reason a key can be read and then pressed with the card still open; the keys live
+  in `shortcuts.ts` as **data**, and the handler in `App.svelte` is an exhaustive
+  `switch` over their ids, so an entry with no action is a compile error rather
+  than a key that silently does nothing; only **plain** letters are claimed (`S`,
+  `H`), never a chord — `⌘H` hides the window on macOS and must stay the system's —
+  with `⌘Z` the one deliberate exception, because that is what undo is; and the
+  sidebar footer carries the same card, because a list of shortcuts somebody cannot
+  discover is not help.
 - **The startup reading — an introduction, and what changed** — built, where the
   board's explanation went. Four pages — what the app is, what Trace and Recall are
   for, the four grading measures (shape, placement, ink, order), and where the course,
@@ -822,8 +833,11 @@ Already shipped, listed only so they are not re-added as open work:
   version is what makes the notes show**, so `NOTES` in `startupPages.ts` is looked at
   then — an entry for the new version, or deliberately none, but never the previous
   release's text left in place. The shortcut list deliberately stayed out of both —
-  that is the `?` overlay above, and naming the board's keys on a sheet that covers
-  the board would be a list of things the reader cannot try.
+  that is the `?` card's job, and naming the board's keys on a sheet that covers the
+  board would be a list of things the reader cannot try. **That card is now built** —
+  see the keyboard-shortcut entry above. The two are the pair to keep straight: a
+  reading is *once*, a key list is *on demand*, which is why the card leaves the board
+  visible and the sheet does not.
 
 ## Known weak spots
 
