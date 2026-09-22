@@ -77,6 +77,25 @@ export interface GradeReport {
   fit: FitInfo | null;
 }
 
+/**
+ * The measures behind one attempt's headline score, as they are stored.
+ *
+ * This is `GradeReport` reduced to the part that cannot be recomputed once the
+ * strokes are gone. It is sent back with the score when an attempt is recorded,
+ * so the grader can be checked against real handwriting later — the four
+ * weights and the shape tolerance are still a judgement, and this is the only
+ * evidence that can settle them.
+ */
+export interface AttemptMeasures {
+  shape: number;
+  position: number;
+  ink: number;
+  inkCoverage: number;
+  order: number;
+  legible: boolean;
+  orderCorrect: boolean;
+}
+
 export interface Character {
   ch: string;
   /** Frequency rank, 1 = most common; 0 when not in the frequency list. */

@@ -21,6 +21,7 @@
   import type { Sweep } from "./lib/render";
   import type {
     AppInfo,
+    AttemptMeasures,
     Character,
     DatasetStats,
     GradeReport,
@@ -1411,7 +1412,19 @@
           `ink=${graded.inkScore.toFixed(2)}/${graded.inkCoverage.toFixed(2)}, ` +
           `legible=${graded.legible}, order=${graded.orderCorrect}`,
       );
-      await recordProgress(character.ch, graded.overall);
+      // The measures go with the score. The schedule needs only the score, but
+      // nothing can recover the per-measure result once the strokes are gone,
+      // and that result is the only thing the grading tolerances can be checked
+      // against — so it is recorded while it still exists.
+      await recordProgress(character.ch, graded.overall, {
+        shape: graded.shapeScore,
+        position: graded.positionScore,
+        ink: graded.inkScore,
+        inkCoverage: graded.inkCoverage,
+        order: graded.orderScore,
+        legible: graded.legible,
+        orderCorrect: graded.orderCorrect,
+      });
     } catch (cause) {
       error = `Grading failed: ${cause}`;
     } finally {
@@ -1458,9 +1471,13 @@
    * same character met inside a word are the same thing to learn, so they share
    * one card and one due date.
    */
-  async function recordProgress(ch: string, score: number) {
+  async function recordProgress(
+    ch: string,
+    score: number,
+    measures?: AttemptMeasures,
+  ) {
     try {
-      const next = await api.recordProgress(ch, score);
+      const next = await api.recordProgress(ch, score, measures);
       applyProgress(next);
       const card = next.cards.find((candidate) => candidate.ch === ch);
       void api.log(

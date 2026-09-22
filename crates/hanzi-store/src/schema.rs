@@ -24,7 +24,14 @@ use rusqlite::Connection;
 ///     than only appended to: a `uuid` to name it across devices, an `updated_at`
 ///     to settle who wrote last, and a `deleted` tombstone so that a removal
 ///     travels instead of the entry being resurrected by a peer's older copy.
-pub const SCHEMA_VERSION: i64 = 4;
+/// 5 — the grading measures behind an attempt's headline score (`shape`,
+///     `position`, `ink`, `ink_coverage`, `order_score`, `legible`,
+///     `order_correct`), so the tolerances those scores were graded against can be
+///     checked against real handwriting instead of synthetic jitter. All
+///     nullable on purpose: an attempt recorded before this, and one merged in
+///     from a peer, carry only the headline score, and a measure that was never
+///     taken must not read as a zero.
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// Everything the database needs, in one idempotent script.
 ///
@@ -253,6 +260,36 @@ fn upgrade(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch(&format!(
                 "ALTER TABLE {table} ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
             ))?;
+        }
+    }
+
+    // ---- schema 5: what an attempt was graded from -------------------------
+    //
+    // The headline score is one number, and it is not enough to check the
+    // grader against: four weights and a shape tolerance produced it, and
+    // without the measures there is no way to ask whether any of them is set
+    // where it should be. They are added to the log rather than to the card
+    // because they describe one attempt, not a schedule.
+    //
+    // Deliberately no backfill and no default. A row written before these
+    // columns existed has no measures, and neither has an attempt merged in from
+    // a peer — the shard format carries the score and the time, and nothing
+    // here invents the rest. `NULL` says "not measured", which is the truth;
+    // `0.0` would say "measured, and wrong".
+    for column in [
+        "shape",
+        "position",
+        "ink",
+        "ink_coverage",
+        "order_score",
+    ] {
+        if !has_column(conn, "attempt", column)? {
+            conn.execute_batch(&format!("ALTER TABLE attempt ADD COLUMN {column} REAL"))?;
+        }
+    }
+    for column in ["legible", "order_correct"] {
+        if !has_column(conn, "attempt", column)? {
+            conn.execute_batch(&format!("ALTER TABLE attempt ADD COLUMN {column} INTEGER"))?;
         }
     }
 

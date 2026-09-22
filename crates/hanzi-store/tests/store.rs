@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hanzi_core::progress::{build_queue, ReviewSource, MAX_HISTORY};
-use hanzi_core::{BoardSize, CursorStore, Pace, ProgressStore, Rating, SettingsStore, VocabStore};
+use hanzi_core::{AttemptMeasures, BoardSize, CursorStore, Pace, ProgressStore, Rating, SettingsStore, VocabStore};
 use hanzi_store::{Db, SCHEMA_VERSION};
 
 /// A private directory per test, cleaned up by the caller's `finish`.
@@ -840,6 +840,116 @@ fn a_schema_two_database_gains_attempt_provenance_without_renumbering() {
     // And the upgrade is not a one-off: reopening again changes nothing.
     let again = Db::open(&dir).unwrap();
     assert_eq!(again.attempts(Some('好')).unwrap().len(), 3);
+
+    finish(&dir);
+}
+
+// ---- schema 5: what an attempt was graded from -----------------------------
+//
+// The headline score is one number, and it is not enough to check the grader
+// against. Four weights and a shape tolerance produced it, and the measures are
+// the only record of how — which is why they are written down rather than
+// recomputed: an attempt's strokes are gone by the time its row exists.
+
+/// The measures a test records, so the round trip compares something with
+/// fractional values that a rounding bug could not pass by accident.
+fn some_measures() -> AttemptMeasures {
+    AttemptMeasures {
+        shape: 0.82,
+        position: 0.71,
+        ink: 0.33,
+        ink_coverage: 0.95,
+        order: 1.0,
+        legible: false,
+        order_correct: true,
+    }
+}
+
+#[test]
+fn the_measures_behind_an_attempt_are_kept_with_it() {
+    let dir = dir("measures");
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+
+    let measures = some_measures();
+    store.record_measured('好', 63.0, Some(measures)).unwrap();
+    // A caller with only a score still records; it just records less. The two
+    // states have to stay distinguishable — `ink = 0.0` is a real verdict,
+    // "never measured" is not a verdict at all.
+    store.record_at('学', 88.0, "2026-09-19T10:00:00Z").unwrap();
+    store.save().unwrap();
+
+    let logged = db.attempts(None).unwrap();
+    assert_eq!(logged.len(), 2);
+    let measured = logged.iter().find(|a| a.ch == "好").unwrap();
+    assert_eq!(measured.measures, Some(measures), "every measure survived");
+    let bare = logged.iter().find(|a| a.ch == "学").unwrap();
+    assert_eq!(bare.measures, None);
+
+    // It is in the file rather than in memory, so a restart does not lose it.
+    drop(store);
+    let reopened = Db::open(&dir).unwrap();
+    let logged = reopened.attempts(Some('好')).unwrap();
+    assert_eq!(logged[0].measures, Some(measures));
+    assert_eq!(logged[0].score, 63.0, "the headline score is unchanged");
+
+    finish(&dir);
+}
+
+#[test]
+fn a_schema_four_database_gains_the_measure_columns_and_keeps_its_attempts() {
+    // Rows written before schema 5 have no measures, and cannot be given any:
+    // the strokes they came from are long gone. What the upgrade must do is add
+    // the columns without touching a row, and read the old rows back as "not
+    // measured" — a zero would be a verdict the grader never gave.
+    let dir = dir("older-measures");
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    store
+        .record_measured('好', 71.0, Some(some_measures()))
+        .unwrap();
+    store.save().unwrap();
+    drop(store);
+
+    // Roll the file back to the shape schema 4 left it in.
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        for column in [
+            "shape",
+            "position",
+            "ink",
+            "ink_coverage",
+            "order_score",
+            "legible",
+            "order_correct",
+        ] {
+            conn.execute(&format!("ALTER TABLE attempt DROP COLUMN {column}"), [])
+                .unwrap();
+        }
+        conn.execute("UPDATE meta SET value = '4' WHERE key = 'schema'", [])
+            .unwrap();
+    }
+
+    let db = Db::open(&dir).unwrap();
+    let logged = db.attempts(Some('好')).unwrap();
+    assert_eq!(logged.len(), 1, "the attempt survived the upgrade");
+    assert_eq!(logged[0].score, 71.0);
+    assert_eq!(
+        logged[0].measures, None,
+        "an attempt from before the columns existed reads as unmeasured"
+    );
+
+    // The columns are usable straight away, on the same file.
+    let measures = some_measures();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    store.record_measured('学', 55.0, Some(measures)).unwrap();
+    store.save().unwrap();
+    let logged = db.attempts(Some('学')).unwrap();
+    assert_eq!(logged[0].measures, Some(measures));
+
+    // And the upgrade is not a one-off: reopening again changes nothing.
+    let again = Db::open(&dir).unwrap();
+    assert_eq!(again.attempts(None).unwrap().len(), 2);
 
     finish(&dir);
 }

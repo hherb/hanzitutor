@@ -72,6 +72,10 @@ pub(crate) fn progress(
             let record = AttemptRecord {
                 ch: ch.clone(),
                 attempt: attempt.clone(),
+                // The pre-M10 JSON kept an attempt's count and score, never the
+                // measures behind it — and the strokes those came from are long
+                // gone, so this is unrecoverable rather than merely missing.
+                measures: None,
             };
             insert_attempt(&tx, device_id, seq, &record).map_err(|e| progress_error(&db, e))?;
             seq += 1;

@@ -5,9 +5,9 @@
 //! testable without opening a window — see `tests/ipc_contract.rs`.
 
 use hanzi_core::{
-    build_lessons, grade_with_outlines, tone::ToneAttempt, BoardSize, Character, CursorView,
-    GradeOptions, GradeReport, Grade, Heard, Lesson, Pace, Point, ProgressView, ReviewView,
-    SettingsView, TextLookup, ToneVerdict, ToneTarget, VocabView, Word,
+    build_lessons, grade_with_outlines, tone::ToneAttempt, AttemptMeasures, BoardSize, Character,
+    CursorView, GradeOptions, GradeReport, Grade, Heard, Lesson, Pace, Point, ProgressView,
+    ReviewView, SettingsView, TextLookup, ToneVerdict, ToneTarget, VocabView, Word,
 };
 use serde::Serialize;
 use tauri::State;
@@ -871,16 +871,23 @@ pub fn progress(state: State<'_, AppState>) -> ProgressView {
 /// `score` is the 0..=100 headline score from the grading engine; the store
 /// derives the review rating from it and schedules the next one. A character
 /// with no card is one that has never been attempted.
+///
+/// `measures` is the report `score` came from, reduced to the part worth
+/// keeping. It is optional because the score is enough to study by: a caller
+/// that has only a score — an older interface, a script — still records. What it
+/// buys is the grader being checkable against real handwriting later, and it
+/// cannot be reconstructed afterwards, because the strokes are gone by then.
 #[tauri::command]
 pub fn record_progress(
     state: State<'_, AppState>,
     ch: char,
     score: f32,
+    measures: Option<AttemptMeasures>,
 ) -> Result<ProgressView, String> {
     let mut progress = state.lock_progress();
     progress
         .store
-        .record(ch, score)
+        .record_measured(ch, score, measures)
         .map_err(|e| e.to_string())?;
     Ok(committed_progress(&mut progress))
 }

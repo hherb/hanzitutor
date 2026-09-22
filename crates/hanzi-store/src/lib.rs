@@ -41,7 +41,7 @@ use hanzi_core::progress::{
 use hanzi_core::settings::{BoardSize, Pace, Settings, SettingsError, SettingsSink};
 use hanzi_core::time::now_iso8601;
 use hanzi_core::vocab::{Document as VocabDocument, VocabError, VocabSink};
-use hanzi_core::{Attempt, AttemptRecord, CardState, Entry, Rating};
+use hanzi_core::{Attempt, AttemptMeasures, AttemptRecord, CardState, Entry, Rating};
 use rusqlite::{params, Connection};
 
 pub use schema::SCHEMA_VERSION;
@@ -165,7 +165,7 @@ impl Db {
     pub fn attempts(&self, ch: Option<char>) -> Result<Vec<LoggedAttempt>, String> {
         let conn = self.lock();
         let path = self.path();
-        let sql = "SELECT id, device_id, seq, ch, at, score, rating FROM attempt";
+        let sql = format!("SELECT {ATTEMPT_COLUMNS} FROM attempt");
         let mut stmt = match ch {
             Some(_) => conn
                 .prepare(&format!("{sql} WHERE ch = ?1 {ATTEMPT_ORDER}"))
@@ -201,10 +201,10 @@ impl Db {
         let conn = self.lock();
         let path = self.path();
         let mut stmt = conn
-            .prepare(
-                "SELECT id, device_id, seq, ch, at, score, rating FROM attempt
-                 WHERE device_id = ?1 ORDER BY seq",
-            )
+            .prepare(&format!(
+                "SELECT {ATTEMPT_COLUMNS} FROM attempt
+                 WHERE device_id = ?1 ORDER BY seq"
+            ))
             .map_err(|e| at(&path, e))?;
         let rows = stmt
             .query_map([&self.device_id], read_attempt)
@@ -271,8 +271,34 @@ impl Db {
     }
 }
 
-/// Read one attempt row, in the column order every query above uses.
+/// Read one attempt row, in the column order [`ATTEMPT_COLUMNS`] selects.
 fn read_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoggedAttempt> {
+    // All seven measure columns are written together or not at all, so "is
+    // there a measure?" is one question. Asking it per column would invent a
+    // half-measured attempt that cannot occur, and `NULL` must stay distinct
+    // from a measured zero: `ink = 0.0` is a real verdict, "never measured" is
+    // not a verdict at all.
+    let shape: Option<f32> = row.get(7)?;
+    let position: Option<f32> = row.get(8)?;
+    let ink: Option<f32> = row.get(9)?;
+    let ink_coverage: Option<f32> = row.get(10)?;
+    let order: Option<f32> = row.get(11)?;
+    let legible: Option<bool> = row.get(12)?;
+    let order_correct: Option<bool> = row.get(13)?;
+    let measures = match (shape, position, ink, ink_coverage, order, legible, order_correct) {
+        (Some(shape), Some(position), Some(ink), Some(ink_coverage), Some(order), Some(legible), Some(order_correct)) => {
+            Some(AttemptMeasures {
+                shape,
+                position,
+                ink,
+                ink_coverage,
+                order,
+                legible,
+                order_correct,
+            })
+        }
+        _ => None,
+    };
     Ok(LoggedAttempt {
         id: row.get(0)?,
         device_id: row.get(1)?,
@@ -281,6 +307,7 @@ fn read_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoggedAttempt> {
         at: row.get(4)?,
         score: row.get(5)?,
         rating: row.get(6)?,
+        measures,
     })
 }
 
@@ -294,6 +321,16 @@ fn read_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoggedAttempt> {
 /// accumulates in `f32`, so folding the same log in two different orders would
 /// leave two devices with slightly different schedules and no way to notice.
 const ATTEMPT_ORDER: &str = "ORDER BY at, device_id, seq";
+
+/// The attempt columns every read of the log selects, in the order
+/// [`read_attempt`] expects them.
+///
+/// One constant rather than a string per query: the reader indexes by position,
+/// so a query that selected these in a different order would not fail to
+/// compile, it would quietly read a score as an ink measure.
+const ATTEMPT_COLUMNS: &str = "id, device_id, seq, ch, at, score, rating, \
+                               shape, position, ink, ink_coverage, order_score, \
+                               legible, order_correct";
 
 /// One row of the attempt log.
 #[derive(Clone, Debug, PartialEq)]
@@ -311,6 +348,16 @@ pub struct LoggedAttempt {
     pub score: f32,
     /// `again`, `hard`, `good` or `easy`.
     pub rating: String,
+    /// What the attempt was graded from — the four measures and the two
+    /// verdicts behind `score`.
+    ///
+    /// [`None`] when nothing measured it: an attempt recorded before schema 5,
+    /// or one merged in from another device, whose shard carries the score and
+    /// the time and nothing else. Kept here rather than recomputed because it
+    /// cannot be recomputed — the strokes are gone — and it is the only thing
+    /// that can say whether the tolerances behind `score` are set where they
+    /// should be.
+    pub measures: Option<AttemptMeasures>,
 }
 
 impl LoggedAttempt {
@@ -442,9 +489,16 @@ fn insert_attempt(
     seq: i64,
     record: &AttemptRecord,
 ) -> rusqlite::Result<()> {
+    // The measures are written as one group, so a row either carries them all or
+    // carries none. A caller that has no measures — the import of an old JSON
+    // document, an attempt arriving through sync — writes `NULL`, which is a
+    // different fact from a measured zero.
+    let m = record.measures;
     conn.execute(
-        "INSERT INTO attempt (device_id, seq, ch, at, score, rating)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO attempt (device_id, seq, ch, at, score, rating,
+                              shape, position, ink, ink_coverage, order_score,
+                              legible, order_correct)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             device_id,
             seq,
@@ -452,6 +506,13 @@ fn insert_attempt(
             record.attempt.at,
             record.attempt.score,
             record.attempt.rating.name(),
+            m.map(|m| m.shape),
+            m.map(|m| m.position),
+            m.map(|m| m.ink),
+            m.map(|m| m.ink_coverage),
+            m.map(|m| m.order),
+            m.map(|m| m.legible),
+            m.map(|m| m.order_correct),
         ],
     )?;
     Ok(())

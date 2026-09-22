@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
+  AttemptMeasures,
   AutoSync,
   AsrStatus,
   Character,
@@ -193,9 +194,16 @@ export const progress = () => invoke<ProgressView>("progress");
 /**
  * Record one graded character; `score` is the 0..=100 headline score. The
  * backend derives the review rating and schedules the next appearance.
+ *
+ * `measures` is the report the score came from. Passing it is what makes the
+ * grader tunable later: nothing can recover the per-measure result once the
+ * strokes are gone. It is optional so a caller with only a score still records.
  */
-export const recordProgress = (ch: string, score: number) =>
-  invoke<ProgressView>("record_progress", { ch, score });
+export const recordProgress = (
+  ch: string,
+  score: number,
+  measures?: AttemptMeasures,
+) => invoke<ProgressView>("record_progress", { ch, score, measures });
 
 /** What is due for review now, most overdue first, from both sources. */
 export const reviewQueue = () => invoke<ReviewView>("review_queue");

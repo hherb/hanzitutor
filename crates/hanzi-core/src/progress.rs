@@ -398,6 +398,61 @@ pub struct AttemptRecord {
     /// The character this attempt was on.
     pub ch: String,
     pub attempt: Attempt,
+    /// The grading measures behind the attempt's headline score, when the caller
+    /// has them.
+    ///
+    /// The schedule needs none of these, and nothing recomputes them: an
+    /// attempt's strokes are gone by the time it is saved. They are the only
+    /// record of *how* an attempt went wrong, which is what the grading
+    /// tolerances have to be checked against, so they travel beside the attempt
+    /// rather than being derived later. `None` is a real state — an attempt
+    /// merged from a peer carries only the score, and so does one recorded
+    /// before these existed.
+    pub measures: Option<AttemptMeasures>,
+}
+
+/// The per-measure grading result behind one attempt's headline score.
+///
+/// Every field is `0..=1` except the two verdicts. The names are
+/// [`GradeReport`](crate::grade::GradeReport)'s with `_score` dropped, because
+/// this *is* that report reduced to the part worth keeping: enough to re-check
+/// the shape tolerance and the four headline weights against real handwriting,
+/// and nothing that can be recomputed.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptMeasures {
+    /// Mean stroke-shape agreement.
+    pub shape: f32,
+    /// Mean stroke-placement agreement.
+    pub position: f32,
+    /// How much of the character's ink was put down.
+    pub ink: f32,
+    /// How much of the ink a correct trace would touch the attempt touched.
+    ///
+    /// Reported rather than scored, but kept: it is the "you never drew that
+    /// part" signal, and ink is a quarter of the headline score, so a weight
+    /// tuned without it would be tuned half-blind.
+    pub ink_coverage: f32,
+    /// How much of the character was written in the correct order.
+    pub order: f32,
+    /// Strokes recognisable and correctly placed. Independent of order.
+    pub legible: bool,
+    pub order_correct: bool,
+}
+
+impl AttemptMeasures {
+    /// The measures behind a graded attempt.
+    pub fn from_report(report: &crate::grade::GradeReport) -> Self {
+        Self {
+            shape: report.shape_score,
+            position: report.position_score,
+            ink: report.ink_score,
+            ink_coverage: report.ink_coverage,
+            order: report.order_score,
+            legible: report.legible,
+            order_correct: report.order_correct,
+        }
+    }
 }
 
 /// Where a schedule is kept.
@@ -602,7 +657,21 @@ impl ProgressStore {
 
     /// Record an attempt made now.
     pub fn record(&mut self, ch: char, score: f32) -> Result<CardView, ProgressError> {
-        self.record_at(ch, score, &now_iso8601())
+        self.record_measured(ch, score, None)
+    }
+
+    /// Record an attempt made now, keeping the measures it was graded from.
+    ///
+    /// This is what the app calls: the headline score is one number, and the
+    /// four weights behind it can only be checked against the measures that
+    /// produced it.
+    pub fn record_measured(
+        &mut self,
+        ch: char,
+        score: f32,
+        measures: Option<AttemptMeasures>,
+    ) -> Result<CardView, ProgressError> {
+        self.record_with(ch, score, &now_iso8601(), &Sm2, measures)
     }
 
     /// Record an attempt at a caller-supplied time, scheduled by [`Sm2`].
@@ -612,19 +681,21 @@ impl ProgressStore {
         score: f32,
         at: &str,
     ) -> Result<CardView, ProgressError> {
-        self.record_with(ch, score, at, &Sm2)
+        self.record_with(ch, score, at, &Sm2, None)
     }
 
     /// Record an attempt at a caller-supplied time under a chosen policy.
     ///
     /// This is what the [`Scheduler`] trait is for: the store does not care how
-    /// the next due date is chosen, only that it is.
+    /// the next due date is chosen, only that it is. `measures` reaches the sink
+    /// untouched — the schedule has no opinion about it.
     pub fn record_with(
         &mut self,
         ch: char,
         score: f32,
         at: &str,
         scheduler: &dyn Scheduler,
+        measures: Option<AttemptMeasures>,
     ) -> Result<CardView, ProgressError> {
         if parse_iso8601(at).is_none() {
             return Err(ProgressError::InvalidTimestamp(at.to_string()));
@@ -646,6 +717,7 @@ impl ProgressStore {
         self.pending.push(AttemptRecord {
             ch: key.clone(),
             attempt: recorded,
+            measures,
         });
 
         // Re-borrow immutably: the card is certainly there, it was just inserted.
@@ -1231,7 +1303,7 @@ mod tests {
 
         let mut store = ProgressStore::in_memory();
         let card = store
-            .record_with('好', 30.0, "2026-09-19T09:00:00Z", &Annually)
+            .record_with('好', 30.0, "2026-09-19T09:00:00Z", &Annually, None)
             .unwrap();
         assert_eq!(card.interval_days, 365.0);
         assert_eq!(card.due, "2027-09-19T09:00:00Z");
