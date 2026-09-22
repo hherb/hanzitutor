@@ -1125,6 +1125,11 @@ temp files.
   `failed to rename app …/hanzi-tutor_iOS.xcarchive/Products/Applications/Hanzi
   Tutor.app: Directory not empty (os error 66)`. `rm -rf src-tauri/gen/apple/build`
   first, every time; it is gitignored, so nothing is lost.
+- **Never run the iOS and Android builds at the same time.** Both write the same
+  `.cargo-target`, and `ring`'s build script loses the race — the build dies with
+  `failed to run custom build command for \`ring v0.17.14\``, which reads exactly
+  like a code error and is not one. The same command run alone succeeds with no
+  change. Build them one after another; each is about five minutes.
 - **A device run is `ios build` + `devicectl`, and the phone must be unlocked.**
   `tauri ios build --debug --target aarch64 --ci` produces an **IPA**
   (`src-tauri/gen/apple/build/arm64/Hanzi Tutor.ipa`), not a loose bundle: unzip it
@@ -1668,6 +1673,44 @@ stored), a rename moving the row, a deletion clearing it, a position whose entry
 is gone reading as no position, and clearing — one through the state layer, three
 on the merge (including that positions for different groups are never compared),
 and one end-to-end on two databases syncing through a folder store.
+
+### Where this got to, and what is next
+
+Confirmed on hardware, not inferred: a drill **resumes at the right word** on both
+an iPhone and an Android phone, and the position travels between them. The two
+open items, in the order they should be done:
+
+1. **Publish the position when it changes.** It is written the moment an entry
+   finishes, but it only leaves the device on the next sync — and syncs happen at
+   launch and on foreground. A drill done after the last sync therefore stays
+   local, which is what made this look like a total failure: the iPhone was right,
+   Android started at the first entry, and pressing *Sync now* on the iPhone was
+   what fixed it. The seam is `hanzi_sync::write_vocab_cursors` and the sync
+   service in `src-tauri/src/sync.rs`.
+2. **A progress tag per entry** (asked for, not started). The data is better than
+   `attempts`/`bestScore`: every character in an entry has an SM-2 card with an
+   interval and a due date, and the schedule is folded from the synced attempt
+   log, so a tag *derived* from the cards means the same thing on every device. It
+   needs an honest rule for an entry whose characters have never been practised —
+   a tag that overstates how well something is known is worse than no tag.
+   `last_practised` and `attempts` are deliberately **per device** (they are not
+   part of the three-part stamp), so they are the wrong source for such a tag.
+
+**One consequence to decide, not a bug.** Because `last_practised` is per device,
+a phone that resumes at the right word still works through entries the other
+device has finished — its queue is longer. Either that fact starts travelling too,
+or the queue is honestly per-device and should be labelled that way.
+
+### Ordering: the list is not ordered by `id`
+
+`crates/hanzi-core/src/vocab.rs` keeps the list in `entry_order` — by `added_at`,
+then the text — and `hanzi-store`'s read uses the same key. **Not by `id`**: an id
+is per device and a peer's entries arrive in uuid order, so one list came out in a
+different order on every device (a word sat at 51 on the iPhone and 11 on
+Android). `added_at` syncs, so every device computes the same order. The SQL and
+the in-memory sort must stay in step: the document is re-sorted as it is built, so
+either one alone leaves the other in charge.
+
 
 ## 7. Open decisions
 
