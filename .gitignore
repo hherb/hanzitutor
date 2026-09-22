@@ -16,6 +16,8 @@ debug
 # which a sandboxed build cannot write. See HANDOVER §6 for the working command —
 # the wrapper cannot run this way, the unpacked launcher can.
 .gradle-home/
+.xcode-derived/
+.build-tools/
 # Kotlin's incremental-compilation cache, left by every Gradle build of the
 # Android project and never wanted in the repository.
 .kotlin/

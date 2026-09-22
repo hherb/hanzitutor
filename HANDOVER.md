@@ -2194,6 +2194,49 @@ app once the image exists), so re-run the whole build rather than just the image
 Both are one-time costs of building here, not defects — the Android and iOS builds
 need the same wider access for `~/.gradle` and `~/Library/Developer/Xcode`.
 
+### Building under the workspace-write policy
+
+Measured here, because a release otherwise asks for a full-access grant it does not
+need. Two of the three tools can be kept inside the workspace, and one cannot:
+
+| step | verdict | how |
+| --- | --- | --- |
+| the `.app` | fine as it is | `tauri build --bundles app` writes only into the repository |
+| Gradle / Android | **works** | `scripts/with-build-caches.sh` — `GRADLE_USER_HOME` into `.gradle-home/`, `GRADLE_RO_DEP_CACHE` for the real cache |
+| `xcodebuild` / iOS | **works** | the same script — a PATH shim adds `-derivedDataPath .xcode-derived`, which the Tauri CLI never passes |
+| the `.dmg` | **cannot** | `hdiutil create` is refused however the paths are arranged — build it by hand or under a wider policy |
+
+```bash
+./scripts/with-build-caches.sh ./scripts/with-cargo-env.sh \
+  ./scripts/tauri-cli.sh android build --apk --aab --target aarch64
+./scripts/with-build-caches.sh ./scripts/with-cargo-env.sh \
+  ./scripts/tauri-cli.sh ios build --debug --target aarch64 --ci
+```
+
+Three things learned by trying the alternatives, so they are not tried again:
+
+- **Xcode's build directory does not follow the environment.** `HOME` and even
+  `CFFIXED_USER_HOME` left it writing to the real
+  `~/Library/Developer/Xcode/DerivedData`, because `xcodebuild` asks the directory
+  services rather than the environment. `-derivedDataPath` is the only lever, and
+  the export action *rejects* the flag — hence the shim adds it to `build` and
+  `archive` only. That one change turned the whole iOS device build from a
+  full-access request into something the workspace-write policy runs.
+- **Gradle's problem is only its home.** With `GRADLE_USER_HOME` in the tree the
+  build succeeds even though the Kotlin daemon logs a `FileSystemException` per
+  marker file under `~/Library/Application Support/kotlin/daemon`. Those lines are
+  noise: the APK and AAB are produced. `GRADLE_RO_DEP_CACHE` is what keeps it from
+  downloading every dependency again, and `.gradle-home/` may be deleted whenever
+  it is in the way — the script re-seeds the wrapper distribution by APFS clone.
+- **`hdiutil` is not a path problem.** It fails with every input and output inside
+  the workspace and `TMPDIR` pointed there too, and `diskutil image create from`
+  (the replacement `hdiutil` itself suggests) fails with `OSStatus error 1`. It
+  wants a device the policy does not grant. The consolation is real though: the
+  `.app` is written and signed *before* the image is attempted, so a failed DMG
+  costs nothing but the image — and **a `--bundles dmg` run afterwards deletes
+  that `.app`** when Tauri cleans up, so re-run the whole build rather than the
+  image alone.
+
 ### Releasing it
 
 The version lives in **three files** — the workspace `version` in `Cargo.toml`,
