@@ -2228,12 +2228,24 @@ gh release create v0.5.0 --prerelease --title "0.5.0 — alpha" \
 Every release so far is an **alpha**, hence `--prerelease`. 0.2.0 was macOS-only on
 purpose; 0.3.0 added the Android APK and AAB, because those became real release builds
 — signed with the project's own upload key, and the artifact that has run on a
-physical phone with speech recognition. **There was no 0.4.0**, so do not go looking
-for one. 0.5.0 adds the attempt log's measures and the export and analysis over them
-(§7), on top of the graded phrase audio. **iOS is still absent on purpose.** The shell
-does run on a physical iPhone, but only from a `--debug` build installed with
-`devicectl`: an iOS *release* build fails to link Tauri's Swift glue (§6), so there
-is no IPA worth attaching until that toolchain question is settled.
+physical phone with speech recognition.
+
+**What is published, which is not the same as what is in the tree.** The tags and
+releases on GitHub are the record: `v0.2.0`, `v0.3.0` and `v0.5.5`, and **there was
+no 0.4.0 and no 0.5.0 release** — 0.5.0 was bumped in the tree (commit 6cd3aee) and
+then never tagged or published, so the version numbers alone do not say what a
+downloader has. 0.5.5 is the first published build since 0.3.0 and therefore carries
+M10–M14 at once: the SQLite store, the attempt log with its measures and export, tone
+practice, optional recognition, sync through the learner's own Dropbox, the graded
+phrase audio, and the vocabulary list's resume and progress tags. Its `.dmg`, APK and
+AAB also contain the graded readers' MeloTTS first pass, which is in no repository —
+see the clip row in the table above and ROADMAP M14 before cutting the next one.
+
+**iOS is still absent on purpose.** The shell does run on a physical iPhone, but only
+from a `--debug` build installed with `devicectl`: an iOS *release* build fails to
+link Tauri's Swift glue (§6), so there is no IPA worth attaching until that toolchain
+question is settled. 0.5.5's iPhone build was made and installed that way — 156 MB of
+debug binary, launched and screenshotted — and is not attached to the release.
 
 ### Notarisation, if the app is to leave this machine
 
