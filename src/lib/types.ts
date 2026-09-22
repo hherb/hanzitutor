@@ -407,6 +407,24 @@ export interface SettingsView {
   voice: string | null;
   animationPace: Pace;
   boardSize: BoardSize;
+  /**
+   * Whether the introduction has been read and dismissed.
+   *
+   * The one field here the app writes rather than the settings screen: the
+   * introduction is shown once, on the first run that has not seen it. Not
+   * nullable — like a pace or a board size there is no device answer to resolve
+   * a missing one from, so `false` is simply "not seen yet".
+   */
+  introSeen: boolean;
+  /**
+   * The version whose "what's new" pages have been read, or `null` for none.
+   *
+   * The upgrade half of the same idea, and a *version* rather than a flag
+   * because the question is "have you read the notes for this release": a
+   * boolean would either show every release's notes again or none of them.
+   * `null` is what an installation upgrading from a build without them has.
+   */
+  whatsNewSeen: string | null;
   /** Set when a change was applied in memory but could not be saved. */
   warning: string | null;
 }
@@ -430,7 +448,39 @@ export interface SettingsPatch {
   voice?: string;
   animationPace?: Pace;
   boardSize?: BoardSize;
+  /**
+   * `true` once the introduction has been dismissed.
+   *
+   * There is no `false`: the settings screen's "show it again" replays the
+   * introduction in place and deliberately sends nothing, so reading it a second
+   * time never depends on clearing the record first. Absent — like every other
+   * field — means leave it alone.
+   */
+  introSeen?: boolean;
+  /**
+   * The version whose "what's new" pages have been read.
+   *
+   * Sent when those pages are dismissed. Like `voice` this is a name that is
+   * never legitimately blank, so an empty string is not a value the caller
+   * sends; absent — as with every other field — means leave it alone.
+   */
+  whatsNewSeen?: string;
   [key: string]: unknown;
+}
+
+/**
+ * What the first screen needs: whether this app has run here before, and which
+ * version is running.
+ *
+ * The two travel together because they are one decision — a first run is shown
+ * the introduction, an installation that has run before is shown what changed —
+ * and because the version is what the "what's new" pages are keyed to. The
+ * version is the *binary's*, the same one the About screen names.
+ */
+export interface StartupView {
+  /** `true` when this app had never opened its database here before this launch. */
+  firstRun: boolean;
+  version: string;
 }
 
 /** One voice the settings screen can offer. */

@@ -1,0 +1,224 @@
+/**
+ * The pages of the startup sheet: the introduction, and what's new.
+ *
+ * Both are the same kind of thing — a handful of pages read once and then
+ * dismissed — so they are the same shape, are rendered by the same component
+ * (`StartupWizard.svelte`), and live here as **data rather than markup**. That is
+ * what keeps the page count, the "Step n of m" and the dots from disagreeing with
+ * the pages: adding one is adding an entry to an array.
+ *
+ * ## Which one is shown
+ *
+ * `App.svelte` decides, from two facts the backend reports together
+ * (`commands::startup`): whether the app has run on this device before, and which
+ * version is running. A **first run** gets [`INTRO_PAGES`]; an **installation that
+ * has run before** gets the notes for the running version, because the tutorial is
+ * not news to somebody who has been using the app. Either way the sheet's "has
+ * been read" records are written together — see `App.svelte`'s `finishStartup`.
+ *
+ * ## The names are the app's own
+ *
+ * The four measures and the two modes are called here exactly what the board's
+ * buttons and the report call them, because this is the page that teaches them.
+ * Changing one here without the others is how the app ends up with two names for
+ * one thing.
+ */
+
+/** One labelled idea inside a page: a mode, a grading measure, a screen. */
+export interface Point {
+  /** The word the app itself uses for it, so the two agree. */
+  name: string;
+  /** One sentence on what it does. */
+  what: string;
+}
+
+/** One page of the startup sheet. */
+export interface Page {
+  title: string;
+  /** The paragraph a page opens with. */
+  lead: string;
+  /** Labelled ideas, listed under the lead. */
+  points?: Point[];
+  /** A closing paragraph, under the list. */
+  note?: string;
+}
+
+/**
+ * What a learner who has never seen the app is shown.
+ *
+ * This is where the board's own explanation went. The "ⓘ How this works"
+ * disclosure and the sentence under the controls were removed to give a phone
+ * back the height they took, on the understanding that what they taught is read
+ * **once at the start** rather than sitting on the screen for ever.
+ *
+ * Deliberately no keyboard-shortcut list: the board's keys cannot be tried while
+ * a sheet covers the board, and that list is the `?` overlay's job (ROADMAP).
+ */
+export const INTRO_PAGES: Page[] = [
+  {
+    title: "Welcome to Hanzi Tutor",
+    lead:
+      "This app teaches you to write simplified Chinese by hand. You write a " +
+      "character with a finger, a stylus or a mouse, and your writing is graded " +
+      "against a reference — not merely recognised, so it can tell you how it " +
+      "was wrong and not only that it was.",
+    note:
+      "Everything happens on this machine. Nothing you write leaves it, and " +
+      "nothing is downloaded unless you ask for it.",
+  },
+  {
+    title: "Two ways to practise",
+    lead:
+      "The Hint button at the left of the board switches between two ways of " +
+      "practising the same character. Either way, switching clears the board.",
+    points: [
+      {
+        name: "Trace",
+        what:
+          "A faint copy of the character is on the board. Follow it, stroke by " +
+          "stroke, in the correct order.",
+      },
+      {
+        name: "Recall",
+        what:
+          "The character is hidden until you press ✓. Write it from memory, " +
+          "then see how you did.",
+      },
+    ],
+    note:
+      "The faint copy is there to write over, not to copy by eye: the grading " +
+      "is the same in both modes, so tracing loosely is not a way to score " +
+      "better.",
+  },
+  {
+    title: "What your writing is graded on",
+    lead:
+      "Every attempt is compared with the reference on four measures, a quarter " +
+      "of the score each.",
+    points: [
+      {
+        name: "Shape",
+        what: "Whether each stroke is the right kind of stroke.",
+      },
+      {
+        name: "Placement",
+        what: "Whether it sits in the right place, and is the right size.",
+      },
+      {
+        name: "Ink",
+        what:
+          "Whether as much ink went down as the character needs. A stroke " +
+          "traced correctly but drawn far too thin is not legible.",
+      },
+      {
+        name: "Order",
+        what:
+          "Whether the strokes were written in the right sequence. A legible " +
+          "character written in the wrong order is reported as exactly that.",
+      },
+    ],
+    note:
+      "The report after each attempt says which strokes were wrong and how — " +
+      "misplaced, out of order, missing, or faint. Press S to watch the " +
+      "character drawn one stroke at a time.",
+  },
+  {
+    title: "Finding your way around",
+    lead: "The sidebar holds the rest of the app.",
+    points: [
+      {
+        name: "Course",
+        what:
+          "Characters in frequency order, the ones you will meet most often " +
+          "first, in lessons you work through.",
+      },
+      {
+        name: "Vocabulary",
+        what:
+          "Characters and words from your own lessons, filed under group names " +
+          "of your own.",
+      },
+      {
+        name: "Words",
+        what: "The HSK 3.0 word list, searchable by character, pinyin or meaning.",
+      },
+      {
+        name: "Phrases",
+        what: "Graded sentences with bundled audio, for listening and reading.",
+      },
+      {
+        name: "Settings",
+        what:
+          "Drawing, stroke-order speed, board size and the pronunciation voice.",
+      },
+    ],
+    note:
+      "What you practise is scheduled for you, so it comes back when it is " +
+      "worth seeing again: Review due at the top of the sidebar holds the " +
+      "characters that are ready.",
+  },
+];
+
+/**
+ * What an installation that has **run before** is shown, keyed by the version
+ * whose notes these are.
+ *
+ * ## Maintaining this
+ *
+ * **When the version is bumped, add an entry here for the new version** — or
+ * deliberately leave it out, which shows nothing. Both are safe; what is not
+ * safe is leaving an *old* entry in place and bumping the version, because the
+ * sheet would then present the previous release's notes as this one's. The
+ * lookup is [`notesFor`], and it shows nothing for a version it has no entry
+ * for, so the failure mode of forgetting is silence rather than a lie.
+ *
+ * `App.svelte` passes the version the *binary* reports, so the key is the same
+ * string `Cargo.toml` carries — which `tests/licences.rs` already holds equal to
+ * `tauri.conf.json`, `package.json` and the About screen.
+ *
+ * ## Writing an entry
+ *
+ * For someone who has been using the app, so: what is different, not what the
+ * app is. Anything a learner would not notice does not belong here — it is a
+ * short list, and one honest page beats three padded ones.
+ */
+export const NOTES: Record<string, Page[]> = {
+  "0.5.6": [
+    {
+      title: "What's new in 0.5.6",
+      lead:
+        "A small update. Nothing about how your writing is graded has changed, " +
+        "and your practice history, schedule and vocabulary are untouched.",
+      points: [
+        {
+          name: "The introduction",
+          what:
+            "The board used to carry an explanation of the four grading " +
+            "measures behind a disclosure. It is now a short introduction, read " +
+            "once and out of the way afterwards, so the board has its height " +
+            "back on a phone. The Settings screen can show it again.",
+        },
+        {
+          name: "A phrase set with no recordings says so",
+          what:
+            "The Phrases screen listed a corpus whose audio was missing as a " +
+            "syntax error. It now says plainly that the set has no recordings, " +
+            "which is what the reader actually needs to know.",
+        },
+      ],
+    },
+  ],
+};
+
+/**
+ * The pages to show a device that has already read the notes for `version`, or
+ * `null` when there are none to show.
+ *
+ * `null` covers two cases that want the same answer: a version with no entry,
+ * and a version whose entry is empty. The caller shows nothing rather than an
+ * empty sheet.
+ */
+export function notesFor(version: string): Page[] | null {
+  const pages = NOTES[version];
+  return pages && pages.length > 0 ? pages : null;
+}

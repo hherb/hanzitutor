@@ -67,11 +67,33 @@ sync reads the token and prompts; with `--user-dir` pointing at a fresh one, the
 `sync:account` record is absent and `SyncService::record` takes its *adoption*
 path, which reads the keychain to look for a sign-in — so it prompts having never
 been connected in that run. Use `pnpm run dev:signed` whenever a run will touch
-sync, and keep the plain binary for what needs no keychain. Unrelated, and worth
-knowing anyway: killing the shell that launched the app does **not** kill the app.
-An orphan left behind goes on drawing its window and asking for what it wants —
-`pgrep -fl hanzi-tutor` finds it, and that is also the shape an orphaned Vite on
-port 1420 takes.
+sync, and keep the plain binary for what needs no keychain.
+
+**`dev:signed` signs once, and a live dev session can undo that while you edit.**
+The signing happens in the `pnpm run dev:signed` pipeline, *before* `tauri dev`
+starts — and `tauri dev` then watches `src-tauri` and `crates/*` and re-runs
+`cargo run` on every Rust change, **without signing again**. So a session that is
+signed and quiet at launch becomes an unsigned stranger the moment a Rust file is
+touched, and the next launch prompts again. A second multiplier rides the same
+session: **the frontend re-mounts `App.svelte` on every HMR update, and
+`autoSync("launch")` lives in its `onMount`**, so each frontend edit re-runs the
+launch sync — and against a fresh `--user-dir`, where there is no `sync:account`
+record, every one of those takes the adoption path and reaches the keychain
+again. Seen here while screenshotting this very feature: three `App` mounts from
+HMR plus one restart from the Rust watcher in ninety seconds, four unasked-for
+keychain dialogs, which reads to whoever is sitting at the machine as an endless
+loop demanding their password. Two rules follow. **While a `dev:signed` session is
+running, do not touch `src-tauri` or `crates/*`.** And for a run whose only
+purpose is to *look* at a render, the signing buys nothing — the keychain is
+reached by the launch sync and by nothing on the board or the settings screen —
+so either batch the frontend edits and take the capture before making any, or
+stop the app first. The prompt is not a symptom of a broken build, and answering
+it repeatedly changes nothing about the app.
+
+Unrelated, and worth knowing anyway: killing the shell that launched the app does
+**not** kill the app. An orphan left behind goes on drawing its window and asking
+for what it wants — `pgrep -fl hanzi-tutor` finds it, and that is also the shape an
+orphaned Vite on port 1420 takes.
 
 `./scripts/fetch-data.sh` is only wanted when you are changing the data pipeline:
 it re-downloads the ~33 MB of upstream text into gitignored `data/raw/`, restores
@@ -183,6 +205,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Progress and SRS (M2) | Done — SM-2 behind a `Scheduler` trait; the review queue is drawn from the course and the list together |
 | Words (M3) | Done — search by character, reading or meaning; a word is read and spoken whole (着急 is `zháojí` where the isolated 着 has no context) |
 | Settings screen | Done — four preferences; an unchosen one is resolved from the device or the system |
+| The startup reading: the introduction, and what's new | Done — a first run is shown four pages of introduction, an install that has run before is shown the notes for the running version; each read once **per device** (a `settings` row), both replayable from the settings screen, and the board's keys are dead while either is up (§4, invariant 31) |
 | Durable study store (M10) | Done — one `hanzi.db`; the old JSON imported once and left byte-identical; an unbounded attempt log |
 | Tone practice (M11) | Done, human-confirmed for characters and words — pitch contour against the expected shape, with no model |
 | Speech recognition (M12) | Done — an optional ~163 MB SenseVoice model, installed from the settings screen |
@@ -332,8 +355,12 @@ src/
   lib/PhrasesPanel.svelte   graded phrases with their bundled clips
   lib/audio.ts              clip playback, rate, and on-device samples
   lib/LicencesPanel.svelte  About and licences: the notices, with their texts
-  lib/SettingsPanel.svelte  the four preferences, plus the two optional model
-                            downloads; each change is written at once
+  lib/SettingsPanel.svelte  the four preferences, the introduction and the two
+                            optional model downloads; each change is written at once
+  lib/StartupWizard.svelte  the pages read once at the start — the introduction,
+                            or what changed — over whatever is behind them
+  lib/startupPages.ts       what those pages say: `INTRO_PAGES`, and `NOTES`
+                            keyed by version. **Look here when bumping the version**
   lib/LessonSidebar.svelte  course, list, word and phrase navigation, progress marks
   lib/Icon.svelte           the board's control glyphs
   lib/types.ts              TS mirror of the Rust structs
@@ -712,6 +739,30 @@ after each item) both do this now. The shape is the rule, not either file.
     merge. A rename therefore *moves* the row (`vocab_rename_group` does it in the
     same call) and a deletion drops it; do not "fix" the name key without solving
     that fork first.
+31. **The startup reading is per *device*, chosen by whether the app has run here
+    before, and nothing behind it is live while it is up.** A first run is shown
+    the introduction; an installation that has run before is shown the notes for
+    the running version instead — **never the introduction unprompted**, because
+    it is not news to whoever has been using the app. Which one it is comes from
+    `commands::startup`, whose `firstRun` is `hanzi_store::Db::is_first_run` —
+    the app's *own* bookkeeping (`meta`'s schema row existed already, or the
+    pre-database JSON documents are on disk), **never a guess from the learner's
+    work**, and `true` when there is no database at all, which offers the
+    introduction and is the harmless way round. Dismissing writes **both**
+    records — `intro_seen`, and `whats_new_seen` holding the **version** whose
+    notes were dealt with — because one flags the tutorial as behind you while
+    the other says which release's news you have seen; a boolean could not do the
+    second without either repeating every release or never showing another. Three
+    consequences are load-bearing: **settings do not sync**, so a phone is not
+    spared the notes because a laptop read them; *reading either again writes
+    nothing* (the settings screen replays in place, because clearing a record to
+    show something would make the next launch treat the device as new or stale),
+    and **`onKey` returns early while `startupSheet` is set**, so the board's
+    Enter/S/H/←/→ cannot fire behind a sheet that covers the board — Enter would
+    grade an empty canvas and S would animate something nobody can see. The same
+    trap awaits anything else added over the board. **And bumping the version is
+    what makes the notes show**: `src/lib/startupPages.ts`'s `NOTES` is keyed by
+    version, so it is looked at at that moment and not before (see §8).
 
 ## 5. The verification loop
 
@@ -2264,6 +2315,16 @@ by hand: `gen/apple/project.yml` (and the `Info.plist` XcodeGen writes from it),
 `gen/android/app/tauri.properties`, which is autogenerated during the Android build
 and derives the Play `versionCode` — `0.3.0` becomes `3000`, and Play requires it to
 increase with every upload.
+
+**Bumping the version is also what makes the release notes show**, so it is the one
+moment `src/lib/startupPages.ts` has to be looked at. An installation that has run
+before is shown `NOTES[<running version>]` once, and the release that was just
+bumped is the key: add an entry for the new version describing **what changed** for
+somebody who already uses the app, or add nothing at all, which shows no sheet.
+Both are safe. What is not safe is bumping the version and leaving the *old*
+entry's text in place — `NOTES` is keyed by version, so a missing entry is silent
+and a stale one would present the last release's news as this one's. There is no
+test for that, because only a person knows whether the notes are still true.
 
 Then build, tag and publish:
 

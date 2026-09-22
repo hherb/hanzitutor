@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use hanzi_core::{AttemptMeasures, GradeOptions, Point, ProgressStore, ReviewSource, VocabStore};
-use hanzi_tutor_lib::{AppState, SpokenAudio, REVIEW_LIMIT};
+use hanzi_tutor_lib::{AppState, SpokenAudio, StartupView, REVIEW_LIMIT};
 
 fn state() -> AppState {
     // `None` keeps the study documents in memory, so tests never touch the
@@ -1047,19 +1047,83 @@ fn spoken_audio_serialises_with_camel_case_fields() {
 }
 
 #[test]
+fn the_startup_view_says_whether_this_is_a_first_run() {
+    // The one thing that decides whether a learner who has not read the
+    // introduction is shown it or shown what changed instead. A directory the
+    // app has never opened is a first run; the *same* directory after one open
+    // is not, even though nothing has been practised in it — the app has run
+    // here, so its owner is not new to it.
+    let dir = data_dir("ipc-startup");
+    {
+        let first = AppState::load(Some(dir.clone())).unwrap();
+        assert!(first.is_first_run(), "no database existed before this open");
+    }
+    let second = AppState::load(Some(dir.clone())).unwrap();
+    assert!(!second.is_first_run(), "the app has opened this database before");
+
+    // In memory — what the tests use, and what a build with no resolvable data
+    // directory gets — there is no evidence of an earlier run, so it reads as
+    // new. That offers the introduction rather than release notes, which is the
+    // harmless way round for someone who may have seen neither.
+    assert!(state().is_first_run());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_startup_view_serialises_with_the_names_the_client_reads() {
+    // `firstRun` and `version` are read straight off this object by the
+    // frontend, and `version` is handed back as `whatsNewSeen` — so a rename
+    // here would either lose the first-run signal or make the notes reappear on
+    // every launch.
+    let json = serde_json::to_value(StartupView {
+        first_run: true,
+        version: "0.5.6".to_string(),
+    })
+    .unwrap();
+    expect_keys(&json, &["firstRun", "version"]);
+    assert_eq!(json["firstRun"], serde_json::json!(true));
+    assert_eq!(json["version"], serde_json::json!("0.5.6"));
+}
+
+#[test]
+fn the_version_the_startup_view_reports_is_the_one_that_ships() {
+    // `tests/licences.rs` pins `licences::APP.version` to Cargo.toml,
+    // tauri.conf.json and package.json; this is the same constant the startup
+    // view hands the frontend, so the notes are keyed to the version the About
+    // screen names rather than to whichever one a file happens to carry.
+    assert_eq!(
+        hanzi_tutor_lib::licences::APP.version,
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+#[test]
 fn settings_serialise_with_camel_case_fields() {
     let mut store = hanzi_core::SettingsStore::in_memory();
     assert!(store.set_click_to_draw(Some(true)));
     assert!(store.set_voice(Some("Meijia")));
     assert!(store.set_animation_pace(hanzi_core::Pace::Slow));
     assert!(store.set_board_size(hanzi_core::BoardSize::Compact));
+    assert!(store.set_intro_seen(true));
+    assert!(store.set_whats_new_seen(Some("0.5.6")));
     let json = serde_json::to_value(store.view()).unwrap();
     expect_keys(
         &json,
-        &["clickToDraw", "voice", "animationPace", "boardSize", "warning"],
+        &[
+            "clickToDraw",
+            "voice",
+            "animationPace",
+            "boardSize",
+            "introSeen",
+            "whatsNewSeen",
+            "warning",
+        ],
     );
     assert_eq!(json["clickToDraw"], serde_json::json!(true));
     assert_eq!(json["voice"], serde_json::json!("Meijia"));
+    assert_eq!(json["introSeen"], serde_json::json!(true));
+    assert_eq!(json["whatsNewSeen"], serde_json::json!("0.5.6"));
     assert_eq!(json["warning"], serde_json::Value::Null);
 
     // The enum values are the names the settings screen sends back and the names
@@ -1086,6 +1150,10 @@ fn settings_the_screen_can_round_trip_through_a_patch() {
         animation_pace: Option<hanzi_core::Pace>,
         #[serde(default)]
         board_size: Option<hanzi_core::BoardSize>,
+        #[serde(default)]
+        intro_seen: Option<bool>,
+        #[serde(default)]
+        whats_new_seen: Option<String>,
     }
 
     let patch: Patch = serde_json::from_value(serde_json::json!({
@@ -1093,20 +1161,31 @@ fn settings_the_screen_can_round_trip_through_a_patch() {
         "boardSize": "large",
         "voice": "Tingting",
         "clickToDraw": false,
+        "introSeen": true,
+        "whatsNewSeen": "0.5.6",
     }))
     .unwrap();
     assert_eq!(patch.click_to_draw, Some(false));
     assert_eq!(patch.voice.as_deref(), Some("Tingting"));
     assert_eq!(patch.animation_pace, Some(hanzi_core::Pace::Fast));
     assert_eq!(patch.board_size, Some(hanzi_core::BoardSize::Large));
+    assert_eq!(patch.intro_seen, Some(true));
+    assert_eq!(patch.whats_new_seen.as_deref(), Some("0.5.6"));
 
     // A patch that names one preference leaves the rest absent, which is what
-    // "leave this one alone" is on the wire.
+    // "leave this one alone" is on the wire. Dismissing the introduction is the
+    // one patch that must be able to stand alone like this.
     let partial: Patch = serde_json::from_value(serde_json::json!({ "voice": "Meijia" })).unwrap();
     assert_eq!(partial.voice.as_deref(), Some("Meijia"));
     assert!(partial.click_to_draw.is_none());
     assert!(partial.animation_pace.is_none());
     assert!(partial.board_size.is_none());
+    assert!(partial.intro_seen.is_none());
+    assert!(partial.whats_new_seen.is_none());
+
+    let intro: Patch = serde_json::from_value(serde_json::json!({ "introSeen": true })).unwrap();
+    assert_eq!(intro.intro_seen, Some(true));
+    assert!(intro.voice.is_none(), "dismissing the introduction sends nothing else");
 }
 
 #[test]
@@ -1121,9 +1200,16 @@ fn an_unchosen_setting_is_null_rather_than_false() {
 
     // A pace and a board size are not nullable: there is no device signal to
     // resolve one from, so the stored absence means the default and the wire
-    // carries the value the app will actually use.
+    // carries the value the app will actually use. The introduction is the same
+    // shape — "not seen" is what a fresh install means, and there is no third
+    // state for the interface to resolve from the device.
     assert_eq!(json["animationPace"], serde_json::json!("normal"));
     assert_eq!(json["boardSize"], serde_json::json!("normal"));
+    assert_eq!(json["introSeen"], serde_json::json!(false));
+    // No release's notes have been read, which is what every installation
+    // upgrading from a build without them reports — and the reason this one is
+    // `null` where `introSeen` is `false`.
+    assert_eq!(json["whatsNewSeen"], serde_json::Value::Null);
 
     let mut store = hanzi_core::SettingsStore::in_memory();
     store.set_click_to_draw(Some(false));
@@ -1137,13 +1223,15 @@ fn changing_one_preference_leaves_the_others_alone() {
     // the screen sends one control's new value, and a filled-in voice must not
     // be cleared by a pace change on the way past.
     let state = state();
-    state.update_settings(Some(true), Some("Meijia"), None, None);
-    let view = state.update_settings(None, None, Some(hanzi_core::Pace::Fast), None);
+    state.update_settings(Some(true), Some("Meijia"), None, None, None, None);
+    let view = state.update_settings(None, None, Some(hanzi_core::Pace::Fast), None, None, None);
 
     assert_eq!(view.click_to_draw(), Some(true), "click-to-draw was untouched");
     assert_eq!(view.voice(), Some("Meijia"), "the voice was untouched");
     assert_eq!(view.pace(), hanzi_core::Pace::Fast);
     assert_eq!(view.board_size(), hanzi_core::BoardSize::Normal);
+    assert!(!view.intro_seen(), "an untouched introduction stays unread");
+    assert_eq!(view.whats_new_seen(), None, "untouched notes stay unread");
 
     // And clearing the device-dependent one is its own call, because `None`
     // above already means "leave it alone".
@@ -1162,6 +1250,8 @@ fn every_preference_survives_a_restart_through_the_state_layer() {
             Some("Meijia"),
             Some(hanzi_core::Pace::Slow),
             Some(hanzi_core::BoardSize::Large),
+            Some(true),
+            Some("0.5.6"),
         );
         assert!(view.warning.is_none(), "{:?}", view.warning);
     }
@@ -1172,6 +1262,12 @@ fn every_preference_survives_a_restart_through_the_state_layer() {
     assert_eq!(view.voice(), Some("Meijia"));
     assert_eq!(view.pace(), hanzi_core::Pace::Slow);
     assert_eq!(view.board_size(), hanzi_core::BoardSize::Large);
+    assert!(view.intro_seen(), "a dismissed introduction survives a restart");
+    assert_eq!(
+        view.whats_new_seen(),
+        Some("0.5.6"),
+        "the release whose notes were read survives a restart"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -1182,7 +1278,7 @@ fn the_voice_list_says_which_voice_a_choice_resolved_to() {
     // than failing, and the screen can only say so honestly if `active` reports
     // what is really in use rather than what was stored.
     let state = state();
-    state.update_settings(None, Some("Definitely Not An Installed Voice"), None, None);
+    state.update_settings(None, Some("Definitely Not An Installed Voice"), None, None, None, None);
 
     let voices = state.voices();
     let json = serde_json::to_value(&voices).unwrap();

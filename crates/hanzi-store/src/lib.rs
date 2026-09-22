@@ -60,6 +60,9 @@ pub struct Db {
     /// `(device_id, seq)` pair mean the same thing on every device, so two logs
     /// can be merged without a row colliding — see [`schema`]'s `upgrade`.
     device_id: String,
+    /// Whether this app had run in this directory before this launch — see
+    /// [`Db::is_first_run`]. Read once, before the schema was stamped.
+    first_run: bool,
 }
 
 impl Db {
@@ -105,7 +108,11 @@ impl Db {
         // afterwards would silently downgrade a database written by a newer app
         // and then accept it. A database whose tables this build does not
         // understand must be refused untouched, not rewritten.
-        if let Some(found) = schema::version(&conn).map_err(|e| at(&path, e))? {
+        //
+        // The same read answers whether this is a first run, which is why it is
+        // kept rather than thrown away — see [`Db::is_first_run`].
+        let existing_schema = schema::version(&conn).map_err(|e| at(&path, e))?;
+        if let Some(found) = existing_schema {
             if found > SCHEMA_VERSION {
                 return Err(format!(
                     "{} is a study database from a newer version of the app \
@@ -123,7 +130,25 @@ impl Db {
             conn: Arc::new(Mutex::new(conn)),
             dir,
             device_id,
+            first_run: existing_schema.is_none() && !legacy_documents_present(&path),
         })
+    }
+
+    /// Whether this app had never run in this directory before this launch.
+    ///
+    /// Asked once, at open, and it is what decides whether a learner who has not
+    /// seen the introduction is shown it or shown what changed instead. The
+    /// signal is the app's **own bookkeeping**, not a guess from the learner's
+    /// work: `meta`'s schema row is written by the first launch that opens the
+    /// database, so a database that already had one has been opened before. An
+    /// installation old enough to predate the database counts too — see
+    /// [`legacy_documents_present`] — because it has real study data and calling
+    /// it new would offer its owner the introduction.
+    ///
+    /// It stays true for the life of the process even though the very act of
+    /// opening writes the schema row, because it is read before that happens.
+    pub fn is_first_run(&self) -> bool {
+        self.first_run
     }
 
     /// This device's identity, for the sync layer to name its shards with.
@@ -937,6 +962,8 @@ const CLICK_TO_DRAW: &str = "click_to_draw";
 const VOICE: &str = "voice";
 const ANIMATION_PACE: &str = "animation_pace";
 const BOARD_SIZE: &str = "board_size";
+const INTRO_SEEN: &str = "intro_seen";
+const WHATS_NEW_SEEN: &str = "whats_new_seen";
 
 impl SettingsSink for Db {
     /// Read the settings a learner has actually chosen.
@@ -951,20 +978,8 @@ impl SettingsSink for Db {
         let conn = self.lock();
         let path = self.path();
         let mut settings = Settings::default();
-        if let Some(text) =
-            setting_get(&conn, CLICK_TO_DRAW).map_err(|e| settings_error(&path, e))?
-        {
-            settings.click_to_draw =
-                Some(match text.as_str() {
-                    "true" => true,
-                    "false" => false,
-                    other => {
-                        return Err(SettingsError::Malformed(format!(
-                            "{}: the stored setting {CLICK_TO_DRAW:?} is {other:?}, which is                              neither true nor false",
-                            path.display()
-                        )))
-                    }
-                });
+        if let Some(value) = setting_get_bool(&conn, CLICK_TO_DRAW, &path)? {
+            settings.click_to_draw = Some(value);
         }
         if let Some(text) = setting_get(&conn, VOICE).map_err(|e| settings_error(&path, e))? {
             // An empty row is treated as no choice rather than a voice called "".
@@ -1004,6 +1019,17 @@ impl SettingsSink for Db {
                 }
             };
         }
+        if let Some(value) = setting_get_bool(&conn, INTRO_SEEN, &path)? {
+            settings.intro_seen = value;
+        }
+        if let Some(text) = setting_get(&conn, WHATS_NEW_SEEN).map_err(|e| settings_error(&path, e))? {
+            // A blank version is treated as no version, the same way a blank
+            // voice is no choice: `save` clears the row instead of writing one,
+            // so this is only reachable in a hand-edited database, and "no
+            // release's notes have been read" is the harmless reading.
+            let version = text.trim();
+            settings.whats_new_seen = (!version.is_empty()).then(|| version.to_string());
+        }
         Ok(settings)
     }
 
@@ -1016,7 +1042,9 @@ impl SettingsSink for Db {
     /// already means, so a row saying "normal" adds nothing an absent row does
     /// not, while making a fresh install look like a database full of decisions
     /// nobody took. A learner who deliberately picks normal gets the behaviour
-    /// they asked for and the row is simply gone.
+    /// they asked for and the row is simply gone. An **unread introduction** is
+    /// the same shape — `false` is the absence — so a fresh install carries no
+    /// `intro_seen` row until the introduction has actually been dismissed.
     fn save(&mut self, settings: &Settings) -> Result<(), SettingsError> {
         let path = self.path();
         let mut conn = self.lock();
@@ -1039,6 +1067,8 @@ impl SettingsSink for Db {
                 (settings.board_size != BoardSize::default())
                     .then(|| board_size_key(settings.board_size).to_string()),
             ),
+            (INTRO_SEEN, settings.intro_seen.then(|| "true".to_string())),
+            (WHATS_NEW_SEEN, settings.whats_new_seen.clone()),
         ];
         for (key, value) in rows {
             setting_put(&tx, key, value.as_deref()).map_err(|e| settings_error(&path, e))?;
@@ -1064,6 +1094,53 @@ fn board_size_key(size: BoardSize) -> &'static str {
         BoardSize::Compact => "compact",
         BoardSize::Normal => "normal",
         BoardSize::Large => "large",
+    }
+}
+
+/// Whether any of the pre-database study documents sits beside the database file.
+///
+/// An installation old enough to predate `hanzi.db` looks exactly like a new one
+/// from the schema row alone — the database is created, empty, on that first open
+/// — so the schema row cannot be the only evidence of an earlier run. Those three
+/// files are that evidence, and they are the same ones the open is about to
+/// import; a learner with work in them must not be offered the introduction.
+/// They are deliberately never deleted after the import (see the module note), so
+/// their presence means "predates the database" and not "was imported here".
+fn legacy_documents_present(db_path: &Path) -> bool {
+    let Some(dir) = db_path.parent() else {
+        return false;
+    };
+    [
+        migrate::PROGRESS_FILE,
+        migrate::VOCABULARY_FILE,
+        migrate::CURSOR_FILE,
+    ]
+    .iter()
+    .any(|name| dir.join(name).exists())
+}
+
+/// Read a stored boolean, or `None` when no row was written.
+///
+/// A value that is neither `true` nor `false` is reported rather than guessed
+/// at: it means a hand-edited database or a build whose spelling changed, and
+/// silently reading it as `false` would hide a real mismatch behind a plausible
+/// default. Both boolean settings share this so the judgement — and the words it
+/// is reported in — cannot drift between them.
+fn setting_get_bool(
+    conn: &Connection,
+    key: &str,
+    path: &Path,
+) -> Result<Option<bool>, SettingsError> {
+    match setting_get(conn, key).map_err(|e| settings_error(path, e))? {
+        None => Ok(None),
+        Some(text) => match text.as_str() {
+            "true" => Ok(Some(true)),
+            "false" => Ok(Some(false)),
+            other => Err(SettingsError::Malformed(format!(
+                "{}: the stored setting {key:?} is {other:?}, which is neither true nor false",
+                path.display()
+            ))),
+        },
     }
 }
 

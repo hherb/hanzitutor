@@ -16,7 +16,9 @@
 //! for what happens when a stored value is missing, unknown or unreadable. That
 //! is this module. Adding a preference is then a field here plus a control there
 //! — and a field the store does not know about needs no database change at all,
-//! because the rows are keyed by name.
+//! because the rows are keyed by name. [`Settings::intro_seen`] is the one field
+//! with no control of its own: the app writes it when the introduction is
+//! dismissed, and the settings screen only replays that introduction.
 //!
 //! ## Which fields are optional, and why not all of them
 //!
@@ -172,6 +174,38 @@ pub struct Settings {
     /// How large the board is drawn — see [`BoardSize::default`].
     #[serde(default)]
     pub board_size: BoardSize,
+    /// Whether the introduction has been read and dismissed.
+    ///
+    /// The one field here the *app* writes rather than a control on the settings
+    /// screen: the interface shows the introduction once, on the first run that
+    /// has not seen it, and this is how it knows. It earns its place in this
+    /// document because it is persisted, per-device and loss-tolerant — losing
+    /// it costs a learner one dismissal, not any work — which is exactly the
+    /// category the module note draws.
+    ///
+    /// A plain `bool` rather than an `Option`, like [`Pace`] and [`BoardSize`]:
+    /// there is no device signal to resolve an unchosen value from, so the two
+    /// states are "not seen" and "seen" and the stored absence means the former.
+    /// **Settings do not sync**, so this is per-device on purpose: the
+    /// introduction is about the screen in front of you, and a phone should not
+    /// have the wizard a laptop already dismissed.
+    #[serde(default)]
+    pub intro_seen: bool,
+    /// The app version whose "what's new" pages have been read, if any.
+    ///
+    /// The upgrade half of the same idea: an installation that has run before is
+    /// shown what changed rather than the introduction, once per version. The
+    /// stored value is the **version string** rather than a flag, because "have
+    /// you read the notes for *this* release" is the question, and a boolean
+    /// would either show every release's notes again or none of them. `None`
+    /// means no notes have ever been read here — which is what every
+    /// installation upgrading from a build that had none has, and is exactly why
+    /// it is `Option` and not a `bool` defaulting to some version.
+    ///
+    /// Deliberately a version and not a timestamp: the app ships a fixed set of
+    /// pages, so the only thing worth recording is which release they describe.
+    #[serde(default)]
+    pub whats_new_seen: Option<String>,
 }
 
 /// Where settings are kept.
@@ -240,6 +274,16 @@ impl SettingsView {
     /// How large the board should be drawn.
     pub fn board_size(&self) -> BoardSize {
         self.settings.board_size
+    }
+
+    /// Whether the introduction has been read and dismissed.
+    pub fn intro_seen(&self) -> bool {
+        self.settings.intro_seen
+    }
+
+    /// The version whose "what's new" pages have been read, if any.
+    pub fn whats_new_seen(&self) -> Option<&str> {
+        self.settings.whats_new_seen.as_deref()
     }
 }
 
@@ -349,6 +393,41 @@ impl SettingsStore {
             return false;
         }
         self.settings.board_size = value;
+        self.dirty = true;
+        true
+    }
+
+    /// Record that the introduction has (or has not) been read.
+    ///
+    /// Written by the app when the introduction is dismissed, not by a control:
+    /// the settings screen's "show it again" button replays it in place and
+    /// leaves this alone, so reading the introduction twice does not depend on
+    /// clearing the record first. Passing `false` is the route back to a first
+    /// run, which is what a test wants and no screen offers.
+    pub fn set_intro_seen(&mut self, value: bool) -> bool {
+        if self.settings.intro_seen == value {
+            return false;
+        }
+        self.settings.intro_seen = value;
+        self.dirty = true;
+        true
+    }
+
+    /// Record which release's "what's new" pages have been read.
+    ///
+    /// An empty (or all-whitespace) version is stored as `None`, the same way a
+    /// cleared voice goes back to the automatic choice: a version nobody can name
+    /// is not a release whose notes have been read. Unlike [`Self::set_intro_seen`]
+    /// this cannot be set to a default — there is no meaningful "unread version",
+    /// only the absence of one — so the way back to "never shown" is `None`, which
+    /// is what a test uses and no screen offers.
+    pub fn set_whats_new_seen(&mut self, value: Option<&str>) -> bool {
+        let value = value.map(str::trim).filter(|v| !v.is_empty());
+        let value = value.map(str::to_string);
+        if self.settings.whats_new_seen == value {
+            return false;
+        }
+        self.settings.whats_new_seen = value;
         self.dirty = true;
         true
     }
@@ -489,6 +568,8 @@ mod tests {
         assert_eq!(store.settings().animation_pace, Pace::Normal);
         assert_eq!(store.settings().board_size, BoardSize::Normal);
         assert_eq!(store.settings().voice, None);
+        assert!(!store.settings().intro_seen);
+        assert_eq!(store.settings().whats_new_seen, None);
 
         // And the same on a fresh document that carries none of the new keys.
         let path = temp_path("missing-new-keys");
@@ -497,7 +578,87 @@ mod tests {
         assert_eq!(store.view().pace(), Pace::Normal);
         assert_eq!(store.view().board_size(), BoardSize::Normal);
         assert_eq!(store.view().voice(), None);
+        assert!(!store.view().intro_seen());
+        assert_eq!(store.view().whats_new_seen(), None);
         fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn the_introduction_is_not_read_until_it_is_dismissed() {
+        // The one thing the interface decides its first screen on. A fresh
+        // install has not seen it, and dismissing it is a change worth writing;
+        // dismissing it twice is not a change at all.
+        let path = temp_path("intro");
+        let mut store = SettingsStore::open(&path).unwrap();
+        assert!(!store.view().intro_seen(), "a fresh install has seen nothing");
+        assert!(store.set_intro_seen(true));
+        assert!(!store.set_intro_seen(true), "already dismissed");
+        store.save().unwrap();
+
+        let reopened = SettingsStore::open(&path).unwrap();
+        assert!(reopened.view().intro_seen());
+        assert_eq!(
+            serde_json::to_value(reopened.view()).unwrap()["introSeen"],
+            serde_json::json!(true)
+        );
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn an_unread_introduction_leaves_no_row_behind() {
+        // The same rule the pace and the board size follow: the default is what
+        // a missing row already means, so a document that records nothing must
+        // not be written at all.
+        let path = temp_path("intro-unread");
+        let mut store = SettingsStore::open(&path).unwrap();
+        assert!(!store.set_intro_seen(false), "already the default");
+        store.save().unwrap();
+        assert!(!path.exists(), "nothing chosen is not a document");
+    }
+
+    #[test]
+    fn the_release_notes_are_remembered_by_version() {
+        // "Have you read the notes for *this* release" is the question, so the
+        // value is the version and not a flag: a boolean would either show every
+        // release's notes again or none of them ever again.
+        let path = temp_path("whats-new");
+        let mut store = SettingsStore::open(&path).unwrap();
+        assert_eq!(store.view().whats_new_seen(), None, "nothing read yet");
+
+        assert!(store.set_whats_new_seen(Some("0.5.6")));
+        assert!(!store.set_whats_new_seen(Some("0.5.6")), "already read");
+        assert!(store.set_whats_new_seen(Some("0.5.7")), "a later release is news again");
+        store.save().unwrap();
+
+        let reopened = SettingsStore::open(&path).unwrap();
+        assert_eq!(reopened.view().whats_new_seen(), Some("0.5.7"));
+        assert_eq!(
+            serde_json::to_value(reopened.view()).unwrap()["whatsNewSeen"],
+            serde_json::json!("0.5.7")
+        );
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn clearing_the_seen_version_goes_back_to_never_shown() {
+        // The absence is the only "unread" there is — a blank version is not a
+        // release whose notes were read, so it clears rather than storing "".
+        let mut store = SettingsStore::in_memory();
+        assert!(store.set_whats_new_seen(Some("0.5.6")));
+        assert!(store.set_whats_new_seen(Some("   ")));
+        assert_eq!(store.view().whats_new_seen(), None);
+        assert!(!store.set_whats_new_seen(None), "already unread");
+    }
+
+    #[test]
+    fn an_unread_release_is_not_a_document_either() {
+        let path = temp_path("whats-new-unread");
+        let mut store = SettingsStore::open(&path).unwrap();
+        assert!(!store.set_whats_new_seen(None), "already the default");
+        store.save().unwrap();
+        assert!(!path.exists(), "nothing read is not a document");
     }
 
     #[test]

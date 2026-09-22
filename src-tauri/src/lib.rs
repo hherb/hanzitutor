@@ -16,7 +16,8 @@ mod state;
 mod sync;
 
 pub use commands::{
-    LevelCount, MarkedTone, SpokenAudio, VocabOutcome, VoiceOption, VoicesView, WordSearchView,
+    LevelCount, MarkedTone, SpokenAudio, StartupView, VocabOutcome, VoiceOption, VoicesView,
+    WordSearchView,
 };
 pub use licences::{AppInfo, LicenceNotice};
 pub use asr::{Asr, AsrStatus, InstallState};
@@ -147,6 +148,7 @@ pub fn run() {
             commands::update_settings,
             commands::clear_click_to_draw,
             commands::app_info,
+            commands::startup,
             commands::licence_notices,
             commands::android_insets,
             commands::speech_report,

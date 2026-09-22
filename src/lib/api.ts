@@ -22,6 +22,7 @@ import type {
   SayStatus,
   SettingsView,
   SpokenAudio,
+  StartupView,
   SpeechTarget,
   SyncView,
   ToneResult,
@@ -276,6 +277,16 @@ export const voices = () => invoke<VoicesView>("voices");
 
 /** The app's name, version and licence, for the About screen. */
 export const appInfo = () => invoke<AppInfo>("app_info");
+
+/**
+ * Whether this app has run here before, and which version is running.
+ *
+ * Read once at startup, and the two together are what decide the first screen: a
+ * first run is shown the introduction, an installation that has run before is
+ * shown what changed, keyed to the version reported here. One call so the flag
+ * and the version cannot come from two different places.
+ */
+export const startup = () => invoke<StartupView>("startup");
 
 /**
  * Every licence and attribution notice the app ships with, full text included.

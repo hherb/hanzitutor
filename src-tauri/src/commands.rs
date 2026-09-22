@@ -1021,6 +1021,14 @@ pub fn settings(state: State<'_, AppState>) -> SettingsView {
 /// - `voice`: a name to choose, `""` to go back to the automatic voice. A voice
 ///   is never legitimately nameless, so the empty string is free to mean this.
 /// - `animationPace` / `boardSize`: closed sets, so every value is a choice.
+/// - `introSeen`: `true` once the introduction has been dismissed. It is here
+///   rather than behind a command of its own because it is stored the same way
+///   and saved the same way; the interface — not this screen — is what sends it,
+///   and replaying the introduction deliberately sends nothing, so that reading
+///   it again never depends on clearing the record first.
+/// - `whatsNewSeen`: the version whose "what's new" pages have been read, sent
+///   when they are dismissed. A version rather than a flag: the next release is
+///   news again, and a boolean could not say which release had been read.
 ///
 /// The change is written straight away; the view that comes back is what the
 /// interface should render, warning included.
@@ -1031,12 +1039,16 @@ pub fn update_settings(
     voice: Option<String>,
     animation_pace: Option<Pace>,
     board_size: Option<BoardSize>,
+    intro_seen: Option<bool>,
+    whats_new_seen: Option<String>,
 ) -> SettingsView {
     state.update_settings(
         click_to_draw,
         voice.as_deref(),
         animation_pace,
         board_size,
+        intro_seen,
+        whats_new_seen.as_deref(),
     )
 }
 
@@ -1072,6 +1084,34 @@ pub fn webview_log(message: String) {
 #[tauri::command]
 pub fn app_info() -> AppInfo {
     crate::licences::APP
+}
+
+/// What the first screen needs to know: whether this app has run here before,
+/// and which version is running.
+///
+/// The two travel together because they are one decision — an installation that
+/// has run before is shown what changed, a new one is shown the introduction,
+/// and the version is what the "what's new" pages are keyed to. One call is what
+/// stops the interface comparing a version read in one place against a flag read
+/// in another, and it is why the version here is the *binary's* rather than the
+/// one `package.json` happens to carry.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupView {
+    /// True when this app had never opened its database in this data directory
+    /// before this launch — see [`AppState::is_first_run`].
+    pub first_run: bool,
+    /// The running version, which is the workspace `Cargo.toml`'s; the same one
+    /// the About screen reports.
+    pub version: String,
+}
+
+#[tauri::command]
+pub fn startup(state: State<'_, AppState>) -> StartupView {
+    StartupView {
+        first_run: state.is_first_run(),
+        version: crate::licences::APP.version.to_string(),
+    }
 }
 
 /// Every licence and attribution notice the app ships with, full text included.

@@ -14,9 +14,12 @@
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
   import PhrasesPanel from "./lib/PhrasesPanel.svelte";
   import SettingsPanel from "./lib/SettingsPanel.svelte";
+  import StartupWizard from "./lib/StartupWizard.svelte";
   import TonePanel from "./lib/TonePanel.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import WordsPanel from "./lib/WordsPanel.svelte";
+  import { INTRO_PAGES, notesFor } from "./lib/startupPages";
+  import type { Page } from "./lib/startupPages";
   import { INK_WIDTH, polylineLength } from "./lib/render";
   import type { Sweep } from "./lib/render";
   import type {
@@ -33,6 +36,7 @@
     ReviewView,
     SettingsPatch,
     SettingsView,
+    StartupView,
     SyncView,
     MicrophoneStatus,
     ToneResult,
@@ -89,6 +93,8 @@
     voice: null,
     animationPace: "normal",
     boardSize: "normal",
+    introSeen: false,
+    whatsNewSeen: null,
     warning: null,
   });
 
@@ -124,6 +130,31 @@
    * just the first column and this is never set.
    */
   let navOpen = $state(false);
+
+  /**
+   * The startup reading that is covering the app, or `null` when none is.
+   *
+   * One of two things, and which one is the backend's answer rather than a
+   * choice made here: the **introduction**, for a device that has never run the
+   * app, or **what changed**, for one that has. Both are a few pages read once
+   * and then dismissed, so both are [`StartupWizard`] with different content —
+   * see `lib/startupPages.ts`.
+   *
+   * `kind` is kept beside the pages because dismissing it has to record the
+   * right thing, and because it is what the startup log names.
+   */
+  let startupSheet = $state<{ kind: "intro" | "notes"; pages: Page[] } | null>(null);
+
+  /**
+   * The version this binary is.
+   *
+   * Reported by the backend with the first-run flag and kept, because it is what
+   * the "what's new" pages are keyed to: it is both the lookup for those pages
+   * and the value recorded when they have been read. Never invented here — the
+   * whole point of asking is that `Cargo.toml` is the only place the version
+   * really lives.
+   */
+  let appVersion = $state<string | null>(null);
 
   /**
    * Wrap a navigation callback so that using it also closes the sheet.
@@ -766,12 +797,21 @@
      *
      * Back is the platform's own version of Escape, and the first thing a
      * learner expects it to dismiss is whatever is covering the board — the
-     * navigation sheet, then the explanation. Answering `true` says the press
-     * was used; `false` lets Android finish the activity. `MainActivity.kt` is
-     * the only caller, so on every other platform this is never invoked.
+     * startup reading, which covers everything, then the navigation sheet.
+     * Answering `true` says the press was used; `false` lets Android finish the
+     * activity. `MainActivity.kt` is the only caller, so on every other platform
+     * this is never invoked.
+     *
+     * Dismissing the reading through Back records it as dealt with, exactly as
+     * the Skip button does: "back out of this" and "do not show me this again"
+     * are the same answer to a sheet that appears once.
      */
     const platform = window as unknown as { __hanziHandleBack?: () => boolean };
     platform.__hanziHandleBack = () => {
+      if (startupSheet) {
+        finishStartup();
+        return true;
+      }
       if (navOpen) {
         navOpen = false;
         return true;
@@ -801,7 +841,24 @@
     })();
 
     void refreshVocabulary();
-    void refreshSettings();
+    // The settings and the first-run answer are one decision, so they are read
+    // together and the sheet is offered once, from here. `appVersion` is kept
+    // because it is what the "what's new" pages are keyed to and what is recorded
+    // when they are read.
+    void (async () => {
+      const loaded = await refreshSettings();
+      if (!loaded) return;
+      try {
+        const info = await api.startup();
+        appVersion = info.version;
+        void api.log(
+          `startup: ${info.firstRun ? "first run" : "run before"}, version ${info.version}`,
+        );
+        offerStartup(loaded, info);
+      } catch (cause) {
+        void api.log(`could not read the startup state: ${cause}`);
+      }
+    })();
     void refreshProgress();
     void refreshReview();
 
@@ -946,6 +1003,18 @@
       // The vocabulary screen has text fields; never steal their keystrokes.
       const target = event.target as HTMLElement | null;
       if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+
+      // The startup reading covers the board, so the board's own keys must not
+      // reach past it: Enter would grade an empty board behind the sheet and S
+      // would start an animation nobody can see. Escape dismisses it — the same
+      // act as Back on Android, and the same act as Skip.
+      if (startupSheet) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          finishStartup();
+        }
+        return;
+      }
 
       const meta = event.metaKey || event.ctrlKey;
       if (event.key === "Enter") {
@@ -1166,11 +1235,111 @@
         `settings: click to draw ${clickToDraw ? "on" : "off"} ` +
           `(${loaded.clickToDraw === null ? "this device's default" : "chosen"}), ` +
           `pace ${loaded.animationPace}, board ${loaded.boardSize}, ` +
-          `voice ${loaded.voice ?? "automatic"}`,
+          `voice ${loaded.voice ?? "automatic"}, ` +
+          `introduction ${loaded.introSeen ? "read" : "not read"}, ` +
+          `notes ${loaded.whatsNewSeen ?? "none read"}`,
       );
+      return loaded;
     } catch (cause) {
       error = `Could not load your settings: ${cause}`;
+      return null;
     }
+  }
+
+  /**
+   * Offer the startup reading this device is due: the introduction, or what
+   * changed.
+   *
+   * Called from the startup sequence with the settings and the first-run answer
+   * it just read, and not from [`refreshSettings`] itself: that function re-reads
+   * the *stored* values, while this is about where the installation has got to —
+   * so a later re-read must not be able to pop a sheet up in the middle of
+   * practice. A read that failed offers nothing, because the error it set is what
+   * the learner needs to see.
+   *
+   * The order matters and is the whole point of the change: **a device that has
+   * run the app before is never shown the introduction unprompted.** It is not
+   * news to whoever has been using it, and what they want after an update is what
+   * differs — so a first run gets [`INTRO_PAGES`] and everything else gets the
+   * notes for the running version, if there are any.
+   *
+   * **Both records are per device**, because settings do not sync: the version is
+   * about the screen in front of you, and a phone should not skip the notes
+   * because a laptop read them.
+   */
+  function offerStartup(loaded: SettingsView, info: StartupView) {
+    if (!loaded.introSeen && info.firstRun) {
+      startupSheet = { kind: "intro", pages: INTRO_PAGES };
+      void api.log("introduction: showing it, this install has never run the app");
+      return;
+    }
+    if (loaded.whatsNewSeen === info.version) {
+      void api.log(`what's new: ${info.version} has already been read here`);
+      return;
+    }
+    const pages = notesFor(info.version);
+    if (!pages) {
+      // A release with no notes of its own — deliberately possible, see
+      // `startupPages.ts`. Nothing is shown, and the version is *not* recorded,
+      // so the notes for a later release are still offered.
+      void api.log(`what's new: nothing to show for ${info.version}`);
+      return;
+    }
+    startupSheet = { kind: "notes", pages };
+    void api.log(`what's new: showing the notes for ${info.version}`);
+  }
+
+  /**
+   * Dismiss the startup reading — finishing it and skipping it are the same act.
+   *
+   * It records **both** halves of the answer, which is why the two flags exist
+   * rather than one. `introSeen` says the tutorial is behind this device whether
+   * or not it was the sheet that was just read, and `whatsNewSeen` names the
+   * release whose notes have now been dealt with — so a brand-new installation
+   * is not immediately offered the notes for the version it just installed, and
+   * an existing one is not offered the introduction next launch.
+   *
+   * Only what is not already recorded is sent: the settings screen's replay
+   * deliberately clears neither flag, so dismissing a replay must not rewrite
+   * rows that already say the right thing.
+   */
+  function finishStartup() {
+    const kind = startupSheet?.kind ?? null;
+    startupSheet = null;
+    if (kind === null) return;
+    const patch: SettingsPatch = {};
+    if (!settings.introSeen) patch.introSeen = true;
+    if (appVersion !== null && settings.whatsNewSeen !== appVersion) {
+      patch.whatsNewSeen = appVersion;
+    }
+    if (Object.keys(patch).length === 0) return;
+    void updateSettings(patch);
+  }
+
+  /**
+   * Read the introduction again, asked for from the settings screen.
+   *
+   * Deliberately not persisted as anything: reading it a second time is not a
+   * state, and clearing the flags to show it would make the next launch treat
+   * this device as new — or, for the notes, as a device that had never been told
+   * what changed.
+   */
+  function replayIntro() {
+    startupSheet = { kind: "intro", pages: INTRO_PAGES };
+  }
+
+  /**
+   * Read what changed again, asked for from the settings screen.
+   *
+   * The notes for the *running* version, not for whatever release the device
+   * last read about: the settings screen offers this to re-read what this build
+   * told you. Does nothing when this version has no notes, which is why the
+   * settings screen is told whether there are any (`notesAvailable`).
+   */
+  function replayNotes() {
+    const pages = appVersion === null ? null : notesFor(appVersion);
+    if (!pages) return;
+    startupSheet = { kind: "notes", pages };
   }
 
   /**
@@ -2324,6 +2493,9 @@
         onExportLog={(format) => void exportPracticeLog(format)}
         {logMessage}
         {logBusy}
+        onShowIntro={replayIntro}
+        onShowNotes={replayNotes}
+        notesAvailable={appVersion !== null && notesFor(appVersion) !== null}
       />
     {:else if view === "about"}
       <LicencesPanel info={appInfo} notices={licenceList} error={licenceError} />
@@ -2830,6 +3002,18 @@
       </div>
     {/if}
   </main>
+
+  <!-- The startup reading, over everything. Last in the app so it is above the
+       board and the phone's navigation sheet in paint order as well as in
+       `z-index`; it is a dialog of its own, so where it sits here is only about
+       stacking. -->
+  {#if startupSheet}
+    <StartupWizard
+      pages={startupSheet.pages}
+      finishLabel={startupSheet.kind === "notes" ? "Done" : "Start practising"}
+      onDone={finishStartup}
+    />
+  {/if}
 </div>
 
 <style>

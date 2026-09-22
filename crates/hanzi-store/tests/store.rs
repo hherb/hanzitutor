@@ -572,6 +572,115 @@ fn a_stored_name_the_build_does_not_know_is_reported_rather_than_guessed() {
 }
 
 #[test]
+fn the_introduction_is_remembered_per_database() {
+    // The flag the interface decides its first screen on: written when the
+    // introduction is dismissed, read back on the next launch, and — like a pace
+    // at its default — an *unread* introduction is the absence of a row rather
+    // than a row saying so, so a fresh database is not a record of a decision
+    // nobody took.
+    let dir = dir("settings-intro");
+    let count = |db: &Db| -> i64 {
+        rusqlite::Connection::open(db.path())
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+            .unwrap()
+    };
+
+    let db = Db::open(&dir).unwrap();
+    let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(!store.view().intro_seen(), "a fresh database has read nothing");
+    assert!(store.set_intro_seen(true));
+    store.save().unwrap();
+    assert_eq!(count(&db), 1, "a dismissed introduction is one row");
+
+    // A second session, as if the app had been started again.
+    let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert!(store.view().intro_seen());
+
+    // And going back to unread removes the row rather than storing `false`.
+    let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(store.set_intro_seen(false));
+    store.save().unwrap();
+    assert_eq!(count(&db), 0, "an unread introduction leaves no row");
+    let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert!(!store.view().intro_seen());
+
+    finish(&dir);
+}
+
+#[test]
+fn an_installation_that_has_run_before_is_not_a_first_run() {
+    // The signal the interface turns into "introduction or what's new", so it
+    // has to mean exactly what it says. A database this open has to create is a
+    // first run; the *same* directory opened again is not, even though nothing
+    // has been practised in it — the app has run here, and the learner is not
+    // new to it.
+    let dir = dir("first-run");
+    let db = Db::open(&dir).unwrap();
+    assert!(db.is_first_run(), "the database did not exist before this open");
+
+    let db = Db::open(&dir).unwrap();
+    assert!(!db.is_first_run(), "the same database, opened again");
+
+    finish(&dir);
+}
+
+#[test]
+fn a_database_created_from_the_old_documents_is_not_a_first_run() {
+    // The pre-M10 upgrade, which is the case the schema row cannot see: the
+    // database is created here for the first time, so it has no schema row, but
+    // the learner's work is already on disk and about to be imported.
+    let dir = dir("first-run-legacy");
+    write_legacy_documents(&dir);
+
+    let db = Db::open(&dir).unwrap();
+    assert!(
+        !db.is_first_run(),
+        "documents predating the database are evidence of an earlier run"
+    );
+
+    finish(&dir);
+}
+
+#[test]
+fn the_release_notes_are_remembered_by_version() {
+    // The upgrade half of the startup sheet, stored as the version whose notes
+    // were read: `None` is an installation that has never been shown any, which
+    // is what every install upgrading from a build without them has.
+    let dir = dir("settings-whats-new");
+    let count = |db: &Db| -> i64 {
+        rusqlite::Connection::open(db.path())
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+            .unwrap()
+    };
+
+    let db = Db::open(&dir).unwrap();
+    let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(store.view().whats_new_seen(), None, "no notes read yet");
+    assert!(store.set_whats_new_seen(Some("0.5.6")));
+    store.save().unwrap();
+    assert_eq!(count(&db), 1);
+
+    let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert_eq!(store.view().whats_new_seen(), Some("0.5.6"));
+
+    // A later release is news again, and clearing goes back to never shown.
+    let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(store.set_whats_new_seen(Some("0.5.7")));
+    store.save().unwrap();
+    let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert_eq!(store.view().whats_new_seen(), Some("0.5.7"));
+
+    let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(store.set_whats_new_seen(None));
+    store.save().unwrap();
+    assert_eq!(count(&db), 0, "an unread release leaves no row");
+
+    finish(&dir);
+}
+
+#[test]
 fn a_setting_a_newer_build_wrote_is_not_mistaken_for_a_choice() {    // A row this build does not know is left alone (a newer build may have
     // written it), but a row for a key it *does* know has to be readable.
     let dir = dir("settings-unknown");

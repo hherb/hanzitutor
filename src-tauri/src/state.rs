@@ -915,13 +915,18 @@ impl AppState {
     /// A `None` argument means *leave this preference alone* rather than *clear
     /// it*: the screen sends only what the learner touched, and clearing the
     /// click-to-draw choice back to the device's default is asked for
-    /// explicitly by [`AppState::clear_click_to_draw`].
+    /// explicitly by [`AppState::clear_click_to_draw`]. `intro_seen` and
+    /// `whats_new_seen` are the two arguments sent on the interface's own behalf
+    /// rather than from a control on the settings screen: the startup reading is
+    /// dismissed on the board, and that is the moment both are recorded.
     pub fn update_settings(
         &self,
         click_to_draw: Option<bool>,
         voice: Option<&str>,
         pace: Option<Pace>,
         board_size: Option<BoardSize>,
+        intro_seen: Option<bool>,
+        whats_new_seen: Option<&str>,
     ) -> SettingsView {
         {
             let mut settings = self.lock_settings();
@@ -936,6 +941,12 @@ impl AppState {
             }
             if let Some(value) = board_size {
                 settings.store.set_board_size(value);
+            }
+            if let Some(value) = intro_seen {
+                settings.store.set_intro_seen(value);
+            }
+            if let Some(version) = whats_new_seen {
+                settings.store.set_whats_new_seen(Some(version));
             }
         }
         // Outside the settings lock: the speaker has its own, and taking them
@@ -955,6 +966,21 @@ impl AppState {
             settings.store.set_click_to_draw(None);
         }
         self.settings_view()
+    }
+
+    /// Whether this app had never opened its database here before this launch.
+    ///
+    /// `true` when there is no database at all: an in-memory run — the tests, and
+    /// a build whose data directory could not be resolved — has no evidence of an
+    /// earlier one, and "new here" is the harmless reading, because it offers the
+    /// introduction rather than release notes to someone who may have seen
+    /// neither. Where there *is* a database, it answers for itself; see
+    /// [`hanzi_store::Db::is_first_run`].
+    pub fn is_first_run(&self) -> bool {
+        self.db
+            .as_ref()
+            .map(hanzi_store::Db::is_first_run)
+            .unwrap_or(true)
     }
 
     /// Persist the current preferences, if anything changed, and report a
@@ -1002,7 +1028,7 @@ impl AppState {
     /// looks broken.
     pub fn set_click_to_draw(&self, value: Option<bool>) -> SettingsView {
         match value {
-            Some(value) => self.update_settings(Some(value), None, None, None),
+            Some(value) => self.update_settings(Some(value), None, None, None, None, None),
             None => self.clear_click_to_draw(),
         }
     }

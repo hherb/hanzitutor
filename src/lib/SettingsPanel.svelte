@@ -84,6 +84,30 @@
     logMessage: string | null;
     /** True while an export is being written. */
     logBusy: boolean;
+    /**
+     * Called to show the introduction again.
+     *
+     * The introduction is shown once on a first run and then only on request.
+     * Nothing is written when this runs: reading it a second time is not a
+     * state, and clearing the "read" record to show it would make the *next*
+     * launch treat this device as new.
+     */
+    onShowIntro: () => void;
+    /**
+     * Called to show what changed in this version again.
+     *
+     * The same bargain as [`onShowIntro`], and nothing is written either: the
+     * record is the *version* whose notes have been read, and replaying them must
+     * not disturb it.
+     */
+    onShowNotes: () => void;
+    /**
+     * Whether the running version has any notes to show.
+     *
+     * A release is allowed to have none — see `startupPages.ts` — so the button
+     * is disabled rather than silently doing nothing when it has none.
+     */
+    notesAvailable: boolean;
   }
 
   let {
@@ -98,6 +122,9 @@
     onExportLog,
     logMessage,
     logBusy,
+    onShowIntro,
+    onShowNotes,
+    notesAvailable,
   }: Props = $props();
 
   /**
@@ -947,6 +974,36 @@
           {:else}
             JSON Lines keeps everything and can be read back; CSV opens in a
             spreadsheet, where the measures are one column each.
+          {/if}
+        </span>
+      </div>
+    </div>
+
+    <!-- The introduction, and what changed -------------------------------- -->
+    <div class="row">
+      <div class="what">
+        <span class="name" id="set-intro">The introduction, and what's new</span>
+        <span class="why">
+          What the board grades, what its two modes are for, and where the rest of
+          the app lives — and, after an update, what changed in it. The
+          introduction is shown once when the app is first opened and the notes
+          once per version, so that both get out of the way afterwards; these
+          read either again.
+        </span>
+      </div>
+      <div class="how">
+        <div class="voicerow">
+          <button class="try" onclick={onShowIntro}>Introduction</button>
+          <button class="try" onclick={onShowNotes} disabled={!notesAvailable}>
+            What's new
+          </button>
+        </div>
+        <span class="status">
+          {#if notesAvailable}
+            Reading either again changes nothing and is not remembered.
+          {:else}
+            This version has no notes of its own, so there is nothing to read
+            again — the introduction is always here.
           {/if}
         </span>
       </div>

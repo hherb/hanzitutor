@@ -64,6 +64,14 @@ filling in the Console listing, not code. What is not built yet is listed under
 - **Two practice modes.** *Trace* puts a faint copy of the character on the board
   to follow. *Recall* shows only the pinyin and meaning, and grades what you
   write from memory.
+- **An introduction read once, and what changed after an update.** A first launch
+  gets four short pages: what the app is, what Trace and Recall are for, the four
+  measures an attempt is graded on, and where the course, the word list and the
+  rest of the app live. An installation that has **run before** is shown what
+  changed in the version it just updated to instead — the tutorial is not news to
+  somebody who has been using the app. Each is read once and gets out of the way
+  afterwards; the Settings screen can show either again, and reading one again
+  changes nothing and is not remembered.
 - **Two ways to draw.** Press-and-drag, which is what a stylus does, or **click to
   draw**: one click starts a stroke, moving the pointer extends it, and a second
   click ends it — no button to hold down for a long stroke on a trackpad. Escape
@@ -362,13 +370,24 @@ can be *un*-chosen, because that is what decides the shape of the row:
   `slow`/`normal`/`fast` and `compact`/`normal`/`large`. No row means the default,
   which is `normal` for both.
 
+Two more rows are written by the app rather than chosen on that screen, and they
+are what decide the first thing you see. **The introduction has been read**
+(`intro_seen`, `true` or no row) and **the release notes have been read**
+(`whats_new_seen`, the version whose notes you have seen, or no row). A launch that
+finds neither shows the introduction, because the app has never run on this device
+before; a launch that finds them missing but *has* run before shows what changed in
+this version, which is the honest thing to tell somebody who already knows how the
+board works. Both are per device, because **preferences do not sync** — a phone
+should not skip the notes because a laptop read them. The Settings screen only
+replays either one, and replaying writes nothing.
+
 | Table | Holds |
 | --- | --- |
 | `vocab_entry`, `vocab_group` | your list: entries, groups, per-entry attempts |
 | `progress_card` | one row per practised character: attempts, best and last score, the interval, ease and when it is next due |
 | `attempt` | **every attempt ever recorded**, in order — not a bounded history |
 | `course_cursor` | where you were in the course, so the app opens there |
-| `settings` | the preferences you have actually chosen, one row each |
+| `settings` | the preferences you have actually chosen, one row each, plus whether the introduction and which release's notes have been read |
 | `meta` | the schema version and the record of the one-time import |
 
 The card and the attempt log are deliberately different things. The card holds
@@ -968,6 +987,8 @@ src/lib/                    Svelte components
   VocabularyPanel.svelte    the vocabulary list: add, group, export, import
   LessonSidebar.svelte      course, list, word and screen navigation
   SettingsPanel.svelte      the four preferences, written as they are changed
+  StartupWizard.svelte      the pages read once at the start, either kind
+  startupPages.ts           what those pages say; the release notes live here
   LicencesPanel.svelte      About: the app's identity and every notice, in full
 scripts/                    data fetching, cargo env, CLI selection
 docs/privacy-policy.md      what the Android build tells Play, and why it is true
