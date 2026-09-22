@@ -350,6 +350,62 @@ three-character phrases. The prompt is a parameter (`--prompt-wav`,
 bundled clips should be in, and where that recording comes from, is still an
 open decision.
 
+## Resolution: the dataset's own audio is bundled
+
+**Decided and done, 2026-09-21.** The bundled HSK 1-2 clips are now the dataset's
+own CosyVoice2 recordings, not generated here.
+
+The dataset publishes an MP3 for every sentence at both speeds — 8,708 files —
+and its attribution file grants redistribution of that synthesised output under
+**Apache-2.0**, asking only for disclosure that it is synthetic:
+
+> 音频由 CosyVoice2-0.5B 在本地合成，**合成语音**（synthetic voice）…
+> 本项目依 Apache-2.0 再分发合成输出。
+
+Measured on the same 208 phrases with the same recogniser and judge, the
+reference audio failed **15** where the MeloTTS output failed **57**. Generating
+was ~4x worse than the audio that already shipped with the text.
+
+`scripts/fetch-clip-audio.py` fetches them, resumably, into
+`public/audio/no7z/` — **819 phrases, 1,638 clips, 30.2 MB, zero missing takes**.
+The filenames are exactly what `synthesize-audio` produced, so the manifest, the
+frontend and the gates cannot tell the difference.
+
+### Full-scale verification, and what it does and does not say
+
+`verify-audio` over all 819 phrases: **78 failed (9.5%)**. The 208-phrase sample
+had put the reference at 15/208 (7.2%), so this is consistent rather than a
+regression — but it is *not* the same kind of number as the differential, because
+there is no longer a control to subtract. The 78 include the recogniser's own
+errors.
+
+The pattern says most of them are exactly that: **70 of the 78 are "dropped or
+short"**, and the archetype is a number word vanishing —
+
+    我今年二十岁      heard 我今年岁
+    一年有十二个月    heard 一年有个月
+    我们班有四十个学生 heard 我们班有个学生
+
+Those are the same phrases that appeared in the **both-fail** set of the earlier
+differential, where the *reference* audio failed them too. A recogniser does not
+silently drop 二十 from audio that says it; this looks far more like the
+recogniser's number handling than a defect in the clips. `check-audio.py` reports
+78 as a failure count, not a defect rate, and should be read that way.
+
+### The lesson worth keeping
+
+The audio was in the corpus from the start, in the needed format, under a licence
+that permitted redistribution, and measurably better than anything generated here.
+Three synthesis paths were built before that was noticed — MeloTTS (22%
+mispronounced), a phonetic verifier to catch it, and a 5.1 GB CosyVoice 3
+environment — to regenerate audio that was already available.
+
+The synthesis work is not wasted, because it answers a different question:
+**on-device speech for a phrase with no recording**, where MeloTTS is the right
+choice (53 MB, runs on the linked `sherpa-onnx`) and CosyVoice cannot play (5.1 GB,
+Python-only). But for the bundled course, the existing recordings were the answer
+from the beginning, and "we could generate it" was not a reason not to use them.
+
 ## Reproducing any of this
 
 The recogniser used for every number above is the app's own, at

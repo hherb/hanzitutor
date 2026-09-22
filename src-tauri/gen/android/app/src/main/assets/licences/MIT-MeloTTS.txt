@@ -17,16 +17,26 @@ copyright holder, and the upstream project is MIT.
 
 What this app takes from it
 ---------------------------
-The model weights, run through `sherpa-onnx`'s `OfflineTts` to speak a phrase the
-app has no recording for — the **on-device** path, `src-tauri/src/say.rs`.
+The model weights, run through `sherpa-onnx`'s `OfflineTts` for two things: the
+**graded reader clips** the app bundles, and **on-demand speech** for a phrase
+with no recording (`src-tauri/src/say.rs`).
 
-**It no longer makes the bundled clips.** An earlier revision of this app
-synthesised `public/audio/` with MeloTTS; an ASR sweep found it mispronouncing
-about one HSK-1 phrase in five (46 of 208 where the reference audio failed 15), so
-the bundled audio is now made with CosyVoice 3 at build time. MeloTTS was kept for
-on demand speech because it is 53 MB and runs on the `sherpa-onnx` library the app
-already links, which CosyVoice — 5 GB and Python-only — cannot do on a phone.
-See `docs/research/MELOTTS_PRONUNCIATION_ACCURACY.md`.
+**Two jobs, and it is worth stating which audio it makes.**
+
+* **The graded readers** (`public/audio/harukicoder/`) **are MeloTTS output**,
+  generated at build time by `crates/hanzi-say`. That corpus publishes no audio at
+  all, so synthesising is the only option.
+* **The HSK 1–2 phrases** (`public/audio/no7z/`) are **not** MeloTTS output. They
+  are the recorded corpus's own files, used unmodified — see the notice for
+  `no7z/hsk-sentences-audio` for that grant. An earlier revision did synthesise
+  them, and an ASR sweep found it mispronouncing about one HSK-1 phrase in five
+  (46 of 208 where the reference audio failed 15), which is why they were replaced.
+* **On-demand speech** — a phrase with no recording — is MeloTTS, because it is
+  53 MB and runs on the `sherpa-onnx` library the app already links, which a 5 GB
+  Python-only model cannot do on a phone.
+
+So: MeloTTS makes the reader clips and speaks live; it does not make the phrase
+clips. See `docs/research/MELOTTS_PRONUNCIATION_ACCURACY.md`.
 
 The `no7z/hsk-sentences-audio` dataset shipped its own MP3s, synthesised with
 CosyVoice2-0.5B under Apache-2.0, and this app does not redistribute those either

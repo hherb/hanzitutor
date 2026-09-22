@@ -80,11 +80,41 @@ export async function loadAllPhrases(): Promise<GradedPhrase[]> {
  * pending state for a second and a half for no reason. Rejects only if the file
  * cannot be played at all.
  */
-export function play(url: string): Promise<void> {
+export function play(url: string, rate = 1): Promise<void> {
   theAudio.pause();
   theAudio.currentTime = 0;
+  // `preservesPitch` keeps the voice from sounding like a chipmunk when slowed,
+  // which matters for a pronunciation exercise: the reading is the point, not
+  // the pitch. Supported under this name in WebKit and Chromium.
+  theAudio.preservesPitch = true;
+  theAudio.playbackRate = rate;
   theAudio.src = url;
   return theAudio.play();
+}
+
+/**
+ * Play at a given rate, 0.5–1.2.
+ *
+ * The corpus ships exactly two takes — normal and slow — so this is the only way
+ * to go slower than normal without regenerating audio. A learner who finds the
+ * normal take a little quick has nothing to adjust otherwise.
+ */
+export function setRate(rate: number): void {
+  theAudio.playbackRate = clampRate(rate);
+}
+
+/** Slowest and fastest the interface offers. */
+export const MIN_RATE = 0.5;
+export const MAX_RATE = 1.2;
+
+/**
+ * Clamp a rate to the range the interface offers.
+ *
+ * Shared by both playback paths so a clip and a synthesised phrase at the same
+ * setting cannot come out at different speeds.
+ */
+export function clampRate(rate: number): number {
+  return Math.min(MAX_RATE, Math.max(MIN_RATE, rate));
 }
 
 /** Stop whatever is playing, if anything. */
@@ -114,21 +144,46 @@ export function isPlaying(): boolean {
  * Resolves when playback *starts*, matching [`play`], so a tap handler is not
  * held for the length of the utterance.
  */
-export function playSamples(samples: number[], sampleRate: number): Promise<void> {
+export function playSamples(samples: number[], sampleRate: number, rate = 1): Promise<void> {
   // Stop the element first: the two share an output device, and a clip still
   // sounding underneath synthesised speech is two voices at once.
   stop();
 
-  const context = new AudioContext({ sampleRate });
+  // **One context for the app, created once.** An earlier version built a new
+  // `AudioContext` per phrase and closed it on `onended`. That is a documented
+  // way to produce clicks: WebKit allows only a handful of live contexts, and
+  // tearing one down while the audio graph is rendering is audible — worse while
+  // the page is busy, which is why it was most obvious when scrolling during
+  // playback. The context is now a module-level singleton, never closed.
+  const context = audioContext(sampleRate);
   const buffer = context.createBuffer(1, samples.length, sampleRate);
   buffer.copyToChannel(Float32Array.from(samples), 0);
 
   const source = context.createBufferSource();
   source.buffer = buffer;
+  // The synthesised path takes its rate here rather than through `setRate`: a
+  // `BufferSource` has its own `playbackRate` and is not affected by the
+  // `<audio>` element's. Slowing this without shifting pitch needs
+  // `preservesPitch`, which is a property of the source's playback rate in Web
+  // Audio and is on by default — so a slower clip keeps its voice.
+  source.playbackRate.value = clampRate(rate);
   source.connect(context.destination);
-  // Closed when the utterance ends, so a screen visited repeatedly does not
-  // accumulate audio contexts — browsers cap how many can exist at once.
-  source.onended = () => void context.close();
   source.start();
-  return Promise.resolve();
+  return context.resume().then(() => undefined);
+}
+
+/// The shared context, created on first use.
+///
+/// A context is tied to a sample rate, so a request at a different rate rebuilds
+/// it — that happens once per model, not per phrase, because every clip from one
+/// model shares its rate.
+let shared: AudioContext | null = null;
+let sharedRate = 0;
+
+function audioContext(sampleRate: number): AudioContext {
+  if (shared && sharedRate === sampleRate) return shared;
+  if (shared) void shared.close();
+  shared = new AudioContext({ sampleRate });
+  sharedRate = sampleRate;
+  return shared;
 }

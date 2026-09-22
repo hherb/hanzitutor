@@ -350,6 +350,9 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut manifest_phrases = Vec::with_capacity(phrases.len());
     let mut skipped = 0usize;
     let mut encoded = 0usize;
+    // Phrases the engine could not say, and why. Reported at the end and left
+    // out of the manifest, so the app never offers a clip that does not exist.
+    let mut skipped_phrases: Vec<(String, String)> = Vec::new();
     let mut total_bytes = 0u64;
 
     for (n, phrase) in phrases.iter().enumerate() {
@@ -379,19 +382,31 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             // Whichever engine is in use produces a WAV at a known path; the
             // encode below is identical either way, which is what keeps the two
             // comparable.
+            // A phrase the model cannot say is **skipped, not fatal**. One bad
+            // input ended a 1,185-sentence run at item 156 before this: the
+            // silence guard did its job and then took the whole batch down with
+            // it, discarding every clip after it. A run over a corpus is not a
+            // transaction — it should finish, report what it could not say, and
+            // let the manifest record the rest.
             let wav = match &say_wavs {
-                Some(wavs) => wavs
-                    .get(&format!("{}{}", phrase.id, speed.suffix()))
-                    .cloned()
-                    .ok_or_else(|| format!("no CosyVoice audio for {}", phrase.id))?,
+                Some(wavs) => match wavs.get(&format!("{}{}", phrase.id, speed.suffix())) {
+                    Some(p) => p.clone(),
+                    None => {
+                        skipped_phrases.push((phrase.id.clone(), "no audio produced".to_string()));
+                        continue;
+                    }
+                },
                 None => {
                     let path = scratch
                         .join(format!("{}-{}.wav", args.source, phrase.id.replace('/', "-")));
-                    model
-                        .as_ref()
-                        .ok_or("no engine initialised")?
-                        .write_wav(&phrase.text, speed.multiplier(), &path)?;
-                    path
+                    let model = model.as_ref().ok_or("no engine initialised")?;
+                    match model.write_wav(&phrase.text, speed.multiplier(), &path) {
+                        Ok(_) => path,
+                        Err(e) => {
+                            skipped_phrases.push((phrase.id.clone(), e.to_string()));
+                            continue;
+                        }
+                    }
                 }
             };
             encode_mp3(&wav, &dest).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -412,6 +427,12 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             phrases.len(),
             phrase.text
         );
+        // If either speed failed, the phrase is not practisable and does not
+        // belong in the manifest at all — a half-present phrase is worse than an
+        // absent one, because it looks playable.
+        if paths.normal.is_empty() || paths.slow.is_empty() {
+            continue;
+        }
         manifest_phrases.push(ManifestPhrase {
             id: phrase.id.clone(),
             level: phrase.level.clone(),
@@ -451,6 +472,18 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     if skipped > 0 {
         println!("resumed: {skipped} clips already present, {encoded} written");
+    }
+    if !skipped_phrases.is_empty() {
+        println!(
+            "\n{} phrase(s) the engine could not say, omitted from the manifest:",
+            skipped_phrases.len()
+        );
+        for (id, why) in skipped_phrases.iter().take(20) {
+            println!("  {id}: {why}");
+        }
+        if skipped_phrases.len() > 20 {
+            println!("  … and {} more", skipped_phrases.len() - 20);
+        }
     }
     println!(
         "\n{} phrases, {:.2} MB total\nmanifest {}",

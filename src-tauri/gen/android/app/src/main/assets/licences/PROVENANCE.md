@@ -47,7 +47,7 @@ than left implicit.
 | The Android app's libraries: AndroidX, Material, Kotlin | [AndroidX](https://developer.android.com/jetpack/androidx) and [Material](https://github.com/material-components/material-components-android) | Apache-2.0 |
 | Graded phrases: HSK 1–2 sentences, pinyin, translations | [no7z/hsk-sentences-audio](https://huggingface.co/datasets/no7z/hsk-sentences-audio) | CC BY-SA 4.0 |
 | Graded readers: passages with word-aligned pinyin and gloss | [harukicoder/hsk30-graded-readers](https://huggingface.co/datasets/harukicoder/hsk30-graded-readers) | CC BY 4.0 |
-| The bundled pronunciation clips (MP3) | Synthesised by this project with MeloTTS | MIT (model) |
+| The bundled pronunciation clips (MP3) | [no7z/hsk-sentences-audio](https://huggingface.co/datasets/no7z/hsk-sentences-audio) — the corpus's own recordings, made with CosyVoice2-0.5B | Apache-2.0 |
 
 The first six rows are compacted by `prepare-data` into one generated artifact,
 `crates/hanzi-core/data/hanzi.bin.gz`, which `src-tauri/src/state.rs` embeds with
@@ -322,14 +322,29 @@ font. It ships as `licences/OFL-1.1.txt`. Noto is derived from Adobe's Source Ha
 Sans, which is why the OFL file carries Adobe's copyright line as well; the
 font's reserved name is `Source`, not `Noto`, so no rename is required.
 
-### The pronunciation clips — MeloTTS, and where the sentences come from
+### The pronunciation clips — the corpus's own recordings
 
 The phrase screen plays short recordings of graded phrases. They are **synthetic
 speech**, generated when the app was built, and three separate things have to be
 accounted for: the model that spoke, the text that was spoken, and the files
 themselves.
 
-**The model is MeloTTS, MIT.** `licences/MIT-MeloTTS.txt` carries the licence as
+**The clips are the corpus's own MP3s, under Apache-2.0.** Every bundled clip is
+the file the upstream project published for that sentence, at both speeds — 819
+phrases, 1,638 files, 30 MB. Its attribution file grants redistribution of that
+synthesised output under Apache-2.0 and asks for one thing: that it be disclosed
+as synthetic speech, which the phrase screen does.
+
+**This reverses an earlier decision, on measurement.** The app used to generate
+its own clips, first with MeloTTS and then with CosyVoice 3. Over 208 HSK-1
+phrases, through one recogniser and one judge, the generated MeloTTS audio failed
+57 where these recordings failed 15 — 46 phrases that only the generated audio got
+wrong. The published recordings were better, already in the required format, and
+permissively licensed. `docs/research/MELOTTS_PRONUNCIATION_ACCURACY.md` has the
+comparison and the three synthesis paths built before it was made.
+
+**The on-device synthesiser is still MeloTTS, and that is a different job.**
+`licences/MIT-MeloTTS.txt` carries the licence as
 published with the ONNX conversion this project uses, naming MyShell.ai. The
 model is **not compiled into the app and not downloaded by it**: a build that
 wants to synthesise runs `scripts/fetch-tts.sh`, which fetches it into
@@ -360,15 +375,16 @@ They are stored under separate directories and listed separately on the phrase
 screen so that what a learner is hearing always has one attributable source. A
 merged list would make it possible to ship one set under the other's notice.
 
-**No third-party audio is redistributed.** This is the part worth being explicit
-about, because the obvious reading of the first corpus is wrong. The `no7z`
-dataset ships its own MP3s, synthesised with **CosyVoice2-0.5B** under Apache-2.0
-— and this project does not use them. Every clip in the app was generated here
-with MeloTTS, for two reasons: the voice that ships is then the same voice the
-app synthesises with on demand, and CosyVoice2 and its dependency chain stay out
-of this app's obligations entirely. Its notice is reproduced inside
-`licences/NO7Z-hsk-sentences-audio.txt` only so the upstream chain of provenance
+**The bundled audio is third-party audio, redistributed under its own grant.**
+The `no7z`
+dataset ships its own MP3s, synthesised with **CosyVoice2-0.5B** — and those are
+what this app bundles, unmodified, at both speeds. Its notice is reproduced
+inside `licences/NO7Z-hsk-sentences-audio.txt` so the upstream chain of provenance
 stays legible.
+
+The bundled recordings and the on-device synthesiser are therefore **two different
+voices**, deliberately: a phrase with a recording is heard in the course's voice, a
+phrase without one is spoken by the device.
 
 **The upstream level labels are not treated as authoritative.** The `no7z`
 project claims none of its sentences contain vocabulary above their own level.
