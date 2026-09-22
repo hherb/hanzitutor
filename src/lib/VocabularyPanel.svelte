@@ -6,10 +6,43 @@
    * frequency lessons, because the point is to track whatever course you are
    * actually taking. An entry's text may be a single character or a word.
    */
-  import type { CharacterHint, TextLookup, VocabEntry, VocabView } from "./types";
+  import type { CharacterHint, EntryProgress, TextLookup, VocabEntry, VocabView } from "./types";
   import Icon from "./Icon.svelte";
   import * as api from "./api";
   import { tick } from "svelte";
+
+  /**
+   * What each of the schedule's four states is called on a card, and what it means.
+   *
+   * `Record<EntryProgress, …>` rather than a lookup with a fallback, so adding a
+   * state in Rust is a compile error here rather than a blank chip. The words are
+   * the panel's — they are a label for a state the backend decided, not a
+   * judgement of its own — but the note is where the *rule* is stated, so it has
+   * to stay in step with `KNOWN_INTERVAL_DAYS` in `hanzi-core`: that constant is
+   * named in weeks here, and changing one means changing the other.
+   */
+  const PROGRESS: Record<EntryProgress, { label: string; note: string }> = {
+    new: {
+      label: "New",
+      note: "Nothing in this entry has been practised yet, on any device that has synced.",
+    },
+    learning: {
+      label: "Learning",
+      note:
+        "Begun, but not settled: at least one character has never been written, or is " +
+        "still being reviewed only days apart.",
+    },
+    due: {
+      label: "Due",
+      note: "At least one of its characters has come up for review now.",
+    },
+    known: {
+      label: "Known",
+      note:
+        "Every character has been practised, none is due, and each is scheduled at " +
+        "least three weeks out.",
+    },
+  };
 
   /** `null` selects everything, `""` the unfiled entries, otherwise a group. */
   export type Selection = string | null;
@@ -508,20 +541,37 @@
           <span class="reading">
             <span class="pinyin">{entry.pinyin || "—"}</span>
             <span class="meaning">{entry.meaning || "—"}</span>
-            <!-- The group and the practice record sit under the reading rather
-                 than beside it. Beside it they were two more fixed columns, and
-                 with three actions in the row the reading was squeezed to nothing
-                 on a phone — the one thing the row exists to show. Here they wrap
-                 among themselves and cost the reading no width. -->
+            <!-- The group and what is known of the entry sit under the reading
+                 rather than beside it. Beside it they were two more fixed
+                 columns, and with three actions in the row the reading was
+                 squeezed to nothing on a phone — the one thing the row exists to
+                 show. Here they wrap among themselves and cost the reading no
+                 width. Re-measured at 360 px and 320 px when the progress tag
+                 arrived; see the note on it below. -->
             <span class="meta">
               {#if entry.group}
                 <span class="chip">{entry.group}</span>
               {/if}
-              <span class="stats" title="attempts and best score">
-                {entry.attempts === 0
-                  ? "not practised"
-                  : `${entry.attempts}× · best ${Math.round(entry.bestScore ?? 0)}`}
-              </span>
+              <!-- How well it is known, from the schedule, and the only progress
+                   signal on the card.
+
+                   This *replaces* the practice record that used to sit here
+                   ("4× · best 88"), for three reasons. It is the better data: the
+                   record counts this device's attempts, which are not part of
+                   what syncs, so a list that had just synced read "not
+                   practised" for a word the other device has known for months,
+                   while this is folded from the synced attempt log. Measuring the
+                   card at 320 px — where the panel is 280 px — showed a third
+                   item costing a line of height on every card. And two progress
+                   signals on one row are two sources of truth for one question.
+                   `attempts` and `bestScore` are still on the wire; nothing on
+                   this screen reads them. -->
+              {#if entry.progress}
+                <span
+                  class="progress {entry.progress}"
+                  title={PROGRESS[entry.progress].note}
+                >{PROGRESS[entry.progress].label}</span>
+              {/if}
             </span>
           </span>
           <!-- Three actions, as glyphs so they hold one row on a phone, where two
@@ -875,13 +925,47 @@
     background: var(--accent-soft);
     color: var(--accent-ink);
     font-size: 0.72rem;
+    /* A group name is the learner's own text and can be long; the column is
+       about 100 px on a phone. It used to be `nowrap` with no bound, which put a
+       long name *under* the row's three action buttons — measured at 360 px, a
+       219 px chip in a 118 px column, crossing the icons at 229. So it wraps
+       inside the pill instead, and never grows past the column. */
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  /* How well an entry is known. A pill like the group chip, but never the same
+     colour: the group is a label the learner chose and this is a state the
+     schedule decided, and telling them apart at a glance is the point.
+     The colour is decoration on top of the word, never the message — which is
+     why every state carries a word, and why none of them is red: red is spoken
+     for by the two controls that cannot be taken back (see `app.css`). */
+  .progress {
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 550;
+    max-width: 100%;
     white-space: nowrap;
   }
-  .stats {
-    font-size: 0.74rem;
+  .progress.new {
+    background: var(--hover);
     color: var(--muted);
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
+  }
+  .progress.learning {
+    background: var(--surface);
+    color: var(--muted-strong);
+    border: 1px solid var(--line);
+  }
+  /* What to do next, so it is the one allowed to be loud. The accent is the same
+     one the sidebar's due dot and the course's due marks use. */
+  .progress.due {
+    background: var(--accent);
+    color: #fff;
+  }
+  /* The green the sidebar already uses for a lesson that is done. */
+  .progress.known {
+    background: #f0fdf4;
+    color: #15803d;
   }
   .row-actions {
     flex: none;

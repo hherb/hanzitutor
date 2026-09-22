@@ -553,6 +553,7 @@ fn vocabulary_entries_serialise_with_camel_case_fields() {
             "attempts",
             "bestScore",
             "lastPractised",
+            "progress",
         ],
     );
     assert_eq!(json["entries"][0]["text"], serde_json::json!("学习"));
@@ -562,6 +563,134 @@ fn vocabulary_entries_serialise_with_camel_case_fields() {
     // plain text — the review scheduling will rely on that.
     let added = json["entries"][0]["addedAt"].as_str().unwrap();
     assert!(added.ends_with('Z') && added.len() == 20, "got {added}");
+    // A view the engine built on its own has consulted no schedule, and that is
+    // `null` rather than `"new"`: "nobody asked" and "nothing has ever been
+    // practised" are different answers, and only one of them is true here.
+    assert_eq!(json["entries"][0]["progress"], serde_json::Value::Null);
+}
+
+#[test]
+fn the_progress_tag_serialises_as_the_interface_spells_it() {
+    // Snake_case values, camelCase fields — the same rule as every other enum on
+    // this boundary, and the interface's `EntryProgress` union mirrors it.
+    for (state, wire) in [
+        (hanzi_core::EntryProgress::New, "\"new\""),
+        (hanzi_core::EntryProgress::Learning, "\"learning\""),
+        (hanzi_core::EntryProgress::Due, "\"due\""),
+        (hanzi_core::EntryProgress::Known, "\"known\""),
+    ] {
+        assert_eq!(serde_json::to_string(&state).unwrap(), wire);
+    }
+}
+
+/// The whole join, through the state layer: the list, the dataset's idea of what
+/// the board can draw, and the schedule.
+#[test]
+fn each_entry_carries_what_the_schedule_says_about_it() {
+    use hanzi_core::EntryProgress;
+
+    let state = state();
+    let id = state
+        .lock_vocab()
+        .store
+        .add_entry("学习", "xuéxí", "to study", Some("Lesson 1"))
+        .expect("adding should succeed")
+        .id;
+    state.lock_vocab().save();
+
+    // Nothing has been written anywhere, so the schedule holds no card at all —
+    // which is `new`, and not `learning`: there is nothing to be part-way through.
+    let view = state.vocab_view();
+    let entry = view.entries.iter().find(|e| e.entry.id == id).unwrap();
+    assert_eq!(entry.progress, Some(EntryProgress::New));
+
+    // Write one character of the two, a few times over, starting a month back.
+    // 学 climbs; 习 has no card at all, so the entry can never be `known`
+    // however well the other half went — the tag is only as good as the
+    // weakest character, which is the whole of the honesty rule.
+    {
+        let mut progress = state.lock_progress();
+        for (score, at) in [
+            (100.0, "2026-08-01T09:00:00Z"),
+            (100.0, "2026-08-03T09:00:00Z"),
+            (100.0, "2026-08-11T09:00:00Z"),
+        ] {
+            progress.store.record_at('学', score, at).unwrap();
+        }
+        progress.save();
+    }
+    let stamped = |at: &str| {
+        state
+            .tag_vocab_at(state.lock_vocab().view(), at)
+            .entries
+            .iter()
+            .find(|e| e.entry.id == id)
+            .unwrap()
+            .progress
+    };
+    assert_eq!(
+        stamped("2026-08-12T09:00:00Z"),
+        Some(EntryProgress::Learning),
+        "学 is scheduled weeks out now, but 习 has never been written"
+    );
+    // And once the card falls due, that outranks everything: it is what the
+    // review queue will offer next.
+    assert_eq!(
+        stamped("2026-12-01T09:00:00Z"),
+        Some(EntryProgress::Due)
+    );
+}
+
+/// A sentence keeps its punctuation in the entry — it is the learner's own text —
+/// but practice skips it, so the tag has to skip it too.
+#[test]
+fn a_character_the_board_cannot_draw_does_not_hold_an_entry_back() {
+    use hanzi_core::EntryProgress;
+
+    let state = state();
+    assert!(
+        state.dataset.is_practisable('你') && !state.dataset.is_practisable('！'),
+        "the board draws one and not the other, which is why the set matters"
+    );
+
+    let id = state
+        .lock_vocab()
+        .store
+        .add_entry("你好！", "nǐhǎo", "hello", Some("Lesson 1"))
+        .expect("adding should succeed")
+        .id;
+    state.lock_vocab().save();
+    {
+        let mut progress = state.lock_progress();
+        for ch in ['你', '好'] {
+            for at in [
+                "2026-08-01T09:00:00Z",
+                "2026-08-03T09:00:00Z",
+                "2026-08-11T09:00:00Z",
+            ] {
+                progress.store.record_at(ch, 100.0, at).unwrap();
+            }
+        }
+        progress.save();
+    }
+
+    // Both characters are scheduled more than three weeks out and neither is due,
+    // so the entry is known — *because* the `！` was not judged. Judged, it could
+    // never have a card, and the entry would sit at `learning` for ever.
+    let view = state.tag_vocab_at(state.lock_vocab().view(), "2026-08-20T09:00:00Z");
+    let entry = view.entries.iter().find(|e| e.entry.id == id).unwrap();
+    assert_eq!(entry.progress, Some(EntryProgress::Known));
+
+    let with_punctuation = hanzi_core::entry_progress(
+        &['你', '好', '！'],
+        &state.lock_progress().store,
+        "2026-08-20T09:00:00Z",
+    );
+    assert_eq!(
+        with_punctuation,
+        EntryProgress::Learning,
+        "which is what counting the comma would do to every sentence"
+    );
 }
 
 #[test]

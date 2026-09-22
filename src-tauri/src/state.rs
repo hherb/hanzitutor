@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use hanzi_core::{
-    build_lessons, build_queue, now_iso8601, BoardSize, CursorStore, CursorView, Dataset, Grade,
-    Pace, ProgressStore, ProgressView, ReviewView, SettingsStore, SettingsView, ToneVerdict,
-    VocabStore, VocabView,
+    build_lessons, build_queue, entry_progress, now_iso8601, BoardSize, CursorStore, CursorView,
+    Dataset, Grade, Pace, ProgressStore, ProgressView, ReviewView, SettingsStore, SettingsView,
+    ToneVerdict, VocabStore, VocabView,
 };
 use hanzi_core::pinyin::{
     heard_against_readings, syllables, tone_target as build_tone_target, Heard, ToneTarget,
@@ -1055,6 +1055,71 @@ impl AppState {
             due_count,
             warning: progress.load_error.clone().or(vocab_warning),
         }
+    }
+
+    /// The vocabulary list as the interface should see it: every entry, and how
+    /// well it is known.
+    ///
+    /// The two statements are deliberately separate. `lock_vocab` must be released
+    /// before the schedule is read — see [`Self::tag_vocab`] — and writing this as
+    /// one expression would hold the list across `tag_vocab`'s lock, because a
+    /// temporary guard lives to the end of the statement that created it.
+    pub fn vocab_view(&self) -> VocabView {
+        let view = self.lock_vocab().view();
+        self.tag_vocab(view)
+    }
+
+    /// Add each entry's progress tag, read from the schedule as of now.
+    ///
+    /// ## Why the lock order matters here
+    ///
+    /// This takes the **schedule** lock and never the list's, and `review_queue`
+    /// takes the schedule *before* the list. Both orders therefore agree, which is
+    /// what stops a deadlock: the sync commands run off the main thread and reload
+    /// the schedule and the list together, so a command that held the list and
+    /// reached for the schedule could meet one doing the reverse.
+    ///
+    /// `view` is owned rather than borrowed for the same reason: whoever built it
+    /// has already let the list go.
+    ///
+    /// ## Why the tag is not just "practised?"
+    ///
+    /// Because `attempts` and `last_practised` are this **device's** own — they are
+    /// not part of the stamp that settles a merge — so a list that has just synced
+    /// would read "not practised" for a word the other device knows well. The tag
+    /// is derived from the cards, which are folded from the synced attempt log, so
+    /// it means the same thing on every device.
+    pub fn tag_vocab(&self, view: VocabView) -> VocabView {
+        self.tag_vocab_at(view, &now_iso8601())
+    }
+
+    /// The same, at a caller-supplied time — the seam that makes the tag testable
+    /// without waiting for a due date, exactly as [`ProgressStore::view_at`] is
+    /// for the schedule itself.
+    pub fn tag_vocab_at(&self, mut view: VocabView, now: &str) -> VocabView {
+        let progress = self.lock_progress();
+        for entry in &mut view.entries {
+            entry.progress = Some(entry_progress(
+                &self.judgeable(&entry.entry),
+                &progress.store,
+                now,
+            ));
+        }
+        view
+    }
+
+    /// The characters of an entry that the board can actually ask for.
+    ///
+    /// The same set the interface practises with — `teachable_characters` is
+    /// [`Dataset::practisable_characters`]. A sentence's punctuation is skipped by
+    /// practice rather than practised, so it must be skipped here too: counting a
+    /// comma would leave every sentence in the list at `Learning` for ever.
+    fn judgeable(&self, entry: &hanzi_core::Entry) -> Vec<char> {
+        entry
+            .characters()
+            .into_iter()
+            .filter(|ch| self.dataset.is_practisable(*ch))
+            .collect()
     }
 
     /// Write the whole practice log to `path`, as JSON Lines or CSV.

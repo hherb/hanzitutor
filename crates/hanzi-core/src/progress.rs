@@ -31,11 +31,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::grade::Grade;
 use crate::time::{add_seconds, now_iso8601, parse_iso8601};
-use crate::vocab::Entry;
+use crate::vocab::{Entry, EntryProgress};
 
 /// Format version written into the documents. Bump when the shape changes and
 /// add a migration; a document from the future is refused rather than guessed at.
 pub const FORMAT_VERSION: u32 = 1;
+
+/// How long a character's interval has to be before its entry counts as known.
+///
+/// Three weeks, which is the line the spaced-repetition tools call a *mature*
+/// card: the ladder climbs 12 hours, 1 day, 6 days and then multiplies by the
+/// ease factor, so a character that has been answered well five times in a row is
+/// around here. It is a floor and not a guess — see [`entry_progress`] for why the
+/// tag is only ever as good as the **weakest** character of an entry.
+///
+/// The interface's wording for `Known` names this in weeks; the two are one
+/// decision, so changing the number means changing that sentence.
+pub const KNOWN_INTERVAL_DAYS: f32 = 21.0;
 
 /// How many attempts are kept per character in memory, and shown to the learner.
 ///
@@ -812,6 +824,71 @@ pub fn fold_from(
     baseline
 }
 
+/// How well the learner knows one entry, from the schedule.
+///
+/// ## What it is not
+///
+/// It does **not** read [`Entry::attempts`], `best_score` or `last_practised`, and
+/// that is the whole reason it exists. Those are this device's own — they are not
+/// part of the stamp that settles a merge — so a list that has just synced reads
+/// "not practised" on a device that has never written the word, however well the
+/// other device knows it. This is derived from the cards the attempt log folds
+/// into, so it says the same thing everywhere.
+///
+/// ## The rule, in the order it is decided
+///
+/// 1. **No card for any character** → `New`. Nobody has ever written it, on any
+///    device. Note that this is the *schedule* saying so: an entry the app never
+///    tagged is [`None`](crate::vocab::VocabEntryView::progress), which is not the
+///    same answer.
+/// 2. **Any character due now** → `Due`, before anything else, because that is
+///    what the review queue will offer next.
+/// 3. **Any character with no card, or any whose interval is below
+///    [`KNOWN_INTERVAL_DAYS`]** → `Learning`.
+/// 4. **Otherwise** → `Known`.
+///
+/// The honesty of the tag is entirely in step 3's "any": an entry is only as known
+/// as its **weakest** character, so one character still climbing the ladder — or
+/// never practised at all — keeps the whole entry out of `Known`. A tag that
+/// overstates how well something is known is worse than no tag.
+///
+/// `characters` is the set the board can actually ask for, which the caller
+/// filters through `Dataset::is_practisable`: the punctuation in a sentence is
+/// skipped by practice, so counting it here would leave such an entry at
+/// `Learning` for ever.
+pub fn entry_progress(
+    characters: &[char],
+    store: &ProgressStore,
+    now: &str,
+) -> EntryProgress {
+    let mut judged = 0usize;
+    let mut missing = false;
+    let mut due = false;
+    let mut young = false;
+
+    for ch in characters {
+        match store.card(*ch) {
+            None => missing = true,
+            Some(card) => {
+                judged += 1;
+                due |= card.is_due(now);
+                young |= card.interval_days < KNOWN_INTERVAL_DAYS;
+            }
+        }
+    }
+
+    if judged == 0 {
+        return EntryProgress::New;
+    }
+    if due {
+        return EntryProgress::Due;
+    }
+    if missing || young {
+        return EntryProgress::Learning;
+    }
+    EntryProgress::Known
+}
+
 /// Build the review queue.
 ///
 /// Everything due at `now`, most overdue first, drawn from both the course and
@@ -1310,6 +1387,131 @@ mod tests {
         // The attempt itself is still recorded by the store, whatever the policy.
         assert_eq!(card.attempts, 1);
         assert_eq!(card.history[0].rating, Rating::Again);
+    }
+
+    // ---- what the schedule says about a vocabulary entry -------------------
+
+    /// Every character of `text` answered well, and often enough, that it is
+    /// scheduled past [`KNOWN_INTERVAL_DAYS`].
+    ///
+    /// The times climb rather than being one timestamp repeated: an interval comes
+    /// from the card and not from the gap between attempts, but a card whose whole
+    /// history is stamped at one instant is not a history this app can produce,
+    /// and the tag is meant to describe a real one.
+    fn mature(store: &mut ProgressStore, text: &str) {
+        for ch in text.chars() {
+            let mut at = "2026-08-01T09:00:00Z".to_string();
+            for _ in 0..4 {
+                at = store.record_at(ch, 100.0, &at).unwrap().due;
+            }
+        }
+    }
+
+    #[test]
+    fn an_entry_nobody_has_written_is_new_rather_than_learning() {
+        // Not "part-way through" anything: there is no card to be part-way
+        // through, and the two answers would be conflated by a tag derived from a
+        // practice count instead of from the schedule.
+        let store = ProgressStore::in_memory();
+        assert_eq!(
+            entry_progress(&['学', '习'], &store, "2026-09-19T09:00:00Z"),
+            EntryProgress::New
+        );
+    }
+
+    #[test]
+    fn an_entry_knows_only_as_much_as_its_weakest_character() {
+        // The honesty rule, and the reason the tag may be trusted at all: one
+        // character still on the ladder keeps the whole word out of `Known`.
+        let at = "2026-09-19T09:00:00Z";
+        let mut store = ProgressStore::in_memory();
+        mature(&mut store, "学");
+        // One easy pass, today, so it is neither due nor settled.
+        store.record_at('习', 100.0, at).unwrap();
+
+        assert_eq!(entry_progress(&['学', '习'], &store, at), EntryProgress::Learning);
+        assert_eq!(
+            entry_progress(&['学'], &store, at),
+            EntryProgress::Known,
+            "the character on its own is settled, so it is the young one that stopped it"
+        );
+    }
+
+    #[test]
+    fn an_entry_with_a_character_never_written_can_never_be_known() {
+        let mut store = ProgressStore::in_memory();
+        mature(&mut store, "学");
+        assert_eq!(
+            entry_progress(&['学', '习'], &store, "2026-09-19T09:00:00Z"),
+            EntryProgress::Learning
+        );
+    }
+
+    #[test]
+    fn a_character_due_now_outranks_everything_else() {
+        // Including a character that has never been written: what matters is what
+        // the review queue will offer next, and that is the one that is due.
+        let mut store = ProgressStore::in_memory();
+        store
+            .record_at('习', 40.0, "2026-09-19T09:00:00Z")
+            .unwrap();
+
+        assert_eq!(
+            entry_progress(&['学', '习'], &store, "2026-09-19T09:01:00Z"),
+            EntryProgress::Due,
+            "a failure comes back within the minute"
+        );
+    }
+
+    #[test]
+    fn weeks_out_is_the_line_and_a_few_days_is_not() {
+        // `KNOWN_INTERVAL_DAYS` is a judgement rather than a measurement, so it
+        // gets a test that fails if it is moved: two clean reviews is six days and
+        // is not settled, and the fourth is past three weeks and is.
+        let mut store = ProgressStore::in_memory();
+        // Judged at the moment of the last review, which is the one time the card
+        // is certainly not due — the due date *is* the interval away.
+        let mut at = "2026-08-01T09:00:00Z".to_string();
+        let mut reviewed = at.clone();
+        for _ in 0..2 {
+            reviewed = at.clone();
+            at = store.record_at('好', 80.0, &at).unwrap().due;
+        }
+        let card = store.card('好').unwrap().clone();
+        assert!(
+            card.interval_days < KNOWN_INTERVAL_DAYS,
+            "two good reviews should be short of the line: {card:?}"
+        );
+        assert_eq!(
+            entry_progress(&['好'], &store, &reviewed),
+            EntryProgress::Learning
+        );
+
+        for _ in 0..2 {
+            reviewed = at.clone();
+            at = store.record_at('好', 80.0, &at).unwrap().due;
+        }
+        let card = store.card('好').unwrap().clone();
+        assert!(
+            card.interval_days >= KNOWN_INTERVAL_DAYS,
+            "four good reviews should be past it: {card:?}"
+        );
+        assert_eq!(
+            entry_progress(&['好'], &store, &reviewed),
+            EntryProgress::Known
+        );
+    }
+
+    #[test]
+    fn an_entry_with_nothing_the_board_can_draw_is_new() {
+        // Not `Known`, which would be the flattering answer for a text nothing can
+        // ever be written against: with no character to judge there is no evidence
+        // of anything, and evidence is what this reports.
+        let store = ProgressStore::in_memory();
+        assert_eq!(
+            entry_progress(&[], &store, "2026-09-19T09:00:00Z"),
+            EntryProgress::New
+        );
     }
 
     // ---- due-ness and the queue -------------------------------------------

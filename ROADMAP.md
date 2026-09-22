@@ -753,6 +753,15 @@ Already shipped, listed only so they are not re-added as open work:
   sign-in, no network), without the sync gate and without pulling anything — so a
   drill finished on the phone is on the laptop the moment the laptop looks. HANDOVER
   §6a has the reasoning.
+- **A progress tag per vocabulary entry** — built. Each entry shows one of four
+  states — `new`, `learning`, `due`, `known` — derived from the **SM-2 cards** of the
+  characters the board can draw (`hanzi_core::progress::entry_progress`, with a
+  three-week interval as the `known` line), never from `attempts`/`bestScore`, which
+  belong to one device. An entry is only as known as its weakest character, `None`
+  on the wire means the schedule was not consulted rather than "never practised", and
+  the tag *replaced* the per-device practice record on the card — HANDOVER §6a has
+  the reasoning. The re-measure it prompted also fixed a group name running under
+  the row's buttons.
 - **Import / export the vocabulary list** — M1: JSON export and import (lossless; merge
   or replace) plus CSV export. CSV *import* is deliberately out, because it is lossy.
 - **A settings screen** — `src/lib/SettingsPanel.svelte` edits the four preferences

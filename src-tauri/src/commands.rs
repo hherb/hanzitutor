@@ -10,7 +10,7 @@ use hanzi_core::{
     ReviewView, SettingsView, TextLookup, ToneVerdict, ToneTarget, VocabView, Word,
 };
 use serde::Serialize;
-use std::sync::Arc;
+use std::sync::{Arc, MutexGuard};
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 
@@ -672,23 +672,30 @@ pub struct VocabOutcome {
     pub message: String,
 }
 
-/// Persist a change and hand back the list as it now stands.
+/// Persist a change and hand back the list as it now stands, with its tags.
 ///
 /// A save failure is reported through the view's `warning` rather than as a hard
 /// error, because the change *did* take effect in memory: the interface should
 /// show it while explaining that it was not written to disk.
-fn committed(vocab: &mut VocabState) -> VocabView {
+///
+/// The lock is taken **by value** so that the caller cannot still be holding the
+/// list while the schedule is read. That order is a rule, not a style: the schedule
+/// is always taken before the list — see [`AppState::tag_vocab`] — and a command
+/// that broke it could deadlock against a sync reloading both.
+fn committed(state: &AppState, vocab: MutexGuard<'_, VocabState>) -> VocabView {
+    let mut vocab = vocab;
     let mut view = vocab.view();
     if let Some(warning) = vocab.save() {
         view.warning = Some(warning);
     }
-    view
+    drop(vocab);
+    state.tag_vocab(view)
 }
 
 /// The whole list: every entry and every group.
 #[tauri::command]
 pub fn vocabulary(state: State<'_, AppState>) -> VocabView {
-    state.lock_vocab().view()
+    state.vocab_view()
 }
 
 #[tauri::command]
@@ -704,7 +711,7 @@ pub fn vocab_add(
         .store
         .add_entry(&text, &pinyin, &meaning, group.as_deref())
         .map_err(|e| e.to_string())?;
-    Ok(committed(&mut vocab))
+    Ok(committed(&state, vocab))
 }
 
 #[tauri::command]
@@ -720,21 +727,21 @@ pub fn vocab_update(
         .store
         .update_entry(id, &pinyin, &meaning, group.as_deref())
         .map_err(|e| e.to_string())?;
-    Ok(committed(&mut vocab))
+    Ok(committed(&state, vocab))
 }
 
 #[tauri::command]
 pub fn vocab_remove(state: State<'_, AppState>, id: u64) -> Result<VocabView, String> {
     let mut vocab = state.lock_vocab();
     vocab.store.remove_entry(id).map_err(|e| e.to_string())?;
-    Ok(committed(&mut vocab))
+    Ok(committed(&state, vocab))
 }
 
 #[tauri::command]
 pub fn vocab_add_group(state: State<'_, AppState>, name: String) -> Result<VocabView, String> {
     let mut vocab = state.lock_vocab();
     vocab.store.add_group(&name).map_err(|e| e.to_string())?;
-    Ok(committed(&mut vocab))
+    Ok(committed(&state, vocab))
 }
 
 /// The learner's own name for a group is not just a label on a row: it is the key
@@ -752,13 +759,16 @@ pub fn vocab_rename_group(
         .store
         .rename_group(&from, &to)
         .map_err(|e| e.to_string())?;
-    let view = committed(&mut vocab);
+    let mut view = committed(&state, vocab);
     // Where the learner got to follows the group. The position is keyed by the
     // group's name, so leaving it behind would restart a renamed group at the
     // top for no reason the learner could see.
     state.rename_vocab_cursor(&from, &to)?;
-    drop(vocab);
     sync.publish_positions_soon();
+    // The tag is about the schedule, not about the group, so re-tagging for a
+    // rename would say the same thing; this is here so the value is visibly the
+    // current one rather than a copy taken before the move.
+    view = state.tag_vocab(view);
     Ok(view)
 }
 
@@ -778,7 +788,7 @@ pub fn vocab_remove_group(
         .store
         .remove_group(&name, purge)
         .map_err(|e| e.to_string())?;
-    let view = committed(&mut vocab);
+    let view = committed(&state, vocab);
     // The group is gone, so its position means nothing: a group recreated with
     // the same name starts from the top rather than inheriting a stranger's
     // place in a different list.
@@ -838,7 +848,7 @@ pub fn vocab_record_attempt(
         .store
         .record_attempt(id, score)
         .map_err(|e| e.to_string())?;
-    Ok(committed(&mut vocab))
+    Ok(committed(&state, vocab))
 }
 
 /// Write the list to `path` as `format`, which is `"json"` (lossless) or
@@ -881,7 +891,7 @@ pub fn vocab_import(
         .store
         .import_json(&json, merge)
         .map_err(|e| e.to_string())?;
-    let view = committed(&mut vocab);
+    let view = committed(&state, vocab);
 
     let mut message = if summary.replaced {
         format!("Replaced your list with {} entries", summary.added)

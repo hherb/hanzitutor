@@ -127,11 +127,72 @@ impl Entry {
     }
 }
 
+/// How well the learner knows one entry, read from the **schedule** rather than
+/// from this device's own practice record.
+///
+/// The distinction is the whole point of the type. [`Entry::attempts`],
+/// `best_score` and `last_practised` belong to one device — they are deliberately
+/// not part of the stamp that settles a merge — so a list that had just synced
+/// would read "not practised" for an entry the other device had known for months.
+/// A tag has to mean the same thing everywhere, and what is folded from the synced
+/// attempt log does: see [`crate::progress::entry_progress`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryProgress {
+    /// No character of the entry is in the schedule at all — nobody has ever
+    /// written it, on any device.
+    New,
+    /// Begun, and not finished: at least one character has never been practised,
+    /// or one of them is still on the early rungs of its ladder.
+    Learning,
+    /// At least one character has come up for review now, whatever else is true of
+    /// the others. Which *entry* the queue then names is up to
+    /// [`crate::progress::build_queue`] — a character shared by two entries is
+    /// offered once, as the lower-numbered of the two — so this says the work is
+    /// here, not that the queue will spell this row out.
+    Due,
+    /// Every character has a card, none of them is due, and every one is
+    /// scheduled at least [`crate::progress::KNOWN_INTERVAL_DAYS`] out.
+    Known,
+}
+
+/// One entry as the interface sees it: the entry itself, and how well it is known.
+///
+/// A view of its own rather than a field on [`Entry`], for the reason
+/// [`VocabView::warning`] is not a field of [`Document`]: the tag is **derived
+/// from the schedule**, and storing it would be a second source of truth for
+/// something the very next attempt changes — and it would travel in the exported
+/// JSON as though the learner had written it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VocabEntryView {
+    #[serde(flatten)]
+    pub entry: Entry,
+    /// `None` means **the schedule was not consulted** — a view the engine built
+    /// on its own, as a test fixture or a round trip through a document does. It
+    /// is deliberately not `New`, which is the schedule answering "no character
+    /// here has ever been practised": the same distinction schema 5 draws between
+    /// a null measure and a zero one, and for the same reason — a reader that
+    /// conflates them reports something it invented.
+    #[serde(default)]
+    pub progress: Option<EntryProgress>,
+}
+
+impl VocabEntryView {
+    /// The entry on its own, with no tag: what [`VocabStore::view`] can answer.
+    fn untagged(entry: Entry) -> Self {
+        Self {
+            entry,
+            progress: None,
+        }
+    }
+}
+
 /// What the interface needs to render the list.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VocabView {
-    pub entries: Vec<Entry>,
+    pub entries: Vec<VocabEntryView>,
     pub groups: Vec<String>,
     /// Set when the change was applied in memory but could not be saved, so the
     /// interface can say so instead of silently losing data.
@@ -256,7 +317,13 @@ impl VocabStore {
 
     pub fn view(&self) -> VocabView {
         VocabView {
-            entries: self.document.entries.clone(),
+            entries: self
+                .document
+                .entries
+                .iter()
+                .cloned()
+                .map(VocabEntryView::untagged)
+                .collect(),
             groups: self.document.groups.clone(),
             warning: None,
         }

@@ -238,7 +238,32 @@ export interface VocabEntry {
   attempts: number;
   bestScore: number | null;
   lastPractised: string | null;
+  /**
+   * How well this entry is known, from the **schedule** rather than from the
+   * counts above.
+   *
+   * `attempts`, `bestScore` and `lastPractised` belong to this device — they are
+   * not part of the stamp that settles a merge — so a list that has just synced
+   * reads "not practised" for a word the other device knows well. This is derived
+   * from the cards the synced attempt log folds into, so it means the same thing
+   * everywhere.
+   *
+   * `null` means the schedule was not consulted, which is **not** `"new"`: the
+   * same distinction schema 5 draws between a null measure and a zero one. The
+   * panel then shows no tag rather than inventing one.
+   */
+  progress: EntryProgress | null;
 }
+
+/**
+ * How well a vocabulary entry is known, in the four states the schedule can be in.
+ *
+ * `new` is no character of the entry ever practised, `due` is something due now,
+ * `known` is every character scheduled weeks out with none due, and `learning` is
+ * everything between — including an entry with one character never practised at
+ * all. See `hanzi_core::progress::entry_progress` for the rule.
+ */
+export type EntryProgress = "new" | "learning" | "due" | "known";
 
 export interface VocabView {
   entries: VocabEntry[];

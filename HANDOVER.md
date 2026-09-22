@@ -887,7 +887,13 @@ temp files.
   fitted and the reading vanished, which is the worse failure. The chip and the
   record now sit under the reading in `.meta` where they may wrap, and the glyph is
   capped at 34 % so a six-character entry cannot take the row. Re-measure before
-  adding a fourth thing there. The action key is `enterkeyhint="next"` on the first
+  adding a fourth thing there — **done when the progress tag arrived**, and it paid
+  twice: a third item in `.meta` cost a line of height on every card at 320 px (so
+  the tag *replaced* the practice record rather than joining it), and the group chip
+  turned out to be unbounded, running under the row's buttons — 219 px in a 118 px
+  column at 360 px. Read the geometry out over the DevTools protocol, not just the
+  screenshot: the chip's fault is plain in `getBoundingClientRect` and easy to miss
+  in a picture. The action key is `enterkeyhint="next"` on the first
   three fields and `done` on the last, with `advance()` moving focus; a key pressed
   during an IME composition is left to the keyboard, because that is what commits a
   candidate.
@@ -1703,22 +1709,63 @@ passes for the wrong reason.
 ### Where this got to, and what is next
 
 Confirmed on hardware, not inferred: a drill **resumes at the right word** on both
-an iPhone and an Android phone, and the position travels between them. One item
-remains open:
-
-1. **A progress tag per entry** (asked for, not started). The data is better than
-   `attempts`/`bestScore`: every character in an entry has an SM-2 card with an
-   interval and a due date, and the schedule is folded from the synced attempt
-   log, so a tag *derived* from the cards means the same thing on every device. It
-   needs an honest rule for an entry whose characters have never been practised —
-   a tag that overstates how well something is known is worse than no tag.
-   `last_practised` and `attempts` are deliberately **per device** (they are not
-   part of the three-part stamp), so they are the wrong source for such a tag.
+an iPhone and an Android phone, and the position travels between them. Both items
+this section left open are now built — the position is published as it changes, and
+each entry carries a progress tag; both are below.
 
 **One consequence to decide, not a bug.** Because `last_practised` is per device,
 a phone that resumes at the right word still works through entries the other
 device has finished — its queue is longer. Either that fact starts travelling too,
-or the queue is honestly per-device and should be labelled that way.
+or the queue is honestly per-device and should be labelled that way. The tag is the
+half of that which could be settled without new state: it reads the schedule, which
+is the same on every device, and the card no longer shows the per-device counts at
+all.
+
+### The progress tag: derived from the schedule, never stored
+
+**Built.** Each entry on the vocabulary screen carries one of four states — `new` /
+`learning` / `due` / `known` — derived, on every view, from the SM-2 cards of the
+entry's characters. The rule is `hanzi_core::progress::entry_progress`; the
+threshold is `KNOWN_INTERVAL_DAYS` (21); the join is `AppState::tag_vocab`, which is
+the only place the list, the dataset and the schedule meet.
+
+Four decisions hold it up:
+
+- **It is not `attempts` / `bestScore`.** Those belong to this device — they are not
+  part of the three-part stamp — so a list that had just synced read "not practised"
+  for a word the other device had known for months. The cards are folded from the
+  synced attempt log, so the tag says the same thing everywhere. That is the reason
+  the tag was asked for.
+- **It is only as good as the weakest character.** Any character with no card, or
+  with an interval under three weeks, keeps the whole entry at `learning`; one
+  character due outranks everything. A tag that overstates how well something is
+  known is worse than no tag, so the rule is a conjunction — never an average, and
+  never a count of how many characters are done.
+- **`None` is not `new`.** The tag is `Option<EntryProgress>` on the wire: `None`
+  means the schedule was not consulted (a view the engine built on its own), which
+  is a different answer from "no character of this has ever been written". The panel
+  shows no tag rather than inventing one — invariant 29's `NULL`-is-not-`0.0` rule,
+  applied to a tag instead of a measure.
+- **Only the characters the board can draw are judged** — `Dataset::is_practisable`,
+  the same set `teachable_characters` sends and practice filters by, so a comma in a
+  sentence cannot hold an entry at `learning` for ever.
+
+**It replaced the practice record on the card, and that is a judgement worth
+stating.** The card used to show `4× · best 88`, this device's own count. Three
+things decided against keeping both: the counts are not what syncs, the tag is the
+better data, and re-measuring the card at 360 px and 320 px showed a third item in
+`.meta` costing a line of height on every row. `attempts` and `bestScore` are still
+on the wire — nothing on that screen reads them — so a screen that wants to show
+them per device, labelled as such, has them. Wanted back, it is one `{#if}` and a
+`.stats` rule.
+
+**The re-measure found a fault that was already there.** The group chip was
+`white-space: nowrap` with no bound, so a long group name ran *under* the row's
+action buttons: measured at 360 px, a 219 px chip in a 118 px column, crossing the
+icons at 229. It now wraps inside its pill and is capped at the column. The
+measurement is the §6 recipe again — this time mounting `VocabularyPanel.svelte`
+directly with a canned view, which needs no `invoke` stub at all, and reading the
+geometry out over the DevTools protocol rather than only eyeballing a screenshot.
 
 ### The position is published when it changes, not at the next sync
 
