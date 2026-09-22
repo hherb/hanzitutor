@@ -721,6 +721,14 @@ Small, independently shippable, still open, roughly in value order:
   retention.
 - **Beginner stroke hints** — mark each stroke's start point and direction on the guide
   for the first attempts.
+- **Exact resume inside a vocabulary list.** Practising a group now starts at its
+  first unattempted entry, so a drill no longer begins at the top every time. What
+  is missing is a per-group **cursor**: it would remember a position that is not
+  "first unattempted", travel between devices, and survive re-drilling an entry
+  from the middle of a list. That needs stable group ids first and a
+  `merge_vocab_cursor` in `hanzi-sync`, because a position that publishes without a
+  merge leaves two devices disagreeing about where the learner is. The decisions
+  taken and the five modules it touches are in `HANDOVER.md` §6a.
 - **Interface localisation** — the app teaches Chinese but speaks English.
 
 Already shipped, listed only so they are not re-added as open work:

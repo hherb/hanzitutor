@@ -1818,11 +1818,30 @@
     wordMessage = null;
   }
 
-  /** Start drilling a snapshot of the given entries. */
+  /**
+   * Start drilling a snapshot of the given entries, from where the learner got to.
+   *
+   * Entries already practised are skipped, so a group picks up at its first
+   * unattempted entry instead of starting over — which is what "resume where I
+   * left off" means for a list worked through in order. The position is not
+   * stored anywhere of its own: `last_practised` on the entry *is* the position,
+   * so it survives a restart and cannot drift out of step with the entries it
+   * describes.
+   *
+   * When every entry has been practised there is nothing left to skip, and the
+   * drill starts at the top: such a list is due for review, not finished.
+   *
+   * `last_practised` is deliberately per-device — it is not part of the
+   * three-part sync stamp, because it describes what was typed and practised
+   * here, not what the learner wrote — so this resumes on the machine the
+   * practice actually happened on.
+   */
   function practiseQueue(entries: VocabEntry[]) {
     if (entries.length === 0) return;
+    const unpractised = entries.filter((entry) => entry.lastPractised === null);
+    const resume = unpractised.length > 0 ? unpractised : entries;
     startPractice(
-      entries.map((entry) => ({
+      resume.map((entry) => ({
         text: entry.text,
         entryId: entry.id,
         pinyin: entry.pinyin,
@@ -1830,7 +1849,15 @@
       })),
       "vocabulary",
     );
-    void api.log(`practising ${entries.length} vocabulary entries`);
+    const skipped = entries.length - unpractised.length;
+    void api.log(
+      `practising ${resume.length} vocabulary entries` +
+        (skipped > 0 && unpractised.length > 0
+          ? `, resuming past ${skipped} already practised`
+          : unpractised.length === 0
+            ? ", all entries practised — starting at the top"
+            : ""),
+    );
   }
 
   /** Start drilling what is due for review, most overdue first. */

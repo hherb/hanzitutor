@@ -1538,13 +1538,39 @@ temp files.
   backend that are easy to get wrong.
 
 
-## 6a. Deferred: resuming inside a user vocabulary list
+## 6a. Resuming inside a user vocabulary list
 
-**Not started. Specified here so the next session does not re-derive it.**
+**Half shipped, deliberately.** Practising a group now resumes at its first
+unattempted entry. What is *not* built is the per-group **cursor** and its sync,
+which is specified below so the next session does not re-derive it.
 
-The course remembers where you were; a vocabulary list does not. Practising a
-group always restarts at its first entry, which is the behaviour reported and
-confirmed. This is **a missing feature, not a bug** — nothing fails to save.
+The course remembers where you were; a vocabulary list used not to, and always
+restarted at its first entry. That was **a missing feature, not a bug** — nothing
+failed to save. It was reported again after being written up here as "not
+started", which is the cost of a deferral that is not visible from the roadmap;
+the item is now also listed in `ROADMAP.md`'s cross-cutting section.
+
+### What is done: the skip-practised resume
+
+`practiseQueue` in `src/App.svelte` filters out entries with `last_practised`
+set, and drills the rest; when **every** entry has been practised there is
+nothing to skip and the drill starts at the top, because such a list is due for
+review rather than finished. No storage, no schema, no sync surface — the
+position *is* `last_practised`, which already existed and already travels to the
+interface as `lastPractised`.
+
+That is enough for a list worked through in order, which is what a drill is:
+practising is linear, so "the first entry I have not done" is where the learner
+stopped. It was confirmed against a real list before shipping: entries are
+ordered by `(group, id)`, and in one group of 29 the **first** entry was the one
+already practised, so every session re-drilled it and started over — the exact
+symptom reported.
+
+What the filter cannot express is a position *other* than "first unattempted".
+It does not travel between devices (`last_practised` is deliberately per-device),
+and if the learner re-drills an already-practised entry from the middle of a
+list, the next session still starts at the first unattempted one. Both are what
+the cursor below is for.
 
 ### What was established, so it is not redone
 
@@ -1572,10 +1598,10 @@ confirmed. This is **a missing feature, not a bug** — nothing fails to save.
   and a laptop, and the requirement is to resume where they left off. No
   per-device reconciliation.
 * **Resuming skips entries already practised** (`last_practised IS NOT NULL`).
-  Decided, not yet implemented, and it interacts with the cursor: if every entry
-  in a group is already practised the "first unpractised" rule finds nothing.
-  **Restart from the top in that case** — such a list is due for review, not
-  finished.
+  **Implemented** — see "What is done" above. It interacts with the cursor: if
+  every entry in a group is already practised the "first unpractised" rule finds
+  nothing, and **the drill restarts from the top** — such a list is due for
+  review, not finished.
 * **Deletion clears a position** (the group is gone, so its cursor is dropped).
 
 ### What implementing it touches
@@ -1592,18 +1618,24 @@ Five modules, which is why it was not started as a fragment:
 4. `crates/hanzi-sync/src/lib.rs` / `local.rs` — shard naming and the read/write
    seam, alongside `cursor_shard_name`.
 5. `src-tauri/src/commands.rs` + `src/lib/api.ts` + `src/App.svelte` — commands,
-   wrappers, and the `practiseQueue` filter.
+   wrappers, and the `practiseQueue` filter (**the filter is done**; the cursor
+   still needs the commands and wrappers to store and return a position).
 
 **Give groups a stable id first**; the cursor depends on it. `vocab_group` is
 currently name-keyed, and `merge_vocab` already merges it, so both the rename
 path and the id have to be settled together.
 
-### Why it was deferred rather than half-built
+### Why the cursor was deferred rather than half-built
 
 It is the one area where an incomplete change is worse than none: a position that
 publishes but cannot be merged leaves two devices disagreeing about where the
 learner is, which is the exact failure M13 exists to avoid. Written down here
 with the research already done so it can be done in one pass with merge tests.
+
+**The skip-practised resume was safe to ship without it** — and that is the test
+to apply to the rest: it adds no state that sync can disagree about, so it could
+not leave two devices inconsistent. The cursor is the half that can, which is why
+it waits for the group ids and the merge.
 
 ## 7. Open decisions
 
