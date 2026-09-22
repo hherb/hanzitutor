@@ -39,7 +39,7 @@ pnpm run fetch-sherpa
 # 4. Confirm the baseline is green. There is no *data* step: the dataset
 #    artifact, the interface font and the licence texts are all committed, so a
 #    clone builds without downloading anything else.
-pnpm test                        # expect 491 passed, 0 failed, 4 ignored
+pnpm test                        # expect 567 passed, 0 failed, 4 ignored
 pnpm run check:rust && pnpm run check:web
 ```
 
@@ -89,6 +89,38 @@ reached by the launch sync and by nothing on the board or the settings screen �
 so either batch the frontend edits and take the capture before making any, or
 stop the app first. The prompt is not a symptom of a broken build, and answering
 it repeatedly changes nothing about the app.
+
+**A render check can be made to reach no keychain at all**, which is worth doing
+rather than promising to be quick with the mouse. What decides whether the launch
+sync touches the secret store is the **non-secret record** in the study database:
+`sync:account` holding `"protection":"userPresence"` makes `SyncService::auto`
+refuse *before* it reads the token (see `sync.rs`), while the real database here
+holds `"keychainOnly"`, which sends it to the keychain. So a **copy** of the data
+directory with that one row changed — plus `intro_seen` and `whats_new_seen` in
+`settings`, so no startup sheet covers the screen being looked at — is a harness
+that opens the app with no dialog whatsoever:
+
+```bash
+mkdir -p .tmp-render
+sqlite3 -readonly "$HOME/Library/Application Support/com.hanzitutor.app/hanzi.db" \
+  ".backup .tmp-render/hanzi.db"
+sqlite3 .tmp-render/hanzi.db "
+  update meta set value='{\"account_id\":\"render\",\"protection\":\"userPresence\"}'
+    where key='sync:account';
+  delete from meta where key='sync:lock';
+  insert into settings(key,value) values('intro_seen','true'),('whats_new_seen','0.5.7')
+    on conflict(key) do update set value=excluded.value;"
+HANZI_TUTOR_DATA_DIR="$PWD/.tmp-render" pnpm run dev
+```
+
+It is a copy, so the real study data is untouched, and `.tmp-*/` is gitignored.
+Two more things save time on the same check. **Open the screen you want to look at
+by changing the default `view` in `App.svelte` for the run** and revert it before
+committing: a synthetic `CGEvent` click is dropped without an accessibility grant,
+so the app cannot be driven from here. And **capture the window rather than the
+screen** — `Quartz.CGWindowListCopyWindowInfo` (pyobjc, already installed) gives
+the `kCGWindowNumber`, and `screencapture -x -o -l<id> out.png` then takes a
+picture of the app alone, with nobody's other windows in it.
 
 Unrelated, and worth knowing anyway: killing the shell that launched the app does
 **not** kill the app. An orphan left behind goes on drawing its window and asking
@@ -204,6 +236,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Personal vocabulary list (M1) | Done — groups, drilling, JSON and CSV export, JSON import (merge or replace) |
 | Progress and SRS (M2) | Done — SM-2 behind a `Scheduler` trait; the review queue is drawn from the course and the list together |
 | Words (M3) | Done — search by character, reading or meaning; a word is read and spoken whole (着急 is `zháojí` where the isolated 着 has no context) |
+| Characters (lookup, §6b) | Done — the whole character set searched by character, reading, meaning, or a word typed as characters or pinyin; a per-character page with its facts, its progress and every HSK word using it; level filter with an "Outside HSK" row |
 | Settings screen | Done — four preferences; an unchosen one is resolved from the device or the system |
 | The startup reading: the introduction, and what's new | Done — a first run is shown four pages of introduction, an install that has run before is shown the notes for the running version; each read once **per device** (a `settings` row), both replayable from the settings screen, and the board's keys are dead while either is up (§4, invariant 31) |
 | Durable study store (M10) | Done — one `hanzi.db`; the old JSON imported once and left byte-identical; an unbounded attempt log |
@@ -267,7 +300,8 @@ crates/hanzi-core/          grading engine. No Tauri, no UI, no platform code.
   src/geom.rs               resampling, normalisation, distances, similarity fit
   src/raster.rs             stroke ink: scanline fill, pen bands, amount/coverage
   src/grade.rs              Hungarian pairing, order analysis, verdicts, scoring
-  src/dataset.rs            Character + Word models, word search, artifact loading
+  src/dataset.rs            Character + Word models, character and word search,
+                            artifact loading
   src/curriculum.rs         frequency list -> lessons
   src/vocab.rs              the personal vocabulary list, and VocabSink
   src/settings.rs           Settings, Pace, BoardSize, SettingsSink, and the
@@ -351,6 +385,9 @@ src/
   lib/TonePanel.svelte      the learner's pitch contour drawn over the expected
                             tone shape, with the verdict Rust worded
   lib/WordsPanel.svelte     the HSK word list: search, browse, practise
+  lib/CharacterPanel.svelte the character set: search, a character's own page
+                            (meaning, readings, facts, the words using it), practise
+  lib/due.ts                due dates in words, shared by the board and that page
   lib/VocabularyPanel.svelte the personal list: groups, entries, import/export
   lib/PhrasesPanel.svelte   graded phrases with their bundled clips
   lib/audio.ts              clip playback, rate, and on-device samples
@@ -361,7 +398,8 @@ src/
                             or what changed — over whatever is behind them
   lib/startupPages.ts       what those pages say: `INTRO_PAGES`, and `NOTES`
                             keyed by version. **Look here when bumping the version**
-  lib/LessonSidebar.svelte  course, list, word and phrase navigation, progress marks
+  lib/LessonSidebar.svelte  course, list, word, character and phrase navigation,
+                            progress marks
   lib/Icon.svelte           the board's control glyphs
   lib/types.ts              TS mirror of the Rust structs
   lib/api.ts                typed invoke wrappers
@@ -769,7 +807,7 @@ after each item) both do this now. The shape is the rule, not either file.
 Run before every commit:
 
 ```bash
-pnpm test           # 515 tests: engine + data-pipeline units, the SQLite store,
+pnpm test           # 567 tests: engine + data-pipeline units, the SQLite store,
                     # sync convergence, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
@@ -1940,6 +1978,58 @@ Android). `added_at` syncs, so every device computes the same order. The SQL and
 the in-memory sort must stay in step: the document is re-sorted as it is built, so
 either one alone leaves the other in charge.
 
+
+## 6b. Looking a character up
+
+The sidebar's **Characters** screen (`src/lib/CharacterPanel.svelte`) is the way out
+of the course's linear order, over `Dataset::search_characters` and the
+`search_characters` command. Six things about it are decisions rather than
+implementation, and each is the answer to a question that will come back:
+
+- **Browsing and searching answer different questions.** An empty query browses
+  *the course* — the frequency order of the characters the course teaches — which is
+  what the level filter's counts describe. A text query searches *the whole dataset*
+  and therefore also finds characters that are in no lesson; the result carries
+  `inCourse` (`Character::is_teachable`) and the panel labels those "no lesson"
+  rather than hiding them. Hiding them would make the screen a worse dictionary;
+  showing them unlabelled would offer a lesson that does not exist.
+- **The two shorthands both come from "what was typed is a word".** Several
+  *characters* typed at once (`医院`) match on each character contained in the query;
+  several *syllables* typed at once (`yisheng`) match on each syllable, segmented by
+  the same `pinyin::syllables` tone practice uses — **do not add a second
+  segmenter**. The syllable rule needs **more than one** syllable to fire: one
+  syllable is already asked as a reading, and the exact/prefix rules answer it.
+- **Ranking is fixed and has one order to keep**: the character itself, an exact
+  reading, a reading prefix, a reading that contains the query, a definition, a
+  syllable of a longer query, then each character of a multi-character query. A
+  prefix must never outrank an exact reading however common the character is, and
+  **a definition must stay above the syllable rule**: an English word can segment
+  into pinyin by accident (`banana` is `ba`-`na`-`na`), so ranking syllables over
+  definitions would bury 蕉 under every character that reads `ba`. All three are
+  pinned in `dataset.rs`'s tests.
+- **`fold_pinyin` does the reading folding, and readings are kept one per entry.**
+  A character with several readings has to match any of them *exactly* (`血` reads
+  `xuè` before `xiě`, and either has to work); concatenating them into one key would
+  make every reading a prefix instead.
+- **The level census is `characterLevels`, not `wordLevels`.** A level count that
+  answers "how many *words*" next to a list of *characters* would be a label that
+  disagrees with what it labels, so the two are separate fields with separate
+  names, and `characters_per_level` counts **only teachable** characters — the ones
+  a browse with that filter will actually list — which the IPC test holds equal to
+  that browse's total. It counts into a `BTreeMap` rather than off the end of the
+  previous run, because characters are stored **by rank**, so their HSK levels
+  interleave; the word census can do the cheap thing only because words are stored
+  by level. **Level 0 is a real filter**, "Outside HSK", and it is the largest group
+  on the screen.
+- **The screen drills one character at a time.** Bulk practice is the course's job —
+  ten characters at a time, in an order chosen to teach — so the panel's actions are
+  one character (practise, save, or jump to its place in the course) and one word
+  from the word list under it. A hundred rows ticked in a search box is not a lesson;
+  adding a "practise all results" button would be the way that creeps back in.
+
+`lib/due.ts` exists because this screen and the board's detail card both say a due
+date out loud, and two copies of "in 5 days" would drift. `App.svelte` imports
+`dueLabel` from there; keep it that way rather than re-adding a local copy.
 
 ## 7. Open decisions
 

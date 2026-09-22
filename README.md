@@ -61,6 +61,14 @@ filling in the Console listing, not code. What is not built yet is listed under
 - **9,443 HSK 3.0 words**, searchable by character, reading (with or without tone
   marks) or English meaning, and practisable straight from the list. Clicking a
   character in a word finds every word that uses it.
+- **Any character looked up**, not only walked past in course order. Search by the
+  character, by a reading with or without tone marks, or by an English meaning; type
+  a word as characters (`医院`) or as its reading (`yisheng`) and it reaches the
+  characters it is made of. Each result opens onto the character's readings, meaning,
+  radical, stroke count, HSK level, frequency place, how well it is known and every
+  HSK word using it, and can be written on the board from there. The list filters by
+  HSK level, or to the thousands of characters the course teaches that no HSK list
+  names.
 - **Two practice modes.** *Trace* puts a faint copy of the character on the board
   to follow. *Recall* shows only the pinyin and meaning, and grades what you
   write from memory.
@@ -863,29 +871,30 @@ Two consequences are worth knowing before they surprise you:
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
 │  Svelte 5 + TypeScript       │        │  Rust                        │
 │                              │        │                              │
-│  PracticeCanvas   pointer →  │ invoke │  commands (thin IPC shell)    │
-│    display space 0..1024     │───────▶│    ├── dataset_stats          │
-│  render.ts        Path2D,    │        │    ├── lessons, character     │
-│     font↔display transforms  │◀───────│    ├── search_words           │
-│  FeedbackPanel    verdicts   │  JSON  │    ├── grade_attempt          │
-│  LessonSidebar    course and │        │    ├── vocab_*                │
-│     words, review, progress  │        │    └── progress, review_queue │
-│  WordsPanel       HSK list,  │        │         │                     │
-│     search by character     │        │         ▼                     │
-│  VocabularyPanel  your list  │        │  hanzi-core                   │
-│                              │        │    geom   resample, distance  │
-│                              │        │    grade  Hungarian + Kendall │
-│                              │        │    raster pen strokes + ink   │
-│                              │        │    dataset  chars + 9k words  │
-│                              │        │    curriculum  frequency      │
-│                              │        │    vocab    the list          │
-│                              │        │    progress SM-2, due dates   │
-│                              │        │    time     ISO-8601 text     │
-│                              │        │         │ sink trait          │
-│                              │        │         ▼                     │
-│                              │        │  hanzi-store  SQLite          │
-│                              │        │    hanzi.db: cards, the       │
-│                              │        │    attempt log, the list      │
+│  PracticeCanvas   pointer →  │ invoke │  commands (thin IPC shell)   │
+│    display space 0..1024     │───────▶│    ├── dataset_stats         │
+│  render.ts        Path2D,    │        │    ├── lessons, character    │
+│     font↔display transforms  │◀───────│    ├── search_words          │
+│  FeedbackPanel    verdicts   │  JSON  │    ├── search_characters     │
+│  LessonSidebar    course and │        │    ├── grade_attempt         │
+│     words, review, progress  │        │    ├── vocab_*               │
+│  WordsPanel       HSK list,  │        │    └─ progress, review_queue │
+│     search by character      │        │         │                    │
+│  CharacterPanel   lookup by  │        │         ▼                    │
+│     character, reading       │        │  hanzi-core                  │
+│  VocabularyPanel  your list  │        │    geom   resample, distance │
+│                              │        │    grade  Hungarian+Kendall  │
+│                              │        │    raster pen strokes + ink  │
+│                              │        │    dataset  chars + 9k words │
+│                              │        │    curriculum  frequency     │
+│                              │        │    vocab    the list         │
+│                              │        │    progress SM-2, due dates  │
+│                              │        │    time     ISO-8601 text    │
+│                              │        │         │ sink trait         │
+│                              │        │         ▼                    │
+│                              │        │  hanzi-store  SQLite         │
+│                              │        │    hanzi.db: cards, the      │
+│                              │        │    attempt log, the list     │
 └──────────────────────────────┘        └──────────────────────────────┘
 ```
 
@@ -984,8 +993,10 @@ src/lib/                    Svelte components
   PracticeCanvas.svelte     pointer capture, stroke recording
   render.ts                 canvas painting, the stroke-order sweep, verdict colours
   WordsPanel.svelte         the HSK word list: search, browse, practise
+  CharacterPanel.svelte     the character set: search, a character's page, practise
   VocabularyPanel.svelte    the vocabulary list: add, group, export, import
-  LessonSidebar.svelte      course, list, word and screen navigation
+  LessonSidebar.svelte      course, list, word, character and screen navigation
+  due.ts                    how a due date is said out loud, for both screens
   SettingsPanel.svelte      the four preferences, written as they are changed
   StartupWizard.svelte      the pages read once at the start, either kind
   startupPages.ts           what those pages say; the release notes live here

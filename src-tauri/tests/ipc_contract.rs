@@ -88,6 +88,7 @@ fn stats_serialise_with_camel_case_fields() {
             "lessonSize",
             "words",
             "wordLevels",
+            "characterLevels",
         ],
     );
 
@@ -110,6 +111,27 @@ fn stats_serialise_with_camel_case_fields() {
         stats.words as u64,
         "every word belongs to exactly one level"
     );
+
+    // The same for characters, in their own key — a character's HSK level is
+    // not a published count of characters the way the word levels are counts of
+    // words, so reusing `wordLevels` would have the sidebar label one with the
+    // other. Levels 1..=6 have characters; nothing is at level 7 in this
+    // artifact, and a level with nothing in it is omitted rather than shown as 0.
+    expect_keys(&json["characterLevels"][0], &["level", "characters"]);
+    let character_levels: Vec<u64> = json["characterLevels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["level"].as_u64().unwrap())
+        .collect();
+    assert_eq!(character_levels, vec![1, 2, 3, 4, 5, 6], "lowest level first");
+    let counted: u64 = json["characterLevels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["characters"].as_u64().unwrap())
+        .sum();
+    assert!(counted > 0 && counted < stats.characters as u64);
 }
 
 #[test]
@@ -427,6 +449,181 @@ fn the_search_view_reports_a_page_and_an_honest_total() {
     assert!(
         view.words.iter().all(|word| word.text.contains('学')),
         "every hit really contains the character"
+    );
+}
+
+#[test]
+fn a_character_search_serialises_with_the_fields_the_panel_reads() {
+    let state = state();
+    let view = state.search_characters("xue", None, 10);
+    let json = serde_json::to_value(&view).unwrap();
+    expect_keys(&json, &["characters", "total"]);
+    expect_keys(
+        &json["characters"][0],
+        &[
+            "ch",
+            "rank",
+            "hsk",
+            "strokeCount",
+            "radical",
+            "pinyin",
+            "definition",
+            "etymology",
+            "inCourse",
+        ],
+    );
+
+    // The geometry must **not** be on the wire: a page of results is a list, and
+    // a character's outlines and centre-lines belong to the board, which asks for
+    // the one character it is about to teach.
+    assert!(
+        json["characters"][0].get("outlines").is_none()
+            && json["characters"][0].get("medians").is_none(),
+        "a search result carries no stroke geometry"
+    );
+
+    assert_eq!(json["characters"][0]["ch"], serde_json::json!("学"));
+    assert_eq!(json["characters"][0]["inCourse"], serde_json::json!(true));
+    assert_eq!(json["characters"][0]["pinyin"][0], serde_json::json!("xué"));
+}
+
+#[test]
+fn characters_can_be_found_outside_the_course_order() {
+    let state = state();
+
+    // By character: the character itself comes back, once.
+    let exact = state.search_characters("医", None, 10);
+    assert_eq!(exact.characters.len(), 1);
+    assert_eq!(exact.characters[0].ch, '医');
+
+    // By reading, with and without tone marks.
+    for query in ["yisheng", "yīshēng"] {
+        assert!(
+            state
+                .search_characters(query, None, 10)
+                .characters
+                .iter()
+                .any(|c| c.ch == '生'),
+            "{query} should reach 生 through its reading"
+        );
+    }
+
+    // By meaning, which is the route to a character nobody has met yet.
+    let by_meaning = state.search_characters("doctor", None, 10);
+    assert!(
+        by_meaning.characters.iter().any(|c| c.ch == '医'),
+        "a definition finds it, got {:?}",
+        by_meaning
+            .characters
+            .iter()
+            .map(|c| c.ch)
+            .collect::<Vec<_>>()
+    );
+
+    // Several characters at once: each of them, so a word met on a sign is two
+    // characters that can be drilled. The order is frequency, not the order
+    // typed — 院 is the more common character, so it comes first.
+    let parts: Vec<char> = state
+        .search_characters("医院", None, 10)
+        .characters
+        .iter()
+        .map(|c| c.ch)
+        .collect();
+    assert_eq!(parts, vec!['院', '医'], "both halves, most common first");
+
+    // The reading half of the same shorthand: `yisheng` is the same word by
+    // sound, and reaches the same two characters.
+    let by_sound: Vec<char> = state
+        .search_characters("yisheng", None, 10)
+        .characters
+        .iter()
+        .map(|c| c.ch)
+        .collect();
+    assert!(
+        by_sound.contains(&'医') && by_sound.contains(&'生'),
+        "yisheng should reach 医 and 生, got {by_sound:?}"
+    );
+}
+
+#[test]
+fn a_character_browse_and_its_level_filter_agree_with_the_census() {
+    let state = state();
+
+    // Browsing is the course's own list, most common first.
+    let page = state.search_characters("", None, 50);
+    assert_eq!(page.characters.len(), 50);
+    assert_eq!(page.total, state.stats().teachable, "browsing matches the course");
+    let ranks: Vec<u32> = page.characters.iter().map(|c| c.rank).collect();
+    assert!(
+        ranks.windows(2).all(|pair| pair[0] <= pair[1]),
+        "most common first, got {ranks:?}"
+    );
+    assert!(page.characters.iter().all(|c| c.in_course));
+
+    // Every level the sidebar offers lists exactly as many characters as the
+    // count beside it promises — the count and the list are the same question.
+    for entry in &state.stats().character_levels {
+        let level = state.search_characters("", Some(entry.level), 1);
+        assert_eq!(
+            level.total, entry.characters,
+            "HSK {} says {} characters",
+            entry.level, entry.characters
+        );
+        assert!(
+            level
+                .characters
+                .iter()
+                .all(|c| c.hsk == entry.level && c.in_course),
+            "and every one of them is at that level and in the course"
+        );
+    }
+
+    // "Outside HSK" is level 0, and it has to agree with the same subtraction the
+    // sidebar does — otherwise the row would offer a number its list disagrees
+    // with. It is the largest single group, which is the point of the screen:
+    // the course teaches thousands of characters no HSK list names.
+    let named: u32 = state
+        .stats()
+        .character_levels
+        .iter()
+        .map(|entry| entry.characters as u32)
+        .sum();
+    let outside = state.search_characters("", Some(0), 1);
+    assert_eq!(outside.total as u32, state.stats().teachable as u32 - named);
+    assert!(
+        outside.total > named as usize,
+        "more characters are outside the HSK lists than inside them"
+    );
+    assert!(outside.characters.iter().all(|c| c.hsk == 0 && c.in_course));
+}
+
+#[test]
+fn a_character_the_course_cannot_teach_is_found_and_says_so() {
+    // The artifact holds characters outside the frequency list. They have to be
+    // findable — it is a dictionary — and they have to be honest about being in
+    // no lesson, which is what `inCourse` is for.
+    let state = state();
+    let outside = state
+        .dataset
+        .chars()
+        .iter()
+        .find(|c| !c.is_teachable() && !c.pinyin.is_empty())
+        .expect("this artifact holds unranked characters")
+        .clone();
+
+    let found = state.search_characters(&outside.ch.to_string(), None, 10);
+    assert_eq!(found.characters.len(), 1);
+    assert_eq!(found.characters[0].ch, outside.ch);
+    assert!(!found.characters[0].in_course, "found, but in no lesson");
+
+    // And browsing never lists it: the course is what browsing walks.
+    assert!(
+        !state
+            .search_characters("", None, 20_000)
+            .characters
+            .iter()
+            .any(|c| c.ch == outside.ch),
+        "browsing must not offer a character no lesson contains"
     );
 }
 

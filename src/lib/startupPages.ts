@@ -183,6 +183,47 @@ export const INTRO_PAGES: Page[] = [
  * short list, and one honest page beats three padded ones.
  */
 export const NOTES: Record<string, Page[]> = {
+  "0.5.7": [
+    {
+      title: "What's new in 0.5.7",
+      lead:
+        "A new screen for looking a character up. Nothing about how your writing " +
+        "is graded has changed, and your practice history, schedule and " +
+        "vocabulary are untouched.",
+      points: [
+        {
+          name: "Characters",
+          what:
+            "A new screen in the sidebar, between HSK words and Phrases. It " +
+            "searches the whole character set — by the character, by its reading " +
+            "with or without tone marks (xue, xué), by an English meaning, or by " +
+            "a word you have met, typed as characters (医院) or as its reading " +
+            "(yisheng), which reaches the characters it is made of.",
+        },
+        {
+          name: "A character's own page",
+          what:
+            "Every result opens onto what the character means, how it reads, its " +
+            "radical, stroke count, HSK level and frequency place, how well you " +
+            "know it, and the HSK words that use it. From there it can be written " +
+            "on the board, added to your list, or shown where it sits in the " +
+            "course.",
+        },
+        {
+          name: "Levels, and what is outside HSK",
+          what:
+            "The same HSK levels the word list offers, filtered on the left, plus " +
+            "an Outside HSK row: the course teaches thousands of characters no " +
+            "HSK list names, and until now they could only be reached by " +
+            "scrolling the course.",
+        },
+      ],
+      note:
+        "The course is still the way to learn, ten characters at a time. This " +
+        "screen is for finding something — the sign you walked past, the word you " +
+        "heard — and for seeing what a character is used in.",
+    },
+  ],
   "0.5.6": [
     {
       title: "What's new in 0.5.6",

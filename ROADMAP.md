@@ -696,8 +696,6 @@ Deliberately not done, and why:
 
 Small, independently shippable, still open, roughly in value order:
 
-- **Search and browse characters** — by character, pinyin or meaning. Needed to find
-  anything outside the linear course.
 - **Keyboard shortcut help** — a `?` overlay. The shortcuts exist and nothing in the
   app now documents them: the "How this works" disclosure that listed them was removed
   with the rest of the board's chrome, and the introduction that replaced the
@@ -782,6 +780,25 @@ Already shipped, listed only so they are not re-added as open work:
   the speech-recognition model row (M12) and the synthesis model row (M14), each
   stating the address, both sizes and the licence before the button, with real progress
   and a retryable failure.
+- **Search and browse characters** — built, as the sidebar's **Characters** screen
+  (`src/lib/CharacterPanel.svelte`, over `hanzi_core::Dataset::search_characters` and
+  the `search_characters` command). It is the way out of the course's linear order.
+  What still constrains new work: an empty query **browses** the course — that is, the
+  frequency order of the characters the course teaches — while a text query finds any
+  character in the dataset, including ones in no lesson, which the panel labels rather
+  than hides (`inCourse`); ranking is the character itself, then an exact reading, a
+  reading prefix, a reading that contains the query, a **definition**, then a
+  **syllable** of a multi-syllable query (`yisheng` reaches 医 and 生), and last each
+  character of a query typed as several characters (`医院` reaches both halves) — the
+  definition is deliberately above the syllable rule, because an English word can
+  segment into pinyin by accident (`banana` is `ba`-`na`-`na`) and a match on what
+  was typed must not be buried under a decomposition of it; the level filter has its
+  own `characterLevels` census rather than reusing the word one, and it counts only
+  teachable characters so the count and the list it labels cannot disagree; **"Outside
+  HSK" is level 0**, and it is the largest group on the screen, because the course
+  teaches thousands of characters no HSK list names; and the screen drills **one**
+  character at a time — bulk practice stays the course's job, ten at a time. The
+  `?` shortcut overlay above remains open.
 - **The startup reading — an introduction, and what changed** — built, where the
   board's explanation went. Four pages — what the app is, what Trace and Recall are
   for, the four grading measures (shape, placement, ink, order), and where the course,

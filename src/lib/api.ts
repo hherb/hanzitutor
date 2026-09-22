@@ -7,6 +7,7 @@ import type {
   AutoSync,
   AsrStatus,
   Character,
+  CharacterSearchView,
   CursorView,
   DatasetStats,
   GradeOptions,
@@ -93,6 +94,20 @@ export const teachableCharacters = () => invoke<string[]>("teachable_characters"
  */
 export const searchWords = (query: string, level: number | null, limit?: number) =>
   invoke<WordSearchView>("search_words", { query, level, limit: limit ?? null });
+
+// ---- the character dictionary ---------------------------------------------
+
+/**
+ * Search the character set.
+ *
+ * An empty `query` browses the course from the most common character down;
+ * readings match with or without tone marks (`xue`, `xué`) and definitions match
+ * in English. What was typed as several characters, or as several syllables, is
+ * looked up as its parts — `医院` and `yisheng` both reach 医 and 生. `level`
+ * narrows to one HSK level. The result is one capped page plus the true total.
+ */
+export const searchCharacters = (query: string, level: number | null, limit?: number) =>
+  invoke<CharacterSearchView>("search_characters", { query, level, limit: limit ?? null });
 
 /**
  * Grade an attempt. `strokes` are in display space (0..=1024, y downwards), in

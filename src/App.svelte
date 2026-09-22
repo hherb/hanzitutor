@@ -6,6 +6,7 @@
     save as pickSavePath,
   } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
+  import CharacterPanel from "./lib/CharacterPanel.svelte";
   import CharacterThumb from "./lib/CharacterThumb.svelte";
   import FeedbackPanel from "./lib/FeedbackPanel.svelte";
   import Icon from "./lib/Icon.svelte";
@@ -20,12 +21,15 @@
   import WordsPanel from "./lib/WordsPanel.svelte";
   import { INTRO_PAGES, notesFor } from "./lib/startupPages";
   import type { Page } from "./lib/startupPages";
+  import { dueLabel } from "./lib/due";
   import { INK_WIDTH, polylineLength } from "./lib/render";
   import type { Sweep } from "./lib/render";
   import type {
     AppInfo,
     AttemptMeasures,
     Character,
+    CharacterSearchView,
+    CharacterSummary,
     DatasetStats,
     GradeReport,
     Lesson,
@@ -49,10 +53,10 @@
   } from "./lib/types";
 
   type Mode = "trace" | "recall";
-  /** Which of the five top-level screens is showing. */
-  type View = "course" | "vocabulary" | "words" | "phrases" | "settings" | "about";
+  /** Which of the six top-level screens is showing. */
+  type View = "course" | "vocabulary" | "words" | "characters" | "phrases" | "settings" | "about";
   /** Where the current practice session draws its characters from. */
-  type Source = "course" | "vocabulary" | "review" | "words";
+  type Source = "course" | "vocabulary" | "review" | "words" | "characters";
 
   /** One character's worth of a multi-character entry: what was drawn, and the
    * grade it got. `report` is null when the character is still to be written. */
@@ -334,6 +338,15 @@
   /** How long a sync may take before it is worth saying that it is happening. */
   const SYNC_NOTICE_DELAY = 400;
 
+  /**
+   * How many words using a searched character are listed beside its page.
+   *
+   * A character such as 的 opens dozens of words, and the page's word list is
+   * there to show what the character is *for*, not to be a second dictionary —
+   * the HSK words screen is where a full list lives.
+   */
+  const CHARACTER_WORDS = 20;
+
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let workingTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -468,6 +481,19 @@
   let wordQuery = $state("");
   /** A note from the words screen, e.g. what was just added to the list. */
   let wordMessage = $state<string | null>(null);
+
+  // ---- the character dictionary --------------------------------------------
+  /** The HSK level the characters screen is filtered to, or null for all. */
+  let characterLevel = $state<number | null>(null);
+  /**
+   * What is in the characters screen's search box.
+   *
+   * Held here for the same reason as the words screen's: drilling a character and
+   * coming back should not lose the search that found it.
+   */
+  let characterQuery = $state("");
+  /** A note from the characters screen, e.g. what was just added to the list. */
+  let characterMessage = $state<string | null>(null);
   /**
    * Every character the board can draw.
    *
@@ -687,6 +713,7 @@
       character !== null &&
       !(view === "vocabulary" && source !== "vocabulary") &&
       !(view === "words" && source !== "words") &&
+      !(view === "characters" && source !== "characters") &&
       view !== "phrases" &&
       view !== "settings" &&
       view !== "about",
@@ -727,24 +754,6 @@
       ? `${stats.teachable.toLocaleString()} characters in ${stats.lessons.toLocaleString()} lessons`
       : "loading…",
   );
-
-  /**
-   * A short, human label for a due date: "today", "tomorrow", "in 5 days".
-   *
-   * The backend compares due timestamps as text; here the label only has to be
-   * readable, so it is measured from the clock in whole days.
-   */
-  function dueLabel(due: string): string {
-    const remaining = Date.parse(due) - Date.now();
-    if (Number.isNaN(remaining)) return due;
-    if (remaining <= 0) return "now";
-    if (remaining < 86_400_000) return "today";
-    const days = Math.round(remaining / 86_400_000);
-    if (days <= 1) return "tomorrow";
-    if (days < 30) return `in ${days} days`;
-    const months = Math.round(days / 30);
-    return months <= 1 ? "next month" : `in ${months} months`;
-  }
 
   onMount(() => {
     /**
@@ -2169,6 +2178,66 @@
     return api.searchWords(query, level);
   }
 
+  // ---- the character dictionary --------------------------------------------
+
+  /**
+   * Drill characters straight from the lookup, without saving them first.
+   *
+   * A lookup is a list, so the drill is a list of one. Bulk practice is what the
+   * course is for: it walks the same characters in an order that teaches, ten at
+   * a time, and a hundred rows ticked in a search box is not a lesson.
+   */
+  function practiseCharacters(characters: CharacterSummary[]) {
+    if (characters.length === 0) return;
+    startPractice(
+      characters.map((character) => ({
+        text: character.ch,
+        entryId: null,
+        pinyin: character.pinyin[0] ?? "",
+        meaning: character.definition,
+      })),
+      "characters",
+    );
+    void api.log(`practising ${characters.length} searched characters`);
+  }
+
+  /** Put a looked-up character in the personal list, reading and meaning filled in. */
+  function addCharacterToList(character: CharacterSummary) {
+    const group = vocabSelection && vocabSelection !== "" ? vocabSelection : null;
+    void withVocab(
+      () => api.vocabAdd(character.ch, character.pinyin[0] ?? "", character.definition, group),
+      undefined,
+      () => {
+        characterMessage = `Added ${character.ch} to your vocabulary list`;
+      },
+    );
+  }
+
+  /**
+   * Show a searched character on the board, where the course reaches it.
+   *
+   * The course cursor is an index into the frequency order, so this is the answer
+   * to "where does this sit in what I am learning" rather than a second way to
+   * open it: the board is left exactly as the course had it, on a lesson that
+   * does not move.
+   */
+  function showCharacterInCourse(ch: string) {
+    leavePractice();
+    view = "course";
+    goToCharacter(ch);
+    characterMessage = null;
+  }
+
+  /** One page of the character set; the panel owns the query and the debounce. */
+  function searchCharacters(query: string, level: number | null): Promise<CharacterSearchView> {
+    return api.searchCharacters(query, level);
+  }
+
+  /** Every HSK word using one character, for the character page. */
+  function wordsUsing(ch: string): Promise<WordSearchView> {
+    return api.searchWords(ch, null, CHARACTER_WORDS);
+  }
+
   /** Return to the course sequence. */
   function leavePractice() {
     source = "course";
@@ -2262,9 +2331,10 @@
     view = next;
     statusMessage = null;
     wordMessage = null;
+    characterMessage = null;
     // Leaving for the course abandons a list, word or review session; the
-    // course is always there to come back to. Moving between the vocabulary
-    // list and the words screen keeps whatever is on the board.
+    // course is always there to come back to. Moving between the three lookup
+    // screens keeps whatever is on the board.
     if (next === "course" && source !== "course") leavePractice();
   }
 
@@ -2298,11 +2368,13 @@
 
   /** Stop drilling and go back to what was being drilled. */
   function stopPractising() {
-    const target: View = source === "words" ? "words" : "vocabulary";
+    const target: View =
+      source === "words" ? "words" : source === "characters" ? "characters" : "vocabulary";
     leavePractice();
     view = target;
     statusMessage = null;
     wordMessage = null;
+    characterMessage = null;
   }
 
   /** Stop reviewing and show what is left of the queue. */
@@ -2381,6 +2453,10 @@
       wordsTotal={stats?.words ?? 0}
       {wordLevel}
       onSelectWordLevel={navigating((level: number | null) => (wordLevel = level))}
+      characterLevels={stats?.characterLevels ?? []}
+      charactersTotal={stats?.teachable ?? 0}
+      {characterLevel}
+      onSelectCharacterLevel={navigating((level: number | null) => (characterLevel = level))}
       onShowSettings={navigating(() => switchView("settings"))}
       onShowLicences={navigating(() => switchView("about"))}
     />
@@ -2478,6 +2554,20 @@
         onPractise={practiseWords}
         onAddToList={addWordToList}
       />
+    {:else if view === "characters" && source !== "characters"}
+      <CharacterPanel
+        bind:query={characterQuery}
+        search={searchCharacters}
+        wordsWith={wordsUsing}
+        level={characterLevel}
+        message={characterMessage}
+        busy={vocabBusy}
+        cards={progress.cards}
+        onPractise={(character) => practiseCharacters([character])}
+        onPractiseWords={practiseWords}
+        onAddToList={addCharacterToList}
+        onShowInCourse={showCharacterInCourse}
+      />
     {:else if view === "phrases"}
       <PhrasesPanel />
     {:else if view === "settings"}
@@ -2500,7 +2590,7 @@
     {:else if view === "about"}
       <LicencesPanel info={appInfo} notices={licenceList} error={licenceError} />
     {:else if !character}
-      <!-- `practising` above is this condition and the four screens before it
+      <!-- `practising` above is this condition and the five screens before it
            written as one; the phone's top bar navigates by that, so the two have
            to move together. -->
       <p class="status">No character selected.</p>
@@ -2544,7 +2634,9 @@
                     ? "review"
                     : source === "words"
                       ? "word"
-                      : "entry"} {queueCursor + 1} of {queue.length}
+                      : source === "characters"
+                        ? "character"
+                        : "entry"} {queueCursor + 1} of {queue.length}
                 </li>
                 <li>{strokeTotal} {strokeTotal === 1 ? "stroke" : "strokes"}</li>
                 {#if activeCard}
@@ -2835,6 +2927,16 @@
                       onclick={stopPractising}
                       aria-label="Back to the word list"
                       title="Back to the word list"
+                    >
+                      <span class="tool-glyph"><Icon name="back" /></span>
+                      <span class="tool-word">Back</span>
+                    </button>
+                  {:else if source === "characters"}
+                    <button
+                      class="tool"
+                      onclick={stopPractising}
+                      aria-label="Back to the character lookup"
+                      title="Back to the character lookup"
                     >
                       <span class="tool-glyph"><Icon name="back" /></span>
                       <span class="tool-word">Back</span>

@@ -18,7 +18,7 @@
 //!
 //! See `LICENSES.md` for the full notices that must accompany redistribution.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 
 use serde::{Deserialize, Serialize};
@@ -137,6 +137,71 @@ pub struct Dataset {
     /// Search keys, precomputed once because a search box runs on every
     /// keystroke and folding 9,000 readings per keystroke is wasted work.
     word_keys: Vec<WordKey>,
+    /// The same for characters, in the same order as `chars`.
+    character_keys: Vec<CharacterKey>,
+}
+
+/// A character's precomputed, comparison-ready text.
+///
+/// The readings are kept **one per entry** rather than folded into one string:
+/// a character with several readings has to be able to match any of them
+/// exactly, and `学` reading `xué` must come before `雪` reading `xuě` when
+/// `xue` is typed, not after it because the two were concatenated.
+#[derive(Clone, Debug, Default)]
+struct CharacterKey {
+    /// Every reading, folded the same way as [`fold_pinyin`].
+    pinyin: Vec<String>,
+    /// Definition lowercased.
+    meaning: String,
+}
+
+/// A character query, prepared once and then compared against every character.
+///
+/// The same work is needed by a search and by a count of its matches, and the
+/// two have to agree about what matches — so the preparation lives here rather
+/// than being repeated, which is exactly how the two could drift apart.
+#[derive(Clone, Debug, Default)]
+struct CharacterQuery {
+    /// The query as typed, trimmed.
+    text: String,
+    /// Readings folded: tone marks and spacing gone, `v` and `ü` unified.
+    folded: String,
+    /// The query lowercased, for matching definitions.
+    lowered: String,
+    /// The query's syllables, when it has more than one. Empty for a single
+    /// syllable or a query that cannot be read as pinyin at all.
+    syllables: Vec<String>,
+}
+
+impl CharacterQuery {
+    fn new(query: &str) -> Self {
+        let text = query.trim().to_string();
+        let folded = fold_pinyin(&text);
+        // Only a query that is more than one syllable gains anything from being
+        // taken apart: one syllable is already asked as a reading, and the exact
+        // and prefix rules answer it.
+        let syllables = if folded.chars().count() > 1 {
+            let parts: Vec<String> = crate::pinyin::syllables(&text)
+                .into_iter()
+                .flatten()
+                .map(|syllable| fold_pinyin(&syllable.text))
+                .filter(|syllable| !syllable.is_empty())
+                .collect();
+            if parts.len() > 1 {
+                parts
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+        Self {
+            lowered: text.to_lowercase(),
+            text,
+            folded,
+            syllables,
+        }
+    }
 }
 
 /// A word's precomputed, comparison-ready text.
@@ -206,6 +271,14 @@ impl Dataset {
             })
             .collect();
 
+        let character_keys = chars
+            .iter()
+            .map(|c| CharacterKey {
+                pinyin: c.pinyin.iter().map(|r| fold_pinyin(r)).collect(),
+                meaning: c.definition.to_lowercase(),
+            })
+            .collect();
+
         Self {
             chars,
             index,
@@ -213,6 +286,7 @@ impl Dataset {
             word_index,
             words_by_char,
             word_keys,
+            character_keys,
         }
     }
 
@@ -401,6 +475,148 @@ impl Dataset {
         } else {
             None
         }
+    }
+
+    // ---- the character dictionary -------------------------------------------
+
+    /// Find characters by character, reading or meaning.
+    ///
+    /// This is the way out of the course's linear order. The course walks the
+    /// frequency list one lesson at a time, which is the right way to *learn*
+    /// and the wrong way to *look something up*: a learner who meets 医院 on a
+    /// sign, or who wants every character that means "water", has no route to it.
+    ///
+    /// An empty query browses: every character the course can teach, most common
+    /// first. Anything else is matched against the character itself, its
+    /// readings (tone marks and spacing ignored, so `xue`, `xué` and `xüe` all
+    /// find 学) and its English definition. Two shorthands follow from what a
+    /// learner has in hand rather than from the data: several **characters**
+    /// typed at once each match (`医院` offers both 医 and 院), and several
+    /// **syllables** typed at once each match (`yisheng` does the same through
+    /// the readings) — because in both cases what was typed is a word, and a
+    /// word is the characters it is made of.
+    ///
+    /// Results are ranked so that the character itself beats an exact reading,
+    /// which beats a reading prefix, which beats a reading that merely contains
+    /// the query, which beats a definition, which beats a syllable of a longer
+    /// reading; ties keep frequency order, so the more common character comes
+    /// first. The definition is deliberately above the syllable rule: an English
+    /// word can segment into pinyin syllables by accident (`banana` is
+    /// `ba`-`na`-`na`), and a match on what was typed must not be buried under a
+    /// decomposition of it. A character the course cannot teach — no frequency
+    /// rank, so it is in no lesson — is still found by text, and the caller is
+    /// told [`Character::is_teachable`], because finding a character and being
+    /// able to drill it are different answers.
+    ///
+    /// `level` restricts the search to one HSK level. `limit` caps the result;
+    /// the caller is told the true total separately by [`Self::count_characters`].
+    pub fn search_characters(&self, query: &str, level: Option<u8>, limit: usize) -> Vec<&Character> {
+        let query = CharacterQuery::new(query);
+
+        let mut matches: Vec<(u8, usize)> = Vec::new();
+        for (i, ch) in self.chars.iter().enumerate() {
+            if level.is_some_and(|level| ch.hsk != level) {
+                continue;
+            }
+            match Self::match_character_rank(ch, &self.character_keys[i], &query) {
+                Some(rank) => matches.push((rank, i)),
+                None => continue,
+            }
+        }
+
+        matches.sort_by_key(|(rank, i)| (*rank, *i));
+        matches
+            .into_iter()
+            .take(limit)
+            .map(|(_, i)| &self.chars[i])
+            .collect()
+    }
+
+    /// How many characters a query matches, ignoring any limit.
+    ///
+    /// Shares [`Self::match_character_rank`] with [`Self::search_characters`],
+    /// so the two can never disagree about what counts as a match — which is why
+    /// the query is prepared in one place too.
+    pub fn count_characters(&self, query: &str, level: Option<u8>) -> usize {
+        let query = CharacterQuery::new(query);
+
+        self.chars
+            .iter()
+            .enumerate()
+            .filter(|(_, ch)| level.is_none_or(|level| ch.hsk == level))
+            .filter(|(i, ch)| Self::match_character_rank(ch, &self.character_keys[*i], &query).is_some())
+            .count()
+    }
+
+    /// How well a character answers a query: lower is better, `None` is no match.
+    fn match_character_rank(
+        ch: &Character,
+        key: &CharacterKey,
+        query: &CharacterQuery,
+    ) -> Option<u8> {
+        if query.text.is_empty() {
+            // Browsing is the course's own list, so it lists what the course can
+            // teach: an unranked character is in no lesson and has no place in a
+            // frequency-ordered browse, and is still found by text below.
+            return ch.is_teachable().then_some(0);
+        }
+        if query.text.chars().count() == 1 && query.text.starts_with(ch.ch) {
+            return Some(0);
+        }
+        if !query.folded.is_empty() {
+            if key.pinyin.iter().any(|reading| reading == &query.folded) {
+                return Some(1);
+            }
+            if key.pinyin.iter().any(|reading| reading.starts_with(&query.folded)) {
+                return Some(2);
+            }
+            if key.pinyin.iter().any(|reading| reading.contains(&query.folded)) {
+                return Some(3);
+            }
+        }
+        // A definition comes before the syllable rule below, and that order is the
+        // answer to an English query that happens to segment into pinyin: `banana`
+        // is `ba`-`na`-`na` by the segmenter's rules, so ranking the syllables
+        // first would bury 香蕉 under every character that reads `ba`. A direct
+        // match on what was typed outranks a decomposition of it.
+        if !query.lowered.is_empty() && key.meaning.contains(&query.lowered) {
+            return Some(4);
+        }
+        // Several syllables typed at once: a word's reading, and each syllable is
+        // one of its characters. Ranked below a whole-reading match, so `xuexi`
+        // never buries 学 behind a character that merely reads `xi`.
+        if query
+            .syllables
+            .iter()
+            .any(|syllable| key.pinyin.iter().any(|reading| reading == syllable))
+        {
+            return Some(5);
+        }
+        // Several characters typed at once: each character is a hit, which is how
+        // a word the learner met somewhere becomes two characters they can drill.
+        if query.text.chars().count() > 1 && query.text.contains(ch.ch) {
+            return Some(6);
+        }
+        None
+    }
+
+    /// How many characters the course teaches at each HSK level, lowest level
+    /// first. Levels with no characters are omitted rather than reported as zero.
+    ///
+    /// Only teachable characters are counted, because those are the ones a
+    /// `search_characters` browse with that level filter will list — a census
+    /// that disagrees with the list it labels is worse than none. Levels are
+    /// counted into a map rather than off the end of the previous run: a
+    /// character's HSK level has nothing to do with its frequency rank, so the
+    /// characters are **not** grouped by level in storage.
+    pub fn characters_per_level(&self) -> Vec<(u8, usize)> {
+        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
+        for ch in self.ranked() {
+            if ch.hsk > 0 {
+                *counts.entry(ch.hsk).or_default() += 1;
+            }
+        }
+        counts.into_iter().collect()
     }
 
     /// What the dataset can tell about a piece of study text before the user
@@ -871,5 +1087,232 @@ mod tests {
         let dataset = word_dataset();
         let word = dataset.word("汉语").unwrap();
         assert_eq!(word.characters(), vec!['汉', '语']);
+    }
+
+    // ---- the character dictionary -----------------------------------------
+
+    /// A character with a chosen reading, meaning, level and rank.
+    fn lexeme(ch: char, pinyin: &[&str], definition: &str, hsk: u8, rank: u32) -> Character {
+        Character {
+            rank,
+            hsk,
+            ..speaker(ch, pinyin, definition)
+        }
+    }
+
+    /// Four characters spanning a reading, a meaning and two HSK levels, stored
+    /// deliberately out of level order — by rank, as the real artifact is.
+    fn character_dataset() -> Dataset {
+        Dataset::from_chars(vec![
+            lexeme('学', &["xué"], "to study", 1, 10),
+            lexeme('雪', &["xuě"], "snow", 2, 20),
+            lexeme('血', &["xuè", "xiě"], "blood", 3, 30),
+            lexeme('习', &["xí"], "to practise; habit", 1, 40),
+        ])
+    }
+
+    #[test]
+    fn characters_can_be_searched_by_character_reading_or_meaning() {
+        let dataset = character_dataset();
+
+        // By the character itself.
+        let exact = dataset.search_characters("雪", None, 10);
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].ch, '雪');
+
+        // By reading, with tone marks, without them, and with `v` for `ü`.
+        for query in ["xue", "xué", "XUE"] {
+            let hits = dataset.search_characters(query, None, 10);
+            assert!(
+                hits.iter().any(|c| c.ch == '学'),
+                "{query} should find 学, got {:?}",
+                hits.iter().map(|c| c.ch).collect::<Vec<_>>()
+            );
+        }
+
+        // By meaning.
+        let by_meaning = dataset.search_characters("snow", None, 10);
+        assert_eq!(by_meaning.len(), 1);
+        assert_eq!(by_meaning[0].ch, '雪');
+
+        // Every reading of a polyphonic character is searchable, not only the
+        // first: 血 is xuè before xiě, and either has to find it.
+        for reading in ["xue", "xie"] {
+            assert!(
+                dataset
+                    .search_characters(reading, None, 10)
+                    .iter()
+                    .any(|c| c.ch == '血'),
+                "{reading} should find 血"
+            );
+        }
+        assert_eq!(fold_pinyin("nǚ"), "nu", "ü folds like v");
+    }
+
+    #[test]
+    fn an_exact_reading_comes_before_a_longer_one_containing_it() {
+        let dataset = character_dataset();
+
+        // 学 reads xué and nothing else, so `xue` is its exact reading; 想 reads
+        // xiǎng and only starts with `xi`. A prefix must never outrank an exact
+        // match, whatever the frequency says.
+        let exact: Vec<char> = dataset
+            .search_characters("xue", None, 10)
+            .iter()
+            .map(|c| c.ch)
+            .collect();
+        assert_eq!(exact, vec!['学', '雪', '血'], "exact readings, by frequency");
+
+        // 习 reads xí (exact) while 血 reads xiě (a prefix) and 学 reads xué (no
+        // match at all) — so the exact match comes first even though 血 is the
+        // more common character.
+        let mixed: Vec<char> = dataset
+            .search_characters("xi", None, 10)
+            .iter()
+            .map(|c| c.ch)
+            .collect();
+        assert_eq!(mixed, vec!['习', '血']);
+    }
+
+    #[test]
+    fn several_characters_typed_at_once_find_each_of_them() {
+        // A word met somewhere is also a way in: 医院 has to offer both halves.
+        let dataset = Dataset::from_parts(
+            vec![
+                lexeme('医', &["yī"], "doctor", 1, 5),
+                lexeme('院', &["yuàn"], "courtyard; school", 1, 8),
+                lexeme('雪', &["xuě"], "snow", 2, 20),
+            ],
+            Vec::new(),
+        );
+        let hits: Vec<char> = dataset
+            .search_characters("医院", None, 10)
+            .iter()
+            .map(|c| c.ch)
+            .collect();
+        assert_eq!(hits, vec!['医', '院'], "in frequency order");
+    }
+
+    #[test]
+    fn several_syllables_typed_at_once_find_each_of_them() {
+        // The reading half of the same shorthand: a learner who knows how a word
+        // sounds, but not how it is written, types `yisheng` and gets 医 and 生.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('医', &["yī"], "doctor", 1, 5),
+            lexeme('生', &["shēng"], "life; to be born", 1, 6),
+            lexeme('学', &["xué"], "to study", 1, 10),
+            lexeme('血', &["xuè", "xiě"], "blood", 3, 30),
+            lexeme('习', &["xí"], "to practise; habit", 1, 40),
+        ]);
+
+        let word: Vec<char> = dataset
+            .search_characters("yisheng", None, 10)
+            .iter()
+            .map(|c| c.ch)
+            .collect();
+        assert_eq!(word, vec!['医', '生'], "in frequency order");
+
+        // `xuexi` is 学 + 习, and 血 rides along on the same syllable.
+        let xuexi: Vec<char> = dataset
+            .search_characters("xuexi", None, 10)
+            .iter()
+            .map(|c| c.ch)
+            .collect();
+        assert_eq!(xuexi, vec!['学', '血', '习']);
+
+        // A whole-reading match still outranks a syllable of one: `xi` is what 习
+        // reads, and it must come before 血, which merely starts with it.
+        let single = dataset.search_characters("xi", None, 10);
+        assert_eq!(single[0].ch, '习', "exact reading first");
+        assert_eq!(single[1].ch, '血', "then the prefix");
+    }
+
+    #[test]
+    fn an_english_word_that_segments_into_pinyin_still_finds_its_meaning_first() {
+        // `banana` is `ba`-`na`-`na` to the syllable splitter, so 吧 and 那 match
+        // it by reading. The character that *means* banana has to come first
+        // anyway: a definition match is a match on what was typed, and the
+        // syllable rule is a guess about a different language.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('吧', &["ba"], "modal particle", 1, 20),
+            lexeme('那', &["nà"], "that; those", 1, 30),
+            lexeme('蕉', &["jiāo"], "banana", 2, 900),
+        ]);
+        let hits = dataset.search_characters("banana", None, 10);
+        assert_eq!(hits[0].ch, '蕉', "the meaning wins");
+        assert!(
+            hits.iter().any(|c| c.ch == '吧'),
+            "and the reading hits are still there, below it"
+        );
+    }
+
+    #[test]
+    fn an_unranked_character_is_found_by_text_but_not_by_browsing() {
+        // No rank means no lesson, so it must not appear in a browse of the
+        // course — but searching for it by name has to find it, and say so.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('学', &["xué"], "to study", 1, 10),
+            lexeme('龘', &["dá"], "dragons flying", 0, 0),
+        ]);
+        let browsed: Vec<char> = dataset
+            .search_characters("", None, 100)
+            .iter()
+            .map(|c| c.ch)
+            .collect();
+        assert_eq!(browsed, vec!['学'], "the unranked one is not in the course");
+
+        let found = dataset.search_characters("龘", None, 10);
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].is_teachable(), "found, but not drillable in course");
+
+        // And it is reachable by its reading too.
+        assert_eq!(dataset.search_characters("da", None, 10)[0].ch, '龘');
+    }
+
+    #[test]
+    fn a_character_browse_is_most_common_first_and_a_level_filter_narrows() {
+        let dataset = character_dataset();
+        let all: Vec<char> = dataset
+            .search_characters("", None, 100)
+            .iter()
+            .map(|c| c.ch)
+            .collect();
+        assert_eq!(all, vec!['学', '雪', '血', '习'], "rank order");
+
+        let hsk1 = dataset.search_characters("", Some(1), 100);
+        assert_eq!(hsk1.len(), 2);
+        assert!(hsk1.iter().all(|c| c.hsk == 1));
+        assert_eq!(dataset.count_characters("", Some(1)), 2);
+        assert_eq!(dataset.count_characters("snow", Some(2)), 1);
+        assert_eq!(dataset.count_characters("snow", Some(1)), 0);
+    }
+
+    #[test]
+    fn the_level_census_counts_characters_that_are_not_stored_level_by_level() {
+        // The regression this guards: the four characters are stored in *rank*
+        // order, so levels 1, 2, 3, 1 interleave. Counting runs off the end of
+        // the previous run — which is what the word census does, safely, because
+        // words are stored by level — would report level 1 twice.
+        let dataset = character_dataset();
+        assert_eq!(dataset.characters_per_level(), vec![(1, 2), (2, 1), (3, 1)]);
+
+        // The census has to agree with what browsing that level lists, or the
+        // count beside the filter is a lie.
+        for (level, count) in dataset.characters_per_level() {
+            assert_eq!(dataset.count_characters("", Some(level)), count);
+        }
+    }
+
+    #[test]
+    fn a_character_search_is_capped_but_the_total_is_counted_honestly() {
+        let dataset = character_dataset();
+        assert_eq!(dataset.search_characters("", None, 2).len(), 2);
+        assert_eq!(dataset.count_characters("", None), 4);
+        assert_eq!(dataset.count_characters("xue", None), 3, "学, 雪 and 血");
+        assert_eq!(dataset.count_characters("nothing matches this", None), 0);
+        assert!(
+            dataset.search_characters("blood", None, 10).len() == 1,
+            "a definition still matches"
+        );
     }
 }

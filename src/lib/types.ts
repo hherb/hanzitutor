@@ -130,12 +130,58 @@ export interface DatasetStats {
   words: number;
   /** How many words sit at each HSK level, lowest first. */
   wordLevels: LevelCount[];
+  /** How many characters sit at each HSK level, lowest first. */
+  characterLevels: CharacterLevelCount[];
 }
 
 /** How many words one HSK level holds. */
 export interface LevelCount {
   level: number;
   words: number;
+}
+
+/** How many characters one HSK level holds. */
+export interface CharacterLevelCount {
+  level: number;
+  characters: number;
+}
+
+// ---- the character dictionary ---------------------------------------------
+
+/**
+ * One character as a search result.
+ *
+ * This is a {@link Character} without its stroke geometry. Outlines and
+ * centre-lines are tens of kilobytes each, and a page of results is a list, so
+ * the board's own `getCharacter` is what fetches the one character it is about
+ * to teach.
+ */
+export interface CharacterSummary {
+  ch: string;
+  /** Frequency rank, 1 = most common; 0 when the course does not teach it. */
+  rank: number;
+  /** HSK level, or 0 when not in the HSK lists. */
+  hsk: number;
+  strokeCount: number;
+  /** Kangxi radical, or `"\0"` when unknown. */
+  radical: string;
+  /** Every reading the dataset knows, most common first. */
+  pinyin: string[];
+  definition: string;
+  etymology: string;
+  /**
+   * True when the character is in the course's frequency order, so it can be
+   * found by browsing and shown in a lesson. A character found by search can be
+   * `false` here, and the panel says so rather than hiding it.
+   */
+  inCourse: boolean;
+}
+
+/** One page of a character search, with the number of matches behind it. */
+export interface CharacterSearchView {
+  characters: CharacterSummary[];
+  /** How many characters matched in total; the page is capped. */
+  total: number;
 }
 
 // ---- the word dictionary --------------------------------------------------

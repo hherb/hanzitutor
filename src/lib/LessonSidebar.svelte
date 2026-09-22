@@ -1,21 +1,30 @@
 <script lang="ts">
   /**
-   * Navigation for the six screens.
+   * Navigation for the seven screens.
    *
    * Course: the built-in frequency-ordered lessons, one lesson open at a time,
    * with how much of each has been practised and what is due for review.
    * Vocabulary: the user's own groups, acting as the filter for the list panel.
    * Words: the HSK dictionary, filtered by level.
+   * Characters: the character set, looked up by character, reading or meaning,
+   * filtered by HSK level — the way out of the course's linear order.
    * Phrases: graded phrases with bundled pronunciation, for listening and
    * repetition practice.
    * Settings: the learner's own preferences.
    * About: what the app is, and the licence notices it ships under.
    */
-  import type { Lesson, LevelCount, ProgressCard, ReviewView, VocabEntry } from "./types";
+  import type {
+    CharacterLevelCount,
+    Lesson,
+    LevelCount,
+    ProgressCard,
+    ReviewView,
+    VocabEntry,
+  } from "./types";
 
   interface Props {
-    view: "course" | "vocabulary" | "words" | "phrases" | "settings" | "about";
-    onSwitchView: (view: "course" | "vocabulary" | "words" | "phrases") => void;
+    view: "course" | "vocabulary" | "words" | "characters" | "phrases" | "settings" | "about";
+    onSwitchView: (view: "course" | "vocabulary" | "words" | "characters" | "phrases") => void;
     lessons: Lesson[];
     activeLesson: number;
     activeCharacter: string | null;
@@ -39,6 +48,12 @@
     /** The level the words screen is filtered to, or null for all of them. */
     wordLevel: number | null;
     onSelectWordLevel: (level: number | null) => void;
+    /** How many characters sit at each HSK level, for the characters screen. */
+    characterLevels: CharacterLevelCount[];
+    charactersTotal: number;
+    /** The level the characters screen is filtered to, or null for all. */
+    characterLevel: number | null;
+    onSelectCharacterLevel: (level: number | null) => void;
     /** Open the Settings screen. */
     onShowSettings: () => void;
     /** Open the About and licences screen. */
@@ -66,6 +81,10 @@
     wordsTotal,
     wordLevel,
     onSelectWordLevel,
+    characterLevels,
+    charactersTotal,
+    characterLevel,
+    onSelectCharacterLevel,
     onShowSettings,
     onShowLicences,
   }: Props = $props();
@@ -73,6 +92,18 @@
   const total = $derived(vocabEntries.length);
   const unfiled = $derived(vocabEntries.filter((entry) => entry.group === null).length);
   const practised = $derived(vocabEntries.filter((entry) => entry.attempts > 0).length);
+
+  /**
+   * How many of the course's characters the HSK lists name.
+   *
+   * The difference between this and the course total is the "Outside HSK" row:
+   * the course teaches by frequency, and thousands of the characters it teaches
+   * are in no HSK list — which is exactly the material a lookup screen exists
+   * for, so it gets a row rather than being unreachable behind "All levels".
+   */
+  const hskCharacters = $derived(
+    characterLevels.reduce((sum, entry) => sum + entry.characters, 0),
+  );
 
   const countIn = (group: string) =>
     vocabEntries.filter((entry) => entry.group === group).length;
@@ -137,6 +168,8 @@
         {summary}
       {:else if view === "words"}
         {wordsTotal.toLocaleString()} HSK words
+      {:else if view === "characters"}
+        {charactersTotal.toLocaleString()} characters
       {:else if view === "settings"}
         your preferences
       {:else if view === "about"}
@@ -156,6 +189,9 @@
     </button>
     <button class:on={view === "words"} onclick={() => onSwitchView("words")}>
       HSK words
+    </button>
+    <button class:on={view === "characters"} onclick={() => onSwitchView("characters")}>
+      Characters
     </button>
     <button class:on={view === "phrases"} onclick={() => onSwitchView("phrases")}>
       Phrases
@@ -232,6 +268,40 @@
     <p class="footnote">
       The official HSK 3.0 word lists. Practise a word without saving it, or use
       <em>+ List</em> to keep it with your own lesson material.
+    </p>
+  {:else if view === "characters"}
+    <ul class="groups">
+      <li>
+        <button
+          class:current={characterLevel === null}
+          onclick={() => onSelectCharacterLevel(null)}
+        >
+          <span class="title">All levels</span>
+          <span class="count">{charactersTotal}</span>
+        </button>
+      </li>
+      {#each characterLevels as entry (entry.level)}
+        <li>
+          <button
+            class:current={characterLevel === entry.level}
+            onclick={() => onSelectCharacterLevel(entry.level)}
+          >
+            <span class="title">HSK {entry.level}</span>
+            <span class="count">{entry.characters}</span>
+          </button>
+        </li>
+      {/each}
+      <li>
+        <button class:current={characterLevel === 0} onclick={() => onSelectCharacterLevel(0)}>
+          <span class="title">Outside HSK</span>
+          <span class="count">{charactersTotal - hskCharacters}</span>
+        </button>
+      </li>
+    </ul>
+    <p class="footnote">
+      The whole character set, by character, reading or meaning. <em>Outside HSK</em>
+      is everything the course teaches that the HSK lists do not name — the
+      characters around the ones you are told to learn.
     </p>
   {:else if view === "vocabulary"}
     <ul class="groups">

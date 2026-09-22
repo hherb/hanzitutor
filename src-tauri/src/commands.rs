@@ -24,11 +24,13 @@ use crate::sync::{AutoSync, SyncService, SyncView};
 /// How many characters make up one lesson.
 pub const LESSON_SIZE: usize = 10;
 
-/// How many words one search returns.
+/// How many results one lookup returns.
 ///
-/// The word list is thousands long, so a page is capped and the true total is
-/// reported beside it — the same honesty the review queue uses.
-pub const WORD_PAGE: usize = 100;
+/// Both dictionaries are thousands long, so a page is capped and the true total
+/// is reported beside it — the same honesty the review queue uses. It is one
+/// constant for the two screens because it answers one question ("how much of a
+/// list is worth sending at once"), and two copies would drift.
+pub const SEARCH_PAGE: usize = 100;
 
 /// Summary of what the app ships with, shown in the sidebar.
 #[derive(Debug, Serialize)]
@@ -42,6 +44,8 @@ pub struct DatasetStats {
     pub words: usize,
     /// How many words sit at each HSK level, lowest first.
     pub word_levels: Vec<LevelCount>,
+    /// How many characters sit at each HSK level, lowest first.
+    pub character_levels: Vec<CharacterLevelCount>,
 }
 
 /// How many words one HSK level holds.
@@ -52,6 +56,14 @@ pub struct LevelCount {
     pub words: usize,
 }
 
+/// How many characters one HSK level holds.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CharacterLevelCount {
+    pub level: u8,
+    pub characters: usize,
+}
+
 /// One page of a word search, with the number of matches behind it.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +72,61 @@ pub struct WordSearchView {
     pub words: Vec<Word>,
     /// How many words matched in total; `words` is capped to one page.
     pub total: usize,
+}
+
+/// One character as a search result: everything a list row and a detail card
+/// need, and deliberately **not** the stroke geometry.
+///
+/// A [`Character`] carries its outlines and centre-lines, which is tens of
+/// kilobytes each; a hundred of them to draw a list nobody has looked at yet is
+/// the one thing a search box must not do. The board asks for the one character
+/// it is about to teach through `character`, which has the geometry.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CharacterSummary {
+    pub ch: char,
+    /// Frequency rank (1 = most common); `0` means the course does not teach it.
+    pub rank: u32,
+    /// HSK level 1..=7, or `0` when the character is not in the HSK lists.
+    pub hsk: u8,
+    pub stroke_count: u8,
+    /// Kangxi radical, or `'\0'` when unknown.
+    pub radical: char,
+    /// Every reading the dataset knows, most common first.
+    pub pinyin: Vec<String>,
+    pub definition: String,
+    pub etymology: String,
+    /// True when the character is in the course's frequency order, so it can be
+    /// found by browsing and shown in a lesson. A character can be found by
+    /// search and still be false here, which the panel says rather than hiding.
+    pub in_course: bool,
+}
+
+/// One page of a character search, with the number of matches behind it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CharacterSearchView {
+    /// The page itself, best match first.
+    pub characters: Vec<CharacterSummary>,
+    /// How many characters matched in total; `characters` is capped to one page.
+    pub total: usize,
+}
+
+impl CharacterSummary {
+    /// Trim a character down to what a search result shows.
+    fn of(character: &Character) -> Self {
+        Self {
+            ch: character.ch,
+            rank: character.rank,
+            hsk: character.hsk,
+            stroke_count: character.stroke_count,
+            radical: character.radical,
+            pinyin: character.pinyin.clone(),
+            definition: character.definition.clone(),
+            etymology: character.etymology.clone(),
+            in_course: character.is_teachable(),
+        }
+    }
 }
 
 impl AppState {
@@ -75,6 +142,11 @@ impl AppState {
                 .words_per_level()
                 .into_iter()
                 .map(|(level, words)| LevelCount { level, words })
+                .collect(),
+            character_levels: dataset
+                .characters_per_level()
+                .into_iter()
+                .map(|(level, characters)| CharacterLevelCount { level, characters })
                 .collect(),
         }
     }
@@ -93,6 +165,29 @@ impl AppState {
                 .cloned()
                 .collect(),
             total: self.dataset.count_words(query, level),
+        }
+    }
+
+    /// One page of a character search, plus how many characters matched.
+    ///
+    /// `query` is matched against the character, its readings and its definition;
+    /// `level` narrows it to one HSK level; an empty query browses the course
+    /// from the most common character down. See
+    /// [`hanzi_core::Dataset::search_characters`].
+    pub fn search_characters(
+        &self,
+        query: &str,
+        level: Option<u8>,
+        limit: usize,
+    ) -> CharacterSearchView {
+        CharacterSearchView {
+            characters: self
+                .dataset
+                .search_characters(query, level, limit)
+                .into_iter()
+                .map(CharacterSummary::of)
+                .collect(),
+            total: self.dataset.count_characters(query, level),
         }
     }
 
@@ -168,7 +263,7 @@ pub fn teachable_characters(state: State<'_, AppState>) -> Vec<char> {
 ///
 /// `query` empty browses from the most useful word down; a single character
 /// lists every word containing it. `level` narrows to one HSK level. The result
-/// is capped at [`WORD_PAGE`] unless `limit` says otherwise, with the true
+/// is capped at [`SEARCH_PAGE`] unless `limit` says otherwise, with the true
 /// total reported beside it.
 #[tauri::command]
 pub fn search_words(
@@ -177,8 +272,29 @@ pub fn search_words(
     level: Option<u8>,
     limit: Option<usize>,
 ) -> WordSearchView {
-    let limit = limit.unwrap_or(WORD_PAGE).clamp(1, WORD_PAGE);
+    let limit = limit.unwrap_or(SEARCH_PAGE).clamp(1, SEARCH_PAGE);
     state.search_words(&query, level, limit)
+}
+
+// ---- the character dictionary ----------------------------------------------
+
+/// Search the character set by character, reading or meaning.
+///
+/// `query` empty browses the course from the most common character down. A query
+/// that is a whole word is looked up as its parts, by either spelling: several
+/// characters typed at once (`医院`) find each of them, and several syllables
+/// typed at once (`yisheng`) do the same through the readings. `level` narrows to
+/// one HSK level. The result is capped at [`SEARCH_PAGE`] unless `limit` says
+/// otherwise, with the true total reported beside it.
+#[tauri::command]
+pub fn search_characters(
+    state: State<'_, AppState>,
+    query: String,
+    level: Option<u8>,
+    limit: Option<usize>,
+) -> CharacterSearchView {
+    let limit = limit.unwrap_or(SEARCH_PAGE).clamp(1, SEARCH_PAGE);
+    state.search_characters(&query, level, limit)
 }
 
 #[tauri::command]
