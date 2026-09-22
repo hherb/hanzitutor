@@ -184,6 +184,45 @@ export const INTRO_PAGES: Page[] = [
  * short list, and one honest page beats three padded ones.
  */
 export const NOTES: Record<string, Page[]> = {
+  "0.5.9": [
+    {
+      title: "What's new in 0.5.9",
+      lead:
+        "A screen for tone pairs — the characters that differ only in tone, which " +
+        "is where most learners actually struggle. Nothing about how your writing " +
+        "is graded has changed, and your practice history, schedule and vocabulary " +
+        "are untouched.",
+      points: [
+        {
+          name: "Tones",
+          what:
+            "A new screen in the sidebar. Each row is one syllable at two, three or " +
+            "four tones — 妈 mā, 麻 má, 马 mǎ, 骂 mà — placed by how common the " +
+            "characters are, with a filter for the pairs worth drilling (2 against " +
+            "3, 1 against 4) and a box to find a syllable.",
+        },
+        {
+          name: "Hearing them",
+          what:
+            "Press Hear for the whole set in order, or the speaker beside one for " +
+            "that one alone. Press Quiz and the app says one at random: pick the " +
+            "reading you heard. Getting it wrong is the useful part — the answer is " +
+            "shown straight away.",
+        },
+        {
+          name: "Saying them",
+          what:
+            "Press Practise and the set goes to the board in tone order, where the " +
+            "microphone and the contour chart already are. Saying 妈 then 麻 then 马 " +
+            "then 骂 and watching the four contours is the other half of the drill.",
+        },
+      ],
+      note:
+        "The voice is the same system voice the board's Listen button uses, so a " +
+        "device with no Chinese voice can still write these on the board but cannot " +
+        "hear or quiz them.",
+    },
+  ],
   "0.5.8": [
     {
       title: "What's new in 0.5.8",

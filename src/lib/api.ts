@@ -27,6 +27,7 @@ import type {
   SpeechTarget,
   SyncView,
   ToneResult,
+  ToneSet,
   TextLookup,
   VocabOutcome,
   VocabView,
@@ -108,6 +109,18 @@ export const searchWords = (query: string, level: number | null, limit?: number)
  */
 export const searchCharacters = (query: string, level: number | null, limit?: number) =>
   invoke<CharacterSearchView>("search_characters", { query, level, limit: limit ?? null });
+
+// ---- tone pairs -----------------------------------------------------------
+
+/**
+ * Characters that differ only in tone, most useful first.
+ *
+ * The whole derived list in one call — a few hundred sets — because the screen
+ * filters what it holds rather than asking again for each filter. `limit` is a
+ * cap, not a request for more.
+ */
+export const toneSets = (limit?: number) =>
+  invoke<ToneSet[]>("tone_sets", { limit: limit ?? null });
 
 /**
  * Grade an attempt. `strokes` are in display space (0..=1024, y downwards), in

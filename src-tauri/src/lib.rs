@@ -17,7 +17,7 @@ mod sync;
 
 pub use commands::{
     CharacterLevelCount, CharacterSearchView, CharacterSummary, LevelCount, MarkedTone, SpokenAudio,
-    StartupView, VocabOutcome, VoiceOption, VoicesView, WordSearchView,
+    StartupView, VocabOutcome, VoiceOption, VoicesView, WordSearchView, TONE_SET_PAGE,
 };
 pub use licences::{AppInfo, LicenceNotice};
 pub use asr::{Asr, AsrStatus, InstallState};
@@ -109,6 +109,7 @@ pub fn run() {
             commands::teachable_characters,
             commands::search_words,
             commands::search_characters,
+            commands::tone_sets,
             commands::grade_attempt,
             commands::speak,
             commands::stop_speaking,

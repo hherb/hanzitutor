@@ -184,6 +184,38 @@ export interface CharacterSearchView {
   total: number;
 }
 
+// ---- tone pairs -----------------------------------------------------------
+
+/**
+ * One character of a tone set: a syllable read at one tone.
+ *
+ * `reading` is the reading that placed it here, which for the drill's sake is
+ * always the character's first — the one a voice says for the glyph on its own.
+ */
+export interface ToneSetMember {
+  ch: string;
+  /** The reading with its tone mark, e.g. `"mā"`. */
+  reading: string;
+  /** The tone of that reading, 1..=4. */
+  tone: number;
+  definition: string;
+  /** Frequency rank; orders the set and is shown beside the character. */
+  rank: number;
+}
+
+/**
+ * Characters that differ only in tone: one syllable, one character per tone.
+ *
+ * Derived in Rust from the dataset's own readings (see
+ * `hanzi_core::Dataset::tone_sets`), because nothing stores this grouping.
+ */
+export interface ToneSet {
+  /** The syllable with tone marks stripped, e.g. `"ma"`. `ü` stays distinct. */
+  base: string;
+  /** The members, tone 1 first. Two or more by construction. */
+  members: ToneSetMember[];
+}
+
 // ---- the word dictionary --------------------------------------------------
 
 /**

@@ -23,8 +23,18 @@
   } from "./types";
 
   interface Props {
-    view: "course" | "vocabulary" | "words" | "characters" | "phrases" | "settings" | "about";
-    onSwitchView: (view: "course" | "vocabulary" | "words" | "characters" | "phrases") => void;
+    view:
+      | "course"
+      | "vocabulary"
+      | "words"
+      | "characters"
+      | "tones"
+      | "phrases"
+      | "settings"
+      | "about";
+    onSwitchView: (
+      view: "course" | "vocabulary" | "words" | "characters" | "tones" | "phrases",
+    ) => void;
     lessons: Lesson[];
     activeLesson: number;
     activeCharacter: string | null;
@@ -182,6 +192,8 @@
         {wordsTotal.toLocaleString()} HSK words
       {:else if view === "characters"}
         {charactersTotal.toLocaleString()} characters
+      {:else if view === "tones"}
+        one syllable, one character per tone
       {:else if view === "settings"}
         your preferences
       {:else if view === "about"}
@@ -204,6 +216,9 @@
     </button>
     <button class:on={view === "characters"} onclick={() => onSwitchView("characters")}>
       Characters
+    </button>
+    <button class:on={view === "tones"} onclick={() => onSwitchView("tones")}>
+      Tones
     </button>
     <button class:on={view === "phrases"} onclick={() => onSwitchView("phrases")}>
       Phrases
@@ -401,15 +416,20 @@
     color: var(--muted);
   }
 
+  /* Two columns rather than one row: seven screens on one line leave each button
+     too narrow for its own label, so the labels wrap inside them ("My list" on two
+     lines) and the row is clipped rather than scrolled. A grid keeps every label on
+     one line and the box a fixed height — which is also what a phone's sheet, where
+     this is the whole navigation, wants. */
   .switch {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     margin: 0 10px 10px;
     border: 1px solid var(--line);
     border-radius: 8px;
     overflow: hidden;
   }
   .switch button {
-    flex: 1;
     padding: 7px 6px;
     border: 0;
     background: transparent;

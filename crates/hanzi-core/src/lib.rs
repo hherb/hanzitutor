@@ -42,7 +42,9 @@ pub mod tone;
 pub mod vocab;
 
 pub use curriculum::{build_lessons, lesson_at, Lesson};
-pub use dataset::{Artifact, Character, CharacterHint, Dataset, TextLookup, Word};
+pub use dataset::{
+    Artifact, Character, CharacterHint, Dataset, TextLookup, ToneSet, ToneSetMember, Word,
+};
 pub use geom::Point;
 pub use pinyin::{
     base, heard_against, heard_against_readings, mark_syllable, mark_tone_at, spoken_tones,

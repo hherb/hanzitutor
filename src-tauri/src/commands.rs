@@ -7,7 +7,7 @@
 use hanzi_core::{
     build_lessons, grade_with_outlines, tone::ToneAttempt, AttemptMeasures, BoardSize, Character,
     CursorView, GradeOptions, GradeReport, Grade, Heard, Lesson, Pace, Point, ProgressView,
-    ReviewView, SettingsView, TextLookup, ToneVerdict, ToneTarget, VocabView, Word,
+    ReviewView, SettingsView, TextLookup, ToneSet, ToneVerdict, ToneTarget, VocabView, Word,
 };
 use serde::Serialize;
 use std::sync::{Arc, MutexGuard};
@@ -31,6 +31,15 @@ pub const LESSON_SIZE: usize = 10;
 /// constant for the two screens because it answers one question ("how much of a
 /// list is worth sending at once"), and two copies would drift.
 pub const SEARCH_PAGE: usize = 100;
+
+/// How many tone sets one call returns.
+///
+/// Not a page in the same sense as [`SEARCH_PAGE`]: the whole derived list is a few
+/// hundred sets (365 in the shipped artifact), so one call carries all of them and
+/// the screen filters what it holds rather than asking again for each filter. The
+/// cap is there so a caller cannot ask for an unbounded slice, and it is above the
+/// number the dataset produces, so no set is hidden by it.
+pub const TONE_SET_PAGE: usize = 400;
 
 /// Summary of what the app ships with, shown in the sidebar.
 #[derive(Debug, Serialize)]
@@ -197,6 +206,15 @@ impl AppState {
         build_lessons(&self.dataset, LESSON_SIZE)
     }
 
+    /// Characters that differ only in tone, most useful first.
+    ///
+    /// Derived on each call rather than stored — see
+    /// [`hanzi_core::Dataset::tone_sets`], which is where the rules live. The whole
+    /// list is what comes back, capped at [`TONE_SET_PAGE`] on the command.
+    pub fn tone_sets(&self, limit: usize) -> Vec<ToneSet> {
+        self.dataset.tone_sets(limit)
+    }
+
     /// Everything needed to display and practise one character: stroke outlines
     /// in font space, stroke centre-lines in display space, and metadata.
     pub fn character(&self, ch: char) -> Result<Character, String> {
@@ -295,6 +313,19 @@ pub fn search_characters(
 ) -> CharacterSearchView {
     let limit = limit.unwrap_or(SEARCH_PAGE).clamp(1, SEARCH_PAGE);
     state.search_characters(&query, level, limit)
+}
+
+// ---- tone pairs -------------------------------------------------------------
+
+/// Characters that differ only in tone, most useful first.
+///
+/// The whole derived list in one call — unlike the two dictionary searches, which
+/// page — because it is a few hundred sets and the screen filters what it holds.
+/// `limit` is a cap rather than a request for more.
+#[tauri::command]
+pub fn tone_sets(state: State<'_, AppState>, limit: Option<usize>) -> Vec<ToneSet> {
+    let limit = limit.unwrap_or(TONE_SET_PAGE).clamp(1, TONE_SET_PAGE);
+    state.tone_sets(limit)
 }
 
 #[tauri::command]

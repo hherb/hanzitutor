@@ -700,9 +700,6 @@ Small, independently shippable, still open, roughly in value order:
   rather than a colour swap.
 - **UI scale / accessibility** — larger text and a bigger board; the board already
   sizes itself from its container.
-- **Tone pairs** — where most learners actually struggle. (The other half of this item
-  has shipped: M11's `src/lib/TonePanel.svelte` draws the learner's log-F0 contour over
-  the expected one.)
 - **Component / radical teaching** — the decomposition and radical fields are already
   in the dataset but only displayed, not taught. Radical-based groupings would help
   retention.
@@ -810,6 +807,25 @@ Already shipped, listed only so they are not re-added as open work:
   with `⌘Z` the one deliberate exception, because that is what undo is; and the
   sidebar footer carries the same card, because a list of shortcuts somebody cannot
   discover is not help.
+- **Tone pairs** — built, as the sidebar's **Tones** screen
+  (`src/lib/TonePairsPanel.svelte`, over `Dataset::tone_sets` and the `tone_sets`
+  command). It is the half M11 left: the panel drew a learner's contour over the
+  expected shape, but nothing said *which* characters form a minimal pair, and a
+  contour only teaches next to another one. What still constrains new work: the sets
+  are **derived**, not stored — one syllable, one character per tone, ranked by the
+  rarest member, from the course's own characters (`tone_sets`); a set is keyed by
+  `pinyin::base` and **not** by `fold_pinyin`, because folding merges `ü` onto `u`
+  and 奴 `nú` against 女 `nǚ` is a vowel contrast, not a tone one; a member is placed
+  **only by its first reading**, because the drill speaks the character and a voice
+  says 行 `xíng` alone, never `háng`; the neutral tone is not a member, as its pitch
+  comes from the syllable before it; the whole list is 365 sets (78 pairs, 140
+  triples, 147 quads), sent in one call so the screen filters what it holds; the
+  listening half is a **quiz** whose readings are shown — mapping a sound to a tone,
+  not recalling which character is which tone by sight — and the speaking half is
+  handed to the **board**, where push-to-talk and the contour panel already live, so
+  no microphone path is duplicated; and a two-tone set of exactly 1 and 3 carries a
+  caveat, because the scorer cannot separate a flat tone 3 from tone 1 from one
+  syllable and the screen must not let a learner trust a score it cannot support.
 - **The startup reading — an introduction, and what changed** — built, where the
   board's explanation went. Four pages — what the app is, what Trace and Recall are
   for, the four grading measures (shape, placement, ink, order), and where the course,
@@ -977,7 +993,9 @@ Recorded honestly, because they bound how much the current scores mean:
 
 **Status: done, for characters and words. Recognising the *text* is M12.** One
 acceptance criterion below is still unticked — the score constants re-tuned against real
-recordings — and it is recorded in *Known limits* rather than hidden.
+recordings — and it is recorded in *Known limits* rather than hidden. **The drill this
+milestone makes possible — minimal pairs, heard and then said in contrast — is the
+Tones screen; see the shipped entry under Cross-cutting polish.**
 
 **Why.** Stroke grading cannot see the most common beginner error in Mandarin, which is
 the tone. A learner can write 妈 perfectly and say it as `má`. Tone is an F0 contour, and

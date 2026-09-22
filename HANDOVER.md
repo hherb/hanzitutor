@@ -247,6 +247,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | The startup reading: the introduction, and what's new | Done — a first run is shown four pages of introduction, an install that has run before is shown the notes for the running version; each read once **per device** (a `settings` row), both replayable from the settings screen, and the board's keys are dead while either is up (§4, invariant 31) |
 | Durable study store (M10) | Done — one `hanzi.db`; the old JSON imported once and left byte-identical; an unbounded attempt log |
 | Tone practice (M11) | Done, human-confirmed for characters and words — pitch contour against the expected shape, with no model |
+| Tone pairs | Done — the sidebar's Tones screen derives minimal pairs from the dataset, hears them, quizzes which reading was spoken, and sends the set to the board for the contour comparison; the derivation rules and their three traps are §9 |
 | Speech recognition (M12) | Done — an optional ~163 MB SenseVoice model, installed from the settings screen |
 | Cross-device sync (M13) | Done — an optional Dropbox account, off by default, merging the attempt log (§7) |
 | Mobile shells (M9) | Runs on a physical iPhone and on Android hardware; the iOS release build and the Play paperwork are outstanding (ROADMAP M9) |
@@ -2558,6 +2559,47 @@ citation tones, spoken tones) and `AppState::score_tones` zips it against a
 `ToneReport` (one judgement per syllable). **Both sides are one entry per syllable in
 the same order** — that invariant is what lets the interface label each chart, and
 `analyze` guarantees it by returning one entry per tone asked for, whatever it heard.
+
+### Tone pairs: the sets, and the three traps
+
+The sidebar's **Tones** screen (`src/lib/TonePairsPanel.svelte`) is the drill M11 made
+possible but did not build: the panel showed a learner's contour against the expected
+shape, and nothing said *which* characters form a minimal pair to compare it with. The
+sets are **derived, not stored** — `Dataset::tone_sets` in `crates/hanzi-core/src/dataset.rs`
+— because the dataset holds each character's readings on the character and nothing groups
+them by the syllable underneath. One syllable, one character per tone, ranked by the
+rarest member: 365 sets in this artifact, 78 pairs, 140 triples, 147 quads.
+
+Three rules there are traps, and each was wrong in a first draft:
+
+- **The key is `pinyin::base`, never `fold_pinyin`.** Folding is for *searching* — typing
+  `nu` should find 女 — and it maps `ü` onto `u`. A minimal pair differs only in **tone**,
+  and 奴 `nú` against 女 `nǚ` differs in the vowel; grouping by the folded form drills the
+  wrong contrast. `base` keeps `nv` and `nu` apart, which is why the screen has both.
+- **A member is placed only by its *first* reading.** The drill *speaks the character*, and
+  a synthesiser says 行 as `xíng` on its own. A `hang` set listing 行 would play `xíng` —
+  the wrong syllable with the wrong tone, in the one exercise whose whole point is
+  hearing the tone. So a secondary reading may not place a character, however common it
+  is; this also makes one character one member for free, so 好 (`hǎo`, `hào`) can never
+  form a "pair" with itself.
+- **The neutral tone is not a member.** Tone 5's pitch is set by the syllable before it,
+  so it cannot be a member of a set drilled one character at a time.
+
+Two more decisions are about honesty rather than data. **The quiz shows the readings** —
+it is mapping a sound to a tone, not recalling which character carries which tone by
+sight, which would test character knowledge instead — and **a two-tone set of exactly 1
+and 3 carries a caveat on screen**, because the scorer cannot tell a flat tone 3 from tone
+1 in one syllable (see "Three decisions that look wrong" above). The score must not look
+like it settled a question it cannot answer.
+
+**The speaking half is the board's.** `Practise` hands the set to `startPractice(…,
+"tones")` in tone order, so push-to-talk, the segmentation diagnostics and
+`TonePanel.svelte` are all reused; nothing about the microphone or the analysis is
+duplicated on the panel. The listening half is the system voice (`api.speak`), the same
+one the board's Listen button uses — there is no clip per syllable, and the bundled
+recordings are whole phrases — so a device with no Chinese voice disables Hear and Quiz
+with the reason rather than faking it. `TONE_SET_PAGE` (400) is above what the dataset
+produces, so the one call carries the whole list and the panel filters what it holds.
 
 ### Words are the reason sandhi exists here
 

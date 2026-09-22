@@ -627,6 +627,150 @@ fn a_character_the_course_cannot_teach_is_found_and_says_so() {
     );
 }
 
+// ---- tone pairs -------------------------------------------------------------
+
+#[test]
+fn a_tone_set_serialises_with_the_fields_the_screen_reads() {
+    let state = state();
+    let sets = state.tone_sets(10);
+    let json = serde_json::to_value(&sets[0]).unwrap();
+    expect_keys(&json, &["base", "members"]);
+    expect_keys(
+        &json["members"][0],
+        &["ch", "reading", "tone", "definition", "rank"],
+    );
+    assert_eq!(json["members"][0]["tone"], serde_json::json!(1), "tone 1 first");
+}
+
+#[test]
+fn every_tone_set_is_one_syllable_at_two_or_more_tones() {
+    let state = state();
+    let sets = state.tone_sets(hanzi_tutor_lib::TONE_SET_PAGE);
+
+    // The whole derived list, and the artifact holds hundreds of sets: a screen
+    // that came back with a handful would mean the derivation had broken, and the
+    // cap must not be what limits it.
+    assert!(
+        sets.len() > 300,
+        "expected the whole derived list, got {} sets",
+        sets.len()
+    );
+    assert_eq!(
+        sets.len(),
+        state.tone_sets(10_000).len(),
+        "the cap is above what the dataset produces, so it hides nothing"
+    );
+
+    for set in &sets {
+        assert!(
+            (2..=4).contains(&set.members.len()),
+            "{} has {} members",
+            set.base,
+            set.members.len()
+        );
+        let tones: Vec<u8> = set.members.iter().map(|member| member.tone).collect();
+        assert!(
+            tones.windows(2).all(|pair| pair[0] < pair[1]),
+            "{} is not in tone order: {tones:?}",
+            set.base
+        );
+        let mut characters: Vec<char> = set.members.iter().map(|member| member.ch).collect();
+        characters.sort_unstable();
+        characters.dedup();
+        assert_eq!(
+            characters.len(),
+            set.members.len(),
+            "{} uses one character for two tones",
+            set.base
+        );
+        for member in &set.members {
+            assert_eq!(
+                hanzi_core::base(&member.reading),
+                set.base,
+                "{} is not this set's syllable",
+                member.reading
+            );
+            assert_eq!(
+                hanzi_core::tone_from_pinyin(&member.reading),
+                Some(member.tone),
+                "the reading and the tone disagree"
+            );
+            assert!(member.rank > 0, "a member is in no lesson");
+        }
+    }
+
+    // Ranked by the rarest member, most useful first.
+    let rarest = |set: &hanzi_core::ToneSet| {
+        set.members
+            .iter()
+            .map(|member| member.rank)
+            .max()
+            .unwrap_or(u32::MAX)
+    };
+    assert!(
+        sets.windows(2).all(|pair| rarest(&pair[0]) <= rarest(&pair[1])),
+        "the sets are not ordered by their rarest member"
+    );
+}
+
+#[test]
+fn a_common_syllable_is_offered_at_every_tone_it_has() {
+    // 师时使是: four common characters, one syllable, four tones. A learner who
+    // can say `shī` and not `shǐ` is exactly who this is for.
+    let state = state();
+    let sets = state.tone_sets(hanzi_tutor_lib::TONE_SET_PAGE);
+    let shi = sets
+        .iter()
+        .find(|set| set.base == "shi")
+        .expect("shi is among the most useful sets");
+    let readings: Vec<&str> = shi.members.iter().map(|m| m.reading.as_str()).collect();
+    assert_eq!(readings, vec!["shī", "shí", "shǐ", "shì"]);
+    assert!(
+        shi.members.iter().any(|member| member.ch == '是'),
+        "the most common character of the four is a member"
+    );
+
+    // 妈麻马骂 is the textbook set, and it has to be there too.
+    let ma = sets.iter().find(|set| set.base == "ma").expect("ma is a set");
+    assert_eq!(
+        ma.members.iter().map(|m| m.ch).collect::<Vec<char>>(),
+        vec!['妈', '麻', '马', '骂']
+    );
+
+    // 行 is `xíng` when it is spoken on its own, which is what the drill does, so
+    // it belongs to the `xing` set and must not appear in a `hang` one. This is the
+    // rule that keeps the audio honest, checked against the real artifact.
+    let xing = sets.iter().find(|set| set.base == "xing").expect("xing is a set");
+    assert!(
+        xing.members
+            .iter()
+            .any(|member| member.ch == '行' && member.reading == "xíng"),
+        "行 should be in the xing set at its first reading"
+    );
+    assert!(
+        sets.iter()
+            .filter(|set| set.base == "hang")
+            .all(|set| set.members.iter().all(|member| member.ch != '行')),
+        "行 must not be placed by a reading the voice would not say"
+    );
+}
+
+#[test]
+fn a_vowel_difference_is_not_a_tone_difference() {
+    // 女 `nǚ` and 奴 `nú` are different syllables. Searching folds `ü` onto `u` on
+    // purpose; a tone set must not, or the contrast drilled is the vowel.
+    let state = state();
+    let sets = state.tone_sets(hanzi_tutor_lib::TONE_SET_PAGE);
+    assert!(
+        sets.iter().any(|set| set.base == "nv"),
+        "the ü syllable has its own sets"
+    );
+    assert!(
+        sets.iter().any(|set| set.base == "nu"),
+        "and so does the u syllable"
+    );
+}
+
 #[test]
 fn browsing_from_the_top_starts_at_the_most_useful_words() {
     let state = state();

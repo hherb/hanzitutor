@@ -18,6 +18,7 @@
   import ShortcutCard from "./lib/ShortcutCard.svelte";
   import StartupWizard from "./lib/StartupWizard.svelte";
   import TonePanel from "./lib/TonePanel.svelte";
+  import TonePairsPanel from "./lib/TonePairsPanel.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import WordsPanel from "./lib/WordsPanel.svelte";
   import { INTRO_PAGES, notesFor } from "./lib/startupPages";
@@ -47,6 +48,8 @@
     SyncView,
     MicrophoneStatus,
     ToneResult,
+    ToneSet,
+    ToneSetMember,
     ToneTarget,
     VocabEntry,
     VocabView,
@@ -56,10 +59,18 @@
   } from "./lib/types";
 
   type Mode = "trace" | "recall";
-  /** Which of the six top-level screens is showing. */
-  type View = "course" | "vocabulary" | "words" | "characters" | "phrases" | "settings" | "about";
+  /** Which of the seven top-level screens is showing. */
+  type View =
+    | "course"
+    | "vocabulary"
+    | "words"
+    | "characters"
+    | "tones"
+    | "phrases"
+    | "settings"
+    | "about";
   /** Where the current practice session draws its characters from. */
-  type Source = "course" | "vocabulary" | "review" | "words" | "characters";
+  type Source = "course" | "vocabulary" | "review" | "words" | "characters" | "tones";
 
   /** One character's worth of a multi-character entry: what was drawn, and the
    * grade it got. `report` is null when the character is still to be written. */
@@ -727,9 +738,28 @@
       !(view === "vocabulary" && source !== "vocabulary") &&
       !(view === "words" && source !== "words") &&
       !(view === "characters" && source !== "characters") &&
+      !(view === "tones" && source !== "tones") &&
       view !== "phrases" &&
       view !== "settings" &&
       view !== "about",
+  );
+
+  /**
+   * What one item of the practice queue is called on the board.
+   *
+   * A review item is a review, a word is a word, an entry of the personal list is
+   * an entry, and every other source queues single characters — the course, a
+   * character lookup and a tone set alike. One place, because the board says it in
+   * its facts line and a second copy would drift.
+   */
+  const queueNoun = $derived(
+    source === "review"
+      ? "review"
+      : source === "words"
+        ? "word"
+        : source === "vocabulary"
+          ? "entry"
+          : "character",
   );
 
   /**
@@ -2293,6 +2323,35 @@
     return api.searchWords(ch, null, CHARACTER_WORDS);
   }
 
+  // ---- tone pairs ----------------------------------------------------------
+
+  /**
+   * Drill one tone set: the characters that differ only in tone, in tone order.
+   *
+   * The set goes to the board rather than being recorded here, because that is
+   * where push-to-talk and the contour panel already are — the pair screen is for
+   * choosing what to compare and hearing it, and the comparison itself is the
+   * board's. Tone order matters: saying 妈 then 麻 then 马 then 骂 is the exercise.
+   */
+  function practiseToneSet(members: ToneSetMember[]) {
+    if (members.length === 0) return;
+    startPractice(
+      members.map((member) => ({
+        text: member.ch,
+        entryId: null,
+        pinyin: member.reading,
+        meaning: member.definition,
+      })),
+      "tones",
+    );
+    void api.log(`practising a tone set of ${members.length}: ${members.map((m) => m.ch).join("")}`);
+  }
+
+  /** The whole derived list of tone sets; the panel filters what it holds. */
+  function loadToneSets(): Promise<ToneSet[]> {
+    return api.toneSets();
+  }
+
   /** Return to the course sequence. */
   function leavePractice() {
     source = "course";
@@ -2424,7 +2483,13 @@
   /** Stop drilling and go back to what was being drilled. */
   function stopPractising() {
     const target: View =
-      source === "words" ? "words" : source === "characters" ? "characters" : "vocabulary";
+      source === "words"
+        ? "words"
+        : source === "characters"
+          ? "characters"
+          : source === "tones"
+            ? "tones"
+            : "vocabulary";
     leavePractice();
     view = target;
     statusMessage = null;
@@ -2629,6 +2694,8 @@
         onAddToList={addCharacterToList}
         onShowInCourse={showCharacterInCourse}
       />
+    {:else if view === "tones" && source !== "tones"}
+      <TonePairsPanel load={loadToneSets} {voice} onPractise={practiseToneSet} />
     {:else if view === "phrases"}
       <PhrasesPanel />
     {:else if view === "settings"}
@@ -2691,13 +2758,7 @@
                   <li>character {charCursor + 1} of {entryCharacters.length}</li>
                 {/if}
                 <li>
-                  {source === "review"
-                    ? "review"
-                    : source === "words"
-                      ? "word"
-                      : source === "characters"
-                        ? "character"
-                        : "entry"} {queueCursor + 1} of {queue.length}
+                  {queueNoun} {queueCursor + 1} of {queue.length}
                 </li>
                 <li>{strokeTotal} {strokeTotal === 1 ? "stroke" : "strokes"}</li>
                 {#if activeCard}
@@ -2998,6 +3059,16 @@
                       onclick={stopPractising}
                       aria-label="Back to the character lookup"
                       title="Back to the character lookup"
+                    >
+                      <span class="tool-glyph"><Icon name="back" /></span>
+                      <span class="tool-word">Back</span>
+                    </button>
+                  {:else if source === "tones"}
+                    <button
+                      class="tool"
+                      onclick={stopPractising}
+                      aria-label="Back to the tone pairs"
+                      title="Back to the tone pairs"
                     >
                       <span class="tool-glyph"><Icon name="back" /></span>
                       <span class="tool-word">Back</span>

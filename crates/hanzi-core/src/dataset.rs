@@ -619,6 +619,94 @@ impl Dataset {
         counts.into_iter().collect()
     }
 
+    // ---- tone pairs ---------------------------------------------------------
+
+    /// Sets of characters that differ only in tone, most useful first.
+    ///
+    /// This is the material a tone drill needs and the dataset cannot state
+    /// directly: the characters sharing one syllable at different tones are a
+    /// **derived** fact, because a character's readings are stored on the character
+    /// and nothing groups them by the syllable underneath. Deriving it here rather
+    /// than in the interface is what makes it testable, and it is one answer for
+    /// every screen that will ever want it.
+    ///
+    /// Four rules, each a decision:
+    ///
+    /// * **The course's characters only** ([`Character::is_teachable`]). A pair is
+    ///   something to hear *and* to write, and a character in no lesson can be
+    ///   neither browsed nor drilled with the course behind it.
+    /// * **Only the reading the voice will say.** A member is a character spoken on
+    ///   its own, so it is placed by its *first* reading — the one a synthesiser
+    ///   says for the glyph by itself. Building a set from a secondary reading would
+    ///   play the wrong syllable and the wrong tone: 行 is `xíng` alone, so it may
+    ///   appear in a `xing` set and never in a `hang` one, however tempting its
+    ///   `háng` reading is. This is also what makes one character one member: a
+    ///   character cannot place two tones of a syllable, so `好` (`hǎo`, `hào`)
+    ///   never forms a "pair" with itself.
+    /// * **A set needs two tones.** One character is not a pair.
+    /// * **Ranked by the rarest member.** Four common characters are more use than
+    ///   a pair containing an obscure one, and it is the member a learner is least
+    ///   likely to know that decides whether the set is worth their time.
+    ///
+    /// The tone comes from [`crate::pinyin::tone_from_pinyin`] and the syllable from
+    /// [`crate::pinyin::base`] — the same two functions the tone scorer uses, so a
+    /// set cannot be grouped by one rule and scored by another. **The syllable is
+    /// `base` and not [`fold_pinyin`]**: folding is for *searching*, where typing
+    /// `nu` should find 女, and it merges `ü` onto `u`. A minimal pair differs only
+    /// in tone, and 奴 `nú` against 女 `nǚ` differs in the vowel — a set of those two
+    /// would drill the wrong contrast. **The neutral tone is not a member** either:
+    /// contrasting a full tone with a neutral one is a real exercise, but a neutral
+    /// syllable's pitch is set by the syllable before it and cannot be drilled from
+    /// one character on its own.
+    pub fn tone_sets(&self, limit: usize) -> Vec<ToneSet> {
+        // (syllable, tone) -> the best character for it. A `BTreeMap` so the
+        // syllables come out in one fixed order, which is what lets the grouping
+        // below be a run-length pass rather than a second map.
+        let mut members: BTreeMap<(String, u8), ToneSetMember> = BTreeMap::new();
+
+        for character in self.ranked() {
+            let Some(reading) = character.pinyin.first() else {
+                continue;
+            };
+            let base = crate::pinyin::base(reading);
+            let Some(tone) = crate::pinyin::tone_from_pinyin(reading) else {
+                continue;
+            };
+            if base.is_empty() || !(1..=4).contains(&tone) {
+                continue;
+            }
+            // `ranked()` is frequency order, so the first character to reach a slot
+            // is the most common one for it, and a slot already filled is not
+            // improved by anything later.
+            members.entry((base, tone)).or_insert(ToneSetMember {
+                ch: character.ch,
+                reading: reading.clone(),
+                tone,
+                definition: character.definition.clone(),
+                rank: character.rank,
+            });
+        }
+
+        let mut sets: Vec<ToneSet> = Vec::new();
+        for ((base, _), member) in members {
+            match sets.last_mut() {
+                Some(set) if set.base == base => set.members.push(member),
+                _ => sets.push(ToneSet {
+                    base,
+                    members: vec![member],
+                }),
+            }
+        }
+
+        sets.retain(|set| set.members.len() >= 2);
+        for set in &mut sets {
+            set.members.sort_by_key(|member| member.tone);
+        }
+        sets.sort_by(|a, b| rarest(a).cmp(&rarest(b)).then_with(|| a.base.cmp(&b.base)));
+        sets.truncate(limit);
+        sets
+    }
+
     /// What the dataset can tell about a piece of study text before the user
     /// edits it.
     ///
@@ -697,6 +785,46 @@ fn rank_key(rank: u32) -> u32 {
     } else {
         rank
     }
+}
+
+/// The rank of a tone set's least common member: the number that decides whether
+/// the set is worth a learner's time.
+fn rarest(set: &ToneSet) -> u32 {
+    set.members
+        .iter()
+        .map(|member| rank_key(member.rank))
+        .max()
+        .unwrap_or(u32::MAX)
+}
+
+/// One character of a tone set: a syllable read at one tone.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToneSetMember {
+    pub ch: char,
+    /// The reading with its tone mark, e.g. `"mā"` — the reading that put this
+    /// character in this set, which for a polyphonic character is not necessarily
+    /// its first.
+    pub reading: String,
+    /// The tone of that reading, `1..=4`.
+    pub tone: u8,
+    pub definition: String,
+    /// The character's frequency rank. Used for ordering, and shown beside it.
+    pub rank: u32,
+}
+
+/// Characters that differ only in tone: one syllable, one character per tone.
+///
+/// `ToneSet` is derived by [`Dataset::tone_sets`] rather than stored, because it is
+/// a grouping of data the dataset holds one character at a time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToneSet {
+    /// The syllable with tone marks stripped, e.g. `"ma"`. **`ü` stays distinct
+    /// from `u`** — `nv` and `nu` are different syllables, not different tones.
+    pub base: String,
+    /// The members, tone 1 first. Two or more by construction.
+    pub members: Vec<ToneSetMember>,
 }
 
 /// Fold a reading for searching: drop tone marks and spacing, lowercase, and
@@ -1314,5 +1442,155 @@ mod tests {
             dataset.search_characters("blood", None, 10).len() == 1,
             "a definition still matches"
         );
+    }
+
+    // ---- tone pairs -------------------------------------------------------
+
+    /// The syllable a set is built on, and its tones in order.
+    fn shape(set: &ToneSet) -> (String, Vec<(char, u8)>) {
+        (
+            set.base.clone(),
+            set.members.iter().map(|m| (m.ch, m.tone)).collect(),
+        )
+    }
+
+    #[test]
+    fn a_syllable_read_at_several_tones_becomes_one_set_in_tone_order() {
+        // 妈麻马骂: `ma` at all four tones. The set is derived, not stored.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('妈', &["mā"], "mother", 1, 100),
+            lexeme('麻', &["má"], "hemp", 3, 300),
+            lexeme('马', &["mǎ"], "horse", 1, 200),
+            lexeme('骂', &["mà"], "to scold", 4, 800),
+        ]);
+        let sets = dataset.tone_sets(10);
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].base, "ma");
+        assert_eq!(
+            shape(&sets[0]).1,
+            vec![('妈', 1), ('麻', 2), ('马', 3), ('骂', 4)],
+            "members come out in tone order, with the reading that placed them"
+        );
+        assert_eq!(sets[0].members[1].reading, "má");
+        assert_eq!(sets[0].members[0].definition, "mother");
+    }
+
+    #[test]
+    fn a_tone_set_uses_only_the_reading_the_voice_would_say() {
+        // 行 is `xíng` on its own. A `hang` set listing it would *play* `xíng` —
+        // the wrong syllable and the wrong tone — so a secondary reading may not
+        // place a character, however common that character is.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('行', &["xíng", "háng"], "to walk; a row", 1, 30),
+            lexeme('航', &["háng"], "to sail", 3, 700),
+            lexeme('星', &["xīng"], "star", 1, 500),
+        ]);
+        let sets = dataset.tone_sets(10);
+        let bases: Vec<&str> = sets.iter().map(|set| set.base.as_str()).collect();
+        assert_eq!(bases, vec!["xing"], "hang has only one usable character");
+        assert_eq!(shape(&sets[0]).1, vec![('星', 1), ('行', 2)]);
+    }
+
+    #[test]
+    fn a_polyphonic_character_fills_only_one_tone_of_its_syllable() {
+        // 好 is hǎo and hào: the best candidate for two tones of `hao`, and a
+        // "pair" of one character would teach nothing. Its first reading claims it.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('好', &["hǎo", "hào"], "good; to like", 1, 50),
+            lexeme('号', &["hào"], "number", 1, 400),
+        ]);
+        let sets = dataset.tone_sets(10);
+        assert_eq!(sets.len(), 1);
+        assert_eq!(
+            shape(&sets[0]).1,
+            vec![('好', 3), ('号', 4)],
+            "好 takes the reading it is listed with first; tone 4 needs another"
+        );
+
+        // With no second character for tone 4, the set is only the one member and
+        // is not a pair at all.
+        let alone = Dataset::from_chars(vec![lexeme('好', &["hǎo", "hào"], "good", 1, 50)]);
+        assert!(alone.tone_sets(10).is_empty());
+    }
+
+    #[test]
+    fn a_character_in_no_lesson_is_not_in_a_tone_set() {
+        // A pair is something to hear and to write, and the course behind it is
+        // what makes both possible.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('妈', &["mā"], "mother", 1, 100),
+            lexeme('麻', &["má"], "hemp", 0, 0),
+            lexeme('马', &["mǎ"], "horse", 1, 0),
+        ]);
+        assert!(
+            dataset.tone_sets(10).is_empty(),
+            "an unranked or unlistable character is not a member"
+        );
+    }
+
+    #[test]
+    fn the_neutral_tone_is_not_a_member() {
+        // 的 is `de` with no tone mark, and a neutral syllable's pitch is set by
+        // the syllable before it — nothing to drill from one character.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('得', &["dé"], "to obtain", 1, 100),
+            lexeme('的', &["de"], "possessive", 1, 1),
+        ]);
+        assert!(
+            dataset.tone_sets(10).is_empty(),
+            "a toneless reading must not be given a tone"
+        );
+    }
+
+    #[test]
+    fn two_syllables_that_differ_in_a_vowel_are_not_a_tone_set() {
+        // 奴 nú against 女 nǚ. Folding `ü` onto `u` — which searching does on
+        // purpose, so that `nu` finds 女 — would make one set of these two, and the
+        // contrast they drill would be the vowel rather than the tone.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('奴', &["nú"], "slave", 3, 500),
+            lexeme('女', &["nǚ"], "woman", 1, 300),
+        ]);
+        assert!(dataset.tone_sets(10).is_empty());
+
+        // The same two readings do differ in tone when the syllable is the same.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('女', &["nǚ"], "woman", 1, 300),
+            lexeme('衄', &["nǜ"], "nosebleed", 0, 900),
+        ]);
+        let sets = dataset.tone_sets(10);
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].base, "nv");
+    }
+
+    #[test]
+    fn tone_sets_are_ranked_by_their_rarest_member() {
+        // `shi` has two common characters; `mao` has one common and one rare. The
+        // set a learner is most likely to recognise comes first.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('是', &["shì"], "to be", 1, 5),
+            lexeme('十', &["shí"], "ten", 1, 12),
+            lexeme('猫', &["māo"], "cat", 1, 900),
+            lexeme('毛', &["máo"], "hair", 1, 1_100),
+        ]);
+        let bases: Vec<String> = dataset.tone_sets(10).into_iter().map(|s| s.base).collect();
+        assert_eq!(bases, vec!["shi", "mao"]);
+    }
+
+    #[test]
+    fn a_tone_set_is_capped_but_derived_from_every_character() {
+        let dataset = Dataset::from_chars(vec![
+            lexeme('妈', &["mā"], "mother", 1, 100),
+            lexeme('麻', &["má"], "hemp", 3, 300),
+            lexeme('猫', &["māo"], "cat", 1, 900),
+            lexeme('毛', &["máo"], "hair", 1, 1_100),
+        ]);
+        assert_eq!(dataset.tone_sets(1).len(), 1);
+        assert_eq!(
+            dataset.tone_sets(1)[0].base,
+            "ma",
+            "the cap takes the best sets, not the first ones found"
+        );
+        assert_eq!(dataset.tone_sets(10).len(), 2);
     }
 }
