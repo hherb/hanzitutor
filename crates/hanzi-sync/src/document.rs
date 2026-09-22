@@ -35,7 +35,7 @@
 use std::collections::BTreeMap;
 
 use hanzi_core::progress::CardState;
-use hanzi_store::{SyncedCursor, SyncedEntry, SyncedGroup};
+use hanzi_store::{SyncedCursor, SyncedEntry, SyncedGroup, SyncedVocabCursor};
 
 use crate::shard::device_of_shard;
 use crate::store::{RemoteStore, SyncError};
@@ -48,6 +48,8 @@ use crate::store::{RemoteStore, SyncError};
 const VOCAB_VERSION: u32 = 1;
 /// The cursor document's format version.
 const CURSOR_VERSION: u32 = 1;
+/// The vocabulary-position document's format version.
+const VOCAB_CURSOR_VERSION: u32 = 1;
 /// The baseline document's format version.
 const BASELINE_VERSION: u32 = 1;
 
@@ -55,6 +57,8 @@ const BASELINE_VERSION: u32 = 1;
 const VOCAB_FILE: &str = "vocab.json";
 /// The file a device's course position lives in.
 const CURSOR_FILE: &str = "cursor.json";
+/// The file a device's per-group vocabulary positions live in.
+const VOCAB_CURSOR_FILE: &str = "vocab-cursor.json";
 /// The file a device's baseline lives in.
 const BASELINE_FILE: &str = "baseline.json";
 
@@ -66,6 +70,11 @@ pub fn vocab_shard_name(device_id: &str) -> String {
 /// The name of a device's cursor shard.
 pub fn cursor_shard_name(device_id: &str) -> String {
     format!("devices/{device_id}/{CURSOR_FILE}")
+}
+
+/// The name of a device's vocabulary-position shard.
+pub fn vocab_cursor_shard_name(device_id: &str) -> String {
+    format!("devices/{device_id}/{VOCAB_CURSOR_FILE}")
 }
 
 /// The name of a device's baseline shard.
@@ -212,6 +221,89 @@ pub fn write_cursor(
     let name = cursor_shard_name(device_id);
     store.put(&name, &encoded)?;
     Ok(name)
+}
+
+/// What travels for a learner's own groups' positions.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct VocabCursorShard {
+    version: u32,
+    cursors: Vec<SyncedVocabCursor>,
+}
+
+/// Read every device's vocabulary positions.
+pub fn read_vocab_cursors(
+    store: &dyn RemoteStore,
+) -> Result<Vec<SyncedVocabCursor>, SyncError> {
+    let mut found = Vec::new();
+    for entry in store.list()? {
+        if owner_of(&entry.name, VOCAB_CURSOR_FILE).is_none() {
+            continue;
+        }
+        let bytes = store.get(&entry.name)?;
+        let shard: VocabCursorShard = serde_json::from_slice(&bytes).map_err(|e| {
+            SyncError::Malformed(format!("{} could not be read: {e}", entry.name))
+        })?;
+        if shard.version > VOCAB_CURSOR_VERSION {
+            return Err(SyncError::Malformed(format!(
+                "{} was written by a newer version of the app (format {}, this build \
+                 understands {VOCAB_CURSOR_VERSION})",
+                entry.name, shard.version
+            )));
+        }
+        found.extend(shard.cursors);
+    }
+    Ok(found)
+}
+
+/// Publish this device's vocabulary positions, whole.
+///
+/// Every group the learner has a place in, the same document-every-time rule as
+/// the list itself. A device with no positions publishes nothing, which is what
+/// absence has to mean here: the format has no way to say "forget every group",
+/// and inventing one would let a device that had merely not synced yet wipe a
+/// peer's places.
+pub fn write_vocab_cursors(
+    store: &dyn RemoteStore,
+    device_id: &str,
+    cursors: &[SyncedVocabCursor],
+) -> Result<String, SyncError> {
+    let shard = VocabCursorShard {
+        version: VOCAB_CURSOR_VERSION,
+        cursors: cursors.to_vec(),
+    };
+    let encoded = serde_json::to_vec(&shard).map_err(|e| {
+        SyncError::Malformed(format!("the vocabulary positions could not be encoded: {e}"))
+    })?;
+    let name = vocab_cursor_shard_name(device_id);
+    store.put(&name, &encoded)?;
+    Ok(name)
+}
+
+/// Merge two devices' vocabulary positions, last writer winning **per group**.
+///
+/// The per-group part is the whole of it. A position is only meaningful against
+/// the list it was taken in, so comparing one group's stamp with another's would
+/// let a device that happened to drill a different lesson later drag a group it
+/// never opened forward, or backwards. Each group is settled alone.
+pub fn merge_vocab_cursors(
+    local: Vec<SyncedVocabCursor>,
+    remote: Vec<SyncedVocabCursor>,
+) -> Vec<SyncedVocabCursor> {
+    let mut by_group: BTreeMap<String, SyncedVocabCursor> = BTreeMap::new();
+    for cursor in local.into_iter().chain(remote) {
+        let group = cursor.group_name.clone();
+        let wins = match by_group.get(&group) {
+            Some(winner) => {
+                stamp(&cursor.updated_at, &cursor.device_id, cursor.revision)
+                    > stamp(&winner.updated_at, &winner.device_id, winner.revision)
+            }
+            None => true,
+        };
+        if wins {
+            by_group.insert(group, cursor);
+        }
+    }
+    by_group.into_values().collect()
 }
 
 /// Settle one entry against another: the later stamp wins, and the device id only

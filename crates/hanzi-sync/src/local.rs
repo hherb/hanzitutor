@@ -53,8 +53,9 @@ use hanzi_core::progress::{CardState, ProgressError, ProgressSink};
 use hanzi_store::{Db, IncomingAttempt, LoggedAttempt};
 
 use crate::document::{
-    merge_cursor, merge_vocab, read_baselines, read_cursor, read_vocab, write_baseline,
-    write_cursor, write_vocab, Baseline, Baselines,
+    merge_cursor, merge_vocab, merge_vocab_cursors, read_baselines, read_cursor, read_vocab,
+    read_vocab_cursors, write_baseline, write_cursor, write_vocab, write_vocab_cursors,
+    Baseline, Baselines,
 };
 use crate::shard::{fold_cards, merge_attempts, read_attempts, write_attempts, MergedAttempt};
 use crate::store::{RemoteStore, SyncError};
@@ -164,6 +165,13 @@ pub fn publish_documents(db: &Db, store: &dyn RemoteStore) -> Result<(), SyncErr
     // is, and publishing a guess would be worse than publishing nothing.
     if let Some(cursor) = db.cursor_view().map_err(SyncError::Io)? {
         write_cursor(store, db.device_id(), &cursor)?;
+    }
+    // And where the learner got to in each of their own groups. Nothing to say
+    // when there is nothing to say: absence must not mean "forget every group",
+    // or a device that had merely not synced yet would wipe a peer's places.
+    let cursors = db.vocab_cursors().map_err(SyncError::Io)?;
+    if !cursors.is_empty() {
+        write_vocab_cursors(store, db.device_id(), &cursors)?;
     }
     // Before the pull, and that ordering is the point: a peer that reads this
     // device's attempts must be able to read the baseline that says how to fold
@@ -348,6 +356,19 @@ pub fn pull_cursor(db: &Db, store: &dyn RemoteStore) -> Result<bool, SyncError> 
     }
 }
 
+/// Move to whoever last moved each group's position, returning whether any moved.
+///
+/// One merge for every group at once, because the settling is *per group*: this
+/// is the one place in the sync where two records are compared and must not be,
+/// since a position only means anything against the list it was taken in.
+pub fn pull_vocab_cursors(db: &Db, store: &dyn RemoteStore) -> Result<bool, SyncError> {
+    let local = db.vocab_cursors().map_err(SyncError::Io)?;
+    let remote = read_vocab_cursors(store)?;
+    let merged = merge_vocab_cursors(local, remote);
+    let changed = db.apply_vocab_cursors(&merged).map_err(SyncError::Io)?;
+    Ok(changed > 0)
+}
+
 /// Publish, pull, and rebuild: one whole sync.
 ///
 /// The order matters in one place only. Attempts are published before anything is
@@ -360,6 +381,10 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
     let pulled = pull(db, store)?;
     let vocab_changed = pull_vocab(db, store)?;
     let cursor_moved = pull_cursor(db, store)?;
+    // Whether a group position moved is not reported: unlike the course
+    // position, the learner sees it the moment they open the group, and the
+    // summary line is about what a sync did to the schedule.
+    let _ = pull_vocab_cursors(db, store)?;
     // Every device's baseline, this one's included, resolved into the two questions
     // the fold asks of it. Read after the pull so that a peer's baseline arriving in
     // this pass is used in this pass rather than the next one.

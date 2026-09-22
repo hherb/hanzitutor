@@ -1626,6 +1626,68 @@ impl Db {
         }
         Ok(out)
     }
+
+    /// Apply the positions that won a merge, returning how many this device
+    /// changed.
+    ///
+    /// Per group, and only when the arriving stamp is newer — the same rule as an
+    /// entry, for the same reason: two devices' positions for one group are a
+    /// genuine disagreement, and the stamp is what settles it.
+    ///
+    /// A position for a group this device does not have is **kept anyway**. The
+    /// group may arrive on a later sync, and dropping the row would throw away
+    /// the learner's place in a list they can still see on the other device.
+    pub fn apply_vocab_cursors(&self, cursors: &[SyncedVocabCursor]) -> Result<usize, String> {
+        let (path, mut conn) = (self.path(), self.lock());
+        let tx = conn.transaction().map_err(|e| at(&path, e))?;
+        let mut changed = 0usize;
+        for cursor in cursors {
+            let held: Option<(Option<String>, String, String, i64)> = tx
+                .query_row(
+                    "SELECT entry_uuid, updated_at, device_id, revision FROM vocab_cursor
+                     WHERE group_name = ?1",
+                    [&cursor.group_name],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .ok();
+            let arriving = (
+                cursor.updated_at.as_str(),
+                cursor.device_id.as_str(),
+                cursor.revision,
+            );
+            if let Some((uuid, updated_at, device_id, revision)) = &held {
+                let current = (updated_at.as_str(), device_id.as_str(), *revision);
+                if arriving <= current && *uuid == cursor.entry_uuid {
+                    continue;
+                }
+                if arriving < current {
+                    // An older stamp must not move a position, even to a value
+                    // that looks different: the newer write is the learner's.
+                    continue;
+                }
+            }
+            tx.execute(
+                "INSERT INTO vocab_cursor (group_name, entry_uuid, updated_at, device_id, revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(group_name) DO UPDATE SET
+                     entry_uuid = excluded.entry_uuid,
+                     updated_at = excluded.updated_at,
+                     device_id  = excluded.device_id,
+                     revision   = excluded.revision",
+                params![
+                    cursor.group_name,
+                    cursor.entry_uuid,
+                    cursor.updated_at,
+                    cursor.device_id,
+                    cursor.revision,
+                ],
+            )
+            .map_err(|e| at(&path, e))?;
+            changed += 1;
+        }
+        tx.commit().map_err(|e| at(&path, e))?;
+        Ok(changed)
+    }
 }
 
 /// Whether a group name is in the table at all, tombstoned or not.

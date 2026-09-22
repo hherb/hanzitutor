@@ -673,13 +673,25 @@ after each item) both do this now. The shape is the rule, not either file.
     "worthless". If measures are ever to travel, the shard format needs a version
     first — a closed shard is never rewritten, so old shards will always be
     measureless and must keep parsing.
+30. **A vocabulary position belongs to one group, and is settled only against that
+    group.** The row holds the entry's **uuid** — never its local id, which names
+    a different word on every device — and the store is the only place that
+    translates between the two. `merge_vocab_cursors` compares stamps *within* a
+    group and never across groups: a position means nothing except against the
+    list it was taken in, so a later stamp in one group must not move another.
+    The row is keyed by the group's **name**, because a group has nothing else to
+    be named by — a stable id would have to be minted per device, and already-
+    synced devices would then fork a shared group and its cursor would never
+    merge. A rename therefore *moves* the row (`vocab_rename_group` does it in the
+    same call) and a deletion drops it; do not "fix" the name key without solving
+    that fork first.
 
 ## 5. The verification loop
 
 Run before every commit:
 
 ```bash
-pnpm test           # 505 tests: engine + data-pipeline units, the SQLite store,
+pnpm test           # 515 tests: engine + data-pipeline units, the SQLite store,
                     # sync convergence, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
@@ -1540,102 +1552,111 @@ temp files.
 
 ## 6a. Resuming inside a user vocabulary list
 
-**Half shipped, deliberately.** Practising a group now resumes at its first
-unattempted entry. What is *not* built is the per-group **cursor** and its sync,
-which is specified below so the next session does not re-derive it.
+**Built.** A drill opens at the learner's stored position in the group, and that
+position travels between devices. It was a missing feature, not a bug — nothing
+failed to save — and it was reported again after being written up here as "not
+started", which is the cost of a deferral nobody can see from the roadmap. It is
+listed in `ROADMAP.md` as well, so the next session finds it.
 
 The course remembers where you were; a vocabulary list used not to, and always
-restarted at its first entry. That was **a missing feature, not a bug** — nothing
-failed to save. It was reported again after being written up here as "not
-started", which is the cost of a deferral that is not visible from the roadmap;
-the item is now also listed in `ROADMAP.md`'s cross-cutting section.
+restarted at its first entry. Confirmed against a real list while fixing it:
+entries are ordered by `(group, id)`, and in one group of 29 the **first** entry
+was the one already practised, so every session re-drilled it and started over —
+the exact symptom reported.
 
-### What is done: the skip-practised resume
+### How the resume decides
 
-`practiseQueue` in `src/App.svelte` filters out entries with `last_practised`
-set, and drills the rest; when **every** entry has been practised there is
-nothing to skip and the drill starts at the top, because such a list is due for
-review rather than finished. No storage, no schema, no sync surface — the
-position *is* `last_practised`, which already existed and already travels to the
-interface as `lastPractised`.
-
-That is enough for a list worked through in order, which is what a drill is:
-practising is linear, so "the first entry I have not done" is where the learner
-stopped. It was confirmed against a real list before shipping: entries are
-ordered by `(group, id)`, and in one group of 29 the **first** entry was the one
-already practised, so every session re-drilled it and started over — the exact
-symptom reported.
-
-What the filter cannot express is a position *other* than "first unattempted".
-It does not travel between devices (`last_practised` is deliberately per-device),
-and if the learner re-drills an already-practised entry from the middle of a
-list, the next session still starts at the first unattempted one. Both are what
-the cursor below is for.
+1. **The stored position wins** when it names an entry still in the list. It is
+   exactly where the learner stopped, and it is the only thing that can carry a
+   position *between* devices.
+2. Otherwise the drill starts at **the first entry not yet practised**
+   (`last_practised`), which needs no storage and is the right answer for a list
+   worked through in order.
+3. If every entry has been practised, it starts at **the top**: such a list is due
+   for review, not finished.
+4. A drill that is not one named group — everything, or the unfiled remainder —
+   keeps no position, because there is no list to keep a place in.
 
 ### What was established, so it is not redone
 
-* The store has seven tables (`meta`, `progress_card`, `attempt`, `vocab_group`,
-  `vocab_entry`, `course_cursor`, `settings`). `course_cursor` is a single row
-  (`CHECK (only_row = 1)`) for the frequency-ordered course. There is no
-  vocabulary equivalent.
-* **Half the work already exists.** `vocab_entry` carries `attempts` and
-  `last_practised`; `vocab_record_attempt` writes both; and both are already on
-  the IPC boundary as `VocabEntry.attempts` / `.lastPractised` in
-  `src/lib/types.ts`. So "skip entries already practised" needs **no storage
-  work** — it is a filter in `App.svelte`'s `practiseQueue`.
-* `practiseQueue(entries)` hands the whole list to `startPractice`, which resets
-  `queueCursor = 0` and has no position to restore.
+* `vocab_entry` carries `attempts` and `last_practised`; `vocab_record_attempt`
+  writes both; both are on the IPC boundary as `VocabEntry.attempts` /
+  `.lastPractised`. That is what makes rule 2 above free.
+* A position is per **group**, so `VocabularyPanel` passes the group alongside the
+  entries, and a row's own Practise button passes none.
 
-### Decisions taken
+### Decisions taken, and the one the plan got wrong
 
-* **Groups get a stable id.** Chosen over keying by name, because a cursor keyed
-  by name is orphaned by a rename: the group row's name changes and the cursor
-  row survives under the old name. Honouring "position cleared on rename" would
-  need a cross-table diff on every sync, which would also wipe the position of a
-  group deleted and recreated with the same name. A stable id makes a rename keep
-  its place, which is what "resume where I left off" actually means.
-* **Last write wins per (group, device).** The user is one person across a phone
-  and a laptop, and the requirement is to resume where they left off. No
-  per-device reconciliation.
-* **Resuming skips entries already practised** (`last_practised IS NOT NULL`).
-  **Implemented** — see "What is done" above. It interacts with the cursor: if
-  every entry in a group is already practised the "first unpractised" rule finds
-  nothing, and **the drill restarts from the top** — such a list is due for
-  review, not finished.
-* **Deletion clears a position** (the group is gone, so its cursor is dropped).
+* **Groups are keyed by name, not by a new stable id — and this is the plan
+  correcting itself.** What stood here said "groups get a stable id", on the
+  grounds that a position keyed by name is orphaned by a rename. The reasoning is
+  sound; the cost was not priced. A *random* id is minted per device, so two
+  devices that already share a group would each invent a different one for it: the
+  group would stop merging, and the cursors keyed by those ids would never meet.
+  Three devices are already synced here, so it is not hypothetical. Keying by name
+  leaves the merge that M13 verified on three devices exactly as it was, and a
+  rename is handled where the rename happens — `vocab_rename_group` moves the row
+  in the same call. The cost is narrow: a peer that has not heard about the rename
+  keeps a row under the old name until it next practises, and a group deleted and
+  recreated with the same name can inherit the old position once. Both are benign,
+  and neither justifies a schema-wide identity change.
+* **Last write wins per group.** One person across a phone and a laptop, so there
+  is nothing to reconcile per device: the stamp settles it. Per *group* is the
+  load-bearing part — a position only means anything against the list it was taken
+  in, so `merge_vocab_cursors` never compares one group's stamp with another's.
+* **Resuming skips entries already practised** (`last_practised IS NOT NULL`) when
+  there is no stored position, and **the drill restarts from the top** when every
+  entry has been practised: such a list is due for review, not finished.
+* **Deletion clears a position** (the group is gone, so `delete_vocab_cursor`
+  drops its row).
 
-### What implementing it touches
+### What implementing it took
 
-Five modules, which is why it was not started as a fragment:
+Five modules, which is why it was not done as a fragment:
 
-1. `crates/hanzi-store/src/schema.rs` — a `vocab_cursor` table and a migration.
-2. `crates/hanzi-store/src/lib.rs` — read/write per group, mirroring the
-   `CursorSink` impl for the course cursor (which is the shape to copy: it
-   carries `updated_at`, `device_id` and a `revision` counter).
-3. `crates/hanzi-sync/src/document.rs` — `merge_vocab_cursor`. **Last-write-wins
-   per group**, so the merge is per-group and must not compare positions across
-   groups. `merge_cursor` is the single-value version to model it on.
-4. `crates/hanzi-sync/src/lib.rs` / `local.rs` — shard naming and the read/write
-   seam, alongside `cursor_shard_name`.
-5. `src-tauri/src/commands.rs` + `src/lib/api.ts` + `src/App.svelte` — commands,
-   wrappers, and the `practiseQueue` filter (**the filter is done**; the cursor
-   still needs the commands and wrappers to store and return a position).
+1. `crates/hanzi-store/src/schema.rs` — the `vocab_cursor` table, schema 6.
+2. `crates/hanzi-store/src/lib.rs` — `vocab_cursor` / `set_vocab_cursor` per
+   group, with the same three-part stamp as the course cursor, plus
+   `rename_vocab_cursor`, `delete_vocab_cursor` and `apply_vocab_cursors`. It also
+   does the **id ↔ uuid translation**, so nothing above it has to know.
+3. `crates/hanzi-sync/src/document.rs` — `merge_vocab_cursors`, last-write-wins
+   **per group**, and the `vocab-cursor.json` shard.
+4. `crates/hanzi-sync/src/local.rs` — publishing the positions and pulling them,
+   alongside the course cursor.
+5. `src-tauri/src/commands.rs` + `src/lib/api.ts` + `src/App.svelte` +
+   `VocabularyPanel.svelte` — the commands, the wrappers, and the resume itself.
+   The panel passes the group with the entries, and a row's own Practise button
+   passes none, so a one-off drill cannot overwrite the place the learner reached
+   in the group that entry came from.
 
-**Give groups a stable id first**; the cursor depends on it. `vocab_group` is
-currently name-keyed, and `merge_vocab` already merges it, so both the rename
-path and the id have to be settled together.
+**Nothing was needed in `hanzi-core`.** The engine's document type has no uuid and
+did not gain one: the store already owns entry uuids, so it translates, and the
+interface keeps working in ids. That is also why the synced half was additive
+rather than a migration — the row stored a portable uuid from the first day.
 
-### Why the cursor was deferred rather than half-built
+### Why the position is a uuid and not an id
+
+An id is handed out per device, so id 3 names a different word on the phone than
+on the laptop. Storing the uuid is what makes the row portable and what let the
+sync land without touching anything already deployed.
+
+### Why a position that syncs was worth the care
 
 It is the one area where an incomplete change is worse than none: a position that
 publishes but cannot be merged leaves two devices disagreeing about where the
-learner is, which is the exact failure M13 exists to avoid. Written down here
-with the research already done so it can be done in one pass with merge tests.
+learner is, which is the exact failure M13 exists to avoid. Hence the per-group
+merge, and hence the tests below — the merge is the part that has to be right.
 
-**The skip-practised resume was safe to ship without it** — and that is the test
-to apply to the rest: it adds no state that sync can disagree about, so it could
-not leave two devices inconsistent. The cursor is the half that can, which is why
-it waits for the group ids and the merge.
+The skip-practised resume was safe to ship on its own, and that is the test to
+apply to the rest of this: it adds no state that sync can disagree about.
+
+### Tests
+
+Five on the store — round trip (and that the **uuid**, not the id, is what is
+stored), a rename moving the row, a deletion clearing it, a position whose entry
+is gone reading as no position, and clearing — one through the state layer, three
+on the merge (including that positions for different groups are never compared),
+and one end-to-end on two databases syncing through a folder store.
 
 ## 7. Open decisions
 

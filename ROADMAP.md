@@ -721,14 +721,6 @@ Small, independently shippable, still open, roughly in value order:
   retention.
 - **Beginner stroke hints** — mark each stroke's start point and direction on the guide
   for the first attempts.
-- **Exact resume inside a vocabulary list.** Practising a group now starts at its
-  first unattempted entry, so a drill no longer begins at the top every time. What
-  is missing is a per-group **cursor**: it would remember a position that is not
-  "first unattempted", travel between devices, and survive re-drilling an entry
-  from the middle of a list. That needs stable group ids first and a
-  `merge_vocab_cursor` in `hanzi-sync`, because a position that publishes without a
-  merge leaves two devices disagreeing about where the learner is. The decisions
-  taken and the five modules it touches are in `HANDOVER.md` §6a.
 - **Interface localisation** — the app teaches Chinese but speaks English.
 
 Already shipped, listed only so they are not re-added as open work:
@@ -747,6 +739,15 @@ Already shipped, listed only so they are not re-added as open work:
   know whether an attempt was *right* — so what remains is not code: it is enough real
   handwriting to re-set the shape tolerance and the four weights against.
 
+- **Resuming inside a vocabulary list** — built (schema 6, HANDOVER §6a). Each
+  group keeps a position, in a `vocab_cursor` row holding the entry's uuid and the
+  three-part stamp, and it travels: `vocab-cursor.json` is a per-device shard and
+  `merge_vocab_cursors` settles it **per group**, so one group's later stamp never
+  drags another. A drill opens at the stored position, falls back to the first
+  entry not yet practised, and starts at the top once all of them have been.
+  Deliberately keyed by the group's **name** rather than a new stable group id:
+  a random id is minted per device, so already-synced devices would fork a shared
+  group and its cursor would never merge.
 - **Import / export the vocabulary list** — M1: JSON export and import (lossless; merge
   or replace) plus CSV export. CSV *import* is deliberately out, because it is lossy.
 - **A settings screen** — `src/lib/SettingsPanel.svelte` edits the four preferences

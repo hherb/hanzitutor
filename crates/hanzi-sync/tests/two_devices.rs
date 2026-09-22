@@ -676,3 +676,104 @@ fn backdate(db: &Db, id: u64, stamp: &str) {
         )
         .unwrap();
 }
+
+/// The uuid of a local entry id — the entry's name on every device.
+fn entry_uuid(db: &Db, id: u64) -> String {
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .query_row(
+            "SELECT uuid FROM vocab_entry WHERE id = ?1",
+            [id as i64],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// A group's stored position, as a uuid, which is what two devices can compare.
+fn position_of(db: &Db, group: &str) -> Option<String> {
+    db.vocab_cursors()
+        .unwrap()
+        .into_iter()
+        .find(|cursor| cursor.group_name == group)
+        .and_then(|cursor| cursor.entry_uuid)
+}
+
+#[test]
+fn a_group_position_follows_the_device_that_drilled_last() {
+    // The end-to-end version of the per-group rule, through the real adapter:
+    // publish, pull and apply, on two databases.
+    let (dir_a, db_a, _) = device("vocab-cursor-a");
+    let (dir_b, db_b, _) = device("vocab-cursor-b");
+    let shared = scratch("vocab-cursor-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    // Two groups, both devices, so that the per-group settling is exercised
+    // rather than a single global position.
+    let mut ids = Vec::new();
+    for (db, tag) in [(&db_a, "a"), (&db_b, "b")] {
+        let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+        let silu = vocab.add_entry("学生", "", "", Some("SiLu")).unwrap().id;
+        let silu2 = vocab.add_entry("姐姐", "", "", Some("SiLu")).unwrap().id;
+        let hsk = vocab.add_entry("中国", "", "", Some("HSK 1")).unwrap().id;
+        vocab.save().unwrap();
+        ids.push((tag, silu, silu2, hsk));
+    }
+    let (_, a_silu, a_silu2, _) = ids[0];
+    let (_, _, _, b_hsk) = ids[1];
+
+    // The laptop reaches the second entry of SiLu; the phone reaches the third
+    // of HSK 1.
+    db_a.set_vocab_cursor("SiLu", Some(a_silu2)).unwrap();
+    db_b.set_vocab_cursor("HSK 1", Some(b_hsk)).unwrap();
+
+    for _ in 0..2 {
+        for db in [&db_a, &db_b] {
+            sync(db, &remote).unwrap();
+        }
+    }
+
+    // Both devices hold both groups' positions. What is compared is the **uuid**,
+    // because that is the entry's name everywhere: the two devices resolve the
+    // same position to *different local ids*, which is exactly why the row stores
+    // a uuid in the first place. Each uuid is read on the device that created the
+    // entry — an id is meaningless anywhere else.
+    let silu_uuid = entry_uuid(&db_a, a_silu2);
+    let hsk_uuid = entry_uuid(&db_b, b_hsk);
+    for db in [&db_a, &db_b] {
+        assert_eq!(position_of(db, "SiLu").as_deref(), Some(silu_uuid.as_str()));
+        assert_eq!(position_of(db, "HSK 1").as_deref(), Some(hsk_uuid.as_str()));
+    }
+    // And the two devices really did number them differently, which is the point
+    // the uuid is carrying.
+    assert_ne!(
+        db_a.vocab_cursor("HSK 1").unwrap(),
+        Some(b_hsk),
+        "the phone's local id for its own entry is not the laptop's"
+    );
+
+    // The laptop now moves further in SiLu, and the phone follows. Nothing is
+    // aged: the write is this device's own, so its revision is higher than the
+    // copy the phone holds and the stamp settles it either way.
+    db_a.set_vocab_cursor("SiLu", Some(a_silu)).unwrap();
+    for _ in 0..2 {
+        for db in [&db_a, &db_b] {
+            sync(db, &remote).unwrap();
+        }
+    }
+    let moved = entry_uuid(&db_a, a_silu);
+    for db in [&db_a, &db_b] {
+        assert_eq!(
+            position_of(db, "SiLu").as_deref(),
+            Some(moved.as_str()),
+            "the newer move won"
+        );
+        assert_eq!(
+            position_of(db, "HSK 1").as_deref(),
+            Some(hsk_uuid.as_str()),
+            "the other group was not dragged by it"
+        );
+    }
+
+    finish(&dir_a);
+    finish(&dir_b);
+}

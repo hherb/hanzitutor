@@ -14,9 +14,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hanzi_core::Rating;
+use hanzi_store::SyncedVocabCursor;
 use hanzi_sync::{
-    attempts_shard_name, device_of_shard, fold_cards, merge_attempts, parse_attempts_shard, Baselines,
-    read_attempts, write_attempts, FolderStore, MergedAttempt, RemoteStore,
+    attempts_shard_name, device_of_shard, fold_cards, merge_attempts, merge_vocab_cursors,
+    parse_attempts_shard, read_attempts, read_vocab_cursors, write_attempts, write_vocab_cursors,
+    Baselines, FolderStore, MergedAttempt, RemoteStore,
 };
 
 /// A fold with nothing to fold from, which is the ordinary case: a log that goes
@@ -328,4 +330,93 @@ fn folding_an_empty_log_produces_no_cards() {
     assert!(merge_attempts(vec![], vec![]).unwrap().is_empty());
 
     finish(&dir("empty"));
+}
+
+// ---- where the learner got to in their own groups --------------------------
+//
+// A vocabulary position is the one record in the sync that is settled *per
+// group*. Two devices' positions for one group are a disagreement and the stamp
+// settles it; two positions for *different* groups are not comparable at all,
+// and treating them as if they were would let a device that drilled a different
+// lesson later drag a group it never opened forward.
+
+fn cursor(group: &str, entry: &str, updated_at: &str, device: &str, revision: i64) -> SyncedVocabCursor {
+    SyncedVocabCursor {
+        group_name: group.to_string(),
+        entry_uuid: Some(entry.to_string()),
+        updated_at: updated_at.to_string(),
+        device_id: device.to_string(),
+        revision,
+    }
+}
+
+#[test]
+fn the_later_write_wins_within_a_group() {
+    let laptop = cursor("SiLu", "entry-1", "2026-09-22T10:00:00Z", "laptop", 0);
+    let phone = cursor("SiLu", "entry-9", "2026-09-22T11:00:00Z", "phone", 0);
+
+    let merged = merge_vocab_cursors(vec![laptop.clone()], vec![phone.clone()]);
+    assert_eq!(merged, vec![phone.clone()], "the later stamp wins");
+
+    // Whichever way round the merge is given them.
+    let merged = merge_vocab_cursors(vec![phone.clone()], vec![laptop.clone()]);
+    assert_eq!(merged, vec![phone]);
+}
+
+#[test]
+fn positions_for_different_groups_are_never_compared() {
+    // The laptop's position in a group it drilled *later* must not drag the
+    // phone's position in a group the phone drilled earlier, and the reverse.
+    let laptop_silu = cursor("SiLu", "silu-3", "2026-09-22T10:00:00Z", "laptop", 0);
+    let phone_silu = cursor("SiLu", "silu-7", "2026-09-22T09:00:00Z", "phone", 0);
+    let laptop_hsk = cursor("HSK 1", "hsk-2", "2026-09-22T23:00:00Z", "laptop", 5);
+    let phone_hsk = cursor("HSK 1", "hsk-4", "2026-09-22T08:00:00Z", "phone", 0);
+
+    let mut merged = merge_vocab_cursors(
+        vec![laptop_silu.clone(), laptop_hsk.clone()],
+        vec![phone_silu.clone(), phone_hsk.clone()],
+    );
+    merged.sort_by(|a, b| a.group_name.cmp(&b.group_name));
+
+    // Each group settles on its own: the later write within the group, never the
+    // later write overall.
+    assert_eq!(merged[0].group_name, "HSK 1");
+    assert_eq!(merged[0].entry_uuid, laptop_hsk.entry_uuid, "laptop wrote later here");
+    assert_eq!(merged[1].group_name, "SiLu");
+    assert_eq!(merged[1].entry_uuid, laptop_silu.entry_uuid, "laptop wrote later here too");
+
+    // And a group only one device has a position in is carried, not dropped.
+    let merged = merge_vocab_cursors(vec![laptop_silu], vec![phone_hsk.clone()]);
+    assert_eq!(merged.len(), 2, "both groups survive");
+    assert!(merged.iter().any(|c| c.group_name == "HSK 1"));
+}
+
+#[test]
+fn a_group_position_round_trips_through_a_device_shard() {
+    let dir = dir("vocab-cursor-shard");
+    let store = FolderStore::open(&dir).unwrap();
+    let cursors = vec![
+        cursor("SiLu", "entry-1", "2026-09-22T10:00:00Z", "laptop", 0),
+        cursor("HSK 1", "entry-2", "2026-09-22T10:05:00Z", "laptop", 3),
+    ];
+
+    let name = write_vocab_cursors(&store, "laptop", &cursors).unwrap();
+    assert_eq!(name, "devices/laptop/vocab-cursor.json");
+    let read = read_vocab_cursors(&store).unwrap();
+    assert_eq!(read.len(), 2);
+    // A position is named by its group, because that is all a group is named by.
+    let mut by_group: Vec<&str> = read.iter().map(|c| c.group_name.as_str()).collect();
+    by_group.sort();
+    assert_eq!(by_group, ["HSK 1", "SiLu"]);
+
+    // A cleared position travels as an absent entry rather than as a zero.
+    let cleared = SyncedVocabCursor {
+        entry_uuid: None,
+        ..cursor("SiLu", "entry-1", "2026-09-22T12:00:00Z", "laptop", 1)
+    };
+    write_vocab_cursors(&store, "laptop", std::slice::from_ref(&cleared)).unwrap();
+    let read = read_vocab_cursors(&store).unwrap();
+    assert_eq!(read, vec![cleared]);
+
+    fs::remove_dir_all(&dir).ok();
 }

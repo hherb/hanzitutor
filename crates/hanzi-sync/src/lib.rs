@@ -39,8 +39,9 @@ mod shard;
 mod store;
 
 pub use document::{
-    baseline_shard_name, cursor_shard_name, merge_cursor, merge_vocab, read_baselines,
-    read_cursor, read_vocab, vocab_shard_name, write_baseline, write_cursor, write_vocab,
+    baseline_shard_name, cursor_shard_name, merge_cursor, merge_vocab, merge_vocab_cursors,
+    read_baselines, read_cursor, read_vocab, read_vocab_cursors, vocab_cursor_shard_name,
+    vocab_shard_name, write_baseline, write_cursor, write_vocab, write_vocab_cursors,
     Baseline, Baselines,
 };
 pub use dropbox::DropboxStore;
