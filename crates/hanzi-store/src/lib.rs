@@ -717,7 +717,8 @@ impl VocabSink for Db {
                 .prepare(
                     "SELECT id, text, pinyin, meaning, group_name, added_at, \
                             attempts, best_score, last_practised
-                     FROM vocab_entry WHERE deleted = 0 ORDER BY id",
+                     FROM vocab_entry WHERE deleted = 0
+                     ORDER BY group_name, added_at, text",
                 )
                 .map_err(|e| vocab_error(&path, e))?;
             let rows = stmt

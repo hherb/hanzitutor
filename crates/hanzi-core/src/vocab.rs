@@ -578,13 +578,20 @@ impl VocabStore {
 
     /// Keep groups alphabetical and entries grouped together, in the order they
     /// were added. Deterministic ordering keeps the file diffable.
+    /// Put the list in the order every device agrees on.
+    ///
+    /// By `added_at`, then the text — **not** by `id`. An `id` is handed out per
+    /// device, and a peer's entries arrive in the order the merge produced them
+    /// (uuid order), so ordering by id showed the same list in a different order
+    /// on every device: one group's word sat at 51 here and 11 there, and a drill
+    /// resumed at the right word only to work through a differently-ordered queue.
+    /// `added_at` is an ISO-8601 UTC string that syncs, so it sorts chronologically
+    /// and identically everywhere; the text settles two entries added in the same
+    /// second, which is otherwise the one case left to chance.
     fn sort(&mut self) {
         self.document.groups.sort();
         self.document.groups.dedup();
-        self.document.entries.sort_by(|a, b| {
-            let key = |e: &Entry| (e.group.clone().unwrap_or_default(), e.id);
-            key(a).cmp(&key(b))
-        });
+        self.document.entries.sort_by(entry_order);
     }
 }
 
@@ -1059,5 +1066,76 @@ mod tests {
         // Unfiled first (empty group key), then A, then B, each in insertion order.
         assert_eq!(order, ["零", "一", "三", "二"]);
         assert_eq!(store.groups(), ["A", "B"]);
+    }
+}
+
+/// The one order the list is kept in, on every device.
+///
+/// A free function so the rule can be tested on its own, and so the reason it is
+/// not `id` has somewhere to live: an `id` is per device, and a peer's entries
+/// arrive in the order the merge produced them, so ordering by id showed one
+/// list in a different order on every device. `added_at` syncs and sorts
+/// chronologically; the text settles two entries added inside the same second.
+fn entry_order(a: &Entry, b: &Entry) -> std::cmp::Ordering {
+    a.group
+        .as_deref()
+        .unwrap_or("")
+        .cmp(b.group.as_deref().unwrap_or(""))
+        .then_with(|| a.added_at.cmp(&b.added_at))
+        .then_with(|| a.text.cmp(&b.text))
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    fn entry(id: u64, text: &str, group: Option<&str>, added_at: &str) -> Entry {
+        Entry {
+            id,
+            text: text.to_string(),
+            pinyin: String::new(),
+            meaning: String::new(),
+            group: group.map(str::to_string),
+            added_at: added_at.to_string(),
+            attempts: 0,
+            best_score: None,
+            last_practised: None,
+        }
+    }
+
+    #[test]
+    fn the_list_is_ordered_by_when_entries_were_added_not_by_id() {
+        // The bug this fixes: two devices holding the same two entries in
+        // opposite id order showed the list in opposite order. `added_at` is the
+        // same on both, so the order is too.
+        let older = entry(9, "学生", Some("SiLu"), "2026-09-20T09:00:00Z");
+        let newer = entry(2, "姐姐", Some("SiLu"), "2026-09-21T09:00:00Z");
+        assert_eq!(entry_order(&older, &newer), std::cmp::Ordering::Less);
+        assert_eq!(entry_order(&newer, &older), std::cmp::Ordering::Greater);
+
+        let mut rows = [
+            entry(1, "z", Some("B"), "2026-09-20T00:00:00Z"),
+            entry(2, "a", Some("B"), "2026-09-21T00:00:00Z"),
+            entry(3, "m", Some("A"), "2026-09-22T00:00:00Z"),
+            entry(4, "n", None, "2026-09-19T00:00:00Z"),
+        ];
+        // An array rather than a `Vec`: the size is part of the test.
+        rows.sort_by(entry_order);
+        let order: Vec<&str> = rows.iter().map(|e| e.text.as_str()).collect();
+        // Unfiled first (the empty group name), then by group name, then by time
+        // within the group — never by id.
+        assert_eq!(order, ["n", "m", "z", "a"]);
+    }
+
+    #[test]
+    fn two_entries_added_in_the_same_second_have_a_stable_order() {
+        // `added_at` is whole seconds, so a tie is real; the text settles it, and
+        // both devices settle it the same way.
+        let a = entry(5, "中国", Some("SiLu"), "2026-09-20T09:00:00Z");
+        let b = entry(6, "学生", Some("SiLu"), "2026-09-20T09:00:00Z");
+        // 中 (U+4E2D) sorts before 学 (U+5B66), so the tie is settled on the
+        // text and not on either id.
+        assert_eq!(entry_order(&a, &b), std::cmp::Ordering::Less);
+        assert_eq!(entry_order(&b, &a), std::cmp::Ordering::Greater);
     }
 }
