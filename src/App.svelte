@@ -1835,6 +1835,10 @@
    * "everything", and a one-off drill of one entry must not overwrite the place
    * the learner had reached in the group it came from.
    *
+   * When the caller does not name a group but every entry agrees on one, that
+   * group is used: a view that is one group's list *is* that group, and the
+   * position has to follow it whether or not the caller knew to say so.
+   *
    * The stored position wins when it names an entry still in the list, because
    * it is exactly where the learner stopped. Otherwise the drill starts at the
    * first entry they have not practised, and if they have practised them all it
@@ -1842,30 +1846,53 @@
    */
   async function practiseQueue(entries: VocabEntry[], group: string | null) {
     if (entries.length === 0) return;
-    let resume = entries;
-    let reason = "";
-    if (group !== null) {
-      const at = await api
-        .vocabCursor(group)
-        .catch(() => null);
+    const scope = group ?? sharedGroup(entries);
+
+    // A stored position, when one names an entry that is still in the list.
+    let resume: VocabEntry[] | null = null;
+    let outcome = "";
+    if (scope !== null) {
+      let at: number | null = null;
+      let failure: unknown = null;
+      try {
+        at = await api.vocabCursor(scope);
+      } catch (cause) {
+        failure = cause;
+      }
       const index = at === null ? -1 : entries.findIndex((entry) => entry.id === at);
       if (index >= 0) {
         resume = entries.slice(index);
-        reason = `, resuming at entry ${index + 1} of ${entries.length}`;
+        outcome = `resuming at entry ${index + 1} of ${entries.length}`;
+      } else if (failure !== null) {
+        // Said out loud rather than swallowed: a place that cannot be read is the
+        // whole difference between resuming and starting over, and a silent
+        // fallback here is indistinguishable from a lost position.
+        outcome = `could not read your place (${failure})`;
+      } else if (at !== null) {
+        outcome = "the entry you were on is no longer in the list";
       }
     }
-    if (reason === "") {
+
+    // Otherwise the first entry not yet practised, and the top once every entry
+    // has been — such a list is due for review, not finished.
+    if (resume === null) {
       const unpractised = entries.filter((entry) => entry.lastPractised === null);
       resume = unpractised.length > 0 ? unpractised : entries;
       const skipped = entries.length - unpractised.length;
-      reason =
+      const fallback =
         unpractised.length === 0
-          ? ", all entries practised — starting at the top"
+          ? "all entries practised — starting at the top"
           : skipped > 0
-            ? `, resuming past ${skipped} already practised`
+            ? `resuming past ${skipped} already practised`
             : "";
+      if (fallback !== "") outcome = outcome === "" ? fallback : `${outcome}; ${fallback}`;
+      // And when there is nothing to say, say that: a group drill that starts at
+      // the first entry with no explanation at all is the report this exists to
+      // make answerable.
+      else if (outcome === "" && scope !== null) outcome = "no place kept yet — starting at the first entry";
     }
-    queueGroup = group;
+
+    queueGroup = scope;
     startPractice(
       resume.map((entry) => ({
         text: entry.text,
@@ -1875,7 +1902,25 @@
       })),
       "vocabulary",
     );
-    void api.log(`practising ${resume.length} vocabulary entries${reason}`);
+    const where = scope === null ? "" : `“${scope}”: `;
+    void api.log(
+      `practising ${resume.length} vocabulary entries${outcome ? ` — ${where}${outcome}` : ""}`,
+    );
+    // On the board, so "it started at the beginning again" arrives with its
+    // reason attached instead of being a mystery to report.
+    if (outcome !== "") statusMessage = `${where}${outcome}`;
+  }
+
+  /**
+   * The one group every entry belongs to, or `null` when they do not agree.
+   *
+   * Used only when the caller passed no group, so that a single group's list
+   * still keeps its place.
+   */
+  function sharedGroup(entries: VocabEntry[]): string | null {
+    const first = entries[0]?.group ?? null;
+    if (first === null) return null;
+    return entries.every((entry) => entry.group === first) ? first : null;
   }
 
   /** Start drilling what is due for review, most overdue first. */

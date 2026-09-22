@@ -698,6 +698,18 @@ fn position_of(db: &Db, group: &str) -> Option<String> {
         .and_then(|cursor| cursor.entry_uuid)
 }
 
+/// This device's local id for the entry a uuid names.
+fn id_of(db: &Db, uuid: &str) -> u64 {
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .query_row(
+            "SELECT id FROM vocab_entry WHERE uuid = ?1",
+            [uuid],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap() as u64
+}
+
 #[test]
 fn a_group_position_follows_the_device_that_drilled_last() {
     // The end-to-end version of the per-group rule, through the real adapter:
@@ -773,6 +785,64 @@ fn a_group_position_follows_the_device_that_drilled_last() {
             "the other group was not dragged by it"
         );
     }
+
+    finish(&dir_a);
+    finish(&dir_b);
+}
+
+#[test]
+fn a_position_pulled_from_a_peer_resolves_on_this_device() {
+    // The acceptance criterion, and the one the earlier test did not actually
+    // assert: the device that *receives* a position must be able to turn it back
+    // into one of its own entries. Comparing uuids is not enough — a row can
+    // travel perfectly and still resolve to nothing, because the entry it names
+    // arrived under a different local id, or arrived deleted, or did not arrive.
+    let (dir_a, db_a, _) = device("cursor-pull-a");
+    let (dir_b, db_b, _) = device("cursor-pull-b");
+    let shared = scratch("cursor-pull-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    // Only A has the list. B has never heard of it.
+    let (first, second) = {
+        let mut vocab = VocabStore::open_with(Box::new(db_a.clone())).unwrap();
+        let first = vocab.add_entry("学生", "", "", Some("SiLu")).unwrap().id;
+        let second = vocab.add_entry("姐姐", "", "", Some("SiLu")).unwrap().id;
+        vocab.save().unwrap();
+        (first, second)
+    };
+    db_a.set_vocab_cursor("SiLu", Some(second)).unwrap();
+    sync(&db_a, &remote).unwrap();
+
+    // B hears about the list and the position together.
+    sync(&db_b, &remote).unwrap();
+    let on_b = db_b.vocab_cursor("SiLu").unwrap().expect("a position arrived");
+    let expected = entry_uuid(&db_a, second);
+    assert_eq!(
+        entry_uuid(&db_b, on_b),
+        expected,
+        "the position resolves to the entry the other device meant"
+    );
+    // And it is the *second* entry, not the first — compared by uuid, because an
+    // id means a different row on each device, and a peer numbers the entries in
+    // the order the merge gave them rather than in this device's order.
+    let first_uuid = entry_uuid(&db_a, first);
+    let b_first = id_of(&db_b, &first_uuid);
+    assert_ne!(on_b, b_first, "the position is the second entry, not the first");
+
+    // Still true after B practises something and syncs again: a position that
+    // only works until the next sync is not a position.
+    {
+        let mut vocab = VocabStore::open_with(Box::new(db_b.clone())).unwrap();
+        vocab.record_attempt(on_b, 80.0).unwrap();
+        vocab.save().unwrap();
+    }
+    for _ in 0..2 {
+        for db in [&db_a, &db_b] {
+            sync(db, &remote).unwrap();
+        }
+    }
+    let still = db_b.vocab_cursor("SiLu").unwrap().expect("still a position");
+    assert_eq!(entry_uuid(&db_b, still), expected);
 
     finish(&dir_a);
     finish(&dir_b);
