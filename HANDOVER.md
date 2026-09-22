@@ -1314,6 +1314,16 @@ temp files.
   terminal, because a webview's console is not visible from here. Key by index. The
   `error` / `unhandledrejection` handler in `App.svelte` forwards that class of
   failure to `[webview] webview error: …` — keep it.
+- **A bundled file the build does not contain is answered with `index.html` and a
+  `200`.** Tauri's asset protocol falls back to the SPA entry point for a path it
+  cannot resolve, so `fetch("audio/x/manifest.json").then(r => r.json())` never
+  sees a 404 — it sees the app's own HTML, and `json()` chokes on it. On WebKit that
+  reached the Phrases screen as `SyntaxError: The string did not match the expected
+  pattern.`, which says nothing about what is wrong and reads as a broken app.
+  `audio.ts`'s `loadManifest` now decodes defensively and treats anything that is
+  not a manifest as **absent** — a state to name ("no recordings are bundled for
+  this corpus in this build") rather than an error. Any future bundled file read
+  over `fetch` has the same trap: look at the body, never only at `response.ok`.
 - **A notice that names a licence is not the licence.** `fetch-data.sh` had been
   fetching Make Me a Hanzi's `COPYING`, which describes what `graphics.txt` and
   `dictionary.txt` derive from and points at a URL for the Arphic Public License —
@@ -2103,7 +2113,7 @@ bundle/dmg/Hanzi Tutor_0.3.0_aarch64.dmg
 | --- | --- | --- |
 | Characters, words, stroke geometry | `include_bytes!` in `src-tauri/src/state.rs` | ~13 MB |
 | Interface font, Noto Sans SC | Vite, from `src/assets/fonts/`, via `src/app.css` | ~17 MB |
-| Graded phrase clips | Vite, from `public/audio/<corpus>/` | ~91 MB in the working tree; ~32 MB of it (`no7z`) is committed, and the graded readers' set is generated but not committed (ROADMAP M14) |
+| Graded phrase clips | Vite, from `public/audio/<corpus>/` | ~91 MB in the working tree: the `no7z` set (~32 MB) is **committed**, and the graded readers' (~59 MB) is **not** — yet builds made here ship it, because Vite copies whatever is in `public/`. A release therefore carries audio no clone has, which is deliberate for now and is the one place the bundle is not reproducible from the tag (ROADMAP M14 has the quality caveat) |
 | SQLite, for the study store | compiled from the amalgamation by `libsqlite3-sys` | ~1.5 MB |
 | 21 licence notices, over 19 files | `bundle.resources` → `Contents/Resources/licences/` | ~230 KB |
 
@@ -2145,8 +2155,18 @@ APP=".cargo-target/release/bundle/macos/Hanzi Tutor.app"
 # 1. Every notice survived as a file — 19 of them.
 ls "$APP/Contents/Resources/licences" | wc -l
 
-# 2. The font made it into the frontend bundle.
-ls "$APP/Contents/Resources/assets" | grep -i noto
+# 2. The font and the clips are in the frontend bundle. They are *embedded in the
+#    binary*, not copied into Resources — `dist/` is what gets embedded, so check
+#    that, and then check the embedding itself. This used to say
+#    `ls "$APP/Contents/Resources/assets"`, which does not exist and made a
+#    present font look missing.
+ls dist/assets | grep -i noto
+ls dist/audio
+BIN="$APP/Contents/MacOS/hanzi-tutor"
+strings -a "$BIN" | grep -c NotoSansSC            # 1+
+strings -a "$BIN" | grep -c "no7z/.*\.mp3"         # 1638
+strings -a "$BIN" | grep -c "harukicoder/.*\.mp3"  # 2368 with the readers' clips
+                                                      # in the tree, 0 without
 
 # 3. It is signed, and by whom.
 codesign --verify --deep --strict --verbose=2 "$APP"
@@ -2160,7 +2180,19 @@ A failure of step 1 or 2 is the class of bug the tests cannot see, so it is wort
 doing after any change to `bundle.resources`, the font path or `vite.config.ts`. Step
 4 also confirms the compiled-in notices reached the interface: the log line
 `[webview] licences: 21 notices bundled` appears on stderr at startup, and the About
-sidebar entry renders them.
+sidebar entry renders them — **but it costs a keychain prompt** on a machine whose
+Dropbox item was written by a differently-signed build (the bundled app has a
+different designated requirement from the dev binary), so prefer steps 1–3 plus the
+licences test when the machine is in use.
+
+**The disk-image step needs a wider sandbox than `workspace-write`.** `pnpm run
+build` gets all the way to a signed `.app` and then dies in `bundle_dmg.sh` with
+`hdiutil: create failed - Operation not permitted`; nothing is wrong with the
+bundle. Two things follow: the `.app` is complete and can be used as it stands, and
+running `--bundles dmg` **afterwards deletes it** (Tauri cleans up the intermediate
+app once the image exists), so re-run the whole build rather than just the image.
+Both are one-time costs of building here, not defects — the Android and iOS builds
+need the same wider access for `~/.gradle` and `~/Library/Developer/Xcode`.
 
 ### Releasing it
 

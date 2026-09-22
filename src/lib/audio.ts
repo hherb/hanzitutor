@@ -33,29 +33,66 @@ export type AudioSource = (typeof AUDIO_SOURCES)[number];
 
 const theAudio = new Audio();
 /** Loaded manifests, so tapping the same corpus twice reads the file once. */
-const manifests = new Map<AudioSource, Promise<AudioManifest>>();
+const manifests = new Map<AudioSource, Promise<AudioManifest | null>>();
 
 /**
- * Load one corpus's manifest.
+ * Whether a decoded body is a manifest rather than something that merely parsed.
+ *
+ * The shape is checked because the failure this guards against is a file that is
+ * *not there* being answered with something that *is* — see [`loadManifest`].
+ */
+function isManifest(value: unknown): value is AudioManifest {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray((value as AudioManifest).phrases)
+  );
+}
+
+/**
+ * Load one corpus's manifest, or answer `null` when this build does not have one.
+ *
+ * ## Why absence is a value rather than an exception
+ *
+ * It is a state the app ships in. The graded readers' recordings are not committed
+ * (ROADMAP M14), so a build has no `harukicoder/manifest.json` and the tab that
+ * lists that corpus has nothing behind it. That is worth telling the learner; it
+ * is not a failure, and it must not read as one.
+ *
+ * ## The two shapes of absence, and the one that used to throw
+ *
+ * A missing file under Tauri's asset protocol is answered with the **SPA
+ * fallback** — `index.html`, with a **200** — so a status check alone cannot see
+ * it, and `response.json()` chokes on the HTML. On WebKit that reached the Phrases
+ * screen as `SyntaxError: The string did not match the expected pattern.`, which
+ * says nothing about a corpus with no clips bundled. So the body is decoded
+ * defensively and anything that is not a manifest counts as absent.
  *
  * Relative, not absolute: Tauri serves the frontend from `dist/`, and a leading
  * slash would be resolved against the custom scheme's host rather than the app
  * root on some platforms.
  */
-export function loadManifest(source: AudioSource): Promise<AudioManifest> {
+export function loadManifest(source: AudioSource): Promise<AudioManifest | null> {
   const cached = manifests.get(source);
   if (cached) return cached;
 
   const pending = fetch(`audio/${source}/manifest.json`)
-    .then((response) => {
-      if (!response.ok) {
-        throw new Error(`audio/${source}/manifest.json: HTTP ${response.status}`);
+    .then(async (response) => {
+      // A 404 is absence, and so is a 200 that is not a manifest: this corpus is
+      // either bundled or it is not, and nothing done here can change that.
+      if (!response.ok) return null;
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        return null;
       }
-      return response.json() as Promise<AudioManifest>;
+      return isManifest(body) ? body : null;
     })
     .catch((cause) => {
-      // Dropped from the cache so a transient failure is retryable rather than
-      // permanent for the life of the window.
+      // A request that did not complete at all is *not* absence — that is worth
+      // retrying — so it is dropped from the cache and reaches the screen as an
+      // error rather than as a corpus with no clips.
       manifests.delete(source);
       throw cause;
     });
@@ -64,10 +101,10 @@ export function loadManifest(source: AudioSource): Promise<AudioManifest> {
   return pending;
 }
 
-/** Every phrase from every corpus, in corpus order. */
+/** Every phrase from every corpus that is bundled, in corpus order. */
 export async function loadAllPhrases(): Promise<GradedPhrase[]> {
   const loaded = await Promise.all(
-    AUDIO_SOURCES.map(async (source) => (await loadManifest(source)).phrases),
+    AUDIO_SOURCES.map(async (source) => (await loadManifest(source))?.phrases ?? []),
   );
   return loaded.flat();
 }
