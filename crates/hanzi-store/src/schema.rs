@@ -31,7 +31,10 @@ use rusqlite::Connection;
 ///     nullable on purpose: an attempt recorded before this, and one merged in
 ///     from a peer, carry only the headline score, and a measure that was never
 ///     taken must not read as a zero.
-pub const SCHEMA_VERSION: i64 = 5;
+/// 6 — `vocab_cursor`, where the learner got to inside one of their own groups.
+///     A new table rather than a column, so an older database gains it empty on
+///     the next open and nothing has to be rewritten.
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Everything the database needs, in one idempotent script.
 ///
@@ -104,6 +107,27 @@ CREATE TABLE IF NOT EXISTS course_cursor (
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+-- Where the learner got to in one of their own groups, one row per group. The
+-- course has `course_cursor`; this is its vocabulary equivalent, except that a
+-- vocabulary list has many groups rather than one fixed order.
+--
+-- The position is the entry's **uuid**, not its local `id`. Ids are handed out
+-- per device, so an id means a different word on a phone than on a laptop; the
+-- uuid is the same word everywhere, which is what makes this row worth syncing
+-- later without a migration. The store translates between the two on the way in
+-- and out — see `Db::vocab_cursor` — so nothing above it has to know.
+--
+-- `entry_uuid` is nullable because a position can be *absent*: the row exists to
+-- carry the stamp, and a null position means start at the top — which is also
+-- what a group whose position was cleared says.
+CREATE TABLE IF NOT EXISTS vocab_cursor (
+    group_name TEXT PRIMARY KEY,
+    entry_uuid TEXT,
+    updated_at TEXT NOT NULL,
+    device_id  TEXT NOT NULL,
+    revision   INTEGER NOT NULL DEFAULT 0
 );
 ";
 

@@ -1182,6 +1182,22 @@ pub struct SyncedCursor {
     pub revision: i64,
 }
 
+/// Where the learner got to in one of their own groups, as it travels.
+///
+/// Keyed by the group's **name**, because that is all a group has to be named by
+/// — see [`SyncedGroup`] — and carrying the entry's **uuid**, because a local id
+/// names a different word on every device.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SyncedVocabCursor {
+    pub group_name: String,
+    /// The entry to resume at, or `None` for "start at the top".
+    #[serde(default)]
+    pub entry_uuid: Option<String>,
+    pub updated_at: String,
+    pub device_id: String,
+    pub revision: i64,
+}
+
 impl Db {
     /// This device's whole vocabulary view, tombstones included.
     ///
@@ -1461,6 +1477,154 @@ impl Db {
         )
         .map_err(|e| at(&path, e))?;
         Ok(before != Some(after))
+    }
+
+    // ---- where the learner got to inside a vocabulary group -----------------
+
+    /// The entry to resume a group's drill at, as a **local** entry id, or
+    /// `None` when the group has no position or the entry is not here.
+    ///
+    /// The row stores the entry's uuid, because an id means a different word on
+    /// every device — so this is where the translation happens, and everything
+    /// above it works in ids, which is what the interface already has.
+    ///
+    /// An entry that is not in the list any more is answered with `None` rather
+    /// than an error: an entry deleted on another device, or one whose group was
+    /// renamed locally, is a position that no longer names anything, and the
+    /// caller's fallback is to start at the first unattempted entry.
+    pub fn vocab_cursor(&self, group: &str) -> Result<Option<u64>, String> {
+        let conn = self.lock();
+        let path = self.path();
+        let uuid: Option<String> = conn
+            .query_row(
+                "SELECT entry_uuid FROM vocab_cursor WHERE group_name = ?1",
+                [group],
+                |row| row.get(0),
+            )
+            .or_else(|e| match e {
+                // No row: nobody has moved this group's position.
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .map_err(|e| at(&path, e))?;
+        let Some(uuid) = uuid else {
+            return Ok(None);
+        };
+        conn.query_row(
+            "SELECT id FROM vocab_entry WHERE uuid = ?1 AND deleted = 0",
+            [&uuid],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|id| Some(id.max(0) as u64))
+        .or_else(|e| match e {
+            // The position names an entry this device does not have — deleted
+            // here or there, or not pulled yet.
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+        .map_err(|e| at(&path, e))
+    }
+
+    /// Move a group's position to `entry_id`, or clear it with `None`.
+    ///
+    /// Written through the same three-part stamp as everything else that syncs,
+    /// and the revision advances only when the position actually changes, so a
+    /// drill that re-records the same position does not manufacture a newer
+    /// stamp for a peer to lose against.
+    pub fn set_vocab_cursor(&self, group: &str, entry_id: Option<u64>) -> Result<(), String> {
+        let (path, conn) = (self.path(), self.lock());
+        let uuid: Option<String> = match entry_id {
+            Some(id) => conn
+                .query_row(
+                    "SELECT uuid FROM vocab_entry WHERE id = ?1",
+                    [id as i64],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .map_err(|e| at(&path, e))?
+                .filter(|uuid| !uuid.is_empty()),
+            None => None,
+        };
+        let before: Option<Option<String>> = conn
+            .query_row(
+                "SELECT entry_uuid FROM vocab_cursor WHERE group_name = ?1",
+                [group],
+                |row| row.get(0),
+            )
+            .ok();
+        let unchanged = before.as_ref().is_some_and(|held| *held == uuid);
+        if unchanged {
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT INTO vocab_cursor (group_name, entry_uuid, updated_at, device_id, revision)
+             VALUES (?1, ?2, ?3, ?4, 0)
+             ON CONFLICT(group_name) DO UPDATE SET
+                 entry_uuid = excluded.entry_uuid,
+                 updated_at = excluded.updated_at,
+                 device_id  = excluded.device_id,
+                 revision   = vocab_cursor.revision + 1",
+            params![group, uuid, now_iso8601(), self.device_id],
+        )
+        .map_err(|e| at(&path, e))?;
+        Ok(())
+    }
+
+    /// Follow a group through a rename.
+    ///
+    /// The position is keyed by the group's name and a name is the only thing a
+    /// group has to be named by — see the note on [`SyncedGroup`] — so a rename
+    /// is the cursor row moving, not a new row. Doing it here rather than in the
+    /// engine keeps "what the learner is practising" and "where they got to" in
+    /// one transaction: a renamed group whose position stayed behind would start
+    /// at the top for no reason the learner could see.
+    pub fn rename_vocab_cursor(&self, from: &str, to: &str) -> Result<(), String> {
+        let (path, conn) = (self.path(), self.lock());
+        conn.execute(
+            "UPDATE vocab_cursor SET group_name = ?2 WHERE group_name = ?1",
+            params![from, to],
+        )
+        .map_err(|e| at(&path, e))?;
+        Ok(())
+    }
+
+    /// Forget a group's position, for a group that is gone.
+    pub fn delete_vocab_cursor(&self, group: &str) -> Result<(), String> {
+        let (path, conn) = (self.path(), self.lock());
+        conn.execute("DELETE FROM vocab_cursor WHERE group_name = ?1", [group])
+            .map_err(|e| at(&path, e))?;
+        Ok(())
+    }
+
+    /// Every group's position as it travels between devices.
+    ///
+    /// The stamp travels with it so a peer can settle two devices' positions the
+    /// same way it settles entries: last writer wins, per group and never across
+    /// groups.
+    pub fn vocab_cursors(&self) -> Result<Vec<SyncedVocabCursor>, String> {
+        let conn = self.lock();
+        let path = self.path();
+        let mut stmt = conn
+            .prepare(
+                "SELECT group_name, entry_uuid, updated_at, device_id, revision
+                 FROM vocab_cursor ORDER BY group_name",
+            )
+            .map_err(|e| at(&path, e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SyncedVocabCursor {
+                    group_name: row.get(0)?,
+                    entry_uuid: row.get(1)?,
+                    updated_at: row.get(2)?,
+                    device_id: row.get(3)?,
+                    revision: row.get(4)?,
+                })
+            })
+            .map_err(|e| at(&path, e))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| at(&path, e))?);
+        }
+        Ok(out)
     }
 }
 

@@ -1143,3 +1143,155 @@ fn a_schema_three_database_gains_vocabulary_identity_without_reusing_a_name() {
 
     finish(&dir);
 }
+
+// ---- schema 6: where the learner got to in one of their own groups ---------
+
+#[test]
+fn a_group_position_round_trips_and_is_stored_as_the_entry_uuid() {
+    let dir = dir("vocab-cursor");
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    let first = vocab
+        .add_entry("学生", "", "", Some("SiLu"))
+        .unwrap()
+        .id;
+    let second = vocab
+        .add_entry("姐姐", "", "", Some("SiLu"))
+        .unwrap()
+        .id;
+    vocab.save().unwrap();
+
+    assert_eq!(db.vocab_cursor("SiLu").unwrap(), None, "no position yet");
+    db.set_vocab_cursor("SiLu", Some(second)).unwrap();
+    assert_eq!(db.vocab_cursor("SiLu").unwrap(), Some(second));
+    assert_eq!(db.vocab_cursor("Nope").unwrap(), None, "an unknown group");
+
+    // What is stored is the entry's **uuid**, not its id. An id is handed out per
+    // device, so an id names a different word on a phone than on a laptop and the
+    // position would move the moment the list is synced.
+    let rows = db.vocab_cursors().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].group_name, "SiLu");
+    let uuid = rows[0].entry_uuid.clone().expect("a position");
+    assert_ne!(uuid, second.to_string(), "the row must not hold the local id");
+    let by_uuid: i64 = rusqlite::Connection::open(db.path())
+        .unwrap()
+        .query_row("SELECT id FROM vocab_entry WHERE uuid = ?1", [&uuid], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(by_uuid as u64, second);
+    assert_ne!(first, second, "the two entries are told apart");
+
+    // The stamp moves only when the position does, so a drill that re-records
+    // where it already was cannot manufacture a newer stamp for a peer to lose
+    // against.
+    let before = rows[0].revision;
+    db.set_vocab_cursor("SiLu", Some(second)).unwrap();
+    assert_eq!(db.vocab_cursors().unwrap()[0].revision, before, "no-op write");
+    db.set_vocab_cursor("SiLu", Some(first)).unwrap();
+    assert_eq!(db.vocab_cursors().unwrap()[0].revision, before + 1);
+
+    // It is in the file, so a restart resumes where the learner got to.
+    drop(vocab);
+    let reopened = Db::open(&dir).unwrap();
+    assert_eq!(reopened.vocab_cursor("SiLu").unwrap(), Some(first));
+
+    finish(&dir);
+}
+
+#[test]
+fn a_renamed_group_keeps_its_position() {
+    // The position is keyed by the group's name, so a rename is the row moving
+    // rather than a new row: a group renamed after a lesson would otherwise
+    // silently start again from the top.
+    let dir = dir("vocab-cursor-rename");
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    let entry = vocab
+        .add_entry("学生", "", "", Some("Lesson 1"))
+        .unwrap()
+        .id;
+    vocab.save().unwrap();
+    db.set_vocab_cursor("Lesson 1", Some(entry)).unwrap();
+
+    vocab.rename_group("Lesson 1", "Chapter 1").unwrap();
+    vocab.save().unwrap();
+    db.rename_vocab_cursor("Lesson 1", "Chapter 1").unwrap();
+
+    assert_eq!(db.vocab_cursor("Lesson 1").unwrap(), None, "the old name is gone");
+    assert_eq!(db.vocab_cursor("Chapter 1").unwrap(), Some(entry));
+    assert_eq!(db.vocab_cursors().unwrap().len(), 1, "one row, moved");
+
+    finish(&dir);
+}
+
+#[test]
+fn a_deleted_group_forgets_its_position() {
+    let dir = dir("vocab-cursor-delete");
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    let entry = vocab
+        .add_entry("学生", "", "", Some("Lesson 1"))
+        .unwrap()
+        .id;
+    vocab.save().unwrap();
+    db.set_vocab_cursor("Lesson 1", Some(entry)).unwrap();
+
+    vocab.remove_group("Lesson 1", false).unwrap();
+    vocab.save().unwrap();
+    db.delete_vocab_cursor("Lesson 1").unwrap();
+
+    assert_eq!(db.vocab_cursor("Lesson 1").unwrap(), None);
+    assert!(db.vocab_cursors().unwrap().is_empty(), "no orphan row left");
+
+    finish(&dir);
+}
+
+#[test]
+fn a_position_whose_entry_is_gone_reads_as_no_position() {
+    // Deleting the entry a position names leaves the row naming a word that is
+    // not there. That is answered with "no position" rather than an error, so a
+    // caller falls back to starting where it can rather than failing to start.
+    let dir = dir("vocab-cursor-gone");
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    let entry = vocab
+        .add_entry("学生", "", "", Some("Lesson 1"))
+        .unwrap()
+        .id;
+    vocab.save().unwrap();
+    db.set_vocab_cursor("Lesson 1", Some(entry)).unwrap();
+    assert_eq!(db.vocab_cursor("Lesson 1").unwrap(), Some(entry));
+
+    vocab.remove_entry(entry).unwrap();
+    vocab.save().unwrap();
+
+    assert_eq!(db.vocab_cursor("Lesson 1").unwrap(), None);
+    // The row survives, so a peer that still has the entry can still be told
+    // where this device got to.
+    assert_eq!(db.vocab_cursors().unwrap().len(), 1);
+
+    finish(&dir);
+}
+
+#[test]
+fn a_position_can_be_cleared() {
+    let dir = dir("vocab-cursor-clear");
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    let entry = vocab
+        .add_entry("学生", "", "", Some("Lesson 1"))
+        .unwrap()
+        .id;
+    vocab.save().unwrap();
+
+    db.set_vocab_cursor("Lesson 1", Some(entry)).unwrap();
+    db.set_vocab_cursor("Lesson 1", None).unwrap();
+    assert_eq!(db.vocab_cursor("Lesson 1").unwrap(), None);
+    let rows = db.vocab_cursors().unwrap();
+    assert_eq!(rows.len(), 1, "cleared, not removed");
+    assert_eq!(rows[0].entry_uuid, None);
+
+    finish(&dir);
+}

@@ -747,7 +747,12 @@ pub fn vocab_rename_group(
         .store
         .rename_group(&from, &to)
         .map_err(|e| e.to_string())?;
-    Ok(committed(&mut vocab))
+    let view = committed(&mut vocab);
+    // Where the learner got to follows the group. The position is keyed by the
+    // group's name, so leaving it behind would restart a renamed group at the
+    // top for no reason the learner could see.
+    state.rename_vocab_cursor(&from, &to)?;
+    Ok(view)
 }
 
 /// Remove a group.
@@ -766,7 +771,29 @@ pub fn vocab_remove_group(
         .store
         .remove_group(&name, purge)
         .map_err(|e| e.to_string())?;
-    Ok(committed(&mut vocab))
+    let view = committed(&mut vocab);
+    // The group is gone, so its position means nothing: a group recreated with
+    // the same name starts from the top rather than inheriting a stranger's
+    // place in a different list.
+    state.delete_vocab_cursor(&name)?;
+    Ok(view)
+}
+
+/// Where the learner got to in one of their own groups, as an entry id, or
+/// `null` when the group has no position or the entry is not in this list.
+#[tauri::command]
+pub fn vocab_cursor(state: State<'_, AppState>, group: String) -> Result<Option<u64>, String> {
+    state.vocab_cursor(&group)
+}
+
+/// Move a group's position, or clear it with `null`.
+#[tauri::command]
+pub fn set_vocab_cursor(
+    state: State<'_, AppState>,
+    group: String,
+    entry_id: Option<u64>,
+) -> Result<(), String> {
+    state.set_vocab_cursor(&group, entry_id)
 }
 
 /// Record a practice attempt against an entry. `score` is the 0..=100 headline

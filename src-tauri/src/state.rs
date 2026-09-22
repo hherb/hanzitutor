@@ -1088,6 +1088,43 @@ impl AppState {
             attempts.len()
         ))
     }
+
+    /// Where the learner got to in one of their own groups, as a local entry id.
+    ///
+    /// `None` when there is no study database — a windowless test — when the
+    /// group has never had a position, or when the position names an entry this
+    /// list does not have. A missing database is not an error: the interface's
+    /// fallback is where it starts anyway.
+    pub fn vocab_cursor(&self, group: &str) -> Result<Option<u64>, String> {
+        match &self.db {
+            Some(db) => db.vocab_cursor(group),
+            None => Ok(None),
+        }
+    }
+
+    /// Move a group's position, or clear it with `None`.
+    pub fn set_vocab_cursor(&self, group: &str, entry_id: Option<u64>) -> Result<(), String> {
+        match &self.db {
+            Some(db) => db.set_vocab_cursor(group, entry_id),
+            None => Ok(()),
+        }
+    }
+
+    /// Follow a group through a rename, so its position is not left behind.
+    pub fn rename_vocab_cursor(&self, from: &str, to: &str) -> Result<(), String> {
+        match &self.db {
+            Some(db) => db.rename_vocab_cursor(from, to),
+            None => Ok(()),
+        }
+    }
+
+    /// Forget a position for a group that no longer exists.
+    pub fn delete_vocab_cursor(&self, group: &str) -> Result<(), String> {
+        match &self.db {
+            Some(db) => db.delete_vocab_cursor(group),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Read a data-directory override out of a command line.

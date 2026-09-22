@@ -125,6 +125,8 @@ pub fn run() {
             commands::vocab_add_group,
             commands::vocab_rename_group,
             commands::vocab_remove_group,
+            commands::vocab_cursor,
+            commands::set_vocab_cursor,
             commands::vocab_record_attempt,
             commands::vocab_export,
             commands::vocab_import,

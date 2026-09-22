@@ -2093,3 +2093,58 @@ fn the_practice_log_exports_every_attempt_with_its_measures() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn a_group_remembers_where_the_learner_got_to() {
+    // The state layer's half of the group cursor: the position survives a
+    // restart, is keyed by the group, and follows a rename rather than being
+    // left behind under the old name.
+    let dir = data_dir("vocab-cursor");
+    let state = AppState::load(Some(dir.clone())).unwrap();
+    let (first, second) = {
+        let mut vocab = state.lock_vocab();
+        let first = vocab
+            .store
+            .add_entry("学生", "", "", Some("SiLu"))
+            .unwrap()
+            .id;
+        let second = vocab
+            .store
+            .add_entry("姐姐", "", "", Some("SiLu"))
+            .unwrap()
+            .id;
+        assert!(vocab.save().is_none(), "saving should succeed");
+        (first, second)
+    };
+
+    assert_eq!(
+        state.vocab_cursor("SiLu").unwrap(),
+        None,
+        "a group nobody has drilled has no position"
+    );
+    state.set_vocab_cursor("SiLu", Some(second)).unwrap();
+    assert_eq!(state.vocab_cursor("SiLu").unwrap(), Some(second));
+
+    // Another group is a different position: the merge and the lookup are both
+    // per group.
+    state.set_vocab_cursor("Lesson 2", Some(first)).unwrap();
+    assert_eq!(state.vocab_cursor("Lesson 2").unwrap(), Some(first));
+    assert_eq!(state.vocab_cursor("SiLu").unwrap(), Some(second));
+
+    // A rename moves the position with the group.
+    state.rename_vocab_cursor("SiLu", "Chapter 1").unwrap();
+    assert_eq!(state.vocab_cursor("SiLu").unwrap(), None);
+    assert_eq!(state.vocab_cursor("Chapter 1").unwrap(), Some(second));
+
+    // A restart does not lose it.
+    drop(state);
+    let reopened = AppState::load(Some(dir.clone())).unwrap();
+    assert_eq!(reopened.vocab_cursor("Chapter 1").unwrap(), Some(second));
+
+    // Removing the group forgets it, so a group recreated with the same name
+    // does not inherit a stranger's place in a different list.
+    reopened.delete_vocab_cursor("Chapter 1").unwrap();
+    assert_eq!(reopened.vocab_cursor("Chapter 1").unwrap(), None);
+
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -27,7 +27,15 @@
     onAddGroup: (name: string) => void;
     onRenameGroup: (from: string, to: string) => void;
     onRemoveGroup: (name: string, purge: boolean) => void;
-    onPractise: (entries: VocabEntry[]) => void;
+    /**
+     * Drill these entries on the board.
+     *
+     * `group` is the group being drilled, or `null` when the selection is not one
+     * group — everything, or the unfiled remainder — and for a row's own Practise
+     * button, which is a one-off and must not overwrite the place the learner had
+     * reached in the group that entry belongs to.
+     */
+    onPractise: (entries: VocabEntry[], group: string | null) => void;
     onExport: (format: "json" | "csv") => void;
     onImport: (merge: boolean) => void;
   }
@@ -246,7 +254,11 @@
   }
 
   function practise() {
-    if (entriesShown.length > 0) onPractise([...entriesShown]);
+    if (entriesShown.length === 0) return;
+    // A named group is the only selection that has a position to keep: "all
+    // entries" and the unfiled remainder are not one list, and have nowhere to
+    // remember a place.
+    onPractise([...entriesShown], selection === null || selection === "" ? null : selection);
   }
 
   const selectionLabel = $derived(
@@ -521,7 +533,7 @@
           <span class="row-actions">
             <button
               class="icon"
-              onclick={() => onPractise([entry])}
+              onclick={() => onPractise([entry], null)}
               disabled={busy}
               aria-label={`Practise ${entry.text}`}
               title="Practise this entry on the board"

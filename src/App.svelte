@@ -472,6 +472,14 @@
   /** Snapshot of what is being drilled, taken when practice starts. */
   let queue = $state<PracticeItem[]>([]);
   let queueCursor = $state(0);
+  /**
+   * The group this drill is of, when it is one.
+   *
+   * The position kept for it is written as each entry is finished, so it must be
+   * the group the drill started from rather than whatever the sidebar now says:
+   * a learner who switches lists mid-drill is still finishing the old one.
+   */
+  let queueGroup = $state<string | null>(null);
   /** Which character of the current entry is being written. */
   let charCursor = $state(0);
   /**
@@ -1821,25 +1829,43 @@
   /**
    * Start drilling a snapshot of the given entries, from where the learner got to.
    *
-   * Entries already practised are skipped, so a group picks up at its first
-   * unattempted entry instead of starting over — which is what "resume where I
-   * left off" means for a list worked through in order. The position is not
-   * stored anywhere of its own: `last_practised` on the entry *is* the position,
-   * so it survives a restart and cannot drift out of step with the entries it
-   * describes.
+   * `group` is the group the drill is of, or `null` when it is not one group —
+   * the whole list, the unfiled remainder, or a single entry from a row's own
+   * button. Only a group has a position: there is nowhere to remember a place in
+   * "everything", and a one-off drill of one entry must not overwrite the place
+   * the learner had reached in the group it came from.
    *
-   * When every entry has been practised there is nothing left to skip, and the
-   * drill starts at the top: such a list is due for review, not finished.
-   *
-   * `last_practised` is deliberately per-device — it is not part of the
-   * three-part sync stamp, because it describes what was typed and practised
-   * here, not what the learner wrote — so this resumes on the machine the
-   * practice actually happened on.
+   * The stored position wins when it names an entry still in the list, because
+   * it is exactly where the learner stopped. Otherwise the drill starts at the
+   * first entry they have not practised, and if they have practised them all it
+   * starts at the top: such a list is due for review, not finished.
    */
-  function practiseQueue(entries: VocabEntry[]) {
+  async function practiseQueue(entries: VocabEntry[], group: string | null) {
     if (entries.length === 0) return;
-    const unpractised = entries.filter((entry) => entry.lastPractised === null);
-    const resume = unpractised.length > 0 ? unpractised : entries;
+    let resume = entries;
+    let reason = "";
+    if (group !== null) {
+      const at = await api
+        .vocabCursor(group)
+        .catch(() => null);
+      const index = at === null ? -1 : entries.findIndex((entry) => entry.id === at);
+      if (index >= 0) {
+        resume = entries.slice(index);
+        reason = `, resuming at entry ${index + 1} of ${entries.length}`;
+      }
+    }
+    if (reason === "") {
+      const unpractised = entries.filter((entry) => entry.lastPractised === null);
+      resume = unpractised.length > 0 ? unpractised : entries;
+      const skipped = entries.length - unpractised.length;
+      reason =
+        unpractised.length === 0
+          ? ", all entries practised — starting at the top"
+          : skipped > 0
+            ? `, resuming past ${skipped} already practised`
+            : "";
+    }
+    queueGroup = group;
     startPractice(
       resume.map((entry) => ({
         text: entry.text,
@@ -1849,15 +1875,7 @@
       })),
       "vocabulary",
     );
-    const skipped = entries.length - unpractised.length;
-    void api.log(
-      `practising ${resume.length} vocabulary entries` +
-        (skipped > 0 && unpractised.length > 0
-          ? `, resuming past ${skipped} already practised`
-          : unpractised.length === 0
-            ? ", all entries practised — starting at the top"
-            : ""),
-    );
+    void api.log(`practising ${resume.length} vocabulary entries${reason}`);
   }
 
   /** Start drilling what is due for review, most overdue first. */
@@ -1925,6 +1943,7 @@
     source = "course";
     queue = [];
     queueCursor = 0;
+    queueGroup = null;
     beginEntry();
   }
 
@@ -1988,6 +2007,18 @@
       await withVocab(() => api.vocabRecordAttempt(entryId, mean), note);
     } else {
       statusMessage = note;
+    }
+    // Where the learner got to, written once the entry is recorded: the entry
+    // they are about to write, or nothing at all when that was the last one, so
+    // the next session opens at the top of a finished list rather than at its
+    // end. A position is the group's, so a drill that is not one group keeps
+    // none.
+    if (queueGroup !== null) {
+      const next = isLast ? null : (queue[queueCursor]?.entryId ?? null);
+      await api.setVocabCursor(queueGroup, next).catch((cause) => {
+        // The drill itself succeeded; say only that the place was not kept.
+        void api.log(`could not remember the place in ${queueGroup}: ${cause}`);
+      });
     }
     // Answering may have cleared the queue, so the badge is brought up to date.
     await refreshReview();

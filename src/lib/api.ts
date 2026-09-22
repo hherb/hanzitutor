@@ -187,6 +187,19 @@ export const vocabImport = (path: string, merge: boolean) =>
   invoke<VocabOutcome>("vocab_import", { path, merge });
 
 /**
+ * Where the learner got to in one of their own groups, as an entry id.
+ *
+ * `null` when the group has no position, or when the position names an entry
+ * this list does not have — a caller starts where it otherwise would.
+ */
+export const vocabCursor = (group: string) =>
+  invoke<number | null>("vocab_cursor", { group });
+
+/** Move a group's position, or clear it with `null`. */
+export const setVocabCursor = (group: string, entryId: number | null) =>
+  invoke<void>("set_vocab_cursor", { group, entryId });
+
+/**
  * Write the practice log to `path`, as JSON Lines or CSV.
  *
  * The whole log, every attempt, whether or not it carries the measures it was
