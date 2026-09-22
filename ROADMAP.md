@@ -1782,14 +1782,13 @@ silent buffer cannot become amplified hiss.
   own. The interface already lists both corpora, so it is currently offering a set with no
   committed clips.
 
-  **It does ship in builds made from this working tree**, which is worth knowing
-  before cutting a release: Vite copies whatever is in `public/`, these clips live
-  there on the build host and are in no repository, and 0.5.5's `.dmg`, APK and AAB
-  therefore carry all 1,184 of them. That was chosen deliberately for the alpha — the
-  tab works as it does in development rather than reporting itself empty — but it is
-  the one place a release is not reproducible from its tag, so the next one should
-  either commit the set (accepting the quality caveat above) or leave it out and let
-  the panel say the corpus is not bundled.
+  **They are committed**, as of 0.5.5's follow-up: `public/audio/harukicoder/` holds
+  the manifest and all 1,184 clips, so a clone builds the app the release ships and
+  the set is reproducible from its tag. They were not committed at first — the
+  quality caveat above is the reason — and shipping them anyway was a deliberate
+  call for the alpha, made before committing them; both the reversal and the caveat
+  are recorded in `public/audio/harukicoder/README.md` beside the files. What is
+  still open is the *voice*, which is a decision and a measurement, not a file.
 
 ### Acceptance criteria
 

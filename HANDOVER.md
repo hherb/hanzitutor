@@ -2104,8 +2104,22 @@ Output, under the project's own target directory (`.cargo-target/` here, because
 
 ```
 bundle/macos/Hanzi Tutor.app
-bundle/dmg/Hanzi Tutor_0.3.0_aarch64.dmg
+bundle/dmg/Hanzi Tutor_0.5.5_aarch64.dmg
 ```
+
+**The image is patched after it is built, and that is not tidiness.**
+`scripts/build-release.sh` runs `scripts/hide-dmg-volume-icon.sh` over the `.dmg`
+it just made, because Tauri's disk-image script copies the app icon to
+`.VolumeIcon.icns` on the volume and marks the volume as having a custom icon, but
+**never sets the file's invisible flag** — so the mounted image draws a large
+dimmed duplicate of the app icon as a stray file above the two items the layout
+places, which reads as a rendering fault. Measured on the 0.5.5 image: the
+original's `.VolumeIcon.icns` had no flags while the `.DS_Store` beside it was
+`hidden`; after the patch it is `hidden` too. A compressed image cannot be mounted
+read-write, so the patch converts to UDRW, sets the flag, converts back — and then
+**re-signs**, because rewriting the image invalidates the signature Tauri put on
+it, and an unsigned `.dmg` turns a right-click-Open into a "damaged" dialog. The
+`.app` inside, and its own signature, are untouched.
 
 ### What is inside, and why the course needs no network
 
@@ -2113,7 +2127,7 @@ bundle/dmg/Hanzi Tutor_0.3.0_aarch64.dmg
 | --- | --- | --- |
 | Characters, words, stroke geometry | `include_bytes!` in `src-tauri/src/state.rs` | ~13 MB |
 | Interface font, Noto Sans SC | Vite, from `src/assets/fonts/`, via `src/app.css` | ~17 MB |
-| Graded phrase clips | Vite, from `public/audio/<corpus>/` | ~91 MB in the working tree: the `no7z` set (~32 MB) is **committed**, and the graded readers' (~59 MB) is **not** — yet builds made here ship it, because Vite copies whatever is in `public/`. A release therefore carries audio no clone has, which is deliberate for now and is the one place the bundle is not reproducible from the tag (ROADMAP M14 has the quality caveat) |
+| Graded phrase clips | Vite, from `public/audio/<corpus>/` | ~91 MB, **both** sets committed: the HSK 1–2 recordings (`no7z`, ~32 MB) and the graded readers' first pass (`harukicoder`, ~59 MB). Each directory carries its own `README.md` with the source, the licence, the attribution the licence requires and the changes made — that is where the CC BY obligation travels with the data. ROADMAP M14 has the quality caveat on the readers' voice |
 | SQLite, for the study store | compiled from the amalgamation by `libsqlite3-sys` | ~1.5 MB |
 | 21 licence notices, over 19 files | `bundle.resources` → `Contents/Resources/licences/` | ~230 KB |
 
@@ -2281,8 +2295,9 @@ downloader has. 0.5.5 is the first published build since 0.3.0 and therefore car
 M10–M14 at once: the SQLite store, the attempt log with its measures and export, tone
 practice, optional recognition, sync through the learner's own Dropbox, the graded
 phrase audio, and the vocabulary list's resume and progress tags. Its `.dmg`, APK and
-AAB also contain the graded readers' MeloTTS first pass, which is in no repository —
-see the clip row in the table above and ROADMAP M14 before cutting the next one.
+AAB also contain the graded readers' MeloTTS first pass, which is committed — see the
+clip row in the table above and ROADMAP M14 for the caveat that the voice is still an
+open decision.
 
 **iOS is still absent on purpose.** The shell does run on a physical iPhone, but only
 from a `--debug` build installed with `devicectl`: an iOS *release* build fails to

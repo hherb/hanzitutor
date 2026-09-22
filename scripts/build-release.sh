@@ -69,6 +69,19 @@ for dir in "$ROOT/.cargo-target/release/bundle" "$ROOT/src-tauri/target/release/
 done
 
 if tauri build "$@"; then
+  # Tauri's disk-image script copies the app icon to `.VolumeIcon.icns` on the
+  # volume but never marks that file invisible, so the mounted image shows a
+  # large dimmed duplicate of the app icon as a stray file. Everything else in
+  # the window — `.DS_Store` included — is hidden, which is what makes it read as
+  # a rendering fault. Patched after the build because Tauri generates that
+  # script itself, and re-signed inside the patch because rewriting an image
+  # invalidates the signature Tauri put on it.
+  if [ -n "$BUNDLE" ]; then
+    for image in "$BUNDLE"/dmg/*.dmg; do
+      [ -f "$image" ] && "$ROOT/scripts/hide-dmg-volume-icon.sh" "$image"
+    done
+  fi
+
   echo
   echo "built:"
   if [ -n "$BUNDLE" ]; then

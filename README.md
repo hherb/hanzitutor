@@ -1269,8 +1269,10 @@ headline gaps are now:
    is a toolchain question rather than a code one (HANDOVER §6).
 3. **Graded phrase audio** (M14). The HSK 1–2 clips are the corpus's own recordings
    and the on-device path for a phrase with no clip is built, so the voice question for
-   the bundled set is settled. What remains is the app-level check, and the graded
-   readers' audio — that corpus publishes text only, so it still needs a voice.
+   the bundled set is settled. The graded readers ship too, but as a **first pass**:
+   that corpus publishes text only, so its 1,184 clips were synthesised here with
+   MeloTTS, whose accuracy measured below the published recordings on the same test —
+   its voice is still the open decision, and the app labels the set accordingly.
 4. **Tone scoring against real voices** (M11). Characters, words and neutral tones
    all work and are confirmed by hand; what is untuned is the *scoring constants*,
    which are still a judgement that has never been fitted to a real recording.
