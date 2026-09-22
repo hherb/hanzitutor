@@ -10,6 +10,7 @@ use hanzi_core::{
     ReviewView, SettingsView, TextLookup, ToneVerdict, ToneTarget, VocabView, Word,
 };
 use serde::Serialize;
+use std::sync::Arc;
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 
@@ -736,9 +737,13 @@ pub fn vocab_add_group(state: State<'_, AppState>, name: String) -> Result<Vocab
     Ok(committed(&mut vocab))
 }
 
+/// The learner's own name for a group is not just a label on a row: it is the key
+/// its position is stored under, so a rename *moves* that position — and a moved
+/// position is published, for the same reason a drill's advance is.
 #[tauri::command]
 pub fn vocab_rename_group(
     state: State<'_, AppState>,
+    sync: State<'_, Arc<SyncService>>,
     from: String,
     to: String,
 ) -> Result<VocabView, String> {
@@ -752,6 +757,8 @@ pub fn vocab_rename_group(
     // group's name, so leaving it behind would restart a renamed group at the
     // top for no reason the learner could see.
     state.rename_vocab_cursor(&from, &to)?;
+    drop(vocab);
+    sync.publish_positions_soon();
     Ok(view)
 }
 
@@ -775,6 +782,13 @@ pub fn vocab_remove_group(
     // The group is gone, so its position means nothing: a group recreated with
     // the same name starts from the top rather than inheriting a stranger's
     // place in a different list.
+    //
+    // Deliberately *not* published, and that is not an oversight. The format has
+    // no way to say "forget a group" — absence is not a deletion, or a device that
+    // had merely not synced yet would wipe a peer's places — so a publish here
+    // would send a document that says nothing about the row being gone. The
+    // row on the other device is harmless: it names a group this device no longer
+    // has, and it is dropped the moment that group is deleted there too.
     state.delete_vocab_cursor(&name)?;
     Ok(view)
 }
@@ -787,13 +801,28 @@ pub fn vocab_cursor(state: State<'_, AppState>, group: String) -> Result<Option<
 }
 
 /// Move a group's position, or clear it with `null`.
+///
+/// **The change is published straight away, on a thread of its own**, rather than
+/// waiting for the next sync. This is the one local change that happens *during*
+/// the thing it records: a drill writes the position after every entry, and syncs
+/// happen only at launch and on foreground — so with the publish left to the next
+/// sync, a drill finished on the phone was invisible on the laptop until somebody
+/// pressed *Sync now*, which is exactly how it was reported. See
+/// [`SyncService::publish_positions_soon`].
+///
+/// The command does not wait for it and does not fail with it: the position is
+/// written locally either way, and a publish that cannot happen is published by the
+/// next sync.
 #[tauri::command]
 pub fn set_vocab_cursor(
     state: State<'_, AppState>,
+    sync: State<'_, Arc<SyncService>>,
     group: String,
     entry_id: Option<u64>,
 ) -> Result<(), String> {
-    state.set_vocab_cursor(&group, entry_id)
+    state.set_vocab_cursor(&group, entry_id)?;
+    sync.publish_positions_soon();
+    Ok(())
 }
 
 /// Record a practice attempt against an entry. `score` is the 0..=100 headline
@@ -1071,7 +1100,7 @@ pub fn licence_notices() -> Vec<LicenceNotice> {
 /// are things the window should be able to keep drawing through, and neither can
 /// happen if this runs on the thread the webview paints on.
 #[tauri::command(async)]
-pub fn sync_status(sync: State<'_, SyncService>) -> SyncView {
+pub fn sync_status(sync: State<'_, Arc<SyncService>>) -> SyncView {
     sync.view()
 }
 
@@ -1082,7 +1111,7 @@ pub fn sync_status(sync: State<'_, SyncService>) -> SyncView {
 #[tauri::command]
 pub fn sync_connect(
     app: tauri::AppHandle,
-    sync: State<'_, SyncService>,
+    sync: State<'_, Arc<SyncService>>,
 ) -> Result<String, String> {
     let url = sync.begin()?;
     // In the system browser, never a webview: Dropbox asks for that, and Google's
@@ -1102,7 +1131,7 @@ pub fn sync_connect(
 
 /// Finish connecting, with the code the learner pasted.
 #[tauri::command(async)]
-pub fn sync_connect_finish(sync: State<'_, SyncService>, code: String) -> Result<SyncView, String> {
+pub fn sync_connect_finish(sync: State<'_, Arc<SyncService>>, code: String) -> Result<SyncView, String> {
     sync.finish(&code)
 }
 
@@ -1118,7 +1147,7 @@ pub fn sync_connect_finish(sync: State<'_, SyncService>, code: String) -> Result
 #[tauri::command(async)]
 pub fn sync_now(
     state: State<'_, AppState>,
-    sync: State<'_, SyncService>,
+    sync: State<'_, Arc<SyncService>>,
 ) -> Result<SyncView, String> {
     let outcome = sync.now();
     // Every store the sync can have rewritten, not just the schedule. See
@@ -1130,7 +1159,7 @@ pub fn sync_now(
 
 /// Forget the account, here and on Dropbox's side.
 #[tauri::command(async)]
-pub fn sync_disconnect(sync: State<'_, SyncService>) -> SyncView {
+pub fn sync_disconnect(sync: State<'_, Arc<SyncService>>) -> SyncView {
     sync.disconnect()
 }
 
@@ -1142,7 +1171,7 @@ pub fn sync_disconnect(sync: State<'_, SyncService>) -> SyncView {
 /// those apart so the screen can be silent about the first two and say something
 /// about the others — see `crate::sync`.
 #[tauri::command(async)]
-pub fn sync_auto(state: State<'_, AppState>, sync: State<'_, SyncService>) -> AutoSync {
+pub fn sync_auto(state: State<'_, AppState>, sync: State<'_, Arc<SyncService>>) -> AutoSync {
     let outcome = sync.auto();
     // Skipping the reload when nothing was attempted is the only case that is safe
     // to skip, and it is worth skipping: `reload_after_sync` re-reads three stores,
@@ -1162,6 +1191,6 @@ pub fn sync_auto(state: State<'_, AppState>, sync: State<'_, SyncService>) -> Au
 /// *off* has to read it. See `crate::sync` for why asking for nothing is the default
 /// and why drawing the screen never unlocks anything.
 #[tauri::command]
-pub fn sync_set_lock(sync: State<'_, SyncService>, locked: bool) -> Result<SyncView, String> {
+pub fn sync_set_lock(sync: State<'_, Arc<SyncService>>, locked: bool) -> Result<SyncView, String> {
     sync.set_lock(locked)
 }

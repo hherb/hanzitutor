@@ -68,13 +68,29 @@
 //! exists and why no app secret is used anywhere in this app. It is a constant here
 //! rather than a build-time secret so a fresh clone builds something that works,
 //! with an environment override for a fork that wants its own Dropbox app.
+//!
+//! ## A position that moves does not wait for the next sync
+//!
+//! The one thing here that is not a sync. A drill writes where it got to in a group
+//! after every entry, and a position is the smallest useful thing this app has: it
+//! is what makes picking up the other device continue the lesson rather than
+//! restart it. Left to the sync at launch and on foreground, a drill finished on the
+//! phone was simply not on the laptop until somebody pressed *Sync now* — which
+//! reads as the feature being broken rather than as a delay.
+//!
+//! So [`SyncService::publish_positions_soon`] sends that one document when it
+//! changes: on a thread, without the gate, and under [`Self::auto`]'s three
+//! refusals rather than a fourth set of rules. It pulls nothing and rebuilds
+//! nothing, so it cannot be a second sync by accident.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use hanzi_store::Db;
 use hanzi_sync::{
-    authorize_url, exchange_code, refresh, revoke, sync, DropboxStore, Http, Pkce, Reach,
-    RemoteStore, SyncError, TcpReach, Tokens, UreqHttp,
+    authorize_url, exchange_code, refresh, revoke, sync, write_vocab_cursors, DropboxStore, Http,
+    Pkce, Reach, RemoteStore, SyncError, TcpReach, Tokens, UreqHttp,
 };
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +134,16 @@ const ACCOUNT_KEY: &str = "sync:account";
 /// different lifetimes: disconnecting forgets the account and must not forget that
 /// the learner wants a fingerprint the next time they connect.
 const LOCK_KEY: &str = "sync:lock";
+
+/// How long an access token fetched for a publish is reused.
+///
+/// A full sync fetches one every time, because it may be the first thing to happen
+/// in a session that outlives the token. A publish happens once per finished entry
+/// in a drill — a handful of seconds apart — and one token exchange per character
+/// written would be silly, so this one is kept for a while and no longer. Dropbox's
+/// access tokens last about four hours, so half an hour is comfortably inside that
+/// and still refreshes within any session long enough for it to matter.
+const PUBLISH_TOKEN_REUSE: Duration = Duration::from_secs(30 * 60);
 
 /// Everything about a connected account that is **not** a secret.
 ///
@@ -276,6 +302,18 @@ pub struct SyncService {
     /// pull, and a learner told about a sync the other one had already overtaken. A
     /// sync that finds this shut is not a failure: it is a sync with nothing to add.
     gate: Mutex<()>,
+    /// An access token fetched for a publish, and when it was fetched.
+    ///
+    /// The one piece of state that exists for the change-publish path. See
+    /// [`PUBLISH_TOKEN_REUSE`] and [`SyncService::publish_token`].
+    publish_token: Mutex<Option<(String, Instant)>>,
+    /// Whether a position has moved that a publish has not written yet.
+    ///
+    /// Together with [`Self::publishing_positions`] this is the coalescer described
+    /// on [`SyncService::publish_positions_soon`].
+    positions_owed: AtomicBool,
+    /// Whether a thread is already draining [`Self::positions_owed`].
+    publishing_positions: AtomicBool,
 }
 
 impl SyncService {
@@ -305,6 +343,9 @@ impl SyncService {
             open: Mutex::new(Open::Unread),
             reach,
             gate: Mutex::new(()),
+            publish_token: Mutex::new(None),
+            positions_owed: AtomicBool::new(false),
+            publishing_positions: AtomicBool::new(false),
         }
     }
 
@@ -372,6 +413,9 @@ impl SyncService {
         // gets one from the first read, not from the second connection.
         let protection = self.tokens.save(&account, self.locked())?;
         self.remember(Some((account.clone(), protection)));
+        // Whichever account was connected before, this is not it: a token fetched
+        // for a publish under the old one must not be used under the new one.
+        self.forget_publish_token();
 
         // Written down before the screen is told, and the token given back up if it
         // cannot be: a refresh token the screen does not know about is one the
@@ -467,6 +511,9 @@ impl SyncService {
 
         let cleared = self.tokens.clear().and_then(|()| self.clear_record());
         self.remember(None);
+        // A token fetched for a publish under the account that just went is worth
+        // nothing, and keeping it would let a later publish use it.
+        self.forget_publish_token();
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let message = match (cleared, unreported) {
             (Ok(()), None) => "Disconnected. Your study data is untouched.".to_string(),
@@ -558,6 +605,167 @@ impl SyncService {
             Ok(view) => AutoSync::Synced { view },
             Err(reason) => AutoSync::Failed { reason },
         }
+    }
+
+    /// Publish this device's group positions because one of them just moved.
+    ///
+    /// ## Why this is not a sync
+    ///
+    /// A full pass publishes, pulls, and then rebuilds the schedule — that is what
+    /// makes two devices agree, and it is far more than this needs. What changed is
+    /// one small document this device owns: which entry a drill had reached in each
+    /// of the learner's own groups. Sending it is a single `put`, so that is all
+    /// this does.
+    ///
+    /// ## Why it does not take the gate
+    ///
+    /// [`Self::take_gate`] exists because two *syncs* interleaving publish and pull
+    /// would each report work the other had already done. This pulls nothing and
+    /// rebuilds nothing: it reads this device's own rows and overwrites this
+    /// device's own shard, which is a whole-document write either way. A publish
+    /// overlapping a sync is therefore a harmless redundant write of the same file —
+    /// while gating it would be worse than harmless, because a sync lasts as long as
+    /// the network takes and a position changed during one would either queue behind
+    /// it or be dropped, and being dropped is the bug this exists to fix.
+    ///
+    /// ## The refusals, which are [`Self::auto`]'s first three
+    ///
+    /// - **No study database**: there is nowhere for a position to have been
+    ///   written, so there is nothing to publish.
+    /// - **No account**: checked against the record rather than the secret store, so
+    ///   this costs no keychain read. Most people never connect Dropbox.
+    /// - **A sign-in behind a fingerprint**: a publish that starts by itself has
+    ///   nobody to satisfy that, and asking at the moment a character is finished is
+    ///   exactly the friction the default exists to avoid. So with the lock on, a
+    ///   position travels on the next *pressed* sync — the same cost the settings
+    ///   screen already states.
+    /// - **No network**: the same bounded probe an automatic sync makes, so a phone
+    ///   on a train does not spend a connect timeout per entry.
+    ///
+    /// A refusal is not a failure and is not reported as one; anything else is
+    /// handed back to the caller, which logs it. Nothing here reaches the screen:
+    /// the learner's own action — finishing the entry — did succeed, and a position
+    /// that did not publish is published by the next sync.
+    pub fn publish_positions(&self) -> Result<(), String> {
+        if self.db.is_none() || self.record().is_none() {
+            return Ok(());
+        }
+        if self.protection() == Protection::UserPresence {
+            return Ok(());
+        }
+        if !self.reach.reachable() {
+            return Ok(());
+        }
+        let account = self.account()?;
+        let token = self.publish_token(&account)?;
+        let remote = DropboxStore::new(self.http.as_ref(), token);
+        self.publish_positions_to(&remote)
+            .map_err(|error| describe(&error))
+    }
+
+    /// Write this device's group positions into a store, and nothing else.
+    ///
+    /// Transport-free, so the document that travels is testable against a
+    /// directory. An empty set publishes nothing, which is what absence has to mean
+    /// here — see [`hanzi_sync::write_vocab_cursors`].
+    fn publish_positions_to(&self, remote: &dyn RemoteStore) -> Result<(), SyncError> {
+        let Some(db) = &self.db else {
+            return Ok(());
+        };
+        let cursors = db.vocab_cursors().map_err(SyncError::Io)?;
+        if cursors.is_empty() {
+            return Ok(());
+        }
+        write_vocab_cursors(remote, db.device_id(), &cursors)?;
+        Ok(())
+    }
+
+    /// Ask for the positions to be published, on a thread of their own.
+    ///
+    /// This is called from the command that moves a position, which is a moment the
+    /// learner chose for something else entirely — finishing an entry in a drill.
+    /// The network must not hold that up, and `UreqHttp` allows ten seconds to
+    /// connect, so the work goes to a thread and the command returns.
+    ///
+    /// ## The two flags, which are one coalescer
+    ///
+    /// Both halves are load-bearing:
+    ///
+    /// - A change that lands **while a publish is in flight** sets
+    ///   `positions_owed` again, and the thread goes round once more. Without that,
+    ///   the **last** entry of a drill could be the one that never went — which is
+    ///   precisely the failure this exists to fix, since a finished drill is when
+    ///   the learner puts the phone down and picks up the other device.
+    /// - A change that lands while a thread is already draining does **not** start
+    ///   a second one. The document is written whole, so a second thread would send
+    ///   exactly what the first is about to send.
+    pub fn publish_positions_soon(self: &Arc<Self>) {
+        self.positions_owed.store(true, Ordering::SeqCst);
+        if self.publishing_positions.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let service = Arc::clone(self);
+        std::thread::spawn(move || service.drain_positions());
+    }
+
+    /// Publish until no change is outstanding, then stand down.
+    fn drain_positions(self: Arc<Self>) {
+        self.drain_owed(|| self.publish_positions());
+        self.publishing_positions.store(false, Ordering::SeqCst);
+        // The flag is cleared *before* this check, so a change that arrives from
+        // here on finds `publishing_positions` false and starts a thread of its own.
+        // What this catches is the change that arrived while the loop was finishing.
+        if self.positions_owed.swap(false, Ordering::SeqCst) {
+            self.publish_positions_soon();
+        }
+    }
+
+    /// The loop above, with the publish handed in so that the coalescing can be
+    /// exercised without a thread or a network.
+    fn drain_owed(&self, mut publish: impl FnMut() -> Result<(), String>) {
+        loop {
+            // Cleared *before* the store is read, so a change that lands while this
+            // publishes is caught by the check below rather than swallowed.
+            self.positions_owed.store(false, Ordering::SeqCst);
+            // Logged rather than swallowed, and logged rather than shown: there is
+            // no screen this belongs on, and the next sync publishes it anyway. A
+            // silent failure here is how a working feature looked broken the first
+            // time — the position simply was not on the other device.
+            if let Err(why) = publish() {
+                eprintln!("[sync] the place in your lists was not published: {why}");
+            }
+            if !self.positions_owed.swap(false, Ordering::SeqCst) {
+                break;
+            }
+        }
+    }
+
+    /// An access token for a publish, reused for [`PUBLISH_TOKEN_REUSE`].
+    ///
+    /// Deliberately not [`Self::fresh_access_token`], which fetches one every time
+    /// because a sync may be the first thing to happen in a session that outlives
+    /// the token. A publish happens once per finished entry, so it keeps its own
+    /// token for half an hour and then fetches another.
+    ///
+    /// Cleared whenever the account behind it changes — see [`Self::finish`] and
+    /// [`Self::disconnect`] — so a token that belonged to a disconnected account is
+    /// never the one a later publish uses.
+    fn publish_token(&self, account: &Account) -> Result<String, String> {
+        let mut held = self.publish_token.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((token, fetched)) = &*held {
+            if fetched.elapsed() < PUBLISH_TOKEN_REUSE {
+                return Ok(token.clone());
+            }
+        }
+        let tokens: Tokens =
+            refresh(self.http.as_ref(), APP_KEY, &account.refresh_token).map_err(|e| describe(&e))?;
+        *held = Some((tokens.access_token.clone(), Instant::now()));
+        Ok(tokens.access_token)
+    }
+
+    /// Forget the reused token, because the account behind it has gone or changed.
+    fn forget_publish_token(&self) {
+        *self.publish_token.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Sync now, over whatever store is handed in.
@@ -2088,6 +2296,216 @@ mod tests {
     fn a_service_without_a_database_says_so_instead_of_pretending() {        let service = bare(MemoryStore::working());
         let error = service.run(&hanzi_sync::FolderStore::open(scratch("nodir")).unwrap(), None).unwrap_err();
         assert!(error.contains("no study database"), "{error}");
+    }
+
+    // ---- a position that moves, published without waiting for a sync --------
+
+    /// A database with one group, one entry in it, and a drill stopped on that
+    /// entry — the state finishing something leaves behind.
+    ///
+    /// Returns the entry's **uuid** as well, because that is what travels: an id
+    /// names a different word on every device.
+    fn drilled(name: &str) -> (Db, String) {
+        let db = database(name);
+        let mut vocab = hanzi_core::VocabStore::open_with(Box::new(db.clone())).unwrap();
+        let entry = vocab
+            .add_entry("学习", "xuéxí", "to study", Some("Lesson 1"))
+            .unwrap();
+        vocab.save().unwrap();
+        db.set_vocab_cursor("Lesson 1", Some(entry.id)).unwrap();
+        let uuid = db.vocab_cursors().unwrap()[0]
+            .entry_uuid
+            .clone()
+            .expect("the position names an entry");
+        (db, uuid)
+    }
+
+    #[test]
+    fn a_position_that_moves_is_published_without_a_sync() {
+        // The point of the whole path: the position leaves the device when it
+        // changes, rather than at the next launch or foreground.
+        let (db, _) = drilled("publish-now");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        let service = with_http(Some(db), &store, &http, true);
+        connect(&service);
+        let before = http.calls();
+
+        service.publish_positions().unwrap();
+        assert!(http.calls() > before, "the position was sent");
+    }
+
+    #[test]
+    fn what_a_publish_writes_is_the_position_a_peer_resumes_from() {
+        // The document itself, over a real store. "Something was sent" is a weaker
+        // claim than "what was sent names the group, the device and the entry".
+        let (db, uuid) = drilled("publish-content");
+        let shared = scratch("publish-content-store");
+        let remote = hanzi_sync::FolderStore::open(&shared).unwrap();
+        let service = with_store(
+            Some(db.clone()),
+            &std::sync::Arc::new(MemoryStore::working()),
+            connecting(),
+        );
+
+        service.publish_positions_to(&remote).unwrap();
+
+        let shards = hanzi_sync::read_vocab_cursors(&remote).unwrap();
+        assert_eq!(shards.len(), 1, "one device, one document");
+        assert_eq!(shards[0].group_name, "Lesson 1");
+        assert_eq!(shards[0].device_id, db.device_id());
+        assert_eq!(
+            shards[0].entry_uuid.as_deref(),
+            Some(uuid.as_str()),
+            "and it names the entry the drill reached, by uuid rather than by id"
+        );
+        std::fs::remove_dir_all(&shared).ok();
+    }
+
+    #[test]
+    fn a_publish_with_nobody_to_publish_to_asks_nothing_of_anybody() {
+        // Most people never connect Dropbox, so this is the case that has to cost
+        // nothing — no socket, and no keychain either: the record answers it.
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        let service = with_http(Some(database("publish-none")), &store, &http, true);
+
+        service.publish_positions().unwrap();
+        assert_eq!(http.calls(), 0, "nothing is connected, so nothing is sent");
+    }
+
+    #[test]
+    fn a_publish_never_asks_for_a_fingerprint() {
+        // A publish starts by itself at a moment the learner did not choose — the
+        // instant an entry is finished — so a locked sign-in has to stop it dead
+        // rather than prompt in the middle of a drill.
+        let (db, _) = drilled("publish-locked");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        let service = with_http(Some(db), &store, &http, true);
+        connect(&service);
+        service.set_lock(true).unwrap();
+        let (calls, reads) = (http.calls(), store.reads());
+
+        service.publish_positions().unwrap();
+
+        assert_eq!(http.calls(), calls, "nothing was sent");
+        assert_eq!(store.reads(), reads, "and nothing was unlocked to find that out");
+    }
+
+    #[test]
+    fn a_publish_with_no_network_is_not_attempted() {
+        // The same bounded probe an automatic sync makes: a phone on a train must
+        // not spend `UreqHttp`'s connect timeout once per finished entry.
+        let (db, _) = drilled("publish-offline");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        connect(&with_http(Some(db.clone()), &store, &http, true));
+        let after_connecting = http.calls();
+        let reads = store.reads();
+
+        let offline = with_http(Some(db), &store, &http, false);
+        offline.publish_positions().unwrap();
+
+        assert_eq!(http.calls(), after_connecting, "not one request was attempted");
+        assert_eq!(store.reads(), reads, "and the sign-in was not read either");
+    }
+
+    #[test]
+    fn a_drill_does_not_exchange_a_token_per_entry() {
+        // A publish happens once per finished entry, so a token exchange each time
+        // would be one per character written. The token is kept for a while — and
+        // *only* for a publish: a sync still fetches its own, which is why this
+        // counts the token endpoint rather than the uploads.
+        let (db, _) = drilled("publish-token");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        let service = with_http(Some(db), &store, &http, true);
+        connect(&service);
+        let before = http.inner.forms.lock().unwrap().len();
+
+        for _ in 0..5 {
+            service.publish_positions().unwrap();
+        }
+
+        let after = http.inner.forms.lock().unwrap().len();
+        assert_eq!(after - before, 1, "five entries, one token exchange");
+    }
+
+    #[test]
+    fn a_publish_that_nothing_overtook_runs_once_and_stands_down() {
+        let service = bare(MemoryStore::working());
+        let publishes = std::cell::Cell::new(0usize);
+        service.drain_owed(|| {
+            publishes.set(publishes.get() + 1);
+            Ok(())
+        });
+        assert_eq!(publishes.get(), 1, "one pass, then the loop ends");
+    }
+
+    #[test]
+    fn a_change_that_lands_during_a_publish_is_published_too() {
+        // The trap this loop exists for: a whole-document publish that clears the
+        // "something changed" flag and then misses a change that arrived while it
+        // was writing. The last entry of a drill is exactly such a change — it is
+        // the one that decides where the next device resumes — so it must not be
+        // the one that is dropped.
+        let service = bare(MemoryStore::working());
+        let publishes = std::cell::Cell::new(0usize);
+        service.drain_owed(|| {
+            let round = publishes.get() + 1;
+            publishes.set(round);
+            if round == 1 {
+                // A second change lands while the first publish is in flight.
+                service.positions_owed.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        });
+        assert_eq!(publishes.get(), 2, "the loop went round again for it");
+    }
+
+    #[test]
+    fn asking_for_a_publish_gets_one_and_leaves_no_thread_behind() {
+        // The command does not wait for the publish, so this is the half it relies
+        // on: a thread starts, does the work, and stands down.
+        let (db, _) = drilled("publish-soon");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        let service = std::sync::Arc::new(with_http(Some(db), &store, &http, true));
+        connect(&service);
+        let before = http.calls();
+
+        service.publish_positions_soon();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while service.publishing_positions.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the publish thread never stood down"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(http.calls() > before, "and it did publish");
+    }
+
+    #[test]
+    fn a_token_fetched_for_one_account_is_not_used_for_another() {
+        // A publish keeps its access token, so the two moments the account behind
+        // it changes have to throw it away: nothing else would notice, and the
+        // stale token would be the one a later publish used.
+        let (db, _) = drilled("publish-account");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        let service = with_http(Some(db), &store, &http, true);
+        connect(&service);
+        service.publish_positions().unwrap();
+        assert!(service.publish_token.lock().unwrap().is_some(), "one was kept");
+
+        service.disconnect();
+        assert!(
+            service.publish_token.lock().unwrap().is_none(),
+            "disconnecting forgets it"
+        );
     }
 
     #[test]

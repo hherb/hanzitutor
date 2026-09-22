@@ -3,6 +3,8 @@
 //! The Rust side owns the character dataset and the grading engine; the webview
 //! handles drawing and presentation. See `crate::commands` for the boundary.
 
+use std::sync::Arc;
+
 mod commands;
 pub mod licences;
 mod asr;
@@ -89,7 +91,12 @@ pub fn run() {
             let state = AppState::assemble(prepared, data_dir);
             // Sync gets the database itself rather than any of the three views over
             // it, because what it moves is the attempt log underneath them.
-            let sync = SyncService::new(state.db.clone());
+            //
+            // Behind an `Arc`, because it is also asked to publish a single change
+            // on a thread of its own — see `SyncService::publish_positions_soon`.
+            // The commands still call it as if it were the service itself: `Arc`
+            // dereferences.
+            let sync = Arc::new(SyncService::new(state.db.clone()));
             app.manage(state);
             app.manage(sync);
             Ok(())

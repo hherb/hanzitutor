@@ -57,6 +57,22 @@ an Apple Development certificate and uses the app's own identifier), and then ru
 and not again — until a Rust change relinks the binary, when it needs signing
 again. That is dev-only: no hardened runtime, no timestamp, no notarisation.
 
+**And that includes the log run in §2.** `./.cargo-target/debug/hanzi-tutor`
+started by hand is unsigned, so it is the same stranger: it cannot use the
+data-protection keychain at all (no application identifier —
+`errSecMissingEntitlement`) and falls back to the **login** keychain, which is the
+one case that asks for the *keychain password* rather than a fingerprint. Two
+shapes of the same surprise, both seen: with the real data directory, the launch
+sync reads the token and prompts; with `--user-dir` pointing at a fresh one, the
+`sync:account` record is absent and `SyncService::record` takes its *adoption*
+path, which reads the keychain to look for a sign-in — so it prompts having never
+been connected in that run. Use `pnpm run dev:signed` whenever a run will touch
+sync, and keep the plain binary for what needs no keychain. Unrelated, and worth
+knowing anyway: killing the shell that launched the app does **not** kill the app.
+An orphan left behind goes on drawing its window and asking for what it wants —
+`pgrep -fl hanzi-tutor` finds it, and that is also the shape an orphaned Vite on
+port 1420 takes.
+
 `./scripts/fetch-data.sh` is only wanted when you are changing the data pipeline:
 it re-downloads the ~33 MB of upstream text into gitignored `data/raw/`, restores
 any deleted licence text or font, and `pnpm run prepare-data` then rebuilds the
@@ -1674,26 +1690,23 @@ is gone reading as no position, and clearing — one through the state layer, th
 on the merge (including that positions for different groups are never compared),
 and one end-to-end on two databases syncing through a folder store.
 
+The publish-on-change path has ten more, in `src-tauri/src/sync.rs`: what it writes
+(read back over a real `FolderStore`, so the claim is about the document rather than
+about "something was sent"), that it sends nothing with no account, no network or a
+locked sign-in, that a publish never unlocks the keychain, that a token fetched for
+one account is not used for another, that five finished entries share **one** token
+exchange, and — the one the loop exists for — that a change landing *during* a
+publish is published too. The last two drive the loop and the token reuse directly,
+because a test that had to lose a race to be interesting would be a test that
+passes for the wrong reason.
+
 ### Where this got to, and what is next
 
 Confirmed on hardware, not inferred: a drill **resumes at the right word** on both
-an iPhone and an Android phone, and the position travels between them. The two
-open items, in the order they should be done:
+an iPhone and an Android phone, and the position travels between them. One item
+remains open:
 
-1. **Publish the position when it changes.** It is written the moment an entry
-   finishes, but it only leaves the device on the next sync — and syncs happen at
-   launch and on foreground. A drill done after the last sync therefore stays
-   local, which is what made this look like a total failure: the iPhone was right,
-   Android started at the first entry, and pressing *Sync now* on the iPhone was
-   what fixed it. The seam is `hanzi_sync::write_vocab_cursors` and the sync
-   service in `src-tauri/src/sync.rs`.
-   **This is the missing half, not a redesign.** The per-group merge,
-   `merge_vocab_cursors`, and its tests already exist and were verified on two
-   databases — do not rework them to make publishing easier. The rule stated under
-   "Why a position that syncs was worth the care" above is what is at stake: a
-   position that publishes without being merged is worse than one that never
-   leaves the device, because it is the failure M13 exists to avoid.
-2. **A progress tag per entry** (asked for, not started). The data is better than
+1. **A progress tag per entry** (asked for, not started). The data is better than
    `attempts`/`bestScore`: every character in an entry has an SM-2 card with an
    interval and a due date, and the schedule is folded from the synced attempt
    log, so a tag *derived* from the cards means the same thing on every device. It
@@ -1706,6 +1719,63 @@ open items, in the order they should be done:
 a phone that resumes at the right word still works through entries the other
 device has finished — its queue is longer. Either that fact starts travelling too,
 or the queue is honestly per-device and should be labelled that way.
+
+### The position is published when it changes, not at the next sync
+
+**Built.** Writing the position locally was never the problem; getting it off the
+device was. A drill writes where it got to after every entry, but a publish
+happened only inside a full sync — which runs at launch and on foreground — so a
+drill finished after the last sync stayed local. That is what made this read as a
+total failure: the iPhone was right, Android started at the first entry, and
+pressing *Sync now* on the iPhone was what fixed it.
+
+`SyncService::publish_positions_soon` is the missing half, and the whole of it is
+`hanzi_sync::write_vocab_cursors` — **the per-group merge and its tests were not
+touched**, which is what the caution below is about.
+
+- **It is not a sync.** No pull, no schedule rebuilt, no baseline: one document
+  this device owns, written whole. `publish_documents` does more than this needs
+  and is not even exported from `hanzi-sync`; `write_vocab_cursors` is.
+- **It does not take the sync gate.** The gate exists so two *syncs* do not
+  interleave publish and pull. A publish-only pass pulls nothing and overwrites
+  this device's own shard, which is a whole-document write either way — so an
+  overlap is a harmless redundant write. Gating it would be worse: a sync lasts as
+  long as the network takes, and a position that changed during one would either
+  queue behind it or be dropped, and being dropped is the bug.
+- **It respects the same three refusals `auto` does** — no account (read from the
+  non-secret record, so no keychain), a sign-in behind a fingerprint (**never
+  prompted at a moment the learner did not choose** — with the lock on, a position
+  waits for the next pressed sync), and no network (the bounded probe, so a phone
+  on a train does not pay a connect timeout per entry).
+- **It runs on a thread and the command does not wait.** `UreqHttp` allows ten
+  seconds to connect, and holding a finished entry up for that would be worse than
+  the delay being fixed.
+- **Two flags, one coalescer.** A change landing while a publish is in flight sets
+  the flag again and the loop goes round, because the **last** entry of a drill is
+  the one that decides where the next device resumes and must not be the one
+  dropped; a change landing while a thread is already draining does not start a
+  second. `positions_owed` and `publishing_positions` in `src-tauri/src/sync.rs`.
+- **A publish keeps its own access token for half an hour** (`publish_token`, not
+  `fresh_access_token`): one token exchange per finished entry would be one per
+  character written. Cleared in `finish` and `disconnect`, since a token fetched
+  for one account must not be used for another.
+- **A failure is logged, not shown** — `[sync] the place in your lists was not
+  published: …`. The learner's own action succeeded and the next sync publishes it.
+- **A rename publishes too** (`vocab_rename_group` moves the row). A **group
+  deletion deliberately does not**: the format has no way to say "forget a group" —
+  absence is not a deletion, or a device that had merely not synced yet would wipe
+  a peer's places — so a publish there would send a document saying nothing about
+  the row being gone.
+
+`SyncService` is now managed as an `Arc`, because a thread needs to own a handle;
+the commands still call it as if it were the service, and `Arc` dereferences.
+
+**This is the missing half, not a redesign.** The per-group merge,
+`merge_vocab_cursors`, and its tests already exist and were verified on two
+databases — do not rework them to make publishing easier. The rule stated under
+"Why a position that syncs was worth the care" above is what is at stake: a
+position that publishes without being merged is worse than one that never
+leaves the device, because it is the failure M13 exists to avoid.
 
 ### Ordering: the list is not ordered by `id`
 
@@ -1788,7 +1858,9 @@ either one alone leaves the other in charge.
   the upgrade. **Do not spend time on it**: `cargo tree --target
   aarch64-apple-darwin -e normal | grep glib` returns nothing. ROADMAP has the
   detail.
-- **Resuming inside a user vocabulary list is not started** — specified in §6a.
+- **Resuming inside a user vocabulary list is built, and its position is published
+  as it changes** — §6a is the record, and it names the one item still open (a
+  per-entry progress tag).
 
 ### Settled, and not to be re-litigated
 

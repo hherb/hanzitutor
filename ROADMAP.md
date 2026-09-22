@@ -747,7 +747,12 @@ Already shipped, listed only so they are not re-added as open work:
   entry not yet practised, and starts at the top once all of them have been.
   Deliberately keyed by the group's **name** rather than a new stable group id:
   a random id is minted per device, so already-synced devices would fork a shared
-  group and its cursor would never merge.
+  group and its cursor would never merge. **The position is published when it
+  changes**, not at the next sync: `SyncService::publish_positions_soon` sends that
+  one document on a thread, under `auto`'s three refusals (no account, a locked
+  sign-in, no network), without the sync gate and without pulling anything — so a
+  drill finished on the phone is on the laptop the moment the laptop looks. HANDOVER
+  §6a has the reasoning.
 - **Import / export the vocabulary list** — M1: JSON export and import (lossless; merge
   or replace) plus CSV export. CSV *import* is deliberately out, because it is lossy.
 - **A settings screen** — `src/lib/SettingsPanel.svelte` edits the four preferences
