@@ -1907,19 +1907,21 @@ pnpm run build                          # the signed .app and .dmg
 ./scripts/fetch-sherpa.sh --android     # once, if it has not been run
 ./scripts/with-cargo-env.sh ./scripts/tauri-cli.sh android build --apk --aab --target aarch64
 
-git tag v0.3.0
-git push origin v0.3.0
-gh release create v0.3.0 --prerelease --title "0.3.0 — alpha" \
+git tag v0.5.0
+git push origin v0.5.0
+gh release create v0.5.0 --prerelease --title "0.5.0 — alpha" \
   --notes-file <notes> \
-  ".cargo-target/release/bundle/dmg/Hanzi Tutor_0.3.0_aarch64.dmg" \
+  ".cargo-target/release/bundle/dmg/Hanzi Tutor_0.5.0_aarch64.dmg" \
   "src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk" \
   "src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab"
 ```
 
 Every release so far is an **alpha**, hence `--prerelease`. 0.2.0 was macOS-only on
-purpose; 0.3.0 adds the Android APK and AAB, because those became real release builds
+purpose; 0.3.0 added the Android APK and AAB, because those became real release builds
 — signed with the project's own upload key, and the artifact that has run on a
-physical phone with speech recognition. **iOS is still absent on purpose.** The shell
+physical phone with speech recognition. **There was no 0.4.0**, so do not go looking
+for one. 0.5.0 adds the attempt log's measures and the export and analysis over them
+(§7), on top of the graded phrase audio. **iOS is still absent on purpose.** The shell
 does run on a physical iPhone, but only from a `--debug` build installed with
 `devicectl`: an iOS *release* build fails to link Tauri's Swift glue (§6), so there
 is no IPA worth attaching until that toolchain question is settled.
