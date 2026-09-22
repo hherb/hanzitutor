@@ -631,7 +631,11 @@ fn validate_group(group: Option<&str>) -> Result<Option<String>, VocabError> {
 }
 
 /// Quote a CSV field when it contains a comma, quote or newline.
-fn csv_field(value: &str) -> String {
+///
+/// The one CSV quoting rule in the project, shared with the attempt log's
+/// export: two spellings of "escape a field" is one more than a spreadsheet
+/// will forgive.
+pub fn csv_field(value: &str) -> String {
     if value.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {

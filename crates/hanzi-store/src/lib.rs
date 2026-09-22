@@ -26,6 +26,8 @@
 //! `hanzi-core`'s, unchanged, and knows nothing about SQL. The only thing this
 //! crate knows is how to read and write the documents the engine hands it.
 
+pub mod analyse;
+pub mod export;
 mod migrate;
 mod schema;
 

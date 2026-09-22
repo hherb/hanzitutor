@@ -64,8 +64,12 @@ const NO_MATCH_COST: f64 = 1.15;
 const W_SHAPE: f64 = 0.60;
 const W_POSITION: f64 = 0.40;
 /// Below these per-stroke scores a stroke is reported as faulty.
-const SHAPE_OK: f32 = 0.60;
-const POSITION_OK: f32 = 0.60;
+///
+/// Public so that anything measuring the grader against real attempts — the
+/// attempt log's analysis — reads the bar the grader actually applied rather
+/// than a copy of it that can drift.
+pub const SHAPE_OK: f32 = 0.60;
+pub const POSITION_OK: f32 = 0.60;
 /// Per-stroke ink agreement (see [`crate::raster`]) below which a stroke is
 /// reported as too faint, and at which the character stops being legible.
 pub const INK_OK: f32 = 0.60;
@@ -83,10 +87,14 @@ pub const INK_OK: f32 = 0.60;
 /// in the "good" band, alongside the "not yet legible" badge the threshold
 /// measures raise. The selfcheck tolerance table was re-measured when this
 /// changed; see `ROADMAP.md` M4 and `HANDOVER.md`.
-const HEADLINE_SHAPE: f32 = 0.25;
-const HEADLINE_POSITION: f32 = 0.25;
-const HEADLINE_ORDER: f32 = 0.25;
-const HEADLINE_INK: f32 = 0.25;
+///
+/// Public for the same reason as the bars above: the attempt log's analysis
+/// recomputes the headline score from the recorded measures, and that check is
+/// only worth anything if it uses these weights rather than its own.
+pub const HEADLINE_SHAPE: f32 = 0.25;
+pub const HEADLINE_POSITION: f32 = 0.25;
+pub const HEADLINE_ORDER: f32 = 0.25;
+pub const HEADLINE_INK: f32 = 0.25;
 
 /// Tunables for a grading run.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -546,8 +554,8 @@ fn grade_inner(
         // "sloppy" tolerance row for nothing.
         legible: n_ref > 0
             && n_user == n_ref
-            && shape_score >= 0.60
-            && position_score >= 0.60
+            && shape_score >= SHAPE_OK
+            && position_score >= POSITION_OK
             && ink_score >= INK_OK,
         order_correct: n_user == n_ref && order_score >= 0.999,
         grade,

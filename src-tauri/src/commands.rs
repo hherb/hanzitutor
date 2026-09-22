@@ -892,6 +892,20 @@ pub fn record_progress(
     Ok(committed_progress(&mut progress))
 }
 
+/// Write the practice log out, as JSON Lines or CSV.
+///
+/// The log is the learner's own record of their own handwriting, so this is how
+/// it leaves the app: a file they choose, written locally. No upload, no account.
+/// The work is in [`AppState::export_practice_log`], where it can be tested.
+#[tauri::command]
+pub fn export_practice_log(
+    state: State<'_, AppState>,
+    path: String,
+    format: String,
+) -> Result<String, String> {
+    state.export_practice_log(&path, &format)
+}
+
 /// What is due for review now, most overdue first, from the course and the
 /// vocabulary list. `dueCount` is the full total; `items` is the capped session.
 #[tauri::command]

@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use hanzi_core::{GradeOptions, Point, ProgressStore, ReviewSource, VocabStore};
+use hanzi_core::{AttemptMeasures, GradeOptions, Point, ProgressStore, ReviewSource, VocabStore};
 use hanzi_tutor_lib::{AppState, SpokenAudio, REVIEW_LIMIT};
 
 fn state() -> AppState {
@@ -2013,4 +2013,83 @@ fn a_stale_vocabulary_list_tombstones_what_a_sync_brought() {
 
     std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_dir_all(&shared).ok();
+}
+
+#[test]
+fn the_practice_log_exports_every_attempt_with_its_measures() {
+    // The end of the tuning chain: what a learner wrote leaves the database as a
+    // file. The measures have to be in it, because they are the reason the log is
+    // worth exporting at all — and an attempt that has none must still be there
+    // rather than quietly dropped, since "unmeasured" is not "worthless".
+    let dir = data_dir("export-log");
+    let export = dir.join("log.jsonl");
+    let state = AppState::load(Some(dir.clone())).unwrap();
+
+    let measures = AttemptMeasures {
+        shape: 0.82,
+        position: 0.71,
+        ink: 0.33,
+        ink_coverage: 0.95,
+        order: 1.0,
+        legible: false,
+        order_correct: true,
+    };
+    {
+        let mut progress = state.lock_progress();
+        progress.store.record_measured('好', 63.0, Some(measures)).unwrap();
+        // An attempt with only a score: what an older build, or a peer's shard,
+        // can offer.
+        progress
+            .store
+            .record_at('学', 88.0, "2026-09-22T10:00:00Z")
+            .unwrap();
+        assert!(progress.save().is_none(), "saving should succeed");
+    }
+
+    let message = state
+        .export_practice_log(export.to_str().unwrap(), "jsonl")
+        .expect("exporting should work");
+    assert!(message.contains("2 attempts"), "{message}");
+    assert!(message.contains("1 with grading measures"), "{message}");
+
+    let written = std::fs::read_to_string(&export).unwrap();
+    let mut measured = None;
+    let mut bare = None;
+    for line in written.lines() {
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        if value["ch"] == "好" {
+            measured = Some(value);
+        } else {
+            bare = Some(value);
+        }
+    }
+    let measured = measured.expect("the measured attempt is in the export");
+    assert_eq!(measured["score"], 63.0);
+    assert_eq!(measured["measures"]["shape"], 0.82);
+    assert_eq!(measured["measures"]["inkCoverage"], 0.95);
+    assert_eq!(measured["measures"]["legible"], false);
+    assert_eq!(measured["measures"]["orderCorrect"], true);
+    let bare = bare.expect("an unmeasured attempt is still exported");
+    assert_eq!(bare["score"], 88.0);
+    assert!(
+        bare.get("measures").is_none(),
+        "an unmeasured attempt says nothing rather than zero"
+    );
+
+    // The same rows in the other shape: a header and one line per attempt.
+    let csv = dir.join("log.csv");
+    state
+        .export_practice_log(csv.to_str().unwrap(), "csv")
+        .expect("the CSV export should work too");
+    let written = std::fs::read_to_string(&csv).unwrap();
+    let lines: Vec<&str> = written.lines().collect();
+    assert_eq!(lines.len(), 3, "a header and one line per attempt");
+    assert!(lines[0].starts_with("ch,at,score,rating,"), "{}", lines[0]);
+
+    // A format nobody knows is refused rather than written as something else.
+    assert!(state
+        .export_practice_log(export.to_str().unwrap(), "xlsx")
+        .is_err());
+
+    std::fs::remove_dir_all(&dir).ok();
 }

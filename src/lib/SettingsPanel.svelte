@@ -72,6 +72,18 @@
      * this app has already had twice.
      */
     syncPulse: number;
+    /**
+     * Called to write the practice log out to a file the learner chooses.
+     *
+     * The log is their own record of their own handwriting — the attempts, their
+     * scores, and since schema 5 the measures each score came from — so this is
+     * the one control on this screen that is about data leaving the app at all.
+     */
+    onExportLog: (format: "jsonl" | "csv") => void;
+    /** What the last export did, or `null` if none has run. */
+    logMessage: string | null;
+    /** True while an export is being written. */
+    logBusy: boolean;
   }
 
   let {
@@ -83,6 +95,9 @@
     onClearClickToDraw,
     onSynced,
     syncPulse,
+    onExportLog,
+    logMessage,
+    logBusy,
   }: Props = $props();
 
   /**
@@ -900,6 +915,40 @@
         {#if syncError}
           <p class="warning">{syncError}</p>
         {/if}
+      </div>
+    </div>
+
+    <!-- Your practice log ----------------------------------------------- -->
+    <div class="row">
+      <div class="what">
+        <span class="name" id="set-log">Your practice log</span>
+        <span class="why">
+          Every attempt you have made: what you wrote, the score it was graded,
+          and the measures behind that score. It is your own record of your own
+          handwriting, so this is where it leaves the app — as a file you choose,
+          written on this machine. Nothing is uploaded, and nothing here depends
+          on an account.
+        </span>
+      </div>
+      <div class="how">
+        <div class="segmented" role="group" aria-labelledby="set-log">
+          <button disabled={logBusy} onclick={() => onExportLog("jsonl")}>
+            Export as JSON Lines
+          </button>
+          <button disabled={logBusy} onclick={() => onExportLog("csv")}>
+            Export as CSV
+          </button>
+        </div>
+        <span class="status">
+          {#if logBusy}
+            Writing…
+          {:else if logMessage}
+            {logMessage}
+          {:else}
+            JSON Lines keeps everything and can be read back; CSV opens in a
+            spreadsheet, where the measures are one column each.
+          {/if}
+        </span>
       </div>
     </div>
   </div>

@@ -186,6 +186,15 @@ export const vocabExport = (path: string, format: "json" | "csv") =>
 export const vocabImport = (path: string, merge: boolean) =>
   invoke<VocabOutcome>("vocab_import", { path, merge });
 
+/**
+ * Write the practice log to `path`, as JSON Lines or CSV.
+ *
+ * The whole log, every attempt, whether or not it carries the measures it was
+ * graded from. Returns the line to show the learner.
+ */
+export const exportPracticeLog = (path: string, format: "jsonl" | "csv") =>
+  invoke<string>("export_practice_log", { path, format });
+
 // ---- practice progress and review -----------------------------------------
 
 /** Every practised character: attempts, history, best score and due date. */

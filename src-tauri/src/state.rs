@@ -1056,6 +1056,38 @@ impl AppState {
             warning: progress.load_error.clone().or(vocab_warning),
         }
     }
+
+    /// Write the whole practice log to `path`, as JSON Lines or CSV.
+    ///
+    /// Here rather than in the command so it can be tested without a window —
+    /// this is the one path by which a learner's own handwriting leaves the
+    /// database, so what it writes is worth a test of its own.
+    ///
+    /// Every attempt is written, measured or not: a row without measures is one
+    /// recorded before schema 5 or merged in from another device, and silently
+    /// dropping it would shorten the history to the part that happens to be
+    /// measurable.
+    pub fn export_practice_log(&self, path: &str, format: &str) -> Result<String, String> {
+        let db = self
+            .db
+            .as_ref()
+            .ok_or("there is nowhere to keep study data, so there is nothing to export")?;
+        let attempts = db.attempts(None)?;
+        let (contents, label) = match format {
+            "jsonl" => (
+                hanzi_store::export::attempts_to_jsonl(&attempts).map_err(|e| e.to_string())?,
+                "JSON Lines",
+            ),
+            "csv" => (hanzi_store::export::attempts_to_csv(&attempts), "CSV"),
+            other => return Err(format!("unknown export format {other:?}")),
+        };
+        std::fs::write(path, contents).map_err(|e| format!("could not write {path}: {e}"))?;
+        let measured = attempts.iter().filter(|a| a.measures.is_some()).count();
+        Ok(format!(
+            "Exported {} attempts ({measured} with grading measures) as {label} to {path}",
+            attempts.len()
+        ))
+    }
 }
 
 /// Read a data-directory override out of a command line.

@@ -130,6 +130,7 @@ pub fn run() {
             commands::vocab_import,
             commands::progress,
             commands::record_progress,
+            commands::export_practice_log,
             commands::review_queue,
             commands::course_cursor,
             commands::set_course_cursor,

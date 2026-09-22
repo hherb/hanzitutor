@@ -421,6 +421,9 @@
   let vocabSelection = $state<string | null>(null);
   let statusMessage = $state<string | null>(null);
   let vocabBusy = $state(false);
+  /** The result of the last practice-log export, shown on the settings screen. */
+  let logMessage = $state<string | null>(null);
+  let logBusy = $state(false);
 
   // ---- the word dictionary -------------------------------------------------
   /** The HSK level the words screen is filtered to, or null for all of them. */
@@ -1747,6 +1750,33 @@
     }
   }
 
+  /**
+   * Write the whole practice log to a file the learner chooses.
+   *
+   * The log is the only record of their own handwriting, and since schema 5 it
+   * also carries what each attempt was graded from. Exporting it is the way it
+   * leaves the app, and the reason it is worth keeping: the grading tolerances
+   * can be checked against real attempts afterwards, anywhere, without the app.
+   */
+  async function exportPracticeLog(format: "jsonl" | "csv") {
+    const label = format === "jsonl" ? "JSON Lines" : "CSV";
+    try {
+      const path = await pickSavePath({
+        title: `Export your practice log as ${label}`,
+        defaultPath: `hanzi-practice-log.${format}`,
+        filters: [{ name: label, extensions: [format] }],
+      });
+      if (!path) return;
+      logBusy = true;
+      logMessage = await api.exportPracticeLog(path, format);
+      void api.log(logMessage);
+    } catch (cause) {
+      error = `Export failed: ${cause}`;
+    } finally {
+      logBusy = false;
+    }
+  }
+
   async function importVocabulary(merge: boolean) {
     try {
       const path = await pickFile({
@@ -2171,6 +2201,9 @@
         onClearClickToDraw={() => void clearClickToDraw()}
         onSynced={refreshAfterSync}
         {syncPulse}
+        onExportLog={(format) => void exportPracticeLog(format)}
+        {logMessage}
+        {logBusy}
       />
     {:else if view === "about"}
       <LicencesPanel info={appInfo} notices={licenceList} error={licenceError} />

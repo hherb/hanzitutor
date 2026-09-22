@@ -23,6 +23,7 @@
     "test": "./scripts/with-cargo-env.sh cargo test --workspace --features hanzi-core/prepare",
     "test:core": "./scripts/with-cargo-env.sh cargo test -p hanzi-core --features prepare",
     "selfcheck": "./scripts/with-cargo-env.sh cargo run --release -p hanzi-core --example selfcheck",
+    "analyse-attempts": "./scripts/with-cargo-env.sh cargo run --release -p hanzi-store --example analyse-attempts",
     "check:rust": "./scripts/with-cargo-env.sh cargo clippy --workspace --all-targets -- -D warnings",
     "check:web": "svelte-check --tsconfig ./tsconfig.json"
   },
