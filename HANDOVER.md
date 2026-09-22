@@ -28,11 +28,18 @@ ls .cargo-home 2>/dev/null || {
   cp -Rc ~/.cargo/registry/index/$REG .cargo-home/registry/index/$REG
 }
 
-# 2. Deps, then confirm the baseline is green. There is no data step: the
-#    dataset artifact, the interface font and the licence texts are all
-#    committed, so a clone builds without downloading anything.
+# 2. Deps.
 pnpm install
-pnpm test                        # expect 409 passed, 0 failed, 4 ignored
+
+# 3. The one build input that is not committed: the pinned sherpa-onnx native
+#    library (~20 MB, SHA-256 checked, into .sherpa-onnx/). Without it the build
+#    fetches an unpinned archive of its own — see invariant 26.
+pnpm run fetch-sherpa
+
+# 4. Confirm the baseline is green. There is no *data* step: the dataset
+#    artifact, the interface font and the licence texts are all committed, so a
+#    clone builds without downloading anything else.
+pnpm test                        # expect 491 passed, 0 failed, 4 ignored
 pnpm run check:rust && pnpm run check:web
 ```
 
@@ -42,7 +49,9 @@ Then `pnpm run dev` to launch it. `pnpm run build` makes a **signed** `.app` and
 `./scripts/fetch-data.sh` is only wanted when you are changing the data pipeline:
 it re-downloads the ~33 MB of upstream text into gitignored `data/raw/`, restores
 any deleted licence text or font, and `pnpm run prepare-data` then rebuilds the
-artifact. Nothing in the normal build path needs either.
+artifact. Nothing in the normal build path needs either. The phrase-audio
+scripts (`fetch-phrases.sh`, `fetch-tts.sh`, `synthesize-audio`) are build-host
+tools for M14, not part of an app build — see ROADMAP M14.
 
 ### Quirk 1 — cargo must use a project-local CARGO_HOME
 
@@ -57,6 +66,12 @@ To run any cargo command:
 ```bash
 ./scripts/with-cargo-env.sh cargo <args>
 ```
+
+The wrapper also points `SHERPA_ONNX_LIB_DIR` at the fetched library — but only
+when it is really there, because handing the crate a missing path gives a *worse*
+error than the download it exists to prevent (§4, invariant 26). Which copy it
+picks depends on the arguments: iOS takes `.sherpa-onnx/current-ios/lib`,
+Android takes the archive directory, everything else the macOS static libraries.
 
 ### Quirk 2 — `pnpm tauri` does not work; use the wrapper
 
@@ -124,40 +139,32 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
   `A privilege violation occurred`, which needs Accessibility, a separate grant —
   so drawing a stroke, clicking *Review due* or scrolling a list still needs the
   human. Window geometry is readable too, via `CGWindowListCopyWindowInfo`.
-
-  This has already earned its place: the progress marks, the review badge and the
-  due dots were confirmed from captures, and the same captures showed that a
-  restored course position was not scrolled into view (now fixed in
-  `LessonSidebar.svelte`).
 - Running the binary directly produces harmless WebKit noise
   (`could not create directory ~/Library/WebKit/...`) because the sandbox blocks
   WebKit's cache directories. It is not an app fault.
 
-## 2. What already works, and how it was verified
+## 2. What already works
 
-| Area | State | Evidence |
-| --- | --- | --- |
-| Grading engine | Done | 34 unit tests (geom + grade); self-consistent on all 7,744 teachable characters |
-| Raster ink measure (M4) | Done | 9 rasteriser tests + 8 grading tests; a third-width pen fails all 7,744 characters, a correct trace scores exactly 1.000 on every one |
-| Dataset pipeline | Done | 9,574 characters, 13 MB artifact |
-| IPC surface | Done | contract tests asserting exact JSON key sets |
-| Drawing canvas | Done, human-confirmed | trace + recall modes, colour-coded feedback; the practice column is anchored under the header and sized by the window, so a tone or a grading report beside it can neither move nor resize the board (row-pinned `.workspace` + `scrollbar-gutter`; measured at 1180×840 — §6) |
-| Board control row | Done, checked as a render | the mock-up's layout: three cards — the tools grouped as writing help, pronunciation and drawing — each a glyph on a tinted disc with its short name under it, centred under the board; one row on a 390 px phone (three cards 103 + 104 + 96 of the 366 px the stage gives them, the row 74 px tall) and one row at 1280 px. **No captions**: the set names live on the cards as `aria-label`, which cost nothing on screen. The microphone is the only solid red, the bin the only soft one, the commit button the only solid accent. Rendered through the scratch entry in §6 at 390×900 and 1280×900, in four states: nothing drawn, one stroke drawn, graded, and mid-review (the one that adds the Back card) |
-| Board chrome | Removed on purpose | the "ⓘ How this works" disclosure and the sentence under the controls are gone — see the onboarding item in [`ROADMAP.md`](ROADMAP.md). What is left under the row is one `.hint` paragraph, rendered **only** when a control is disabled and there is no tooltip on a phone to say why, which is the one job nothing else does |
-| Stroke-order animation (M7) | Done | pen sweeps each centre-line, the outline revealed behind it; band width measured per stroke; confirmed by window capture |
-| Input ergonomics (M8) | Done, human-confirmed | click-to-draw, on by default where there is a hover and remembered once chosen — the preference lives on the settings screen, having been a switch on the control row until the row was redesigned; both paths produce identical geometry; driven with synthetic pointer events, and the trackpad behaviour confirmed by hand |
-| Pronunciation | Done on macOS and iOS | 19 tests; the iOS voice list is pinned from the simulator's log; the voice preference outranks the automatic choice but yields to the environment override, and falls back rather than going silent; human-confirmed hearing 的 on both |
-| Settings screen | Runs, and the store behind it is verified | the fourth sidebar screen. 12 `settings.rs` tests + the store round trip + the IPC contract, which pins the enum names, that a one-field change leaves the rest alone, and that a *deduplicated* voice list is what the screen is offered. Against the running app: a fresh install leaves the `settings` table **empty**, a change writes the expected rows (`voice = Meijia`, `animation_pace = slow`, `board_size = compact`), a chosen voice is applied **before** the warm-up (`[speech] using voice Meijia` on the next launch), and a compact board is visibly smaller. The pace is scale arithmetic with unit tests behind it; the sweep itself was not watched at two speeds (drawing cannot be driven from here, §6) |
-| Personal vocabulary list | Done | 27 store unit tests; persistence tested through the state layer |
-| iOS app (M9) | Runs on a physical iPhone, human-confirmed | the Rust side cross-compiles unchanged; phone layout verified by simulator screenshot; the scene-lifecycle crash and the black screen behind it are recorded in §6 |
-| Durable study store (M10) | Done | one `hanzi.db`; the old JSON imported once and left byte-identical; the attempt log past the 20 a card shows; WAL, and an uncommitted write leaves nothing |
-| Tone practice, model-free (M11) | Done, human-confirmed for characters **and words** | 16 `pinyin.rs` tests (syllable splitting, tone reading, sandhi) + 25 `tone.rs` tests (YIN, contours, DTW, segmentation, scoring) + the IPC contract; the device open/record/stop path verified against real hardware (§6); a human confirmed tone hearing and a multi-syllable word (不对, both tones, sandhi explained) |
-| Per-character progress, SRS | Done | 30 store/scheduler unit tests; record → relaunch → due-date cycle tested through the state layer |
-| HSK 3.0 word list | Done | 9,443 words in the artifact; every one drawable character by character, checked against the shipped dataset |
-| Word search and browsing | Done | by character, reading (tones/spacing/`ü` folded) or meaning; exact-beats-prefix ranking proven in tests |
-| Words spoken and read whole | Done | the dictionary's own reading is used, so 着急 is `zháojí` where the isolated 着 has no context |
-| Licence notices in the bundle | Done | 7 tests pin the catalogue, the files on disk, the compiled-in text and the bundle config against each other; the packaged `.app` was checked by hand (see §8) |
-| Nothing downloaded, ever | Done | no HTTP client anywhere in the dependency graph; the dataset, the font and the notices are committed, so a clone and CI build offline |
+| Area | State |
+| --- | --- |
+| Grading engine | Done — shape, placement, ink (M4) and order, a quarter of the score each; `selfcheck` scores every teachable character a perfect 100 |
+| Dataset pipeline | Done — 9,574 characters with stroke geometry, 7,744 in a frequency-ordered course of 775 lessons, 9,443 HSK 3.0 words, in one committed 13 MB artifact |
+| Drawing canvas | Done, human-confirmed — trace and recall modes, drag and click-to-draw, colour-coded verdicts |
+| Board control row | Done, checked as a render — three cards (writing help, pronunciation, drawing) centred under the board, one row at 390 px and at 1280 px |
+| Stroke-order animation (M7) | Done — the pen sweeps each centre-line with the outline revealed behind it |
+| Personal vocabulary list (M1) | Done — groups, drilling, JSON and CSV export, JSON import (merge or replace) |
+| Progress and SRS (M2) | Done — SM-2 behind a `Scheduler` trait; the review queue is drawn from the course and the list together |
+| Words (M3) | Done — search by character, reading or meaning; a word is read and spoken whole (着急 is `zháojí` where the isolated 着 has no context) |
+| Settings screen | Done — four preferences; an unchosen one is resolved from the device or the system |
+| Durable study store (M10) | Done — one `hanzi.db`; the old JSON imported once and left byte-identical; an unbounded attempt log |
+| Tone practice (M11) | Done, human-confirmed for characters and words — pitch contour against the expected shape, with no model |
+| Speech recognition (M12) | Done — an optional ~163 MB SenseVoice model, installed from the settings screen |
+| Cross-device sync (M13) | Done — an optional Dropbox account, off by default, merging the attempt log (§7) |
+| Mobile shells (M9) | Runs on a physical iPhone and on Android hardware; the iOS release build and the Play paperwork are outstanding (ROADMAP M9) |
+| Graded phrase audio (M14) | In progress — the HSK 1–2 clips are the corpus's own recordings, and the Phrases screen and optional synthesis model are built; the graded readers' voice is still open (ROADMAP M14) |
+| Pronunciation | The system synthesiser on macOS, iOS and Android; the bundled clips cover the graded phrases on any platform |
+| Network | Off unless the learner asks: two optional model downloads (recognition, synthesis) and an optional Dropbox sync |
+| Licence notices | Done — 21 notices over 19 bundled files, pinned three ways (§8) |
 
 Verified end-to-end by reading the app's own logs:
 
@@ -172,7 +179,7 @@ HANZI_TUTOR_DATA_DIR="$PWD/.tmp-data" ./.cargo-target/debug/hanzi-tutor 2>&1 \
 # [webview] review queue: 2 due, 2 in this session
 # [webview] drawable characters: 9574
 # [webview] speech: using Tingting (Chinese (China mainland)) (zh_CN)
-# [webview] licences: 17 notices bundled
+# [webview] licences: 21 notices bundled
 # [webview] course cursor: resuming at character 413
 # [webview] character 的: de, 8 strokes
 # [webview] spoke 面
@@ -184,12 +191,12 @@ HANZI_TUTOR_DATA_DIR="$PWD/.tmp-data" ./.cargo-target/debug/hanzi-tutor 2>&1 \
 
 The `graded …` line carries both ink figures — the score first, then coverage —
 so the M4 measure can be watched in the field without a debugger. The last three
-lines above are from the M4 run (a fresh data directory, hence the different
-counts); they are the current format, and the two `graded` lines are the same
-trace with the pen declared first at full width and then at a third of it.
+lines are from the M4 run (a fresh data directory, hence the different counts);
+they are the current format, and the two `graded` lines are the same trace with
+the pen declared first at full width and then at a third of it.
 
 `drawable characters` is the word-list counterpart of the course load: 9,574
-characters have stroke geometry (against 7,744 with a frequency rank). The
+characters have stroke geometry against 7,744 with a frequency rank. The
 interface needs that set to skip the punctuation in a sentence instead of asking
 the board to draw a comma. A `webview error:` or `webview rejection:` line means
 an exception reached the window — the handler exists because a rendering error
@@ -213,25 +220,33 @@ crates/hanzi-core/          grading engine. No Tauri, no UI, no platform code.
   src/dataset.rs            Character + Word models, word search, artifact loading
   src/curriculum.rs         frequency list -> lessons
   src/vocab.rs              the personal vocabulary list, and VocabSink
-  src/settings.rs           the learner's settings: Settings, Pace, BoardSize,
-                            SettingsSink, and the tri-state (None = nobody has
-                            chosen) — see §7 for which fields are which
-  src/progress.rs           per-character cards, SM-2 scheduling, review queue
+  src/settings.rs           Settings, Pace, BoardSize, SettingsSink, and the
+                            tri-state (None = nobody has chosen) — see §7
+  src/progress.rs           per-character cards, SM-2 scheduling, the review
+                            queue, and the fold that rebuilds a card from a log
   src/tone.rs               YIN pitch tracking, tone contours, syllable
                             segmentation, DTW scoring. Pure DSP: samples in,
-                            numbers out, so the scoring is testable against
-                            synthetic contours and synthetic words (see §9)
-  src/pinyin.rs             splitting a word's reading into syllables, reading a
-                            tone off a diacritic, and tone sandhi. Reading rules
-                            rather than signal processing
+                            numbers out (see §9)
+  src/pinyin.rs             splitting a reading into syllables, reading a tone off
+                            a diacritic, tone sandhi, and the heard-against
+                            comparison (see §9)
   src/time.rs               ISO-8601 formatting, parsing, date arithmetic
   src/bin/prepare_data.rs   upstream data -> compact artifact (feature = "prepare")
   examples/selfcheck.rs     whole-dataset measurement and tolerance tuning
 crates/hanzi-say/           speech synthesis, wrapping sherpa-onnx's OfflineTts.
+                            The build host's half: samples and WAVs, no app state.
   src/lib.rs                the model, normalisation, the silence guard, chunking
   src/sentences.rs          reading the two graded corpora into one Phrase shape
-  src/bin/synthesize_audio.rs   corpus -> MP3 clips + manifest.json (build time).
-                            Also the only place that needs ffmpeg. See §10
+  src/phonetics.rs          splitting a syllable into initial, final and tone, so
+                            a mispronunciation can be told from a spelling
+                            difference a recogniser prefers
+  src/judge.rs              the judgement half of `verify-audio`, kept apart from
+                            the recogniser so it is testable without a model
+  src/bin/synthesize_audio.rs   corpus -> MP3 clips + manifest.json. Resumable;
+                            the only place that needs ffmpeg. See §3a
+  src/bin/verify_audio.rs   does a clip say what its text says? It drives a
+                            downloaded recogniser, so it is run by hand
+                            (ROADMAP M14; docs/research/MELOTTS_*.md)
 crates/hanzi-store/         the study database: SQLite, and nothing else.
                             Separate from the engine so the engine keeps no
                             native dependency
@@ -241,15 +256,26 @@ crates/hanzi-store/         the study database: SQLite, and nothing else.
   src/lib.rs                ProgressSink / VocabSink / CursorSink, and the
                             attempt log's reader (attempt_count, attempts)
   tests/store.rs            the M10 acceptance criteria, from real saved files
+crates/hanzi-sync/          the sync format, the merge and the fold — no account
+                            and no network in the merge itself
+  src/document.rs           shard naming and the merge rules, per document
+  src/local.rs              the adapter: publish, pull, recompute
+  src/http.rs, oauth.rs, dropbox.rs   the hand-written Dropbox client over `ureq`
+  src/reach.rs              the network probe a launch sync makes first
+  tests/                    convergence, two-device and Dropbox tests
 src-tauri/
   src/commands.rs           the IPC surface; thin wrappers over AppState methods
-  src/state.rs              embedded dataset, speech warm-up, the three stores
-                            (all three opened over the one database)
+  src/state.rs              embedded dataset, speech warm-up, the stores
+  src/asr.rs                the recognition model: manifest, download, recogniser.
+                            One of the only modules that opens a socket
+  src/say.rs                the synthesis model, on asr.rs's rules exactly
+  src/sync.rs               the sync account and the platform secret store
   src/licences.rs           the catalogue of notices that ship; see §8
-  src/capture.rs            microphone capture (cpal): open on press, dropped on
-                            release. The stream lives on its own thread because
-                            cpal::Stream is not Send on every backend
-  src/speech.rs             macOS `say` backend, voice selection
+  src/platform.rs           the mobile plugin bridge (Android insets, back,
+                            keystore) and the Kotlin/AVFoundation seams
+  src/capture.rs            microphone capture: cpal everywhere but Android
+  src/speech.rs             the platform synthesiser: macOS `say`, iOS
+                            AVSpeechSynthesizer, Android TextToSpeech
   tests/ipc_contract.rs     locks the JSON contract the UI reads
   tests/licences.rs         pins the notices, the version and the bundle config
   Info.plist                NSMicrophoneUsageDescription, merged over the
@@ -259,7 +285,7 @@ src-tauri/
                             hardened-runtime build captures silence; see §6
 src/
   App.svelte                shell: modes, navigation, keyboard, state ownership,
-                            and the stroke-order animation's clock
+                            the practice queue and the stroke-order animation clock
   lib/PracticeCanvas.svelte pointer capture, coalesced sampling, display space,
                             drag and click-to-draw input modes
   lib/CharacterThumb.svelte one small picture of one character's attempt
@@ -269,24 +295,33 @@ src/
   lib/TonePanel.svelte      the learner's pitch contour drawn over the expected
                             tone shape, with the verdict Rust worded
   lib/WordsPanel.svelte     the HSK word list: search, browse, practise
+  lib/VocabularyPanel.svelte the personal list: groups, entries, import/export
+  lib/PhrasesPanel.svelte   graded phrases with their bundled clips
+  lib/audio.ts              clip playback, rate, and on-device samples
   lib/LicencesPanel.svelte  About and licences: the notices, with their texts
-  lib/SettingsPanel.svelte  the four preferences; each change is written at once,
-                            and an unchosen one is offered as Automatic
-  lib/LessonSidebar.svelte  course, list and word navigation, progress marks
+  lib/SettingsPanel.svelte  the four preferences, plus the two optional model
+                            downloads; each change is written at once
+  lib/LessonSidebar.svelte  course, list, word and phrase navigation, progress marks
+  lib/Icon.svelte           the board's control glyphs
   lib/types.ts              TS mirror of the Rust structs
   lib/api.ts                typed invoke wrappers
   assets/fonts/             Noto Sans SC, the bundled interface face (OFL)
+public/audio/<corpus>/      committed phrase clips + manifest.json; see §8
 licences/                   every notice text that ships, plus README.md
-docs/research/              independent research notes behind open decisions
-scripts/                    fetch-data, with-cargo-env, tauri-cli, build-release,
-                            probe-app-sandbox
+docs/research/              research notes behind the open decisions
+docs/privacy-policy.md      the privacy policy Play requires (TODOs remain)
+store/                      the Play listing's copy and artwork
+scripts/                    fetch-data, fetch-sherpa, fetch-phrases, fetch-tts,
+                            with-cargo-env, tauri-cli, build-release,
+                            probe-app-sandbox, check-audio.py, cosyvoice-say.py
 .github/workflows/ci.yml    test + clippy + svelte-check on push
 ```
 
 **The seam to preserve:** `hanzi-core` must stay free of Tauri and platform
 dependencies. That is what makes the engine testable without a window, and what
 will let it run behind a mobile shell or a CLI unchanged. Anything that needs the
-window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`.
+window goes in `src-tauri`; anything that is *logic* goes in `hanzi-core`. The
+same rule put `hanzi-store` and `hanzi-sync` in crates of their own.
 
 ## 3a. Working conventions
 
@@ -330,8 +365,9 @@ The shape to use:
   truncated file must not be mistaken for a finished one;
 * summarise only at the end, and say what was skipped.
 
-`crates/hanzi-say/src/bin/synthesize_audio.rs` and
-`scripts/cosyvoice-say.py` need this and did not have it at the time of writing.
+`crates/hanzi-say/src/bin/synthesize_audio.rs` (which checks the clip's size, not
+just its name) and `scripts/cosyvoice-say.py` (`progress.json`, renamed into place
+after each item) both do this now. The shape is the rule, not either file.
 
 ## 4. Invariants — do not break these
 
@@ -623,35 +659,31 @@ The shape to use:
 Run before every commit:
 
 ```bash
-pnpm test           # 409 tests: engine + data pipeline units, the SQLite store, IPC contract, speech, notices, data-dir flag
+pnpm test           # 491 tests: engine + data-pipeline units, the SQLite store,
+                    # sync convergence, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
 
 These three are exactly what `.github/workflows/ci.yml` runs on every push and
-pull request, on a macOS runner, with no data step.
+pull request, on a macOS runner, with no data step — plus `pnpm run fetch-sherpa`,
+because that is the only input cargo does not obtain for itself.
 
 `pnpm test` enables hanzi-core's `prepare` feature deliberately, so the data
 pipeline's parsing — which upstream fields are trusted and how a word's reading is
 chosen — is covered by the same run. Without the feature flag the nine
 `prepare-data` tests silently do not run.
 
-Additionally, **if you touched anything in the grading path**:
+**If you touched the grading path**, also run `pnpm run selfcheck`:
 
 ```bash
 pnpm run selfcheck
 ```
 
-It reports self-consistency (must be a perfect 100 for *every* teachable
-character, on all four measures), tolerance under jitter, shape-metric
+It reports self-consistency, tolerance under jitter, shape-metric
 discrimination, robustness to how the pointer sampled the stroke, what the ink
-measure can see, and the cost of a grade. It has found five real bugs already: the
-stray-tap cutoff, the blank-canvas scoring, the order metric, the sample-mean
-placement metric, and — in M4 — the attempt at measuring ink with
-intersection-over-union, which the tolerance table exposed by dropping a sloppy
-hand from 99% legible to 4%. Treat a regression in its output as a failing test.
-
-The checks to read first, and what "healthy" looks like:
+measure can see, and the cost of a grade. Treat a regression in its output as a
+failing test. The checks to read first, and what "healthy" looks like:
 
 ```
   0 of 7744 teachable characters are not perfect
@@ -666,527 +698,451 @@ The checks to read first, and what "healthy" looks like:
   cost: 0.8 ms per grade on 鱻 (33 strokes)  <- target is under 20 ms
 ```
 
-The `0` on the verdict line is a hard invariant, not a statistic. If sampling
+The `0` on the verdict line is a hard invariant, not a statistic: if sampling
 alone changes a verdict, placement is being measured from the sample mean again
-and the number explodes into the thousands.
+and the number explodes into the thousands. The ink lines are the M4 tripwires.
+`a correct trace below the ink bar` and `characters with a Faint stroke` must both
+be **0**, because a correct trace is normalised to score exactly 1.000 on ink by
+construction — the moment that stops being true, "perfect" is unreachable for some
+character. `third-width pen ... below 0.6: 7744` is the measure working. The
+tolerance rows `sigma=15` and `sigma=30` must stay at 100% and 99.1%; if they
+collapse, the ink measure has started double-counting placement (which is what IoU
+did) rather than measuring ink.
 
-The ink lines are the M4 tripwires. `a correct trace below the ink bar` and
-`characters with a Faint stroke` must both be **0** — a correct trace is
-normalised to score exactly 1.000 on ink by construction, and the moment that
-stops being true, "perfect" is unreachable for some character and the bar is
-wrong. `third-width pen ... below 0.6: 7744` is the measure actually working. The
-tolerance rows `sigma=15` and `sigma=30` must stay at 100% and 99.1%: if they
-collapse again, the ink measure has started double-counting placement (which is
-what IoU did) rather than measuring ink.
+**Unless you changed grading on purpose, `selfcheck` must come out
+byte-identical before and after your change.** That is the tripwire for everything
+else: M2's scheduling, M3's new artifact payload and M7's canvas-only animation
+were all checked that way. The figures above are the ones M4 was allowed to move —
+the tolerance table's mean score drops a few points as shape, placement and order
+lost weight to ink, and `sigma=50` legibility went 53.2% → 52.4% because the ink
+bar now fails 8% of very rough attempts; `sigma=15` and `sigma=30` are unchanged.
+If you touch the rasteriser or the weights, re-read that table rather than
+assuming.
 
-`selfcheck` is also the tripwire for milestone M2: it must be **byte-identical**
-before and after a scheduling change, because scheduling interprets the score and
-must never alter it. Extracting the grade bands into `Grade::from_score` was
-checked that way. M3 was checked the same way for a different reason: it changed
-the artifact (a new payload struct, 9,443 words added), and every figure — the
-self-consistency 0 included — is unchanged, which is what proves the word list
-touched no geometry.
-
-M4 is the first milestone that was *allowed* to move these numbers, because it
-changed grading on purpose. What it moved: the self-consistency scores stay
-exactly 100 and the verdict-change count stays 0; the tolerance table's mean score
-drops a few points (shape/placement/order lost weight to ink) and `sigma=50`
-legibility went 53.2% → 52.4% because the ink bar now fails 8% of very rough
-attempts. `sigma=15` and `sigma=30` legibility are unchanged. If you touch the
-rasteriser or the weights, re-read that table rather than assuming.
-
-M7 changed no Rust at all — it is the canvas and the state above it — so
-`selfcheck` must come out **byte-identical**, and it does: 0 of 7,744 not perfect,
-0 verdict changes under resampling, the same tolerance rows. Reading it is still
-worth the minute, because it is the cheapest proof that an interface change did
-not reach into the grader. M10 moved the study data and touched no grading code
-either, and the same reasoning applies: `selfcheck` is unchanged.
-
-**If you touched the store**, the tests that matter are `crates/hanzi-store/tests/store.rs`:
-they start from documents written by the app's own JSON stores rather than
-fixtures, and they cover the import, the markers, the untouched bytes, the log
-past the 20 a card shows, WAL, and an uncommitted write. `src-tauri/tests/ipc_contract.rs`
-then covers the same ground through `AppState`, which is where the `Persisted`
-rules live. And check it **on the built binary** with `--user-dir`, because the
-data directory is the part a unit test cannot see:
+**If you touched the store**, `crates/hanzi-store/tests/store.rs` is the suite that
+matters: it starts from documents written by the app's own JSON stores rather than
+from fixtures, and covers the import, the markers, the untouched bytes, the log
+past the 20 a card shows, WAL, and an uncommitted write.
+`src-tauri/tests/ipc_contract.rs` covers the same ground through `AppState`, where
+the `Persisted` rules live. Check it **on the built binary** too, because the data
+directory is the part a unit test cannot see:
 
 ```bash
 ./.cargo-target/debug/hanzi-tutor --user-dir "$PWD/.tmp-db"   # then look in .tmp-db
 sqlite3 .tmp-db/hanzi.db "select key, value from meta; select ch, attempts from progress_card;"
 ```
 
-That is how M10 was checked: the binary created `hanzi.db` in the chosen
-directory, imported all three legacy documents, recorded the markers, and left the
-JSON byte-identical. Remember that a plain `cargo build` binary does not render
-(see §6) — for a run you can *look at*, use `pnpm run dev`.
+A plain `cargo build` binary does not render (see §6) — for a run you can *look
+at*, use `pnpm run dev`.
 
-**If you touched the scheduler**, the numbers to hold still are in
-`progress.rs`'s tests, which pin every interval and due date outright: a failure
-is due in 60 s, and passes at 12 h / 1 d / 2 d rising to 1 d / 6 d / `interval ×
-ease`, capped at a year. They will tell you which end of the policy you moved.
+**If you touched the scheduler**, the numbers to hold still are in `progress.rs`'s
+tests, which pin every interval and due date outright: a failure is due in 60 s,
+and passes at 12 h / 1 d / 2 d rising to 1 d / 6 d / `interval × ease`, capped at a
+year. They will tell you which end of the policy you moved.
 
-Then exercise the app and read its logs (see §2). The `graded …` line proves a
-real attempt went through; its absence means nobody has graded anything in that
-run. `progress …` follows it when the attempt was recorded, and the `review
-queue` line says what came due — but note that **drawing cannot be automated
-here** (see §6), so those two lines need a human at the trackpad. Everything
-downstream of them is covered by the IPC tests, which drive
-`AppState::load` → record → save → reload against real temp files.
+Then exercise the app and read its logs (§2). `graded …` proves a real attempt went
+through; `progress …` follows it when the attempt was recorded, and `review queue`
+says what came due — but **drawing cannot be automated here** (§6), so those two
+lines need a human at the trackpad. Everything downstream of them is covered by
+the IPC tests, which drive `AppState::load` → record → save → reload against real
+temp files.
 
 ## 6. Traps that cost time here
 
-- **Look, don't try to act.** `screencapture` now works (window-targeted; recipe
-  in §1), so verify visual work yourself instead of asking. Acting is still
-  blocked: AppleScript window inspection and `System Events` keystrokes both fail
-  with `A privilege violation occurred`, needing Accessibility rather than Screen
-  Recording. Anything that clicks, types or scrolls needs the human.
-- **You can still screenshot a graded panel without drawing.** Because the board
-  cannot be driven, feedback-panel changes look unverifiable — but `pnpm run dev`
-  serves the frontend over HMR, so a two-line temporary seed in `loadCharacter`
-  (grade `next.medians` and call `check()`) renders a real report for a capture,
-  and reverting is instant. M4's panel, its advice lines and the `faint` colour
-  were confirmed that way, and the seeded 100/100 and 83/100 runs reproduce the
-  `graded …` log lines quoted in §2. Take the seed out again before committing.
-  **M7's stroke-order animation needs the same trick** and is otherwise
-  unreachable: `setTimeout(() => void playStrokeOrder(), 1500)` in
-  `loadCharacter`, then capture the window every ~0.3 s for a few seconds. A
-  capture runs slower than the animation, so expect a handful of frames per
-  stroke — enough to see a stroke half-revealed with the pen at its head. Logging
-  a line per stroke (`TEMP play stroke i/n`) is what showed the stop and
-  navigate-away paths really do end the loop rather than leaving a timer behind.
+- **Look, don't try to act.** `screencapture` works (window-targeted; recipe in
+  §1). Acting does not: AppleScript window inspection and `System Events`
+  keystrokes fail with `A privilege violation occurred`, needing Accessibility
+  rather than Screen Recording. Anything that clicks, types or scrolls needs the
+  human.
+- **You can screenshot a graded panel without drawing.** `pnpm run dev` serves the
+  frontend over HMR, so a temporary two-line seed in `loadCharacter` (grade
+  `next.medians` and call `check()`) renders a real report for a capture, and
+  reverting is instant. **M7's stroke-order animation needs the same trick** and is
+  otherwise unreachable: `setTimeout(() => void playStrokeOrder(), 1500)` in
+  `loadCharacter`, then capture every ~0.3 s — a capture runs slower than the
+  animation, so expect a few frames per stroke. Log a line per stroke
+  (`TEMP play stroke i/n`) to see that stop and navigate-away really end the loop.
+  Take the seed out before committing.
 - **A phone-width layout can be checked without a phone, a Tauri window, or
-  Screen Recording.** `invoke` is the whole of the boundary `src/lib/api.ts`
-  crosses, so a scratch HTML entry that defines
-  `window.__TAURI_INTERNALS__.invoke` with canned answers mounts the real
-  `App.svelte` with the real CSS in a plain browser:
-  `./node_modules/.bin/vite --port 1420 --strictPort`, then open it. Take the
-  character's `outlines` and `medians` from `data/raw/graphics.txt` for the one
-  character you want on the board (`medians` are font-space, so flip with
-  `900 - y`) rather than committing a fixture: `data/raw/` is gitignored on
-  purpose, and a copy of LGPL geometry in a tracked mock is a second source of
-  truth for data the artifact already carries. Drive a headless Chrome over the
-  DevTools Protocol (`--remote-debugging-port`, `Emulation.setDeviceMetricsOverride`,
-  `Page.captureScreenshot`) to capture at a chosen device pixel ratio —
-  `--screenshot` cannot set one, and the ratio is the whole question when the
-  check is "does a row of tools fit a 390 px phone at 3x". Two things about that
-  Chrome, both learned the hard way and both cheap to repeat: the DevTools socket
-  **rejects the `Origin` header Node's `WebSocket` sends**, so drive it from
-  Python (`websocket-client` with `suppress_origin=True`) rather than from Node;
-  and it needs **`--no-sandbox`**, because under this sandbox crashpad cannot
-  write `~/Library/Application Support/Google/Chrome/Crashpad` and the browser
-  dies with `Trace/BPT trap: 5` — which reads as "headless Chrome does not work
-  here" rather than as a permission problem. Attaching straight to the page
-  target (`/json/list`) is steadier than creating a target and attaching a
-  session, which dropped the socket repeatedly.
-  That measurement is what says the current row is **one line on a phone**: three
-  cards 103 + 104 + 96 px inside the 366 px the stage gives them — 25 px of margin
-  either side, because the row is centred on the board rather than laid against the
-  left edge — and the row 74 px tall, with the commit row 44 px under it. The same
-  cards wrap to about 150 px when the phone is a little narrower, which is the
-  number to watch if a fourth tool is ever added — at 820 px the board column is
-  squeezed to 135 px by the two-column layout above the 760 px breakpoint, and the
-  row breaks there too.
-- **A page cannot change the phone's keyboard, and the vocabulary form must not
-  pretend otherwise.** Entering a word means three scripts in three fields —
-  hanzi, Latin pinyin, English meaning — and the obvious wish is for the keyboard
-  to follow the field. It cannot. No web API switches an input method's language:
-  `lang` is a hint, and Chromium's Android WebView does not even pass it on —
-  `ImeUtils.computeEditorInfo` fills in `inputType`, the autocorrect flags and
-  `imeOptions`, and never `EditorInfo.hintLocales` — while `inputmode` has no
-  `latin` value (its keywords are `none`, `text`, `decimal`, `numeric`, `tel`,
-  `search`, `email`, `url`; none of them names a language). Android gives an app
-  no public API to pick an input-method subtype either, so the keyboard's own
-  language key is the only switch. `VocabularyPanel.svelte` therefore sets `lang`
-  on each field for the screen reader and the spell checker — which is what the
-  attribute is actually for — and otherwise leaves the layout alone. Do not add
-  an attribute expecting the keyboard to move.
+  Screen Recording.** `invoke` is the whole boundary `src/lib/api.ts` crosses, so a
+  scratch HTML entry defining `window.__TAURI_INTERNALS__.invoke` with canned
+  answers mounts the real `App.svelte` and CSS in a plain browser
+  (`./node_modules/.bin/vite --port 1420 --strictPort`). Take the character's
+  `outlines` and `medians` from `data/raw/graphics.txt` (`medians` are font-space,
+  so flip with `900 - y`) rather than committing a fixture: `data/raw/` is
+  gitignored, and a tracked copy of LGPL geometry is a second source of truth. Drive
+  headless Chrome over the DevTools Protocol (`--remote-debugging-port`,
+  `Emulation.setDeviceMetricsOverride`, `Page.captureScreenshot`) to capture at a
+  chosen device pixel ratio — `--screenshot` cannot set one, and the ratio is the
+  whole question when the check is "does a row of tools fit a 390 px phone at 3x".
+  Two things about that Chrome: the DevTools socket **rejects the `Origin` header
+  Node's `WebSocket` sends**, so drive it from Python (`websocket-client` with
+  `suppress_origin=True`); and it needs **`--no-sandbox`**, because crashpad cannot
+  write `~/Library/Application Support/Google/Chrome/Crashpad` here and the browser
+  dies with `Trace/BPT trap: 5`, which reads as "headless Chrome does not work"
+  rather than as a permission problem. Attaching straight to the page target
+  (`/json/list`) is steadier than creating a target and attaching a session.
+- **A page cannot change the phone's keyboard.** Entering a word means three
+  scripts in three fields, and the keyboard cannot be made to follow the field. No
+  web API switches an input method's language: `lang` is a hint, and Chromium's
+  Android WebView does not even pass it on (`ImeUtils.computeEditorInfo` fills in
+  `inputType`, the autocorrect flags and `imeOptions`, never
+  `EditorInfo.hintLocales`), while `inputmode` has no `latin` value (its keywords are `none`, `text`, `decimal`,
+  `numeric`, `tel`, `search`, `email`, `url` — none names a language). Android gives
+  an app no public API to pick an input-method subtype either, so the keyboard's
+  own language key is the only switch. `VocabularyPanel.svelte` therefore sets
+  `lang` on each field for the screen reader and the spell checker, and otherwise
+  leaves the layout alone. Do not add an attribute expecting the keyboard to move.
 - **The pinyin tone key writes the mark; the interface never guesses where it
-  goes.** Typing `xuéxí` on a phone is two taps per accented vowel on a keyboard
-  that hides them, so `VocabularyPanel.svelte` has a tone row that calls
-  `mark_tone`. The placement rule — `a`, then `o`, then `e`, then the last of
-  `i`/`u`/`ü`, which is what puts the mark on the `u` of `iu` and the `i` of
-  `ui` — lives in `pinyin.rs`, beside the code that reads those marks back,
-  because a mark written one way and read another is two rules for one thing. The
-  caret crosses the boundary as a **character** offset, not the UTF-16 index
-  `selectionStart` reports, and the panel converts both ways. Do not move the rule
-  into TypeScript, and do not "simplify" it into inserting a bare accented vowel:
-  the whole point is that the learner does not have to know which letter takes it.
+  goes.** Typing `xuéxí` on a phone is two taps per accented vowel, so
+  `VocabularyPanel.svelte` has a tone row that calls `mark_tone`. The placement
+  rule — `a`, then `o`, then `e`, then the last of `i`/`u`/`ü`, which is what puts
+  the mark on the `u` of `iu` and the `i` of `ui` — lives in `pinyin.rs`, beside
+  the code that reads those marks back: a mark written one way and read another is
+  two rules for one thing. The caret crosses the boundary as a **character**
+  offset, not the UTF-16 index `selectionStart` reports. Do not move the rule into
+  TypeScript, and do not insert a bare accented vowel instead.
 - **A phone's 360 px is the panel's 320 px, and the vocabulary card was measured,
-  not guessed.** `main` is padded 20 px a side, so the width to design against is
-  the viewport minus 40. With three 30 px glyph buttons in the row, the group chip
-  and the practice record left the reading column **zero** width at 320 px — the
-  card fitted and the reading vanished, which is the worse failure because the
-  reading is what the row is for. The chip and the record now sit under the
-  reading in `.meta` where they may wrap, and the glyph is capped at 34 % so a
-  six-character entry cannot take the row. Re-measure with a scratch entry before
-  adding a fourth thing to that row. The same card's action key is
-  `enterkeyhint="next"` on the first three fields and `done` on the last, with
-  `advance()` moving focus, so the key does what its label says; a key pressed
-  during an IME composition is left to the keyboard, because that is what commits
-  a candidate.
+  not guessed.** `main` is padded 20 px a side, so design against the viewport
+  minus 40. With three 30 px glyph buttons in the row, the group chip and the
+  practice record left the reading column **zero** width at 320 px — the card
+  fitted and the reading vanished, which is the worse failure. The chip and the
+  record now sit under the reading in `.meta` where they may wrap, and the glyph is
+  capped at 34 % so a six-character entry cannot take the row. Re-measure before
+  adding a fourth thing there. The action key is `enterkeyhint="next"` on the first
+  three fields and `done` on the last, with `advance()` moving focus; a key pressed
+  during an IME composition is left to the keyboard, because that is what commits a
+  candidate.
 - **The stroke-order sweep is a clip, not a fade, and the band's width comes from
-  the outline.** `drawSweptStroke` in `render.ts` fills the outline clipped to
-  the band the pen has covered. Make the band a constant and you get one of two
-  failures, both visible immediately: too narrow and the outline's edges arrive
-  in disconnected fragments that look like a rendering fault; wide enough for the
-  widest stroke and a short 点 flashes in whole. So `strokeRadii` measures each
-  stroke's half-width once per character by walking outward from its centre-line
-  with `ctx.isPointInPath` and caches it. The trap inside that: `isPointInPath`
-  takes its point in *canvas* coordinates while the path is transformed by the
-  current matrix, so the measurement clears the transform and works in font space
-  at 1:1 — measuring under the drawing transform silently reports nonsense.
+  the outline.** `drawSweptStroke` in `render.ts` fills the outline clipped to the
+  band the pen has covered. A constant band gives one of two visible failures: too
+  narrow and the outline's edges arrive in disconnected fragments; wide enough for
+  the widest stroke and a short 点 flashes in whole. So `strokeRadii` measures each
+  stroke's half-width once per character with `ctx.isPointInPath` and caches it.
+  The trap inside that: `isPointInPath` takes its point in *canvas* coordinates
+  while the path is transformed by the current matrix, so the measurement clears the
+  transform and works in font space at 1:1 — measuring under the drawing transform
+  silently reports nonsense.
 - **A key that means two things has to be cancelled in the capture phase.** In
   click-to-draw mode (M8) Backspace abandons the open stroke, and with no stroke
-  open it is still the app's undo — two listeners on `window`, one in
-  `PracticeCanvas` and one in `App`. Registering the cancel with
+  open it is the app's undo — two listeners on `window`, one in `PracticeCanvas`
+  and one in `App`. Registering the cancel with
   `addEventListener("keydown", …, true)` puts it in the capture phase, where
-  `stopPropagation()` keeps the event from ever reaching `App`'s bubble-phase
-  handler. Both listeners on the *same* node would not do it: at-target phase runs
-  capture and bubble listeners in registration order, so only
-  `stopImmediatePropagation` would separate them — and that is not what a real
-  keypress does, where the target is `body` and `window` is an ancestor.
-- **Pointer work can be verified here after all — with synthetic events.** Drawing
-  cannot be *driven* (§1, §6), but `PracticeCanvas`'s handlers are ordinary DOM
-  handlers, so a temporary seed can dispatch `new PointerEvent("pointerdown" |
-  "pointermove" | "pointerup", {clientX, clientY, buttons, pointerId: 1,
-  bubbles: true})` at the canvas with coordinates computed from the canvas rect,
-  and the app's own log (a `TEMP …` line through `api.log`) reports what the state
-  became. Two things to know: stub `setPointerCapture` / `releasePointerCapture`
-  first, because a synthetic pointer id is not a real pointer and the call throws;
-  and dispatch key events at `document.body` with `bubbles: true`, not at
-  `window`, or the capture trick above is not exercised. That is how M8's six
-  cases were checked — the same geometry from both modes, Escape, Backspace,
-  `pointercancel` and a mid-draft mode switch — and it is worth reaching for
-  before declaring any input change unverifiable. Take the seed out afterwards.
-  Synthetic events still do not prove that the *platform* delivers hover moves
-  the way the handlers assume, so the last step is a human at the trackpad:
-  click-to-draw was confirmed that way after M8 landed, and that confirmation is
-  what the §2 row means by "human-confirmed".
+  `stopPropagation()` keeps the event from reaching `App`'s bubble-phase handler.
+  Both listeners on the *same* node would not do it: at-target phase runs capture
+  and bubble listeners in registration order, so only `stopImmediatePropagation`
+  would separate them — and that is not what a real keypress does, where the target
+  is `body` and `window` is an ancestor.
+- **Pointer work can be verified here after all — with synthetic events.** A
+  temporary seed can dispatch `new PointerEvent("pointerdown" | "pointermove" |
+  "pointerup", {clientX, clientY, buttons, pointerId: 1, bubbles: true})` at the
+  canvas with coordinates computed from the canvas rect, and the app's own log (a
+  `TEMP …` line through `api.log`) reports what the state became. Stub
+  `setPointerCapture` / `releasePointerCapture` first, because a synthetic pointer
+  id is not a real pointer and the call throws; and dispatch key events at
+  `document.body` with `bubbles: true`, not at `window`, or the capture trick above
+  is not exercised. Take the seed out afterwards. This does not prove the *platform*
+  delivers hover moves as the handlers assume, so the last step is a human at the
+  trackpad — that is what the §2 "human-confirmed" means.
 - **A stroke has to end where the pointer was released.** `handleUp` in
   `PracticeCanvas.svelte` appends the `pointerup` position before committing the
-  stroke. Without that, a quick flick whose only sample arrives with the release
-  collapses to a single point, and the grader then discards it as an accidental
-  tap — so the learner watches a stroke disappear and gets a puzzling "1 mark was
-  too small to be a stroke" note instead of a grade. `push` ignores a sample that
-  merely repeats the previous one, so appending it is free.
-- **Pointer samples arrive by time, not by distance.** This is the trap that hid
-  the placement bug for a long time, and it has two halves. First, never measure
-  position with a sample mean (invariant 15): sample density is a record of
-  drawing *speed*, so the mean moves when the learner speeds up, and the resulting
-  verdict — "wrong place" on a stroke they traced, with the shape score reading
-  95% — is impossible to act on. Second, **synthetic jitter cannot find this class
-  of bug**, because jittering a reference preserves its sample density: the whole
-  tolerance table stayed healthy while 18,763 strokes changed verdict under
-  realistic sampling. Anything that consumes pointer geometry needs a
-  density-perturbed case as well as a noisy one; `selfcheck`'s fourth section is
-  that case, and it is the only reason this is now visible.
+  stroke. Otherwise a quick flick whose only sample arrives with the release
+  collapses to a single point, and the grader discards it as an accidental tap — so
+  the learner watches a stroke disappear and gets "1 mark was too small to be a
+  stroke" instead of a grade. `push` ignores a sample that repeats the previous one,
+  so appending it is free.
+- **Pointer samples arrive by time, not by distance.** Sample density records
+  drawing *speed*, so anything judging where a stroke sits must not use a sample
+  mean (invariant 15): the mean moves when the learner speeds up, and the verdict —
+  "wrong place" on a stroke they traced, with the shape score reading 95% — is
+  impossible to act on. And **synthetic jitter cannot find this class of bug**,
+  because jittering a reference preserves its sample density: the whole tolerance
+  table stayed healthy while 18,763 strokes changed verdict under realistic
+  sampling. `selfcheck`'s fourth section is the density-perturbed case.
 - **The stray-tap filter is not a scoring rule.** Marks below
   `min(min_stroke_len, shortest_reference * 0.5)` are removed *before* strokes are
-  paired, so they cannot influence any verdict or score (there is a test proving
-  the report is identical with and without one). The threshold is 12 of 1024
-  units; only 2 of 112,617 reference strokes in the whole dataset are that short,
-  so it is a genuine accidental-touch filter and not a limit on short strokes.
-  Keep the UI's wording free of any causal link to the stroke verdicts.
+  paired, so they cannot influence any verdict or score (a test proves the report is
+  identical with and without one). The threshold is 12 of 1024 units; only 2 of
+  112,617 reference strokes in the dataset are that short. Keep the UI's wording
+  free of any causal link to the stroke verdicts.
 - **Do not measure the element you are sizing.** The canvas is sized in CSS from
-  `side`, which starts at 0, so an observer on *the canvas* can never see a size
-  to grow into. `PracticeCanvas.svelte` observes the surrounding board instead.
-  This was a silent deadlock — the window opened with an invisible canvas.
-- **The report column must not size the board.** `.workspace` is one grid row and
-  that row is `minmax(0, 1fr)`, pinned to the height `main` left it, because a row
-  with an `auto` size grows to whatever is in it — and the tallest thing in it is
-  the feedback column whenever a tone or a grading report is on screen. Sizing the
-  row that way handed the board its height from the report: the square was
-  re-fitted to the taller box, `place-items: center` pushed it down by half of the
-  extra, and the controls slid off the bottom of the window when a tone was
-  scored. Measured with a four-syllable tone report and a grading report beside
-  it, on a 1180×840 window: the board's top went from 120 to 247 (and the page
-  from 808 to 1052 of scroll) before the row was pinned, and stayed at 120 with
-  it. `main` also carries `scrollbar-gutter: stable`, without which the page
-  scrollbar the report brings with it takes its width out of the board and the
-  square quietly shrinks by ~15 px. The board's *size* is deliberately still a
-  fit to the window — what it must not do is change because a report appeared.
+  `side`, which starts at 0, so an observer on *the canvas* can never see a size to
+  grow into. `PracticeCanvas.svelte` observes the surrounding board instead. This
+  was a silent deadlock — the window opened with an invisible canvas.
+- **The report column must not size the board.** `.workspace` is one grid row,
+  `minmax(0, 1fr)`, pinned to the height `main` left it: a row with an `auto` size
+  grows to whatever is in it, and the tallest thing in it is the feedback column.
+  Sizing it that way handed the board its height from the report — the square was
+  re-fitted, `place-items: center` pushed it down by half the extra, and the
+  controls slid off the bottom when a tone was scored (on a 1180×840 window the
+  board's top went from 120 to 247). `main` also carries `scrollbar-gutter: stable`,
+  without which the page scrollbar the report brings takes its width out of the
+  board. The board's *size* is deliberately still a fit to the window; what it must
+  not do is change because a report appeared.
 - **The phone's top bar carries the navigation, never the character.** It held the
-  character's own glyph, which in recall mode is exactly the answer the mode
-  exists to withhold, printed in the corner of the screen. The header beside the
-  meaning held the `← n / N →` widget, which on a 390 px screen took a third of the
-  width the meaning had. The widget is now drawn once — as a `characterNav()`
-  snippet — in two rows, the top bar on a phone and the header on a wide screen,
-  and both move whatever `nav` in the script says is live (the course, or a list,
-  word or review queue). `practising` decides whether the top bar draws it at all;
-  it is the branch order of the markup written as one condition, and the type
-  checker needs that order written as `!character` in the markup, so the two have
-  to be changed together. The character's details fold there too (`.meta.open`,
-  `showDetails`): folded, the meaning keeps two lines through `-webkit-line-clamp`
-  and the strokes, radical, level, frequency, progress and etymology sit inside
-  `#character-details` behind a More button that a wide screen never draws.
-  Checked at 390×844 in the app's own window — one width-based media query, so iOS
-  and Android are the same layout.
+  character's own glyph, which in recall mode is exactly the answer the mode exists
+  to withhold. The `← n / N →` widget now comes from one `characterNav()` snippet,
+  drawn in the top bar on a phone and the header on a wide screen; both move
+  whatever `nav` says is live (the course, or a list, word or review queue), and
+  `practising` decides whether the top bar draws it at all — the branch order of the
+  markup written as one condition, so the two change together. The character's
+  details fold there too (`.meta.open`, `showDetails`): folded, the meaning keeps two
+  lines through `-webkit-line-clamp` and the rest sits in `#character-details` behind a
+  More button a wide screen never draws. Checked at 390×844; one
+  width-based media query, so iOS and Android are the same layout.
 - **iOS decides whether there is an input at all from the audio *category*, and
-  `cpal` asks it.** The first device build with tone practice in it failed every
-  recording with **"channel count must be at least 1"**: `cpal` reads the input
-  channel count from `AVAudioSession.inputNumberOfChannels()`, and the session
-  this app shares with its speech was on `playback` — which has no input, so the
-  count was zero and the stream was refused. That reads like a broken microphone
-  and is not one. `capture.rs` now takes the session as `playAndRecord`
-  (measurement mode, `defaultToSpeaker`, `allowBluetoothHFP`), *activates* it,
-  and only then asks the device for its configuration; it gives the session back
-  when the stream is gone. It is the mirror of `speech.rs`'s playback session,
-  and the two are the only places that set it.
-  *The same surprise has a second half.* Taking the session **is** a route
-  change — the category moves, and the output moves from the receiver to the
-  loudspeaker — and `cpal` reports that to the stream's error callback as
-  "Audio route changed" (`StreamInvalidated`, or `DeviceChanged` for a removed
-  device). Its iOS backend only refreshes its latency estimate for those and
-  leaves the stream running, which its own `ErrorKind` documents ("the stream
-  remains active and no rebuild is required"), so treating the callback as fatal
-  threw away an utterance that was being captured perfectly well, as "The
-  microphone stopped: Audio route changed". Both kinds are now logged and
-  ignored on iOS; `DeviceNotAvailable` ("No suitable audio route for the session
-  category") still fails the recording. Nothing here affects Android, which
-  records through Kotlin's `AudioRecord` and always did.
+  `cpal` asks it.** The first device build with tone practice failed every recording
+  with **"channel count must be at least 1"**: `cpal` reads the input channel count
+  from `AVAudioSession.inputNumberOfChannels()`, and the session this app shares
+  with its speech was on `playback` — which has no input, so the count was zero and
+  the stream was refused. That reads like a broken microphone and is not one.
+  `capture.rs` now takes the session as `playAndRecord` (measurement mode,
+  `defaultToSpeaker`, `allowBluetoothHFP`), *activates* it, and only then asks the
+  device for its configuration; it gives the session back when the stream is gone.
+  *Second half:* taking the session **is** a route change, which `cpal` reports to
+  the stream's error callback as "Audio route changed" (`StreamInvalidated`, or
+  `DeviceChanged` for a removed device). Its iOS backend only refreshes its latency
+  estimate for those and leaves the stream running, which its own `ErrorKind`
+  documents — so treating the callback as fatal threw away an utterance that was
+  being captured perfectly well, as "The microphone stopped: Audio route changed".
+  Both kinds are now logged and ignored on iOS; `DeviceNotAvailable` still fails the
+  recording. Nothing here affects Android, which records through Kotlin's
+  `AudioRecord`.
 - **macOS voice names carry a locale qualifier**: `Tingting (Chinese (China
   mainland))`, not `Tingting`. Compare `base_name()`. A fixture with tidy names
   passed while the real list never matched, so the app quietly used another voice.
 - **`say -v '?'` takes ~1 s** and lists every voice twice. Resolve it lazily and
   warm it on a background thread; never on the startup path.
 - **Keep pointer-frequency data out of `$state`.** The in-progress stroke lives in
-  a plain variable in `PracticeCanvas.svelte` and only schedules a repaint;
-  making it reactive would deep-proxy on every pointer move.
+  a plain variable in `PracticeCanvas.svelte` and only schedules a repaint; making
+  it reactive would deep-proxy on every pointer move.
 - **Vite must ignore `.cargo-target/` and `.cargo-home/`** (already configured) or
   the dev server thrashes watching build output.
 - **`cargo build`: the dev profile is `opt-level = 1`** for both the workspace and
   dependencies, so grading feels instant while iterating. Do not remove it.
 - **The cursor row only changes when the cursor moves.** `set_index` returns false
-  for the same position, and the UI debounces by 400 ms and skips a write that
-  matches what it just restored, so a fresh install writes no cursor row until you
-  actually navigate. If you are checking persistence by hand and see nothing in
+  for the same position, and the UI debounces by 400 ms and skips a write matching
+  what it just restored, so a fresh install writes no cursor row until you actually
+  navigate. If you are checking persistence by hand and see nothing in
   `course_cursor`, that is why — move a step, then look.
 - **A plain `cargo build` binary renders a blank window.** The frontend comes from
   `build.devUrl` (`http://localhost:1420`) unless the Tauri CLI builds it for
   production, so `.cargo-target/debug/hanzi-tutor` run by hand is a white window
-  with no `[webview]` lines — only `[data]` and `[speech]` — unless Vite is up.
-  Use `pnpm run dev` to look at the app, or the binary inside a built `.app` to
-  test the packaged path. This is not a broken build, and it wasted an hour once.
-- **The Rust side already cross-compiles for iOS.** `cargo check -p hanzi-tutor
-  --target aarch64-apple-ios` succeeds unchanged — engine, bundled SQLite, Tauri
-  and all — which is worth knowing before estimating M9. It emits three dead-code
-  warnings in `speech.rs` (the `Command`/`Stdio` imports, `hold`, and
-  `parse_voices`; the macOS-only pieces are not gated tightly enough), and clippy
-  with `-D warnings` would fail on them, so that is the first thing to tidy.
-- **An iOS build cannot finish inside this file sandbox.** The same check gets all
-  the way through the dependency graph and then dies in Tauri's Swift glue:
-  `swift-rs` builds `tauri/mobile/ios-api` with `swift build`, which wants the
-  swiftpm caches under `~/Library` and applies its *own* nested sandbox, both of
-  which workspace-write refuses — `sandbox_apply: Operation not permitted`, the
-  same wall `scripts/probe-app-sandbox.sh` documents in §7. It is the environment
-  rather than the code: with a wider sandbox the check finishes in 20 s. Expect
-  `tauri ios init`, `ios dev` and `xcodebuild` to need the same, since they write
-  to `~/Library/Developer` and the CocoaPods caches.
+  with no `[webview]` lines — only `[data]` and `[speech]` — unless Vite is up. Use
+  `pnpm run dev` to look at the app, or the binary inside a built `.app` to test the
+  packaged path. This is not a broken build, and it wasted an hour once.
+- **The Rust side cross-compiles for iOS unchanged.** `cargo check -p hanzi-tutor
+  --target aarch64-apple-ios` succeeds — engine, bundled SQLite, Tauri and all.
+  `speech.rs`'s macOS-only pieces are gated tightly enough for that target's
+  `-D warnings` now; that was the one tidy-up M9 needed.
+- **An iOS build cannot finish inside this file sandbox.** The check gets through
+  the dependency graph and then dies in Tauri's Swift glue: `swift-rs` builds
+  `tauri/mobile/ios-api` with `swift build`, which wants the swiftpm caches under
+  `~/Library` and applies its *own* nested sandbox — `sandbox_apply: Operation not
+  permitted`, the same wall `scripts/probe-app-sandbox.sh` documents in §7. It is
+  the environment, not the code: with a wider sandbox the check finishes in 20 s.
+  Expect `tauri ios init`, `ios dev` and `xcodebuild` to need the same, since they
+  write to `~/Library/Developer` and the CocoaPods caches.
 - **The study data is a database, so "look at your data" means `sqlite3`.** The
   tables are `progress_card`, `attempt` (every attempt, ever), `vocab_entry`,
-  `vocab_group`, `course_cursor` and `meta`. `hanzi.db-wal` and `hanzi.db-shm`
-  beside it are SQLite's write-ahead log and shared memory, not stray files; the
-  `-wal` file is where a save lives until the next checkpoint, which is exactly
-  what makes a kill mid-write survivable. The three JSON documents of an older
-  install are **imports**, not outputs: after the import they are never read or
-  written again, so do not "tidy them up" and do not add code that rewrites them.
+  `vocab_group`, `course_cursor`, `settings` and `meta`. `hanzi.db-wal` and
+  `hanzi.db-shm` are SQLite's write-ahead log and shared memory, not stray files;
+  the `-wal` file is where a save lives until the next checkpoint, which is what
+  makes a kill mid-write survivable. The three JSON documents of an older install
+  are **imports**, not outputs: after the import they are never read or written
+  again.
 - **`tauri ios dev` is for *devices*; simulators are a different route.** The
   `[DEVICE]` argument is matched against connected hardware, and the CLI prints
   simulators in that same "Detected connected device" list — so passing a
-  simulator's name makes it build with `-sdk iphoneos`, which then fails asking
-  for a development team and provisioning profiles. That error is misleading: the
-  target was a simulator all along. The two routes that work here are
-  `tauri ios dev --open` (opens Xcode; you pick a simulator and press Run — the
-  only path that gives hot reload) and, headlessly,
+  simulator's name makes it build with `-sdk iphoneos`, which then fails asking for
+  a development team. That error is misleading: the target was a simulator all
+  along. The two routes that work are `tauri ios dev --open` (opens Xcode; you pick
+  a simulator and press Run — the only path with hot reload) and, headlessly,
   `tauri ios build --debug --target aarch64-sim --ci` followed by
-  `xcrun simctl install <udid> "<app>"`, `xcrun simctl launch <udid> com.hanzitutor.app`,
-  and `xcrun simctl io <udid> screenshot shot.png` to look at it.
+  `xcrun simctl install <udid> "<app>"`, `xcrun simctl launch <udid>
+  com.hanzitutor.app`, and `xcrun simctl io <udid> screenshot shot.png`.
 - **The test device is a *simulator* unless `xcrun devicectl list devices` says
   otherwise.** This machine has an iPhone for every model name and five iOS
-  runtimes, and `xcrun devicectl` is what distinguishes hardware ("available,
-  paired") from the `simulated` column. The one real phone is `HHIP1`, an
-  iPhone14,3.
+  runtimes, and `devicectl` is what distinguishes hardware ("available, paired")
+  from the `simulated` column. The one real phone is `HHIP1`, an iPhone14,3.
 - **AVFoundation objects are not `Send`, so iOS speech runs on the main thread.**
-  `Retained<AVSpeechSynthesizer>` cannot live in `Speaker` — Tauri requires the
-  shared state to be `Send + Sync`, and objc2 marks these classes main-thread-only
-  by default — so the synthesiser lives in a `thread_local` on the main thread and
-  every call goes through `with_main`, which runs inline when it is already there
-  (dispatching synchronously to the queue you are standing on is a deadlock) and
-  otherwise hops the queue and waits on a channel. Only plain data (`Vec<Voice>`,
-  a `Result`) crosses back. On iOS the `Utterance` field does not exist at all:
-  the macOS backend holds a `say` process, iOS holds nothing, which is why the
-  struct has a `#[cfg]` on that field.
+  `Retained<AVSpeechSynthesizer>` cannot live in `Speaker` — Tauri requires shared
+  state to be `Send + Sync`, and objc2 marks these classes `MainThreadOnly` — so the
+  synthesiser lives in a `thread_local` on the main thread and every call goes
+  through `with_main`, which runs inline when it is already there (dispatching
+  synchronously to the queue you are standing on is a deadlock) and otherwise hops
+  the queue and waits on a channel. Only plain data (`Vec<Voice>`, a `Result`) crosses back. On iOS the
+  `Utterance` field does not exist at all, which is why the struct has a `#[cfg]` on
+  it.
 - **iOS speech takes the audio session, and gives it back — a few seconds later.**
-  The device build spoke on the simulator and was silent on the phone with no
-  error anywhere, because the default `soloAmbient` category is muted by the
-  Ring/Silent switch — and the simulator cannot reproduce that, having no such
-  switch. Pronunciation now sets `playback` + `spokenAudio` + `duckOthers` for an
-  utterance and deactivates the session (`notifyOthersOnDeactivation`)
-  `SESSION_HOLD_MS` after the synthesizer reports it finished or cancelled. A
-  deliberate tap on "Hear it" is therefore audible whatever the switch says, while
-  a learner's music is ducked rather than stopped and returns to volume shortly
-  after the word ends. **The hold is not slack: handing the session straight back
-  powered the route down between words, and the next one crackled** — see "The
-  crackle on the first word, and not the second". Four details are load-bearing:
+  The device build spoke on the simulator and was silent on the phone with no error
+  anywhere, because the default `soloAmbient` category is muted by the Ring/Silent
+  switch — and the simulator has no such switch. Pronunciation now sets `playback` +
+  `spokenAudio` + `duckOthers` for an utterance and deactivates the session
+  (`notifyOthersOnDeactivation`) `SESSION_HOLD_MS` after the synthesizer reports it
+  finished or cancelled, so an explicit tap is audible whatever the switch says and
+  ducked music returns shortly after the word ends. **The hold is not slack: handing
+  the session straight back powered the route down between words, and the next one
+  crackled.** Four details are load-bearing:
   * The hold is armed only when `isSpeaking` is false. `Speaker::speak` stops the
     previous utterance before starting the next, and AVFoundation may deliver that
-    cancellation *after* its replacement has begun: releasing then cuts the new
-    word off mid-syllable.
-  * `SESSION_GENERATION` is what makes a stale timer stand down. Every utterance
-    bumps it through `take_session`; a timer that wakes to find it moved on leaves
-    the session alone. Both the check and the release run on the main thread, where
-    `take_session` runs, so a tap landing while the timer sleeps wins.
-  * `stop_on_main` deliberately releases nothing. The cancellation callback arms
-    the hold, and `Speaker::speak` stops before it speaks — releasing there would
-    be the cold route the hold exists to avoid.
+    cancellation *after* its replacement has begun: releasing then cuts the new word
+    off mid-syllable.
+  * `SESSION_GENERATION` makes a stale timer stand down. Every utterance bumps it
+    through `take_session`; a timer that wakes to find it moved on leaves the
+    session alone. Check and release both run on the main thread, where `take_session`
+    runs, so a tap landing while the timer sleeps wins.
+  * `stop_on_main` deliberately releases nothing. The cancellation callback arms the
+    hold, and `Speaker::speak` stops before it speaks — releasing there would be the
+    cold route the hold exists to avoid.
   * `AVSpeechSynthesizer.delegate` is a **weak** property, which is why the
-    synthesizer lives in a `Speech` struct beside its `Retained` delegate rather
-    than alone in the `thread_local`. The delegate is ordinary Rust with no
-    `MainThreadOnly`, and its callbacks arrive on the main thread, which is also
-    where the session calls belong.
-  * Failing to take the session is logged and otherwise ignored: it costs volume,
-    not speech.
-- **Never hold the synthesizer's `RefCell` borrow across an AVFoundation call.**
-  A delegate callback can run inline on the main thread during
-  `speakUtterance`/`stopSpeakingAtBoundary`, and it borrows the same
-  `thread_local`; a live `RefMut` would panic. Both call sites clone the
+    synthesizer lives in a `Speech` struct beside its `Retained` delegate rather than
+    alone in the `thread_local`. Failing to take the session is logged and otherwise
+    ignored: it costs volume, not speech.
+- **`Speaker::prime` builds the synthesiser and starts the route before anyone
+  asks**, from the existing background voice warm-up thread — that is what makes the
+  *first* tap warm rather than only the second. Without it the first tap cracked,
+  because AVFoundation feeds buffers into a route that has not finished starting.
+  Related and not changed: `audio.ts`'s `playSamples` builds a fresh `AudioContext`
+  per utterance and closes it on `ended`, the same class of glitch — look there if a
+  crackle turns up on a *phrase* rather than a character.
+- **Never hold the synthesizer's `RefCell` borrow across an AVFoundation call.** A
+  delegate callback can run inline on the main thread during
+  `speakUtterance`/`stopSpeakingAtBoundary` and borrows the same `thread_local`; a
+  live `RefMut` would panic. Both call sites clone the
   `Retained<AVSpeechSynthesizer>` out of the borrow and call through the clone.
 - **iOS 26 and 27 kill an app that has not adopted the scene life cycle — and it
-  looks like nothing at all.** On the phone the app showed a black flash, closed,
-  and printed nothing to its own log; the only evidence was a crash report
-  (`idevicecrashreport -u <udid> -k <dir>`), whose faulting frame names it
-  exactly:
-
-  ```
-  EXC_BREAKPOINT (SIGTRAP)
-  UIKitCore  ___UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption_block_
-  ```
-
-  The simulator did not complain because it runs iOS 18. `tao` already implements
-  the scene delegate (`TaoSceneDelegate`, in
+  looks like nothing at all.** On the phone the app showed a black flash, closed, and
+  printed nothing to its own log; the only evidence was a crash report
+  (`idevicecrashreport -u <udid> -k <dir>`) naming
+  `___UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption_block_` at
+  `EXC_BREAKPOINT (SIGTRAP)`. The simulator did not complain because it runs iOS 18.
+  `tao` already implements the scene delegate (`TaoSceneDelegate`, in
   `tao/src/platform_impl/ios/scene.rs`), so nothing needs patching — what was
-  missing is the declaration that makes UIKit create a scene at all:
-  `UIApplicationSceneManifest`, which Tauri's iOS template does not add. It lives
-  in `src-tauri/Info.ios.plist`, which the CLI **merges at build time** (not at
-  `ios init`: re-initialising alone left the generated `Info.plist` without it,
-  while the built app's did have it). Two details are load-bearing and both were
-  learned the hard way:
-
-  * `UIApplicationSupportsMultipleScenes` must be **true**. That is not a claim
-    that this app wants several windows: it is the switch that puts `tao` into
-    scene mode at all (`multiple_scenes_enabled()` in
-    `tao/src/platform_impl/ios/scene.rs`). With it **false** the crash above is
-    gone but the app shows a **black screen** — tao takes its pre-scene path,
-    creates the window in `didFinishLaunching` before any scene exists, and a
-    window that is not attached to a scene is invisible once a manifest is
-    present. A black screen instead of a crash is much harder to read: nothing
-    is logged and the crash reports stop.
+  missing is `UIApplicationSceneManifest`, which Tauri's iOS template does not add.
+  It lives in `src-tauri/Info.ios.plist`, which the CLI **merges at build time**
+  (not at `ios init`: re-initialising alone left the generated `Info.plist` without
+  it). Two details are load-bearing:
+  * `UIApplicationSupportsMultipleScenes` must be **true**. That is not a claim that
+    this app wants several windows: it is the switch that puts `tao` into scene mode
+    at all (`multiple_scenes_enabled()`). With it **false** the crash is gone but the app shows a **black screen**,
+    because tao then creates the window in `didFinishLaunching` before any scene
+    exists, and a window not attached to a scene is invisible once a manifest is
+    present. A black screen instead of a crash is much harder to read: nothing is
+    logged and the crash reports stop.
   * There must be **no `UISceneConfigurations`**. tao answers UIKit's
-    `configurationForConnectingSceneSession` with a `UISceneConfiguration` named
-    `TaoScene` and sets its delegate class to `TaoSceneDelegate` itself; naming a
-    delegate in this file as well is a second, competing source of truth.
+    `configurationForConnectingSceneSession` with its own `UISceneConfiguration` named
+    `TaoScene`, with the delegate class set; naming a delegate here as well is a second, competing source
+    of truth.
 
-  Diagnose this class of failure on the **simulator**, not the phone: the same
-  manifest that black-screens an iOS 27 phone black-screens an iOS 18 simulator,
-  and the simulator can be screenshotted.
-- **A device build writes `DEVELOPMENT_TEAM` into the generated
-  `project.pbxproj`.** It is Xcode's doing, not the project's; revert that line
-  before committing, so the file does not carry one person's team.
+  Diagnose this on the **simulator**: the same manifest black-screens both, and the
+  simulator can be screenshotted.
+- **A device build needs `~/Library/Developer/Xcode`, and the sandbox that
+  withholds it fails in a way that reads like a signing problem.** Under a
+  workspace-write file policy `xcodebuild` dies in *Build Preparation* — before it
+  compiles or signs anything: `Couldn't create workspace arena folder
+  '…/DerivedData/hanzi-tutor-…': Unable to write to info file`, then `Error saving
+  log: … Code=1 "Operation not permitted"` for the `.xcactivitylog`, and exit 65.
+  The giveaway is the phase: no signing step is named, and an ordinary `touch` into
+  `~/Library/Developer/Xcode/DerivedData` fails the same way while a write inside
+  the repository succeeds. `xcodebuild` needs DerivedData, the module cache and the
+  provisioning profiles; nothing else here does — `devicectl device install` and
+  `process launch` are happy sandboxed. **Do not "fix" this by putting
+  `DEVELOPMENT_TEAM` into `project.yml`.** That was tried on 2026-09-22 and is
+  unnecessary: `APPLE_DEVELOPMENT_TEAM=X5DWXB4283` on the command is sufficient by
+  itself (re-verified with `project.yml` reverted), and the signing identity Xcode
+  picks is the one whose *name* says `(Y38YQNR57Q)` while the bundle's
+  `TeamIdentifier` is `X5DWXB4283`. Because the block is host policy rather than
+  anything in the repository, **a build that worked in an earlier session can start
+  failing with no repo change at all**; check the phase in the log before touching
+  any signing setting. A device build also rewrites `DEVELOPMENT_TEAM` into the
+  generated `project.pbxproj` and reorders keys in `hanzi-tutor_iOS/Info.plist` (the
+  `CFBundleVersion` step); both are build churn, semantically identical to `HEAD`, and belong reverted rather
+  than committed.
 - **`ios build` cannot replace a stale archive.** A second build fails with
   `failed to rename app …/hanzi-tutor_iOS.xcarchive/Products/Applications/Hanzi
-  Tutor.app: Directory not empty (os error 66)` — the previous app is still in the
-  archive's products directory. `rm -rf src-tauri/gen/apple/build` first, every
-  time; it is gitignored, so nothing is lost.
+  Tutor.app: Directory not empty (os error 66)`. `rm -rf src-tauri/gen/apple/build`
+  first, every time; it is gitignored, so nothing is lost.
 - **A device run is `ios build` + `devicectl`, and the phone must be unlocked.**
   `tauri ios build --debug --target aarch64 --ci` produces an **IPA**
-  (`src-tauri/gen/apple/build/arm64/Hanzi Tutor.ipa`), not a loose bundle:
-  unzip it and install `Payload/Hanzi Tutor.app` with
-  `xcrun devicectl device install app --device <udid> <app>`, then
-  `xcrun devicectl device process launch --device <udid> com.hanzitutor.app`.
-  A locked phone refuses the launch with `Unable to launch … because the device
-  was not, or could not be, unlocked` — the only step here that needs a human.
-  `idevicescreenshot` (libimobiledevice) reports "No device found" for this
-  iPhone, so **screenshots of the physical device are not available** from here;
-  `devicectl … --console` is the intended channel for the app's own log lines,
-  though it did not forward Rust's stderr on this setup. Ask the person holding
-  the phone what they see — that is the honest check, and it is what M9's device
-  criterion rests on.
+  (`src-tauri/gen/apple/build/arm64/Hanzi Tutor.ipa`), not a loose bundle: unzip it
+  and install `Payload/Hanzi Tutor.app` with `xcrun devicectl device install app
+  --device <udid> <app>`, then `xcrun devicectl device process launch --device
+  <udid> com.hanzitutor.app`. A locked phone refuses the launch with `Unable to
+  launch … because the device was not, or could not be, unlocked` — the only step
+  here that needs a human. `idevicescreenshot` (libimobiledevice) reports "No device
+  found" for this iPhone, but that is that tool's limitation and not this setup's:
+  **`xcrun devicectl device capture screenshot --device <udid> --destination
+  shot.png` does screenshot the physical phone** (verified on HHIP1, iOS 27,
+  1284×2778), so "what does the screen actually show?" is a question this machine
+  answers itself. `devicectl … --console` is the intended channel for the app's own
+  log lines, though it did not forward Rust's stderr here.
 - **iOS *release* builds do not link; debug does.** `ios build` without `--debug`
-  fails at the app link with `symbol(s) not found for architecture arm64` for
-  every Tauri Swift entry point (`_run_plugin_command`, `_register_plugin`,
-  `_on_webview_created`, `_log_stdout`, `_init_plugin_dialog`). The cause is
-  visible in the archives: in `Products/Release-iphoneos/libTauri.a` those
-  symbols are **local** (`t`), where `Products/Debug-iphoneos/libTauri.a` exports
-  them (`T`), so the Rust staticlib can only bundle them in a debug build. That
-  wants a Tauri or Swift toolchain version, not a change here; until then a
-  device build is `--debug`.
-- **`crate-type` deliberately has no `cdylib`.** Tauri's template includes it for
-  Android, but cargo builds it for iOS too, where its link fails the same way
-  (Swift search paths are passed, `-lTauri` is not) and cargo treats that as fatal
-  before Xcode ever runs. iOS links the `staticlib`; Android will need `cdylib`
-  back.
+  fails at the app link with `symbol(s) not found for architecture arm64` for every
+  Tauri Swift entry point (`_run_plugin_command`, `_register_plugin`,
+  `_on_webview_created`, `_log_stdout`, `_init_plugin_dialog`). In the archives, those
+  symbols are **local** (`t`) in `Products/Release-iphoneos/libTauri.a` where
+  `Products/Debug-iphoneos/libTauri.a` exports them (`T`), so the Rust staticlib can
+  only bundle them in a debug build. That wants a Tauri or Swift toolchain version,
+  not a change here; until then a device build is `--debug`.
+- **`crate-type` carries `staticlib`, `cdylib` and `rlib`, and it cannot be
+  per-target.** Tauri's template includes `cdylib` for Android; cargo also builds it
+  for iOS, where its link fails (`-lTauri` is not passed) and cargo treats that as
+  fatal before Xcode runs — hence the `staticlib` iOS links. The risk runs the other
+  way now: removing `cdylib` breaks Android.
 - **The team ID belongs in the environment, not in a committed file.**
   `APPLE_DEVELOPMENT_TEAM=X5DWXB4283` on the build command is enough for
-  `-allowProvisioningUpdates` to provision the app. Xcode will write
-  `DEVELOPMENT_TEAM` into the generated `project.pbxproj` when it does; that line
-  is **not** committed, for the same reason the macOS signing identity is not in
-  `tauri.conf.json`.
-- **A build produced by `tauri ios build` embeds the frontend; it does not use
-  the dev server.** So a layout change is not a hot reload — it needs
-  `vite:build` (which `ios build` runs) *and* a Rust rebuild to re-embed, which
-  is a couple of minutes per look. `ios dev --open` is the only HMR route on iOS.
-  Do not drive `xcodebuild` at the project directly: the "Build Rust Code" phase
-  asks the parent CLI for its options over a WebSocket and panics with
-  `failed to read CLI options … Connection refused` without one.
-- **`gen/apple/tauri` is a file this project adds, and a full re-init deletes
-  it.** The npm CLI's template runs `node tauri ios xcode-script …` from
-  `src-tauri/gen/apple`, but `ios init` does not write that entry point, so the
-  build stops at `Cannot find module '…/gen/apple/tauri'`. The committed shim
-  forwards to `@tauri-apps/cli`; it has to be an **ES module** (`import`, not
-  `require`) because the repository's `package.json` sets `"type": "module"`. The
-  standalone CLI generates a different phase (`cargo tauri …`) that needs no
-  shim — whichever CLI initialised the project decides which you have.
+  `-allowProvisioningUpdates` to provision the app. Xcode writes `DEVELOPMENT_TEAM`
+  into the generated `project.pbxproj` when it does; that line is **not** committed,
+  for the same reason the macOS signing identity is not in `tauri.conf.json`.
+- **A build produced by `tauri ios build` embeds the frontend; it does not use the
+  dev server.** A layout change therefore needs `vite:build` *and* a Rust rebuild to
+  re-embed — a couple of minutes per look. `ios dev --open` is the only HMR route on
+  iOS. Do not drive `xcodebuild` at the project directly: the "Build Rust Code" phase
+  asks the parent CLI for its options over a WebSocket and panics with `failed to
+  read CLI options … Connection refused` without one.
+- **`gen/apple/tauri` is a file this project adds, and a full re-init deletes it.**
+  The npm CLI's template runs `node tauri ios xcode-script …` from
+  `src-tauri/gen/apple`, but `ios init` does not write that entry point, so the build
+  stops at `Cannot find module '…/gen/apple/tauri'`. The committed shim forwards to
+  `@tauri-apps/cli`; it must be an **ES module** (`import`, not `require`) because
+  the root `package.json` sets `"type": "module"`. The standalone CLI generates a
+  different phase (`cargo tauri …`) that needs no shim.
 - **Xcode 27 refuses an iOS deployment target below 15.0,** and Tauri's template
   defaulted to 14.0. It is set in `tauri.conf.json` as
   `bundle.iOS.minimumSystemVersion` (which maps to `IPHONEOS_DEPLOYMENT_TARGET`).
-  Note that `tauri ios init` **leaves an existing `project.yml` alone**: to make
-  the config take effect you must delete `src-tauri/gen/apple` and re-init, which
-  also deletes the shim above.
+  `tauri ios init` **leaves an existing
+  `project.yml` alone**: to make the config take effect you must delete
+  `src-tauri/gen/apple` and re-init, which also deletes the shim above.
 - **The iOS framework dependency is a hand-edit to `project.yml`, and a re-init
-  loses it.** `bundle.iOS.frameworks` is the *wrong* key for sherpa-onnx despite
-  the name: Tauri renders it as `- sdk: {{this}}.framework`, which is for Apple
-  system frameworks, so pointing it at an xcframework yields a nonsense `sdk:`
-  entry rather than a bundled framework. What this project has instead is a
-  `- framework: SherpaOnnxC.xcframework` dependency with `embed: true` written
-  directly into `src-tauri/gen/apple/project.yml`. `embed` is load-bearing: iOS
-  links sherpa-onnx **dynamically** (the crate forces shared linking there), so
-  without it the app builds and then dies at launch, because dyld cannot find the
-  dylib. `scripts/fetch-sherpa.sh --ios` stages the framework at
-  `gen/apple/SherpaOnnxC.xcframework` against a pinned digest, so the path in
-  `project.yml` and that script's staging directory have to agree. A re-init
-  drops the edit with nothing to say so.
+  loses it.** `bundle.iOS.frameworks` is the *wrong* key for sherpa-onnx despite the
+  name: Tauri renders it as `- sdk: {{this}}.framework`, which is for Apple system
+  frameworks, so pointing it at an xcframework yields a nonsense `sdk:` entry. What
+  this project has instead is a `- framework: SherpaOnnxC.xcframework` dependency
+  with `embed: true` written directly into `src-tauri/gen/apple/project.yml`.
+  `embed` is load-bearing: iOS links sherpa-onnx **dynamically**, so without it the
+  app builds and then dies at launch, because dyld cannot find the dylib.
+  `scripts/fetch-sherpa.sh --ios` stages the framework at
+  `gen/apple/SherpaOnnxC.xcframework` against a pinned digest, so that path and the
+  script's staging directory have to agree.
 - **Regenerating the iOS project after a build bundles 405 MB of static library
   into the app.** `project.yml` lists `Externals` as a source path, and the build
   writes the Rust static library to `Externals/arm64/<config>/libapp.a`. XcodeGen
-  walks that path and treats the `.a` as a file to copy, so any `xcodegen
-  generate` (which is also what `ios init` runs) *after* a build adds "libapp.a
-  in Resources" — and the app then ships the entire build intermediate. It cost
-  405 MB uncompressed and took the IPA from **46 MB to 163 MB**. A fresh `ios
-  init` never sees it, because `Externals/` is empty until something has been
-  built, which is exactly why it is easy to hit once and never notice. The source
-  entry now carries `excludes: ["**/libapp.a"]` so a regeneration is safe; the
-  library is still linked, because that comes from the `dependencies` entry and
-  not from the directory walk. If the app ever balloons again, look here first.
-- **Compiling the Android Kotlin from here needs three deviations, and they are
-  worth knowing because the obvious command fails for a reason that looks like a
-  broken toolchain.** `./gradlew -g <workspace dir>` cannot work: the wrapper
-  insists on writing a `.zip.lck` beside the distribution, and `~/.gradle` is
-  read-only in this sandbox, while pointing `-g` at a workspace that symlinks the
-  (read-only) distribution fails the same way. So call the **already-unpacked
-  launcher** directly, give Gradle a read-only dependency cache so it never needs
-  to download anything, and ask for the task by its **flavour-specific** name —
-  the Rust plugin adds `abi` product flavours, so there is no plain
-  `compileDebugKotlin`:
+  walks that path and treats the `.a` as a file to copy, so any `xcodegen generate`
+  (which `ios init` runs) *after* a build adds "libapp.a in Resources" and the app
+  ships the entire build intermediate — it took the IPA from **46 MB to 163 MB**. A
+  fresh `ios init` never sees it, because `Externals/` is empty until something has
+  been built. The source entry now carries `excludes: ["**/libapp.a"]`; the library
+  is still linked, because that comes from the `dependencies` entry.
+- **Compiling the Android Kotlin from here needs three deviations, and the obvious
+  command fails for a reason that looks like a broken toolchain.** `./gradlew -g
+  <workspace dir>` cannot work: the wrapper insists on writing a `.zip.lck` beside
+  the distribution, and `~/.gradle` is read-only in this sandbox, while pointing
+  `-g` at a workspace that symlinks the (read-only) distribution fails the same way.
+  So call the **already-unpacked launcher** directly, give Gradle a read-only
+  dependency cache so it never downloads, and ask for the task by its
+  **flavour-specific** name — the Rust plugin adds `abi` product flavours, so there
+  is no plain `compileDebugKotlin`:
 
   ```bash
   cd src-tauri/gen/android
@@ -1195,699 +1151,602 @@ downstream of them is covered by the IPC tests, which drive
     -g "$PWD/../../../.gradle-home" --no-daemon :app:compileUniversalDebugKotlin
   ```
 
-  The workspace `-g` directory is gitignored and regenerable — delete it when you
-  are done rather than leaving a gigabyte in the tree. Note also that a host
-  `cargo clippy` **never compiles the `#[cfg(target_os = "android")]` code**, so
-  a change to `AndroidKeystore` in `src-tauri/src/sync.rs` can pass every check
-  here and still not type-check; run
-  `cargo check -p hanzi-tutor --target aarch64-linux-android` with the NDK's
-  `aarch64-linux-android26-clang` as `CC`/linker (and `llvm-ar` as `AR`,
-  `llvm-ranlib` as `RANLIB`) to cover it.
-
+  The workspace `-g` directory is gitignored and regenerable — delete it when you are
+  done rather than leaving a gigabyte in the tree. Note also that a host `cargo
+  clippy` **never compiles the `#[cfg(target_os = "android")]` code**, so a change to
+  `AndroidKeystore` in `src-tauri/src/sync.rs` can pass every check here and still
+  not type-check; run `cargo check -p hanzi-tutor --target aarch64-linux-android`
+  with the NDK's `aarch64-linux-android26-clang` as `CC`/linker (and `llvm-ar` as
+  `AR`, `llvm-ranlib` as `RANLIB`) to cover it.
 - **Both mobile targets need their own pinned sherpa-onnx artefact, and
-  `with-cargo-env.sh` has to know which.** `sherpa-onnx-sys` forces shared
-  linking on Android as well as iOS, so `SHERPA_ONNX_LIB_DIR` pointing at the
-  macOS *static* libraries panics the build script with "No shared runtime
-  libraries found in …" — for `tauri android build` exactly as for iOS. iOS gets
-  a lib directory (`fetch-sherpa.sh --ios`), Android an archive directory
-  (`fetch-sherpa.sh --android`, through `SHERPA_ONNX_ARCHIVE_DIR`, so the crate
-  picks the ABI matching the architecture being built). The choice is made from
-  the command's arguments, because the `--target` triple is constructed inside
-  Tauri and never visible to the wrapper — and it matches target triples as well
-  as CLI subcommands, since a bare `ios`/`android` word misses
-  `cargo check --target aarch64-linux-android`, which then fails with that same
-  misleading panic.
+  `with-cargo-env.sh` has to know which.** `sherpa-onnx-sys` forces shared linking on
+  Android as well as iOS, so `SHERPA_ONNX_LIB_DIR` pointing at the macOS *static*
+  libraries panics the build script with "No shared runtime libraries found in …".
+  iOS gets a lib directory (`fetch-sherpa.sh --ios`), Android an archive directory
+  (`fetch-sherpa.sh --android`, through `SHERPA_ONNX_ARCHIVE_DIR`, so the crate picks
+  the ABI matching the architecture being built). The choice is made from the
+  command's arguments, because the `--target` triple is constructed inside Tauri and
+  never visible to the wrapper — and it matches target triples as well as CLI
+  subcommands, since a bare `ios`/`android` word misses `cargo check --target
+  aarch64-linux-android`, which then fails with that same misleading panic.
 - **The crate cannot stage either mobile artefact into this project itself.** Its
   `find_tauri_project_dir` looks for `tauri.conf.json` in `target_dir.parent()`,
   which assumes the default `src-tauri/target/`. This project sets
-  `CARGO_TARGET_DIR=<repo>/.cargo-target`, so that parent is the repository root,
-  the lookup finds nothing, and the copy is **silently skipped** — for the iOS
-  xcframework and for Android's jniLibs alike. Both are therefore staged by
-  `scripts/fetch-sherpa.sh`. Android's staging copies into the existing per-ABI
-  directories rather than over them, because Gradle's own build leaves a symlink
-  to `libhanzi_tutor_lib.so` in the very same place.
+  `CARGO_TARGET_DIR=<repo>/.cargo-target`, so that parent is the repository root, the
+  lookup finds nothing, and the copy is **silently skipped** — for the iOS
+  xcframework and for Android's jniLibs alike. Both are staged by
+  `scripts/fetch-sherpa.sh` instead. Android's staging copies into the existing
+  per-ABI directories rather than over them, because Gradle's own build leaves a
+  symlink to `libhanzi_tutor_lib.so` in the very same place.
 - **A signing identity's parenthetical is not the team ID.** `cargo-mobile2`
-  reports `Apple Development: someone@example.com (Y38YQNR57Q)`; passing that
-  value as `APPLE_DEVELOPMENT_TEAM` gives `No Account for Team "Y38YQNR57Q"`.
-  The team this project signs with is `X5DWXB4283`, and it belongs in the build
-  environment rather than in `tauri.conf.json`, for the same reason the macOS
-  identity is not in there.
+  reports `Apple Development: someone@example.com (Y38YQNR57Q)`; passing that value
+  as `APPLE_DEVELOPMENT_TEAM` gives `No Account for Team "Y38YQNR57Q"`. The team
+  this project signs with is `X5DWXB4283`, and it belongs in the build environment.
 - **SQLite does not create the directory for you.** `Connection::open` fails with
-  "unable to open database file" if the data directory is missing, which is
-  exactly the state a first run is in — and the warning it produces blames the
-  database, not the missing folder. `Db::open` therefore does `create_dir_all`
-  first, which is what the JSON stores used to do as they wrote. If that line
-  ever moves, every fresh install breaks, and `--user-dir` at a path that does
-  not exist yet breaks with it. There is a test that starts with no directory.
+  "unable to open database file" if the data directory is missing, which is exactly
+  the state a first run is in — and the warning blames the database, not the missing
+  folder. `Db::open` therefore does `create_dir_all` first. If that line ever moves,
+  every fresh install breaks, and `--user-dir` at a path that does not exist yet
+  breaks with it. There is a test that starts with no directory.
 - **Port 1420 may be held by an orphaned Vite.** `pkill -f vite` does not always
-  match it, because `pnpm` here runs Electron as Node, and a survivor makes
-  `pnpm run dev` fail in `beforeDevCommand` while the app itself still starts
-  against the *old* dev server — so a stale bundle can be what you are looking
-  at. Check `curl -s -o /dev/null -w '%{http_code}' http://localhost:1420` before
-  trusting a run; a leftover server serving the same directory will happily serve
-  current sources, which is convenient but makes "which bundle is this?" a real
-  question.
-- **A compiled-in dependency is a shipped notice.** SQLite and `rusqlite` are the
+  match it, because `pnpm` here runs Electron as Node, and a survivor makes `pnpm
+  run dev` fail in `beforeDevCommand` while the app still starts against the *old*
+  dev server — so a stale bundle can be what you are looking at. Check `curl -s -o
+  /dev/null -w '%{http_code}' http://localhost:1420` before trusting a run.
+- **A compiled-in dependency is a shipped notice.** SQLite and `rusqlite` were the
   first third-party *code* in the binary, and they were added to
-  `src-tauri/src/licences.rs`, `tauri.conf.json` and `licences/` together because
-  the tests only check the three against *each other* — a dependency nobody
-  catalogued is invisible to them. Adding one means checking its licence by hand
-  and adding a notice, and the count in the §2 log line moves with it.
-- **An "again" card is due 60 seconds later, not tomorrow.** That is deliberate
-  (see `AGAIN_SECONDS`), and it is why the interface refreshes the queue on a
-  60-second heartbeat as well as after every answer. If you change the interval,
-  change the heartbeat with it or the badge will look stuck.
+  `src-tauri/src/licences.rs`, `tauri.conf.json` and `licences/` together because the
+  tests only check the three against *each other* — a dependency nobody catalogued is
+  invisible to them. Adding one means checking its licence by hand and adding a
+  notice; the count in the §2 log line moves with it.
+- **An "again" card is due 60 seconds later, not tomorrow.** Deliberate (see
+  `AGAIN_SECONDS`), and it is why the interface refreshes the queue on a 60-second
+  heartbeat as well as after every answer. Change the interval and the heartbeat
+  together, or the badge will look stuck.
 - **`src-tauri/gen/schemas/`** is generated and gitignored; `capabilities/default.json`
-  references it with `$schema`, so editors will warn until the first build. Expected.
-- **A stale artifact fails on the magic, not on the JSON.** `crates/hanzi-core/data/hanzi.bin.gz`
-  is gitignored, so a checkout that pulled an artifact-changing commit keeps the
-  old file and the app refuses to decode it. The message says *re-run
-  `prepare-data`*; do that rather than hunting for a bug in the loader. `build.rs`
-  checks only that the file *exists*, not that it is current, so this is a runtime
-  error rather than a build one.
+  references it with `$schema`, so editors warn until the first build. Expected.
+- **A stale artifact fails on the magic, not on the JSON.**
+  `crates/hanzi-core/data/hanzi.bin.gz` is gitignored, so a checkout that pulled an
+  artifact-changing commit keeps the old file and the app refuses to decode it. The
+  message says *re-run `prepare-data`*; do that rather than hunting for a bug in the
+  loader. `build.rs` checks only that the file *exists*, not that it is current, so
+  this is a runtime error rather than a build one.
 - **`prepare-data` is the only place the word list is filtered.** Words whose
   characters lack geometry or a frequency rank are dropped there, not at load, so
-  "why is this word missing?" is answered by its `words from …: N kept` line. If
-  you add a rule, add it there and print the count it dropped — the silent
-  version of that filter is how a word list ends up with entries the board cannot
-  draw.
-- **Clicking a character in a word is a search, not navigation.** `WordsPanel`
-  turns the click into a query for that character, which is the browse-by-radical
-  route the roadmap asked for. The course jump lives on the sidebar instead.
+  "why is this word missing?" is answered by its `words from …: N kept` line. If you
+  add a rule, add it there and print the count it dropped.
+- **Clicking a character in a word is a search, not navigation.** `WordsPanel` turns
+  the click into a query for that character. The course jump lives on the sidebar.
 - **A word can repeat a character, so never key a per-character `{#each}` by the
-  character.** 是不是 is one of the first words in the list, and keying the glyph
-  tiles by `ch` throws `each_key_duplicate`. The nastier half is *how* it fails:
-  the error is raised inside Svelte's render flush, so the window simply stops
-  updating — the panel sat on "Searching…" with the correct data already in
-  state, and nothing appeared in the terminal, because a webview's console is not
-  visible from here. Key by index for character tiles. The `error` /
-  `unhandledrejection` handler in `App.svelte` now forwards that class of failure
-  to `[webview] webview error: …`, which is what turned this from a mystery into
-  a one-line answer — keep it.
+  character.** 是不是 is one of the first words, and keying the glyph tiles by `ch`
+  throws `each_key_duplicate`. The nastier half is *how* it fails: the error is raised
+  inside Svelte's render flush, so the window simply stops updating — the panel sat on
+  "Searching…" with the correct data already in state, and nothing appeared in the
+  terminal, because a webview's console is not visible from here. Key by index. The
+  `error` / `unhandledrejection` handler in `App.svelte` forwards that class of
+  failure to `[webview] webview error: …` — keep it.
 - **A notice that names a licence is not the licence.** `fetch-data.sh` had been
   fetching Make Me a Hanzi's `COPYING`, which describes what `graphics.txt` and
-  `dictionary.txt` are derived from and sends the reader to a URL for the Arphic
-  Public License. That URL was never followed, so the app would have shipped the
-  notice *about* the licence without the licence itself. The same was true of the
-  CC BY-SA legal code. If you touch the data pipeline or the notices, check that
-  every licence a notice points at is also present as a **file**;
-  `tests/licences.rs` now requires the text, and looks for a phrase only the
-  genuine text contains, so a stub cannot pass as a licence.
+  `dictionary.txt` derive from and points at a URL for the Arphic Public License —
+  which was never followed, so the app would have shipped the notice *about* the
+  licence without the licence itself. The same was true of the CC BY-SA legal code.
+  If you touch the data pipeline or the notices, check that every licence a notice
+  points at is also present as a **file**; `tests/licences.rs` requires the text and
+  looks for a phrase only the genuine text contains, so a stub cannot pass.
 - **`include_str!` makes the licence texts part of the Rust build.** Editing
-  `LICENSES.md` or anything in `licences/` recompiles `hanzi-core` and
-  `hanzi-tutor`. That is correct, and surprising when a build you expected to be
-  instant takes ten seconds. It also produced the only false alarm this suite has
-  given: a test compares the compiled-in text with the file on disk, so editing a
-  text *while* cargo is compiling leaves the binary holding the old copy and the
-  comparison fails. Re-run before investigating.
-- **Bundle resource paths are relative to `src-tauri/`**, not to the repository
-  root, so a notice at `licences/x.txt` is written `"../licences/x.txt"` in
-  `tauri.conf.json`. `tests/licences.rs` derives that string from each catalogue
-  entry and compares the whole map, so a config that drifts from the catalogue
-  fails the suite rather than the bundle.
+  `LICENSES.md` or anything in `licences/` recompiles `hanzi-core` and `hanzi-tutor`
+  — surprising when a build you expected to be instant takes ten seconds. It also
+  produced the only false alarm this suite has given: a test compares the compiled-in
+  text with the file on disk, so editing a text *while* cargo is compiling leaves the
+  binary holding the old copy and the comparison fails. Re-run before investigating.
+- **Bundle resource paths are relative to `src-tauri/`**, not the repository root,
+  so a notice at `licences/x.txt` is written `"../licences/x.txt"` in
+  `tauri.conf.json`. `tests/licences.rs` derives that string from each catalogue entry
+  and compares the whole map, so a config that drifts from the catalogue fails the
+  suite rather than the bundle.
 - **`pnpm run build` signs.** `scripts/build-release.sh` picks a Developer ID
-  certificate from the keychain automatically, so a build on someone else's Mac
-  will be signed as *them* unless they set `APPLE_SIGNING_IDENTITY` — and on a
-  machine with no certificate it falls back to ad-hoc, which still launches
-  locally. `pnpm run build:unsigned` skips the wrapper entirely.
+  certificate from the keychain automatically, so a build on someone else's Mac will
+  be signed as *them* unless they set `APPLE_SIGNING_IDENTITY` — and on a machine
+  with no certificate it falls back to ad-hoc, which still launches locally. `pnpm
+  run build:unsigned` skips the wrapper entirely.
 - **A microphone needs two things, and only one of them is obvious.** A signed,
   hardened-runtime build cannot open the microphone without
-  `com.apple.security.device.audio-input` in `src-tauri/Entitlements.plist`, and
-  the *user* is asked by `NSMicrophoneUsageDescription` in `src-tauri/Info.plist`.
-  They are not alternatives: the plist key is the prompt, the entitlement is the
-  kernel's permission. **The failure is silent and looks identical in both
-  cases** — capture opens, streams, and delivers zeros, which the analyser reports
-  as "I could not hear enough voice". Worse, it works in `tauri dev` and in an
-  unsigned build and then stops working once signed, so check the two commands in
-  `README.md` ("What is inside the bundle") on any build someone is going to run.
-  Note that a plain `tauri build` without `build-release.sh` is only
-  *linker-signed* and never applies the entitlements at all — that is not a
-  failure of the config, it is the signing step not having run. Verify with
-  `codesign -d --entitlements - "$APP"`, which prints the dictionary when it is
-  right and nothing when the file was not applied.
+  `com.apple.security.device.audio-input` in `src-tauri/Entitlements.plist`, and the
+  *user* is asked by `NSMicrophoneUsageDescription` in `src-tauri/Info.plist`. They
+  are not alternatives: the plist key is the prompt, the entitlement is the kernel's
+  permission. **The failure is silent and looks identical in both cases** — capture
+  opens, streams, and delivers zeros, which the analyser reports as "I could not hear
+  enough voice". Worse, it works in `tauri dev` and in an unsigned build and then
+  stops once signed, so check the two commands in `README.md` on any build someone is
+  going to run. A plain `tauri build` without `build-release.sh` is only
+  *linker-signed* and never applies the entitlements at all. Verify with `codesign -d
+  --entitlements - "$APP"`, which prints the dictionary when it is right and nothing
+  when the file was not applied.
 - **A terminal cannot be granted the microphone the way an app can**, and on this
-  machine it has not been. So `cargo test -- --ignored` records silence here while
-  the packaged app works, and **no test in this repository has ever heard a human
-  voice**. Do not read a passing ignored test as proof that capture works; read
-  the peak level it prints. See §9.
+  machine it has not been. So `cargo test -- --ignored` records silence here while the
+  packaged app works, and **no test in this repository has ever heard a human voice**.
+  Do not read a passing ignored test as proof that capture works; read the peak level
+  it prints. See §9.
 
 ### Android
 
 - **Every Gradle and emulator command needs a wider sandbox than `workspace-write`.**
-  Gradle writes its dependency cache under `~/.gradle`, the emulator writes its
-  lock and userdata files under `~/.android/avd`, and `adb` wants `~/.android`
-  for its keys. All of those are refused with `Operation not permitted`, and the
-  failure mode is not a clean error: a Gradle build *hangs* with no output
-  because `cmd | tail` swallows the progress, and the emulator dies with
-  `A snapshot operation … is pending and timeout has expired`, which reads like a
-  stale snapshot rather than a permissions problem. Run these with
-  `danger-full-access`, and do not pipe a long build to `tail` while diagnosing.
-- **Android needs the `cdylib` crate type, and there is no way to have it only
-  there.** `crate-type` is not per-target. `src-tauri/Cargo.toml` carries all
-  three now and says why; the risk is that the iOS *link* trips over the dylib
-  again, which `cargo check --target aarch64-apple-ios` will not show because it
-  does not link.
+  Gradle writes its dependency cache under `~/.gradle`, the emulator writes its lock
+  and userdata files under `~/.android/avd`, and `adb` wants `~/.android` for its
+  keys. All are refused with `Operation not permitted`, and the failure mode is not a
+  clean error: a Gradle build *hangs* with no output because `cmd | tail` swallows
+  the progress, and the emulator dies with `A snapshot operation … is pending and
+  timeout has expired`, which reads like a stale snapshot rather than a permissions
+  problem. Run these with `danger-full-access`, and do not pipe a long build to
+  `tail` while diagnosing.
 - **`minSdk` is 26 because of AAudio, and it has to be set in two places that
-  agree.** `cpal` pins the `ndk` crate to its `api-level-26` feature, so the
-  library needs `libaaudio.so`, which does not exist before Android 8. At
-  `minSdk = 24` the link fails with `unable to find library -laaudio` — note
-  *which* clang it used, `aarch64-linux-android24-clang`: that API level comes
-  from `bundle.android.minSdkVersion` in `tauri.conf.json`, which is what the CLI
-  uses to pick the linker, while the manifest's `minSdk` comes from the generated
+  agree.** `cpal` pins the `ndk` crate to its `api-level-26` feature, so the library
+  needs `libaaudio.so`, which does not exist before Android 8. At `minSdk = 24` the
+  link fails with `unable to find library -laaudio` — note *which* clang it used,
+  `aarch64-linux-android24-clang`: that API level comes from
+  `bundle.android.minSdkVersion` in `tauri.conf.json`, which is what the CLI uses to
+  pick the linker, while the manifest's `minSdk` comes from the generated
   `build.gradle.kts`. Setting only the Gradle one still fails to link.
-- **Gradle cannot find the Tauri CLI under pnpm, and the error is a bare
-  `Cannot find module`.** `gen/android/buildSrc/.../BuildTask.kt` runs
-  `node tauri android android-studio-script` from `src-tauri/`, expecting a
-  package literally named `tauri` to be resolvable from there. pnpm does not
-  flatten `@tauri-apps/cli` into such a name, so the task dies with
-  `Cannot find module '<root>/src-tauri/tauri'` after the Rust library has
-  already linked. `src-tauri/tauri.js` is a committed shim that loads the
-  package's real entry point — `tauri.js`, not `main.js`, which only exports an
-  API and would silently do nothing. It is an `import`, not a `require`, because
-  the root `package.json` says `"type": "module"`.
+- **Gradle cannot find the Tauri CLI under pnpm, and the error is a bare `Cannot
+  find module`.** `gen/android/buildSrc/.../BuildTask.kt` runs `node tauri android
+  android-studio-script` from `src-tauri/`, expecting a package literally named
+  `tauri` to be resolvable from there. pnpm does not flatten `@tauri-apps/cli` into
+  such a name, so the task dies with `Cannot find module '<root>/src-tauri/tauri'`
+  after the Rust library has already linked. `src-tauri/tauri.js` is a committed shim
+  that loads the package's real entry point — `tauri.js`, not `main.js`, which only
+  exports an API and would silently do nothing. It is an `import`, not a `require`,
+  because the root `package.json` says `"type": "module"`.
 - **The webview starts loading *while* `setup` runs, so nothing slow may happen
   there.** This is the trap that cost the most. On desktop the windows are created
-  after `setup`, so a slow setup is invisible; on Android the frontend is running
-  by ~300 ms and its first commands arrive before `app.manage()`, and a command
-  that finds no state is **rejected, not queued** — the phone showed *"state not
-  managed for field `state` on command `review_queue`"* and an empty board, and a
-  second launch lost the commands entirely and sat on "Loading the character
-  set…" forever. Decoding the 13 MB dataset and ordering the course now happen in
-  `AppState::prepare()` **before the Tauri builder exists**, and `setup` only
-  opens the study database. Note that the fix is placement, not speed: the decode
-  is only ~1 s of CPU, which is still 3× the webview's head start. Anything else
-  slow added to `setup` — or to `AppState::assemble` — reintroduces this. Two
-  useful diagnostics, both cheap:
+  after `setup`, so a slow setup is invisible; on Android the frontend is running by
+  ~300 ms and its first commands arrive before `app.manage()`, and a command that
+  finds no state is **rejected, not queued** — the phone showed *"state not managed
+  for field `state` on command `review_queue`"* and an empty board, and a second
+  launch lost the commands entirely and sat on "Loading the character set…" forever.
+  Decoding the 13 MB dataset and ordering the course now happen in
+  `AppState::prepare()` **before the Tauri builder exists**, and `setup` only opens
+  the study database. The fix is placement, not speed: the decode is only ~1 s of
+  CPU, still 3× the webview's head start. Anything else slow added to `setup` — or to
+  `AppState::assemble` — reintroduces this. Two cheap diagnostics:
   * `adb shell am start -W -n com.hanzitutor.app/.MainActivity` gives the real
-    cold-start time (`TotalTime`). 262 ms once the one-off ART compilation after
-    an install is past — the first launch after `adb install` takes ~90 s and is
-    not the app's fault.
-  * The webview is debuggable in a debug build, so the page can be inspected and
-    driven over the DevTools protocol: `adb forward tcp:9222
+    cold-start time (`TotalTime`). 262 ms once the one-off ART compilation after an
+    install is past — the first launch after `adb install` takes ~90 s and is not the
+    app's fault.
+  * The webview is debuggable in a debug build: `adb forward tcp:9222
     localabstract:webview_devtools_remote_<pid>`, then `curl
     http://127.0.0.1:9222/json` for a WebSocket URL. Node 22+ has a global
-    `WebSocket`, so no dependency is needed. This is how the pending-promise
-    state, the missing managed state, and the `env()` value were all confirmed
-    rather than guessed.
-- **Logcat is unusable on the test phone.** `adb logcat -d` returns only kernel
-  and radio lines — no app output at all, on any buffer, including device-side
-  `logcat`, on a RedMagic NX809J. Do not plan on `[data] …` or `eprintln!` lines
-  there; use the DevTools probe above, or read the app's own data directory with
-  `adb shell run-as com.hanzitutor.app ls`.
+    `WebSocket`, so no dependency is needed. This is how the pending-promise state,
+    the missing managed state, and the `env()` value were confirmed.
+- **Logcat is unusable on the test phone.** `adb logcat -d` returns only kernel and
+  radio lines — no app output at all, on any buffer, including device-side `logcat`,
+  on a RedMagic NX809J. Do not plan on `[data] …` or `eprintln!` lines there; use
+  the DevTools probe above, or read the app's own data directory with `adb shell
+  run-as com.hanzitutor.app ls`.
 - **`env(safe-area-inset-*)` is the display cutout, not the status bar.** Android's
   WebView reports the cutout, so on a phone with a punch-hole the CSS was right by
-  luck and on the emulator it was zero — the header was drawn under the clock.
-  Both are edge-to-edge and cannot opt out (targetSdk 35+), so the page is told
-  the real system bar insets by the `android_insets` command, and `app.css` takes
-  `max(env(…), var(--inset-…))`. Taking the maximum is what makes one rule right
-  on both: on a notched phone the two agree instead of summing.
+  luck and on the emulator it was zero — the header was drawn under the clock. Both
+  are edge-to-edge and cannot opt out (targetSdk 35+), so the page is told the real
+  system bar insets by the `android_insets` command, and `app.css` takes
+  `max(env(…), var(--inset-…))`. Taking the maximum makes one rule right on both: on a
+  notched phone the two agree instead of summing.
 - **Tauri dispatches mobile plugin commands on the Android main thread.**
-  `run_command` goes through `run_on_android_context`, so a Kotlin plugin method
-  that blocks freezes the UI, and one that waits on a latch deadlocks. The
-  speech plugin resolves *later* instead: commands that arrive before
-  `TextToSpeech` reports ready are queued and answered when it does, which is the
-  normal case because the pronunciation warm-up asks for the voice list while the
-  app is still starting.
-- **Android offers a network voice beside the on-device one for the same
-  locale.** For an app whose whole premise is that it needs no network, the
-  default choice matters: the Kotlin side sorts `isNetworkConnectionRequired`
-  first, so the automatic pick is `cmn-cn-x-ccc-local` rather than a
-  network-backed voice that would fail offline. The Rust `Voice` model needed no
-  new field — `pick_voice` takes the first mainland voice in the order the
-  platform reported it.
+  `run_command` goes through `run_on_android_context`, so a Kotlin plugin method that
+  blocks freezes the UI, and one that waits on a latch deadlocks. The speech plugin
+  resolves *later* instead: commands that arrive before `TextToSpeech` reports ready
+  are queued and answered when it does, which is the normal case because the
+  pronunciation warm-up asks for the voice list while the app is still starting.
+- **Android offers a network voice beside the on-device one for the same locale.**
+  The Kotlin side sorts `isNetworkConnectionRequired` first, so the automatic pick is
+  `cmn-cn-x-ccc-local` rather than a network-backed voice that would fail offline.
+  The Rust `Voice` model needed no new field — `pick_voice` takes the first mainland
+  voice in the order the platform reported it.
 - **An unset `ndkVersion` silently costs 170 MB.** Gradle needs the NDK to find
-  `llvm-strip`; without a `ndkVersion` it gives up with a single line —
-  *"Unable to strip the following libraries, packaging them as they are"* — and
-  ships the 203 MB debug library verbatim. With it set, the same APK is 76 MB.
-  It is taken from `ANDROID_NDK_HOME` with the development version as a fallback
-  so that a build from Android Studio, where no such variable is set, still works.
+  `llvm-strip`; without a `ndkVersion` it gives up with one line — *"Unable to strip
+  the following libraries, packaging them as they are"* — and ships the 203 MB debug
+  library verbatim. With it set, the same APK is 76 MB. It is taken from
+  `ANDROID_NDK_HOME` with the development version as a fallback so a build from
+  Android Studio, where no such variable is set, still works.
 - **A back press has to be answered synchronously.** `OnBackPressedCallback` must
-  decide *now*, so the page is asked with `evaluateJavascript` and a global
-  function (`window.__hanziHandleBack`) whose return value settles it; an event
-  listener would need a round trip that cannot be waited for on the main thread.
-  And the callback must be registered **enabled** — `OnBackPressedCallback(false)`
-  is never invoked and the platform default quietly applies, which looks exactly
-  like the feature not working.
+  decide *now*, so the page is asked with `evaluateJavascript` and a global function
+  (`window.__hanziHandleBack`) whose return value settles it; an event listener would
+  need a round trip that cannot be waited for on the main thread. And the callback
+  must be registered **enabled** — `OnBackPressedCallback(false)` is never invoked and
+  the platform default quietly applies, which looks exactly like the feature not
+  working.
 - **`adb shell input` is a real enough input device to verify drawing.** `input
   swipe` on the board produced a stroke, moved the counter to `1 / 8`, enabled
-  Undo/Clear and graded to a score — real touch events through the WebView's
-  pointer handling. `input tap` drives buttons the same way. What it does not
-  prove is palm rejection or stylus behaviour, which still wants a person.
+  Undo/Clear and graded to a score — real touch events through the WebView's pointer
+  handling. `input tap` drives buttons the same way. What it does not prove is palm
+  rejection or stylus behaviour, which still wants a person.
 - **The emulator that ships with Android Studio was full, and it is not ours to
-  wipe.** `Medium_Phone_API_36.1` had 299 MB free of 6 GB with three of the
-  owner's own test apps on it, so installing there would have meant deleting
-  someone else's data. `HanziTutor_API36` is a second AVD cloned from its
-  `config.ini` with a 12 GB data partition instead — `avdmanager` is not
-  installed on this machine (there is no `cmdline-tools/`), so the two files were
-  written by hand: `~/.android/avd/HanziTutor_API36.ini` pointing at
-  `HanziTutor_API36.avd/config.ini`, whose `image.sysdir.1` is what ties it to the
+  wipe.** `Medium_Phone_API_36.1` had 299 MB free of 6 GB with three of the owner's
+  own test apps on it. `HanziTutor_API36` is a second AVD cloned from its
+  `config.ini` with a 12 GB data partition instead — `avdmanager` is not installed
+  here (there is no `cmdline-tools/`), so the two files were written by hand:
+  `~/.android/avd/HanziTutor_API36.ini` pointing at
+  `HanziTutor_API36.avd/config.ini`, whose `image.sysdir.1` ties it to the
   already-installed system image. No image had to be downloaded.
 - **`key.properties` belongs to the Android project root, not to `app/`.** The
-  `.gitignore` there is the one that excludes it, and Gradle's module directory is
-  `gen/android/app/`, so `file("key.properties")` looks in the wrong place and
-  finds nothing — silently. The build does not fail; it just signs nothing, and
-  the only signal is that the artifact is called
-  `app-universal-release-unsigned.apk` instead of `app-universal-release.apk`.
-  Read that filename literally. Use `rootProject.file("key.properties")`.
-- **R8 does not break the Kotlin plugin bridge, but not because of anything
-  here.** Release builds minify, and `register_android_plugin` instantiates
-  `PlatformPlugin` **by name** — a reflective lookup that R8 cannot see. What
-  saves it is that Tauri's Android library ships *consumer* ProGuard rules
-  (`-keep @app.tauri.annotation.TauriPlugin public class *` and the same for
-  `@InvokeArg`), which apply to the app automatically. Debug-only verification
-  would never have caught a problem here, so the release build was run on a
-  device: the course loads, a stroke grades, and "Hear it" is live — which is
-  what proves `voices` answered through the reflective bridge.
-- **The release build is not debuggable, so it cannot be probed over DevTools.**
-  Wry enables webview debugging in debug builds only, so `webview_devtools_remote`
-  has no socket in a release build. Verify the release by installing it,
-  screenshotting, and driving it with `adb shell input` — which is what caught
-  the difference between "it built" and "it works".
-- **`INTERNET` is now declared for release, and that reversed a deliberate
-  property.** It used to be scoped to `app/src/debug/AndroidManifest.xml`, so the
-  released manifest declared only `RECORD_AUDIO` and `aapt2 dump permissions` made
-  "works offline" checkable on the artifact. M12's optional model download is a
-  runtime request, so the permission moved into the main manifest; the debug copy
-  is now redundant and kept only because `tauri android init` regenerates it.
-  **The privacy policy and the Play listing were restated at the same time** —
-  `docs/privacy-policy.md` and `store/listing.md` both used to say "no network
-  requests at all", and a listing that says that while the app offers a 163 MB
-  download is a mismatch Play's Data safety declaration would catch. The substance
-  is unchanged: nothing is collected, nothing is uploaded, and the request happens
-  only when the learner presses the button. If a future change removes the
-  download, put the permission back in the debug source set and restore the
-  claims rather than leaving both stale.
-- **The model download is unverified on Android.** It is exercised end to end on
-  macOS (`asr::tests::downloads_verifies_and_installs_the_model`), but no Android
-  release build was run here, and the permission change above is exactly the sort
-  of thing that only shows up on a device. Install a signed release APK and press
-  *Download and install* once before trusting it.
+  `.gitignore` there excludes it, and Gradle's module directory is `gen/android/app/`,
+  so `file("key.properties")` looks in the wrong place and finds nothing — silently.
+  The build does not fail; it just signs nothing, and the only signal is that the
+  artifact is called `app-universal-release-unsigned.apk` instead of
+  `app-universal-release.apk`. Read that filename literally. Use
+  `rootProject.file("key.properties")`.
+- **R8 does not break the Kotlin plugin bridge, but not because of anything here.**
+  Release builds minify, and `register_android_plugin` instantiates `PlatformPlugin`
+  **by name** — a reflective lookup R8 cannot see. What saves it is that Tauri's
+  Android library ships *consumer* ProGuard rules (`-keep
+  @app.tauri.annotation.TauriPlugin public class *` and the same for `@InvokeArg`),
+  which apply to the app automatically. Debug-only verification would never catch a
+  problem here.
+- **The release build is not debuggable, so it cannot be probed over DevTools.** Wry
+  enables webview debugging in debug builds only, so `webview_devtools_remote` has no
+  socket in a release build. Verify the release by installing it, screenshotting, and
+  driving it with `adb shell input`.
+- **`INTERNET` is declared for release, and that reversed a deliberate property.** It
+  used to be scoped to `app/src/debug/AndroidManifest.xml`, so the released manifest
+  declared only `RECORD_AUDIO` and `aapt2 dump permissions` made "works offline"
+  checkable on the artifact. M12's optional model download is a runtime request, so
+  the permission moved into the main manifest; the debug copy is now redundant and
+  kept only because `tauri android init` regenerates it. **The privacy policy and the
+  Play listing were restated at the same time** — `docs/privacy-policy.md` and
+  `store/listing.md` both used to say "no network requests at all", and a listing that
+  says that while the app offers a 163 MB download is a mismatch Play's Data safety
+  declaration would catch. The substance is unchanged: nothing is collected, nothing
+  is uploaded, and a request happens only when the learner presses the button. If a
+  future change removes the download, put the permission back in the debug source set
+  and restore the claims rather than leaving both stale.
+- **The model downloads are unverified on Android.** The recognition one is exercised
+  end to end on macOS (`asr::tests::downloads_verifies_and_installs_the_model`), but
+  no Android release build has run either download here, and the permission change
+  above is exactly the sort of thing that only shows up on a device. Install a signed
+  release APK and press each install button once before trusting it.
 - **Play needs more than an AAB.** Because the app asks for the microphone, the
-  listing requires a published privacy policy and a Data safety declaration, and
-  the answers have to match what the app really does. `docs/privacy-policy.md`
-  and `store/listing.md` hold both; the policy still needs a real contact
-  address and a public URL before submission, and both are marked with TODOs.
-- **The version code comes from the app version.** `tauri.properties` derives
-  `3000` from `0.3.0`, and Play requires it to increase with every upload, so a
-  second upload means bumping the version in `Cargo.toml` and `tauri.conf.json`
-  first. `bundle.android.autoIncrementVersionCode` exists for people who would
-  rather not remember.
+  listing requires a published privacy policy and a Data safety declaration, and the
+  answers have to match what the app really does. `docs/privacy-policy.md` and
+  `store/listing.md` hold both; the policy still needs a real contact address and a
+  public URL before submission, and both are marked with TODOs.
+- **The version code comes from the app version.** `tauri.properties` derives `3000`
+  from `0.3.0`, and Play requires it to increase with every upload, so a second upload
+  means bumping the version in `Cargo.toml` and `tauri.conf.json` first.
+  `bundle.android.autoIncrementVersionCode` exists for people who would rather not
+  remember.
 
 ### Android speech and the microphone
 
-- **`TextToSpeech.speak` returning `SUCCESS` means nothing was heard.** It means
-  the engine *accepted* the utterance. The voice's data may be missing, a network
-  voice may have no network, the output may not open — all of which produce
-  silence, or a progress callback nobody is listening to, from a call that
-  reported success. The first version of `PlatformPlugin.speak` resolved as soon
-  as `speak()` returned, so on a phone that could not make a sound the app said
-  everything was fine. It now resolves when `UtteranceProgressListener.onStart`
-  fires and **rejects with the engine's own error code** when it does not, with a
-  three-second guard so a silent engine cannot hang the caller. Both `onStart` and
-  `onError` are matched by **utterance id**: `speak` cuts off the previous
-  utterance, and the engine reports that cancellation in its own time, so without
-  the match a stale failure gets blamed on the next request.
-- **A listed voice is not necessarily a usable one, and on a phone that has never
-  had a network none of them are.** Android's engine advertises every voice it
-  knows and marks the ones whose data has never been downloaded with
-  `Engine.KEY_FEATURE_NOT_INSTALLED`. The test phone reported **16 Chinese voices
-  and 0 installed** — it had no connectivity at all, so nothing had ever been
-  fetched — and asking it to speak produced a service error or silence depending
-  on the moment. With WiFi on, the same query answered **14 installed** and
-  speech worked, using `cmn-cn-x-ccc-local`, an on-device voice. So: sort
-  installed voices first (Rust takes the first Mandarin voice it sees, so this is
-  what decides the default), prefer on-device over network, and keep the
-  promise that the *runtime* needs no network — the download is a one-time
-  device setup step, like installing a font, which is why the app can still ship
-  with no `INTERNET` permission.
-- **A vendor ROM may mute the synthesiser outright, and the app has to object.**
-  The RedMagic build logs, on every attempt:
-  `AudioHardening background playback would be muted for com.google.android.tts`,
-  with the music stream at full volume and the app in the foreground. This is the
-  Android twin of the iOS Ring/Silent problem in this same file: a synthesiser
-  that works for another app is silenced for this one unless the app says the
-  sound is deliberate. `speak` now takes audio focus
-  (`AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`, borrowed from the iOS session's
-  `duckOthers`) and sets `USAGE_MEDIA` + `CONTENT_TYPE_SPEECH`, giving the focus
-  back on `onDone`, on error, and on `stop`.
-- **Android 11 and later hide the speech engine unless it is asked for by
-  intent.** `<queries><intent><action
+- **`TextToSpeech.speak` returning `SUCCESS` means nothing was heard.** It means the
+  engine *accepted* the utterance. The voice's data may be missing, a network voice
+  may have no network, the output may not open — all producing silence from a call
+  that reported success. `PlatformPlugin.speak` now resolves when
+  `UtteranceProgressListener.onStart` fires and **rejects with the engine's own error
+  code** when it does not, with a three-second guard. Both `onStart` and `onError` are
+  matched by **utterance id**: `speak` cuts off the previous utterance, and the engine
+  reports that cancellation in its own time, so without the match a stale failure gets
+  blamed on the next request.
+- **A listed voice is not necessarily a usable one, and on a phone that has never had
+  a network none of them are.** Android's engine advertises every voice it knows and
+  marks the ones whose data has never been downloaded with
+  `Engine.KEY_FEATURE_NOT_INSTALLED`. The test phone reported **16 Chinese voices and
+  0 installed** — no connectivity at all — and asking it to speak produced a service
+  error or silence. With WiFi on, the same query answered **14 installed** and speech
+  worked, using `cmn-cn-x-ccc-local`, an on-device voice. So: sort installed voices
+  first (Rust takes the first Mandarin voice it sees), prefer on-device over network,
+  and keep the *runtime* needing no network — the voice data is a one-time device
+  setup step, like installing a font. (The *app* does declare `INTERNET` now, for
+  M12's optional model download; that is a separate thing from the voice data being
+  installed.)
+- **A vendor ROM may mute the synthesiser outright, and the app has to object.** The
+  RedMagic build logs, on every attempt: `AudioHardening background playback would be
+  muted for com.google.android.tts`, with the music stream at full volume and the app
+  in the foreground. This is the Android twin of the iOS Ring/Silent problem. `speak`
+  now takes audio focus (`AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`, borrowed from the iOS
+  session's `duckOthers`) and sets `USAGE_MEDIA` + `CONTENT_TYPE_SPEECH`, giving the
+  focus back on `onDone`, on error, and on `stop`.
+- **Android 11 and later hide the speech engine unless it is asked for by intent.**
+  `<queries><intent><action
   android:name="android.intent.action.TTS_SERVICE"/></intent></queries>` in the
-  manifest, or `getDefaultEngine()` answers null on a phone that plainly has an
-  engine installed.
+  manifest, or `getDefaultEngine()` answers null on a phone that plainly has an engine
+  installed.
 - **`TextToSpeech.getDefaultEngine()` does not resolve against this compile SDK.**
-  Read `Settings.Secure.TTS_DEFAULT_SYNTH` instead — it is the same value the
-  platform uses, and on the test phone it is *empty*, which is itself the answer
-  to "why is this phone silent": no synthesiser had ever been chosen there.
-- **The microphone has to be asked about more than once.** The status was fetched
-  once at startup, with the comment that "whether the machine has one does not
-  change while the app runs". On Android that is false in the most annoying
-  possible way: the permission is granted through a dialog that is dismissed
-  *after* that first read, so the answer is always "no" and a control disabled on
-  it stays disabled for ever. `MainActivity.onRequestPermissionsResult` now tells
-  the page to ask again, and the page also re-asks whenever it comes back to the
-  foreground, which is what catching a permission granted from the system
-  settings looks like.
-- **On a phone there is no tooltip, so a control that cannot be used has to say
-  why somewhere the learner will look.** This cost a round of confusion: the
-  microphone button was greyed out and read as a microphone fault, when in fact
-  the microphone was fine and **的** was believed to have no judgeable tone — it is
-  a neutral-tone particle. (It is scored now, on being level; see §9. The button's
-  remaining reasons are a missing microphone and text no half can answer.) The
-  button then
-  spelled the reason out in its own label (`No tone to score` / `No microphone`).
-  On a phone the reason is carried by the sentence under the row, the `.hint`, and
-  `sayBlocked` in `App.svelte` is the one expression the tooltip, the accessible
-  name and the hint all read, so the three cannot drift. A **separate** explanatory
-  paragraph is still the wrong answer — it wraps to its own row and pushes the rest
-  of the controls off the screen — which is why the reason rides on a line that was
-  already there. As of the caption removal that line is the `.hint`'s *only* job:
-  it renders when a control is disabled and not otherwise, so on a phone with a
-  working voice and a judgeable tone there is no explanatory text on the board's
-  screen at all. The row itself has been through three shapes and the constraint
-  never changed: **a control the learner cannot identify is unusable, and a row
-  that is too tall costs the board its height.** It was four wrapped rows of wide
-  labelled buttons (too tall), then bare glyphs with the word in `title` and
-  `aria-label` (short, but on a phone the only thing that explains the control is a
-  tooltip, and there is no tooltip), and it is now the mock-up's shape: a glyph on
-  a tinted disc with its short name under it, two tools to a card, three cards
-  centred under the board. That is **74 px** on a 390 px phone, and the words are
-  back *and* the row is one line, which neither of the two earlier shapes managed at
-  once. Two things were cut from the mock-up after using it on a phone: the
-  captions under each card (Writing help, Pronunciation, Drawing), because each
-  cost a line of screen to name what the glyphs and the words under them already
-  said — the names moved onto the cards as `aria-label`, so a screen reader still
-  hears the grouping — and "Hold to speak", which wrapped to two lines and made its
-  card taller than the other two, now "(hold…)" on the button with the sentence in
-  `title` and the accessible name. The words are also the accessible names
-  (`aria-label` contains the visible word wherever the text is not simply dropped),
-  so a voice-control user can say what is on the button — see §4's label-in-name
-  note. What the row kept from the icon era: the long sentence stays in `title`
-  and `aria-label`, and a disabled control still never explains itself, which is
-  the `.hint`'s job.
-
-- **Push-to-talk has three ways to stop itself, and the third is not obvious.**
-  The button moved out from under the finger (clearing the previous judgement
-  removed the panel above it and pulled the row up), `touch-action` let the
-  browser claim the touch for a scroll, and — the one that survived both fixes —
-  **Android's long-press selection gesture takes the pointer at 555 ms** and
-  sends `pointercancel`. The button now captures the pointer, leaves the previous
-  judgement on screen, sets `touch-action: none` and `user-select: none`, and
-  swallows `contextmenu`, which is what the practice board had been doing all
-  along. §9 has the measurements and the event log that found it. One of the
-  three causes is now structurally impossible: the label that used to narrow to
-  "Listening…" on press is gone, and the button is a fixed-size mouth glyph. The
-  panel above it can still appear and vanish, so the pointer capture and the
-  untouched previous judgement stay.
+  Read `Settings.Secure.TTS_DEFAULT_SYNTH` instead — the same value the platform uses,
+  and on the test phone it is *empty*, which is itself the answer to "why is this
+  phone silent": no synthesiser had ever been chosen there.
+- **The microphone has to be asked about more than once.** The status was fetched once
+  at startup, with the comment that "whether the machine has one does not change while
+  the app runs". On Android that is false in the most annoying way: the permission is
+  granted through a dialog dismissed *after* that first read, so the answer is always
+  "no" and a control disabled on it stays disabled for ever.
+  `MainActivity.onRequestPermissionsResult` now tells the page to ask again, and the
+  page also re-asks whenever it comes back to the foreground.
+- **On a phone there is no tooltip, so a control that cannot be used has to say why
+  somewhere the learner will look.** The microphone button was greyed out and read as
+  a microphone fault, when the microphone was fine and **的** was believed to have no
+  judgeable tone — it is a neutral-tone particle. (It is scored now, on being level;
+  see §9.) The reason is carried by the `.hint` under the row, and `sayBlocked` in
+  `App.svelte` is the one expression the tooltip, the accessible name and the hint all
+  read, so the three cannot drift. A **separate** explanatory paragraph is the wrong
+  answer — it wraps to its own row and pushes the rest of the controls off the screen.
+  That line is now the `.hint`'s *only* job: it renders when a control is disabled and
+  not otherwise. Three shapes were tried (four wrapped rows of labelled buttons — too
+  tall; bare glyphs with the word only in `title`/`aria-label` — no tooltip on a
+  phone; and the mock-up's **three cards**: a glyph on a tinted disc with its short
+  name under it, two tools to a card, centred under the board — **74 px** on a 390 px
+  phone, one line, words visible). Two things were cut from the mock-up after using it
+  on a phone: the captions under each card, whose names moved onto the cards as
+  `aria-label`, and "Hold to speak", which wrapped and made its card taller — now
+  "(hold…)" on the button with the sentence in `title`. The visible words are the
+  accessible names, so a voice-control user can say what is on the button — see
+  invariant 28.
+- **Push-to-talk has three ways to stop itself, and the third is not obvious.** The
+  button moved out from under the finger (clearing the previous judgement removed the
+  panel above it and pulled the row up, which fired the `pointerleave` wired to
+  `stopListening`), `touch-action` let the browser claim the touch
+  for a scroll, and — the one that survived both fixes — **Android's long-press
+  selection gesture takes the pointer at 555 ms** and sends `pointercancel`. The button
+  now captures the pointer, leaves the previous judgement on screen, sets
+  `touch-action: none` and `user-select: none`, and swallows `contextmenu`, which is
+  what the practice board had been doing all along. §9 has the measurements. The label
+  that used to narrow to "Listening…" is gone and the button is a fixed-size mouth
+  glyph, so one cause is now structurally impossible; the panel above it can still
+  appear and vanish, so the pointer capture and the untouched previous judgement stay.
+  Instrument the events rather than guessing: listeners for
+  `pointerdown`/`pointerup`/`pointercancel`/`lostpointercapture` with timestamps say
+  in one run what took three rebuilds to infer.
 - **`cpal`'s Android input does not work; `AudioRecord` does.** Capture is
-  per-platform for that reason — `cpal` elsewhere, Kotlin's `AudioRecord` on
-  Android — and §9 has the AAudio log, the five-source probe and the three
-  details of the Kotlin backend that are easy to get wrong.
+  per-platform for that reason — `cpal` elsewhere, Kotlin's `AudioRecord` on Android —
+  and §9 has the AAudio log, the five-source probe and the three details of the Kotlin
+  backend that are easy to get wrong.
+
+
+## 6a. Deferred: resuming inside a user vocabulary list
+
+**Not started. Specified here so the next session does not re-derive it.**
+
+The course remembers where you were; a vocabulary list does not. Practising a
+group always restarts at its first entry, which is the behaviour reported and
+confirmed. This is **a missing feature, not a bug** — nothing fails to save.
+
+### What was established, so it is not redone
+
+* The store has seven tables (`meta`, `progress_card`, `attempt`, `vocab_group`,
+  `vocab_entry`, `course_cursor`, `settings`). `course_cursor` is a single row
+  (`CHECK (only_row = 1)`) for the frequency-ordered course. There is no
+  vocabulary equivalent.
+* **Half the work already exists.** `vocab_entry` carries `attempts` and
+  `last_practised`; `vocab_record_attempt` writes both; and both are already on
+  the IPC boundary as `VocabEntry.attempts` / `.lastPractised` in
+  `src/lib/types.ts`. So "skip entries already practised" needs **no storage
+  work** — it is a filter in `App.svelte`'s `practiseQueue`.
+* `practiseQueue(entries)` hands the whole list to `startPractice`, which resets
+  `queueCursor = 0` and has no position to restore.
+
+### Decisions taken
+
+* **Groups get a stable id.** Chosen over keying by name, because a cursor keyed
+  by name is orphaned by a rename: the group row's name changes and the cursor
+  row survives under the old name. Honouring "position cleared on rename" would
+  need a cross-table diff on every sync, which would also wipe the position of a
+  group deleted and recreated with the same name. A stable id makes a rename keep
+  its place, which is what "resume where I left off" actually means.
+* **Last write wins per (group, device).** The user is one person across a phone
+  and a laptop, and the requirement is to resume where they left off. No
+  per-device reconciliation.
+* **Resuming skips entries already practised** (`last_practised IS NOT NULL`).
+  Decided, not yet implemented, and it interacts with the cursor: if every entry
+  in a group is already practised the "first unpractised" rule finds nothing.
+  **Restart from the top in that case** — such a list is due for review, not
+  finished.
+* **Deletion clears a position** (the group is gone, so its cursor is dropped).
+
+### What implementing it touches
+
+Five modules, which is why it was not started as a fragment:
+
+1. `crates/hanzi-store/src/schema.rs` — a `vocab_cursor` table and a migration.
+2. `crates/hanzi-store/src/lib.rs` — read/write per group, mirroring the
+   `CursorSink` impl for the course cursor (which is the shape to copy: it
+   carries `updated_at`, `device_id` and a `revision` counter).
+3. `crates/hanzi-sync/src/document.rs` — `merge_vocab_cursor`. **Last-write-wins
+   per group**, so the merge is per-group and must not compare positions across
+   groups. `merge_cursor` is the single-value version to model it on.
+4. `crates/hanzi-sync/src/lib.rs` / `local.rs` — shard naming and the read/write
+   seam, alongside `cursor_shard_name`.
+5. `src-tauri/src/commands.rs` + `src/lib/api.ts` + `src/App.svelte` — commands,
+   wrappers, and the `practiseQueue` filter.
+
+**Give groups a stable id first**; the cursor depends on it. `vocab_group` is
+currently name-keyed, and `merge_vocab` already merges it, so both the rename
+path and the id have to be settled together.
+
+### Why it was deferred rather than half-built
+
+It is the one area where an incomplete change is worse than none: a position that
+publishes but cannot be merged leaves two devices disagreeing about where the
+learner is, which is the exact failure M13 exists to avoid. Written down here
+with the research already done so it can be done in one pass with merge tests.
 
 ## 7. Open decisions
 
-- **Speech recognition of *text* (M12) — the product decision is taken, the code is
-  not written.** Tone practice needs no model and shipped without one. Recognising
-  *what* was said is different: every usable Mandarin recogniser is a neural model
-  of ~155 MB (`sherpa-onnx` + SenseVoice), which cannot be bundled.
-  **Decided by the project owner: a download is acceptable provided it is optional,
-  user-triggered, and installed from the settings screen.** The app must keep
-  working exactly as it does today for anyone who declines — no prompt, no nag, no
-  degradation. The full set of constraints is in ROADMAP M12, and the model choice,
-  packaging and licensing research is in
-  `docs/research/ASR_TTS_CLAUDE_RESEARCH.md` §5, §7 and §9. **Until that is built,
-  the app makes no HTTP request at all**, which is asserted in §2 and checked with
-  `cargo tree`; whoever adds the download is the one who restates the README's
-  promise as "nothing is downloaded unless you ask", and adds the model's own
-  licence notice the way `cpal`'s was added.
+### Still open
 
-- **Committing the artifact** — settled the other way, deliberately. The 13 MB
-  artifact and the 17 MB interface font are both committed, so a clone and a CI
-  run go straight from `pnpm install` to a build with no download. The cost is
-  ~30 MB of binary in the repository; the 33 MB of upstream text stays ignored.
-  `.gitignore` records the reversal and the command that regenerates the artifact.
+- **The App Store path is untested, and one part of it is at risk.** A Mac App
+  Store build must be sandboxed, and `speech.rs` pronounces by spawning
+  `/usr/bin/say`, which a sandbox may refuse. `scripts/probe-app-sandbox.sh` was
+  written to settle it and **could not do so from here**: applying any sandbox
+  profile is refused in this environment (`sandbox-exec -p '(version 1)(allow
+  default)' …` → `sandbox_apply: Operation not permitted`), and an app signed with
+  `com.apple.security.app-sandbox` and launched through launchd ran with the
+  entitlement present but unenforced. The script reports "inconclusive" rather than
+  a false answer. Run it from a normal login session, or put a build on TestFlight
+  and try *hear it* there. If `say` is refused, the macOS backend wants
+  `AVSpeechSynthesizer` in process — **not a new design**: `speech.rs` already
+  speaks that way on iOS, so it is the same backend behind a `cfg`. Settle this
+  before writing M6's three backends. There is also an answer that removes the
+  question: the pre-rendered audio pack in
+  [`docs/research/ASR_TTS_CLAUDE_RESEARCH.md`](docs/research/ASR_TTS_CLAUDE_RESEARCH.md)
+  §4.4 takes synthesis off the runtime path for the bundled curriculum, and M14's
+  clips are that answer in part already.
 - **The ink measure is proven, but half of it cannot fire yet.** The canvas paints
   every stroke at one fixed width, so nothing a learner does on a trackpad can put
   down *less* ink than `INK_WIDTH` and the `faint` verdict is unreachable in daily
-  use; what M4 does catch today is overshoot and short strokes. The width half
-  becomes live when input can report a real pen width — a stylus. **M8 chose not
-  to add the velocity-thickened brush it had listed as "cosmetic only"**, and the
-  reason is worth keeping: ink amount became a quarter of the score in M4, so
-  stroke width is a grading input now, and a brush that thinned with speed would
-  score a fast stroke worse for being fast. Doing it properly means the grader
-  takes a width per stroke and `INK_OK` is re-tuned against real attempts — the
-  attempt log's job (M10). Whichever comes first wants real attempts to re-tune
-  `INK_OK` against.
+  use; what M4 catches today is overshoot and short strokes. The width half becomes
+  live when input can report a real pen width — a stylus. **M8 chose not to add the
+  velocity-thickened brush it had listed as "cosmetic only"**, and the reason is
+  worth keeping: ink amount became a quarter of the score in M4, so stroke width is
+  a grading input now, and a brush that thinned with speed would score a fast stroke
+  worse for being fast. Doing it properly means the grader takes a width per stroke
+  and `INK_OK` is re-tuned against real attempts.
 - **The four headline weights are a judgement, not a measurement.** An equal
   quarter each, chosen so a third-inked character cannot read "Excellent". The
   honest way to set them is the attempt log below, on real handwriting.
 - **Shape tolerance is tuned on synthetic jitter**, not on real learners. It wants
-  revisiting once there are real attempts to look at — ideally by logging
-  attempts and re-running the distribution analysis in `selfcheck`.
-- **Vocabulary list scope** — settled: M1 shipped with auto-fill for single
-  characters, a composed reading for words, and hand-typed meanings. M3 changed
-  one half of that: a word in the HSK dictionary now gets its real reading *and*
-  its real meaning, and only a word the dictionary does not know falls back to a
-  composed reading with a blank meaning. The remaining intentional gaps (CSV
-  import, tone sandhi, sentence segmentation) are recorded at the end of
-  `ROADMAP.md` M1 and M3.
-- **Word dictionary scope** — settled: the HSK 3.0 lists, multi-character entries
-  only, MIT compilation with CC-CEDICT readings and definitions (CC BY-SA 4.0).
-  The share-alike obligation is real and is recorded in `LICENSES.md`; it is why
-  the upstream fields that would add a third licence (SUBTLEX-CH frequency, HanLP
-  part-of-speech) are not bundled. If a future milestone wants published word
-  frequencies, that is a licensing decision, not just a data one.
+  revisiting once there are real attempts to look at — ideally by logging attempts
+  and re-running the distribution analysis in `selfcheck`.
+- **The attempt log exists; what reads it is still to come.** M10 shipped the
+  unbounded log (`attempt`, with `Db::attempts` and `Db::attempt_count` to read it)
+  and the schedule shows the newest 20 attempts per character, but nothing yet
+  *exports* it and `selfcheck` still tunes against synthetic jitter. The
+  cross-cutting "attempt logging" item is half done on purpose: the ceiling is gone,
+  and the analysis that wanted it is the next thing to build. A migrated card's
+  `attempts` count can exceed the rows in the log — the JSON it came from kept only
+  the newest 20 — so any analysis must treat the log as starting at the import, not
+  at the learner's first attempt.
+- **Graded phrase audio (M14): the bundled voice is settled, the readers' is not.** The
+  HSK 1–2 clips are the corpus's own **Apache-2.0 CosyVoice2 recordings**, fetched by
+  `scripts/fetch-clip-audio.py` (819 phrases, 1,638 clips, zero missing takes) — decided on
+  measurement, after generated MeloTTS audio failed 57 of 208 phrases where the published
+  recordings failed 15. MeloTTS stays for **on-device speech for a phrase with no clip**.
+  Still open: the **graded readers'** audio (text only upstream; a MeloTTS first pass exists
+  uncommitted and is not shippable on the same measure), the app-level check, and playback
+  speed. The measurements are in
+  [`docs/research/MELOTTS_PRONUNCIATION_ACCURACY.md`](docs/research/MELOTTS_PRONUNCIATION_ACCURACY.md);
+  `verify-audio` (§3) is the instrument.
+- **Tone scoring against real voices is unfinished** — segmentation on words, and
+  scoring constants never fitted to a recording. See §9.
+- **An accepted dependency advisory.** Dependabot flags `glib` 0.18.5 (moderate,
+  fixed in 0.20.0). It is Linux-GTK-only and absent from the macOS build graph, and
+  it is not fixable from here because `gtk 0.18` pins `glib ^0.18` — cargo rejects
+  the upgrade. **Do not spend time on it**: `cargo tree --target
+  aarch64-apple-darwin -e normal | grep glib` returns nothing. ROADMAP has the
+  detail.
+- **Resuming inside a user vocabulary list is not started** — specified in §6a.
+
+### Settled, and not to be re-litigated
+
+- **Network and privacy posture.** Nothing is fetched unless the learner asks, and
+  that is the sentence to keep true. Three things can reach the network, all
+  opt-in: `asr.rs`, which downloads the ~163 MB recognition model only when the
+  install button is pressed (M12); `say.rs`, on exactly the same rules (M14); and
+  `sync.rs`, which reaches the learner's own Dropbox once an account is connected
+  and then syncs at launch and on return — which is why it asks whether there is a
+  network before it tries. Both downloads verify against a pinned SHA-256, stage
+  their work so an interrupted install leaves the previous state untouched, state
+  the address, size and licence before the button, and change nothing when
+  declined. Sync is off by default. There is no server of ours and no account of
+  ours. **Whoever adds another download must restate the README's promise — in
+  `README.md`, `LICENSES.md` and the bundle's own `longDescription` — and add the
+  model's licence notice the way `cpal`'s and MeloTTS's were added.** For that
+  person: `tauri.conf.json`'s `longDescription` names both optional models now, and
+  the same restatement is owed the next time a download is added.
+- **Committing the artifact** — deliberate. The 13 MB artifact and the 17 MB
+  interface font are both committed, so a clone and a CI run go from `pnpm install`
+  to a build with no download. The cost is ~30 MB of binary in the repository; the
+  33 MB of upstream text stays ignored. `.gitignore` records the reversal and the
+  command that regenerates the artifact. The phrase clips are committed on the same
+  reasoning.
+- **Vocabulary list scope** — M1 shipped auto-fill for single characters, a composed
+  reading for words, and hand-typed meanings; M3 changed one half of that, so a word
+  in the HSK dictionary gets its real reading *and* meaning, and only an unknown word
+  falls back to a composed reading with a blank meaning. The remaining intentional
+  gaps (CSV import, tone sandhi, sentence segmentation) are recorded at the end of
+  ROADMAP M1 and M3.
+- **Word dictionary scope** — the HSK 3.0 lists, multi-character entries only, MIT
+  compilation with CC-CEDICT readings and definitions (CC BY-SA 4.0). The
+  share-alike obligation is real and recorded in `LICENSES.md`; it is why the
+  upstream fields that would add a third licence (SUBTLEX-CH frequency, HanLP
+  part-of-speech) are not bundled.
 - **A word's reading is chosen by a rule, not resolved by context.** The first
   dictionary form wins unless it is a capitalised proper noun, in which case the
-  first ordinary reading wins. That fixes 安 (`Ān` the surname → `ān` peaceful)
-  but leaves a minority of genuinely ambiguous headwords on their less common
-  reading (便宜). There is no context to do better without the sentence, so this
-  is documented rather than papered over.
-- **Scheduling scope** — settled: M2 shipped SM-2 behind a `Scheduler` trait, with
-  the intervals and file layout recorded at the end of `ROADMAP.md` M2. FSRS was
-  deliberately not attempted: it wants a review history one learner will not
-  produce quickly, and the trait is the seam for revisiting it. There is no
-  export/import for the schedule either — it is derived from practice, and a
-  merge format would be guesswork.
-- **The attempt log exists; what reads it is still to come.** M10 shipped the
-  unbounded log (`attempt`, with `Db::attempts` and `Db::attempt_count` to read
-  it) and the schedule now shows the newest 20 attempts per character from it, but
-  nothing yet *exports* it and `selfcheck` still tunes the tolerances against
-  synthetic jitter. The cross-cutting "attempt logging" item is therefore half
-  done on purpose: the ceiling is gone, and the analysis that wanted it is the
-  next thing to build. A migrated card's `attempts` count can exceed the rows in
-  the log — the JSON it came from kept only the newest 20 — so any analysis must
-  treat the log as starting at the import, not at the learner's first attempt.
-- **Where study data lives** — settled: the platform's application data directory,
-  resolved through the platform API rather than assembled from `$HOME`, and
-  overridable with `--user-dir` (which wins) or `HANZI_TUTOR_DATA_DIR`. Not a
-  `~/.hanzi-tutor` of our own: a Mac App Store build is sandboxed, the real home is
-  not writable there, and some home-directory APIs still return the real home
-  inside a sandbox — so a hand-built path fails only at save time. **The format is
-  settled too** (M10): one SQLite database, `hanzi.db`, holding all three stores,
-  imported once from the JSON documents an older build left behind.
-- **Where settings live, what an unchosen one means, and the screen that edits
-  them** — settled, and built. Preferences are a `Settings` document in
-  `hanzi-core`, stored as rows in `hanzi.db`'s `settings` table, with **no row**
-  meaning "nobody has chosen" rather than "off". That distinction is the whole
-  point: the interface resolves an unchosen preference from the device
-  (click-to-draw where there is a hover, dragging for a finger or a stylus) or
-  from the system (the pronunciation voice) and only writes a value once the
-  learner has actually made a choice. `src/lib/SettingsPanel.svelte` is the screen
-  — the fourth sidebar entry — and it edits four preferences: click-to-draw, the
-  stroke-order pace, the board size, and the voice. Three rules there are worth
-  not undoing:
-  - **Only a preference with a device or system answer is a tri-state.**
-    `click_to_draw` and `voice` are `Option`; `animation_pace` and `board_size`
-    are plain enums with a `Default`, because nothing can resolve their absence
-    and `Option` would only add a state no one can observe. `Pace`/`BoardSize`
-    carry `ALL` (the order the screen offers) and the scale the app applies, so a
-    new choice cannot be added in one place and forgotten in the other.
-  - **Clearing is spelled per preference on the wire**, because a *missing*
-    argument already means "leave this one alone" — that is what lets the screen
-    send only the control the learner touched without resetting the other three.
-    Click-to-draw therefore has its own command (`clear_click_to_draw`), and a
-    voice clears with `""`. Do not try to fold these into `null`.
-  - **A preference at its default is stored as no row.** Otherwise a fresh
-    install writes two rows saying "normal", and the settings table stops being a
-    record of decisions somebody took.
-- **Cross-device sync: built, and it now runs by itself.** M13.
-  Schema 3 has shipped: `meta.device_id`, `attempt.device_id`/`attempt.seq` with a
-  unique index on the pair, and `ATTEMPT_ORDER = (at, device_id, seq)` for reading
-  the log. **Never read the attempt log by `id` again** — `id` is this file's
-  insertion order, and once a peer's attempts have been merged in, the row that
-  arrived last is not the attempt that happened last; the schedule is folded in the
-  order the log is read, so reading by `id` would silently reorder a learner's
-  reviews. `seq` is numbered *per device*, so two devices legitimately both start
-  at 1: the pair is what is unique, never the number alone. `crates/hanzi-sync` now
-  holds the shard format, the merge and the fold, and three of its rules are
-  load-bearing: **a closed shard is never rewritten** (a name is the sequence it
-  starts at, which is why a shard carries no content hash — a hash would make the
-  name depend on the contents, so a retried partial write would make a second shard
-  instead of finishing the first); **the merge is a union, not a reconciliation**,
-  so two copies of one `(device_id, seq)` that disagree mean a shard was replaced
-  and are reported as `SyncError::Rewritten` rather than resolved, because picking a
-  winner would invent history the learner cannot check; and **the per-attempt update
-  lives in exactly one place**, `hanzi_core::apply_attempt`, called by both
-  `ProgressStore::record_with` and `fold_attempts`. Do not inline a copy of it into
-  either — if the live path and the fold can drift, two devices hold different
-  schedules for one history and neither can tell which is right. Two things about
-  the adapter are equally load-bearing: sync publishes **`Db::own_attempts`**, never
-  `Db::attempts` — after one sync the log holds a peer's work too, and publishing
-  that under this device's name would relabel it, which is the identity the merge
-  rests on; and **every store a sync can rewrite is reloaded afterwards, by
-  `AppState::reload_after_sync`** — progress, the vocabulary list and the course
-  cursor. That is why `sync_now` and `sync_auto` both take the `AppState` as well as
-  the sync service: if that parameter looks unused, it is not, and removing it puts
-  the bug back. The reload runs on failure as well as success, because a sync that
-  died partway through `recompute` may still have written something, and it leaves a
-  store already in its *failed* state alone, since refusing to save is the point of
-  that state. `sync_auto` is the one caller that skips it, and **only** when nothing
-  was attempted at all — no account, a locked sign-in, no network. Without the reload
-  the schedule is wrong until the next sync — recoverable, because the log kept every
-  attempt and the fold
-  rebuilds from it, but silently wrong in between. **The vocabulary list is the one
-  that bites**: `save` reads an entry missing from the document as one the learner
-  removed and tombstones it, so a save from a document that predates a sync deletes
-  everything the sync brought in — and those tombstones then travel and delete the
-  entries on the other devices too. It was forgotten once, after the progress store
-  had been done, which is why the set now lives in one method instead of three calls
-  at the command. **Reloading the backend is only half of it, and the half that is
-  easy to miss**: this side keeps its own copies of the same views, and they are only
-  replaced when a command hands over a new one. So the settings screen calls
-  `onSynced`, which is `App.svelte`'s `refreshAfterSync` — vocabulary, progress and
-  the review queue together, because one sync changes all three. A backend reload
-  with no frontend re-read looks exactly like a sync that did nothing until the app
-  is restarted, which is how it was reported twice. On the vocabulary side, three
-  rules are load-bearing. **The stamp is `(updated_at, device_id, revision)` and all
-  three parts are needed** — the time for
-  the ordinary case, the device for two devices writing in one second, and the
-  revision for two writes by *one* device in one second, which is what adding and
-  then immediately deleting an entry looks like. **The stamp moves only when what the
-  learner typed moves**: practice counters are this device's own, because one stamp
-  per entry means practising could otherwise clobber an edit. And **`vocab_view`
-  returns tombstones** — a removal that does not travel is a removal the other device
-  undoes. Two properties already in the code decide the whole design, so do not
-  "improve" them away: `attempt` is append-only — a grow-only set, which merges with
-  no conflict to resolve — and `Sm2::review` is pure, so a card is a *fold over the
-  log* rather than a mergeable value. **The log syncs; `hanzi.db` never does.** A live
-  SQLite file in a cloud folder is how study data gets corrupted — out-of-order
-  WAL and SHM sidecars, snapshots taken mid-transaction, "conflicted copies" — and
-  no phone exposes such a folder as a filesystem anyway. Three further rules: sync
-  must not carry `settings` (the absent-preference-asks-the-device invariant above
-  would break, so a phone's answer could overwrite a desktop's); the fold order
-  must be `(at, device_id, seq)`, because whole-second `at` ties are real and
-  `ease` accumulates in `f32`, so without a tiebreak the devices drift; and a
-  migrated card whose `attempts` exceeds its logged rows must fold from a captured
-  baseline, since its log is incomplete — **and that baseline is built now.** The rule
-  worth not undoing is that its covered range is **per character**: a baseline says
-  "the cards I name already hold my rows in this seq range" and nothing about the other
-  characters the same device wrote in the same stretch, so read as a global range it
-  silently drops them and leaves their cards at whatever they were. A card with no
-  baseline to fold from is left alone and reported, which is what the code did before
-  the baseline existed: the fallback must degrade to a stale schedule, never to an
-  invented one. Dropbox is the first transport, with
-  app-folder access and PKCE so that no client secret enters an AGPL repository —
-  and with **no redirect URI**, because Dropbox rejects custom schemes (every
-  redirect must be HTTPS except `localhost`), so the code is shown on the
-  authorization page and pasted into the app rather than deep-linked back. That
-  also means `tauri-plugin-deep-link` is not wanted here; do not add it on the
-  assumption that a mobile OAuth flow needs it. The Dropbox client itself is in
-  `crates/hanzi-sync/src/{http,oauth,dropbox}.rs`, hand-written over `ureq` rather
-  than an SDK so the licence catalogue does not grow, and tested against an
-  in-memory Dropbox — `UreqHttp` is the only part that touches a socket. Three
-  things about it are easy to get wrong: **the token request carries no
-  `client_secret`** (PKCE replaces it, and a test asserts it); **no `redirect_uri`
-  is sent at all**, because Dropbox refuses custom schemes and its code flow makes
-  the parameter optional, which is why the flow is a paste rather than a deep link;
-  and **a Dropbox refusal arrives as a 200 with `error_description` and no
-  `access_token`**, so the refusal must be checked *before* the access token is
-  required or the learner sees a parse error instead of Dropbox's own sentence.
-  `put` overwrites on purpose — a create-only upload breaks a retry after a timeout
-  the device could not distinguish from a failure. On the app side,
-  `src-tauri/src/sync.rs` owns the account and the Keychain, and four rules there are
-  worth not undoing: **the refresh token goes in the platform's secret store and
-  never in `hanzi.db`** (an ordinary file that backups copy around; a refusal to
-  connect on a platform with no secret store yet is a bug report, a plaintext
-  credential is a vulnerability nobody notices); **drawing the screen never reads the
-  keychain** — "connected?" is answered from a record in `meta` holding Dropbox's
-  `account_id` and the protection the item got, because an item behind a user-presence
-  access control asks on *every* read, so a keychain read to draw Settings is a
-  fingerprint prompt for opening Settings, and a sync at launch that did the same would
-  prompt at every launch; **the token is read at most once per run of the app**, cached
-  in an `Open` enum whose third state distinguishes "not read yet" from "read, nothing
-  there"; and **the token store and the HTTP client stay trait objects** — replacing
-  them with the concrete Keychain and `UreqHttp` would make the module untestable
-  without touching the developer's real Keychain, which is a test that deletes their
-  account. The fingerprint is a **switch**, off by default: with it on, the item is
-  created behind a user-presence constraint and asked for when the token is about to be
-  used; with it off, the item carries no constraint at all and is still encrypted at
-  rest and this-device-only. `Protection` reports which of the four states a device
-  actually got, because an ad-hoc signed build cannot reach the data-protection
-  keychain (`errSecMissingEntitlement`) and lands in the login keychain instead — the
-  one case that can ask for the keychain password. **On Android the same two states are
-  arranged differently, and one detail there is an invariant rather than a preference:**
-  the mode belongs to the *keystore key*, not to the item, so it is recorded beside the
-  blob and the key is rebuilt (blob and all) when the switch changes. `can_lock` asks
-  the Kotlin plugin, which blocks until Android's main thread answers — **safe only
-  because every caller is a `#[tauri::command(async)]`**, which Tauri runs on its
-  runtime instead of on that thread. Put a `view()` back into a plain blocking command
-  and Android deadlocks on the first settings screen. **The app also syncs by itself, at
-  launch and when it comes back**, and two things about that are load-bearing rather
-  than decorative. `crates/hanzi-sync/src/reach.rs` asks whether there is a network
-  path *before* the sync tries: a TCP connection to the API host, on a thread with a
-  deadline, because `UreqHttp`'s ten-second connect timeout is written for a bad
-  connection rather than a dead one and a launch would spend it per request finding
-  out. And the commands that touch the network are declared `async`, which on a
-  *synchronous* function is what moves it off the main thread — without it the window
-  freezes and the "Syncing…" line cannot be painted, so the feedback this feature
-  exists to give would arrive after the thing it describes. Because two syncs can now
-  genuinely overlap, `SyncService` holds a gate; a refusal from it is not a failure.
-  A device upgrading from a build without the fingerprint switch has an item behind a
-  fingerprint and no preference saying so, which is why adopting a sign-in writes the
-  switch down — left unsaid, every launch would read a locked item and prompt.
-- **The voice preference only works if it reaches the speaker before the
-  warm-up.** `AppState::load` sets it on the `Speaker` *before* `warm_voice`
-  spawns. Resolution is not cached (only the ~1s voice *list* is), so a change
-  takes effect on the next utterance; but resolving first would mean the session's
-  first utterance and the startup log both name a voice that is not the one in
-  use. The environment variable `HANZI_TUTOR_VOICE` deliberately **outranks** the
-  stored preference — see `resolve_voice` in `src-tauri/src/speech.rs`, which is a
-  pure function of (installed voices, preference, override) precisely so that the
-  ordering is testable without a synthesiser.
+  first ordinary reading wins. That fixes 安 (`Ān` the surname → `ān` peaceful) but
+  leaves a minority of genuinely ambiguous headwords on their less common reading
+  (便宜). Without the sentence there is no context to do better, so this is
+  documented rather than papered over.
+- **Scheduling scope** — SM-2 behind a `Scheduler` trait, with the intervals
+  recorded at the end of ROADMAP M2. FSRS was deliberately not attempted: it wants a
+  review history one learner will not produce quickly, and the trait is the seam for
+  revisiting it. There is no export/import for the schedule either — it is derived
+  from practice, and a merge format would be guesswork.
+- **Where study data lives** — the platform's application data directory, resolved
+  through the platform API rather than assembled from `$HOME`, overridable with
+  `--user-dir` (which wins) or `HANZI_TUTOR_DATA_DIR`. Not a `~/.hanzi-tutor` of our
+  own: a Mac App Store build is sandboxed, the real home is not writable there, and
+  some home-directory APIs still return the real home inside a sandbox — so a
+  hand-built path fails only at save time. The format is one SQLite database,
+  `hanzi.db`, imported once from the JSON documents an older build left behind.
 - **The JSON documents are never removed, and nothing exports back to them.** The
   import leaves `vocabulary.json`, `progress.json` and `course-cursor.json`
   untouched on purpose — they are the only copy of the data until the database has
-  it, and a rollback to an older build is then possible. Nothing writes them
-  again, so they go stale the moment the app runs; that is intended, and the
-  vocabulary list's own JSON export (File → export in the list screen) is the
-  user-facing escape hatch, not these files.
-- **The App Store path is untested, and one part of it is at risk.** A Mac App
-  Store build must be sandboxed, and `src/speech.rs` pronounces by spawning
-  `/usr/bin/say` — which a sandbox may refuse. `scripts/probe-app-sandbox.sh` was
-  written to settle it and **could not do so from here**: applying any sandbox
-  profile is refused in this development environment (`sandbox-exec -p '(version
-  1)(allow default)' …` → `sandbox_apply: Operation not permitted`), and an app
-  signed with `com.apple.security.app-sandbox` and launched through launchd ran
-  with the entitlement present but unenforced. The script detects exactly that and
-  reports "inconclusive" rather than a false answer. Run it from a normal login
-  session, or put a build on TestFlight and try *hear it* there. If `say` is
-  refused, the macOS backend needs `AVSpeechSynthesizer` in-process — the same
-  shape M9 needs for iOS, so settle it before writing M6's three backends. A third
-  option — and now there is a fourth thing to know: **the iOS backend is the
-  shape that fix would take.** `speech.rs` already speaks through
-  `AVSpeechSynthesizer` in process on iOS, so the macOS sandbox case is that same
-  backend behind a `cfg`, not a new design. A third
-  option removes the question: the pre-rendered audio pack in
-  `docs/research/ASR_TTS_CLAUDE_RESEARCH.md` §4.4 takes synthesis off the runtime
-  path for the bundled curriculum and is the only one of the three that is
-  *known* to be sandbox-safe.
-- **An accepted dependency advisory.** Dependabot flags `glib` 0.18.5 (moderate,
-  fixed in 0.20.0). It is Linux-GTK-only and absent from the macOS build graph,
-  and it is not fixable from here because `gtk 0.18` pins `glib ^0.18` — cargo
-  rejects the upgrade. `ROADMAP.md` records the detail. **Do not spend time on
-  it**: if you want to confirm the scope, `cargo tree --target
-  aarch64-apple-darwin -e normal | grep glib` returns nothing.
+  it, and a rollback to an older build is then possible. Nothing writes them again,
+  so they go stale the moment the app runs; that is intended, and the vocabulary
+  list's own JSON export is the user-facing escape hatch.
+- **Where settings live, and what an unchosen one means.** Preferences are a
+  `Settings` document in `hanzi-core`, stored as rows in `hanzi.db`'s `settings`
+  table, with **no row** meaning "nobody has chosen" rather than "off". That
+  distinction is the whole point: the interface resolves an unchosen preference from
+  the device (click-to-draw where there is a hover, dragging for a finger or a
+  stylus) or from the system (the pronunciation voice) and only writes a value once
+  the learner has made a choice. `src/lib/SettingsPanel.svelte` is the screen — the
+  fifth sidebar entry — and three rules there are not to be undone:
+  - **Only a preference with a device or system answer is a tri-state.**
+    `click_to_draw` and `voice` are `Option`; `animation_pace` and `board_size` are
+    plain enums with a `Default`. `Pace`/`BoardSize` carry `ALL` (the order the
+    screen offers) and the scale the app applies, so a new choice cannot be added in
+    one place and forgotten in the other.
+  - **Clearing is spelled per preference on the wire**, because a *missing* argument
+    already means "leave this one alone". Click-to-draw therefore has its own
+    command (`clear_click_to_draw`), and a voice clears with `""`. Do not fold them
+    into `null`.
+  - **A preference at its default is stored as no row**, or the settings table stops
+    being a record of decisions somebody took.
+- **The voice preference only works if it reaches the speaker before the warm-up.**
+  `AppState::load` sets it on the `Speaker` *before* `warm_voice` spawns. Resolution
+  is not cached (only the ~1s voice *list* is), so a change takes effect on the next
+  utterance; resolving first would mean the session's first utterance and the startup
+  log both name a voice that is not in use. `HANZI_TUTOR_VOICE` deliberately
+  **outranks** the stored preference, and `resolve_voice` in
+  `src-tauri/src/speech.rs` is a pure function of (installed voices, preference,
+  override) precisely so that ordering is testable without a synthesiser.
+- **Cross-device sync: built (M13), off by default, and it runs by itself at launch
+  and on return.** **[`ROADMAP.md`](ROADMAP.md) M13 owns the design, the tests and the
+  reasoning** — read it before touching `crates/hanzi-sync` or `src-tauri/src/sync.rs`.
+  The rules whose violation is silent, and which must not be undone:
+  - **Never read the attempt log by `id`.** Order is `ATTEMPT_ORDER = (at, device_id,
+    seq)`; `id` is this file's insertion order, so after a merge it would reorder a
+    learner's reviews without saying so. `seq` is numbered per device — the pair is the
+    identity, never the number alone.
+  - **A closed shard is never rewritten**, and a shard's name carries no content hash,
+    so a retried partial write finishes a shard rather than creating a second.
+  - **The merge is a union, not a reconciliation**: two disagreeing copies of one
+    `(device_id, seq)` are `SyncError::Rewritten`, never a winner.
+  - **`hanzi_core::apply_attempt` is the only per-attempt update**, called by both
+    `ProgressStore::record_with` and `fold_attempts`; do not inline a copy into either.
+  - **Sync publishes `Db::own_attempts`, never `Db::attempts`** — after one sync the log
+    holds a peer's work, and publishing that under this device's name would relabel it.
+  - **Every store a sync can rewrite is reloaded afterwards**
+    (`AppState::reload_after_sync`: progress, vocabulary, course cursor) **and the
+    frontend re-reads too** (`refreshAfterSync`). Missing either looks like a sync that
+    did nothing until a restart; for the vocabulary list it is worse, because a stale
+    document's save tombstones what the sync brought in and the tombstones travel.
+    `sync_auto` skips the reload **only** when nothing was attempted at all.
+  - **A migrated card folds from a per-character baseline**; with none it is left alone
+    and reported, never invented. **The log syncs; `hanzi.db` never does**, and sync
+    must not carry `settings`.
+  - **The refresh token lives in the platform's secret store, never in `hanzi.db`**,
+    and drawing the settings screen never reads the keychain — "connected?" comes from a
+    `meta` record. `can_lock` blocks until Android's main thread answers, so every
+    caller must stay a `#[tauri::command(async)]`; a plain blocking command deadlocks
+    the first settings screen.
 
 ## 8. The app bundle, and the notices inside it
 
@@ -1902,69 +1761,67 @@ pnpm run build:unsigned   # the plain Tauri build, no signing wrapper
 ```
 
 `scripts/build-release.sh` resolves a signing identity in this order:
-`$APPLE_SIGNING_IDENTITY`, then the first *Developer ID Application* certificate
-in the keychain, then ad-hoc (`-`) — which still launches on this machine, since
-Apple Silicon refuses a completely unsigned binary. The identity is **not** in
-`tauri.conf.json`, because that file is committed and one person's certificate
-does not belong in it.
+`$APPLE_SIGNING_IDENTITY`, then the first *Developer ID Application* certificate in
+the keychain, then ad-hoc (`-`) — which still launches on this machine, since Apple
+Silicon refuses a completely unsigned binary. The identity is **not** in
+`tauri.conf.json`, because that file is committed and one person's certificate does
+not belong in it.
 
-Output, under the project's own target directory (`.cargo-target/` here, because
-of `with-cargo-env.sh`; `src-tauri/target/` otherwise):
+Output, under the project's own target directory (`.cargo-target/` here, because of
+`with-cargo-env.sh`; `src-tauri/target/` otherwise):
 
 ```
 bundle/macos/Hanzi Tutor.app
 bundle/dmg/Hanzi Tutor_0.3.0_aarch64.dmg
 ```
 
-### What is inside, and why nothing is downloaded
+### What is inside, and why the course needs no network
 
 | Part | How it gets in | Size |
 | --- | --- | --- |
 | Characters, words, stroke geometry | `include_bytes!` in `src-tauri/src/state.rs` | ~13 MB |
 | Interface font, Noto Sans SC | Vite, from `src/assets/fonts/`, via `src/app.css` | ~17 MB |
+| Graded phrase clips | Vite, from `public/audio/<corpus>/` | ~91 MB in the working tree; ~32 MB of it (`no7z`) is committed, and the graded readers' set is generated but not committed (ROADMAP M14) |
 | SQLite, for the study store | compiled from the amalgamation by `libsqlite3-sys` | ~1.5 MB |
-| Fifteen licence notices, as text | `bundle.resources` → `Contents/Resources/licences/` | ~180 KB |
+| 21 licence notices, over 19 files | `bundle.resources` → `Contents/Resources/licences/` | ~230 KB |
 
-Two things in the app can open a socket, and **both are off until the learner
-chooses them**: `asr.rs`, which downloads the optional speech model only when the
-settings button is pressed, and `sync.rs`, which reaches the learner's own Dropbox
-once they have connected an account — and then keeps doing it at launch and on
-return, which is why it asks whether there is a network before it tries. That
-matters here because "everything the reader needs is inside the app" has to hold at
-build time, which is why the artifact and the font are committed rather than
-fetched; it does not mean the app never talks to anything.
+Everything the course teaches is inside the app, and that is a build-time property:
+the artifact, the font and the clips are committed rather than fetched. It is **not**
+a claim that the app never talks to anything — three modules can open a socket, and
+every one is off until the learner chooses it: `asr.rs` (recognition model),
+`say.rs` (synthesis model) and `sync.rs` (their own Dropbox account). See §7.
 
 ### The notices are pinned three ways
 
 `src-tauri/src/licences.rs` is the catalogue. For each notice it holds the text
-(`include_str!`, so it is compiled into the binary), the file under `licences/`,
-and the path the bundle copies it to. `tauri.conf.json` copies the same files.
-`src-tauri/tests/licences.rs` fails unless all three agree — in either direction,
-so an uncatalogued file and a missing one are both failures. **Adding a notice
-means editing the catalogue and the bundle config; the test is what stops you
-forgetting the second one.** There are twelve since M10 added SQLite and
-`rusqlite`: the app's first third-party *code*, since everything before it was
-data or a font. Note what the test cannot do for you — it compares the catalogue,
-the files and the bundle config with each other, so a dependency nobody
-catalogued is invisible. Adding a crate means reading its licence by hand and
-adding a notice.
+(`include_str!`, so it is compiled into the binary), the file under `licences/`, and
+the path the bundle copies it to. `tauri.conf.json` copies the same files.
+`src-tauri/tests/licences.rs` fails unless all three agree — in either direction, so
+an uncatalogued file and a missing one are both failures. **Adding a notice means
+editing the catalogue and the bundle config; the test is what stops you forgetting
+the second one.** There are 21 notices over 19 distinct files (several notices share
+one text); SQLite and `rusqlite` were the first third-party *code* in the binary,
+since everything before them was data or a font. Note what the test cannot do: it
+compares the catalogue, the files and the bundle config with each other, so a
+dependency nobody catalogued is invisible. Adding a crate means reading its licence
+by hand and adding a notice. A notice can also be owed for code compiled in and never
+called, and whether it is there can differ by platform — see invariant 23.
 
-Two copies is not redundancy for its own sake. The compiled-in copy is what the
-About screen shows, and it cannot be lost in packaging — the roadmap's warning was
-that notices are "easy to get wrong and only shows up in the packaged app". The
-file copy is what a redistributor can read without launching the app, which is the
-conventional form of the obligation.
+Two copies is not redundancy for its own sake. The compiled-in copy is what the About
+screen shows, and it cannot be lost in packaging. The file copy is what a
+redistributor can read without launching the app, which is the conventional form of
+the obligation.
 
 ### Verifying a build, by hand
 
-There is no test for the packaged artefact, because there is no packaged artefact
-in CI. After a build, check these four things:
+There is no test for the packaged artefact, because there is no packaged artefact in
+CI. After a build, check these four things:
 
 ```bash
 APP=".cargo-target/release/bundle/macos/Hanzi Tutor.app"
 
-# 1. Every notice survived as a file, and there are ten of them.
-ls "$APP/Contents/Resources/licences"
+# 1. Every notice survived as a file — 19 of them.
+ls "$APP/Contents/Resources/licences" | wc -l
 
 # 2. The font made it into the frontend bundle.
 ls "$APP/Contents/Resources/assets" | grep -i noto
@@ -1978,24 +1835,24 @@ open "$APP"
 ```
 
 A failure of step 1 or 2 is the class of bug the tests cannot see, so it is worth
-doing after any change to `bundle.resources`, the font path or `vite.config.ts`.
-Step 4 also confirms the compiled-in notices reached the interface: the log line
-`[webview] licences: 17 notices bundled` appears on stderr at startup, and the
-fourth sidebar entry renders them.
+doing after any change to `bundle.resources`, the font path or `vite.config.ts`. Step
+4 also confirms the compiled-in notices reached the interface: the log line
+`[webview] licences: 21 notices bundled` appears on stderr at startup, and the About
+sidebar entry renders them.
 
 ### Releasing it
 
 The version lives in **three files** — the workspace `version` in `Cargo.toml`,
-`package.json` and `src-tauri/tauri.conf.json` —
-and `tests/licences.rs::the_version_is_the_same_in_every_file_that_carries_one`
-fails if any two disagree. Bump all three together: the About screen, the
-bundle's `Info.plist` and the `.dmg` filename all read from them. `Cargo.lock`
-follows on the next cargo run, and `pnpm test` is the check that the three still
-agree. Two generated files carry a version as well and nothing tests them, so
-keep them in step by hand: `gen/apple/project.yml` (and the `Info.plist` XcodeGen
-writes from it), and `gen/android/app/tauri.properties`, which is autogenerated
-during the Android build and derives the Play `versionCode` — `0.3.0` becomes
-`3000`, and Play requires it to increase with every upload.
+`package.json` and `src-tauri/tauri.conf.json` — and
+`tests/licences.rs::the_version_is_the_same_in_every_file_that_carries_one` fails if
+any two disagree. Bump all three together: the About screen, the bundle's
+`Info.plist` and the `.dmg` filename all read from them. `Cargo.lock` follows on the
+next cargo run, and `pnpm test` is the check that the three still agree. Two
+generated files carry a version as well and nothing tests them, so keep them in step
+by hand: `gen/apple/project.yml` (and the `Info.plist` XcodeGen writes from it), and
+`gen/android/app/tauri.properties`, which is autogenerated during the Android build
+and derives the Play `versionCode` — `0.3.0` becomes `3000`, and Play requires it to
+increase with every upload.
 
 Then build, tag and publish:
 
@@ -2014,481 +1871,221 @@ gh release create v0.3.0 --prerelease --title "0.3.0 — alpha" \
   "src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab"
 ```
 
-Every release so far is an **alpha**, hence `--prerelease`. 0.2.0 was macOS-only
-on purpose; 0.3.0 adds the Android APK and AAB, because those became real release
-builds — signed with the project's own upload key, and the artifact that has run
-on a physical phone with speech recognition. **iOS is still absent on purpose.**
-The shell does run on a physical iPhone, but only from a `--debug` build
-installed with `devicectl`: an iOS *release* build fails to link Tauri's Swift
-glue (see the traps above), so there is no IPA worth attaching until that
-toolchain question is settled.
+Every release so far is an **alpha**, hence `--prerelease`. 0.2.0 was macOS-only on
+purpose; 0.3.0 adds the Android APK and AAB, because those became real release builds
+— signed with the project's own upload key, and the artifact that has run on a
+physical phone with speech recognition. **iOS is still absent on purpose.** The shell
+does run on a physical iPhone, but only from a `--debug` build installed with
+`devicectl`: an iOS *release* build fails to link Tauri's Swift glue (§6), so there
+is no IPA worth attaching until that toolchain question is settled.
 
 ### Notarisation, if the app is to leave this machine
 
 Signing is automatic; notarisation is not attempted, because it needs Apple
 credentials and uploads the build. To do it, provide either `APPLE_ID`,
 `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID`, or an App Store
-Connect API key (`APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH`), and
-let the bundler staple the ticket. Without it a signed `.dmg` copied to another
-Mac needs a right-click-Open the first time — the standard Gatekeeper prompt for a
-build Apple has not seen, not a defect.
+Connect API key (`APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH`), and let
+the bundler staple the ticket. Without it a signed `.dmg` copied to another Mac needs
+a right-click-Open the first time — the standard Gatekeeper prompt for a build Apple
+has not seen, not a defect.
 
 ### What is deliberately not in the bundle
 
-- **Speech.** Pronunciation uses the system synthesiser. Apple's voices cannot be
-  redistributed, so there is no lawful way to bundle one; the app disables the
-  control with an explanation when no Chinese voice is installed. A current macOS
-  ships several.
-- **Any browser-opening capability.** The licences screen shows source addresses
-  as text rather than links, because opening one would need the opener plugin and
-  a new permission, and would contradict the app's "nothing leaves the machine"
-  promise for no gain — the full licence texts are already bundled.
+- **A recorded voice for arbitrary text.** The graded phrases ship as clips, but
+  anything else is spoken by the system synthesiser. Apple's voices cannot be
+  redistributed, so there is no lawful way to bundle one; the app disables the control
+  with an explanation when no Chinese voice is installed, and M14's optional model is
+  the answer for a platform with no voice at all.
+- **Any browser-opening capability.** The licences screen shows source addresses as
+  text rather than links, because opening one would need the opener plugin and a new
+  permission, and would contradict the app's "nothing leaves the machine unless you
+  ask" promise for no gain — the full licence texts are already bundled.
 
 ## 9. Tone practice (M11) — what to know before touching it
 
 Tone practice records one utterance — a character or a whole word — and scores its
-pitch contour against the tones asked for. It is **not** speech recognition:
-nothing is transcribed, there is no model, and nothing is downloaded. ROADMAP M11
-is the scope, M12 is the part that would need a model; §6 of
-`docs/research/ASR_TTS_CLAUDE_RESEARCH.md` is the argument.
+pitch contour against the tones asked for. **It is not speech recognition**: the pitch
+half needs no model, transcribes nothing and downloads nothing. ROADMAP M11 is the
+scope; the optional transcription half is M12, and §6 of
+[`docs/research/ASR_TTS_CLAUDE_RESEARCH.md`](docs/research/ASR_TTS_CLAUDE_RESEARCH.md)
+is the argument.
 
 An utterance is judged in **two independent halves**, and they do not share a
-precondition. The pitch is scored when the text is a word short enough to divide;
-the transcription is compared when a model is installed and the readings are
-known. Either can happen without the other, which is what `ToneResult.toneScored`
-reports — see "A phrase with no tone target" below.
+precondition. The pitch is scored when the text is a word short enough to divide; the
+transcription is compared when a model is installed and the readings are known. Either
+can happen without the other, which is what `ToneResult.toneScored` reports — see "A
+phrase with no tone target" below.
 
 ### Two modules, and the seam between them
 
 | Module | What it owns | Why there |
 | --- | --- | --- |
-| `crates/hanzi-core/src/pinyin.rs` | Splitting a reading into syllables, reading a tone off a diacritic, and **tone sandhi** | It is reading rules, not signal processing. It is also the half M12 reuses whatever happens to the audio side |
+| `crates/hanzi-core/src/pinyin.rs` | Splitting a reading into syllables, reading a tone off a diacritic, and **tone sandhi** | Reading rules, not signal processing. Also the half M12 reuses |
 | `crates/hanzi-core/src/tone.rs` | YIN, contours, syllable segmentation, DTW, scoring | Pure DSP: samples in, numbers out |
 
-`tone.rs` knows nothing about pinyin and `pinyin.rs` knows nothing about audio.
-The app joins them: `AppState::tone_target` builds a `ToneTarget` (characters,
-readings, citation tones, spoken tones) and `AppState::score_tones` zips it against
-a `ToneReport` (one judgement per syllable). **Both sides are one entry per
-syllable in the same order** — that invariant is what lets the interface label each
-chart, and `analyze` guarantees it by returning one entry per tone asked for,
-whatever it heard.
+`tone.rs` knows nothing about pinyin and `pinyin.rs` knows nothing about audio. The
+app joins them: `AppState::tone_target` builds a `ToneTarget` (characters, readings,
+citation tones, spoken tones) and `AppState::score_tones` zips it against a
+`ToneReport` (one judgement per syllable). **Both sides are one entry per syllable in
+the same order** — that invariant is what lets the interface label each chart, and
+`analyze` guarantees it by returning one entry per tone asked for, whatever it heard.
 
 ### Words are the reason sandhi exists here
 
-The dataset stores a **character's** reading as a list (`好` → `["hǎo", "hào"]`)
-but a **word's** reading run together (`学习` → `"xuéxí"`). So a word needs the
-reading taken apart before anything can be scored, and it needs the tones
-*colloquially* rather than as a dictionary prints them: 你好 is `3 + 3` in a
-dictionary and `2 + 3` out loud. Scoring the dictionary tones would mark correct
-speech wrong.
+A **character's** reading is stored as a list (`好` → `["hǎo", "hào"]`) but a **word's**
+run together (`学习` → `"xuéxí"`), so a word's reading must be taken apart before
+anything can be scored — and it needs the tones *colloquially*: 你好 is `3 + 3` in a
+dictionary and `2 + 3` out loud. `pinyin::spoken_tones` applies the three rules
+(third-before-third, 不 before a fourth tone, 一 before anything else) and both readings
+are reported, so the interface can show "tone 2 (dictionary 3)". Rules 2 and 3 depend on
+*which character* it is, not which tone, which is why the function takes the characters
+as well as the tones. README has the table and the full argument.
 
-Three rules are applied (`pinyin::spoken_tones`): third-before-third, 不 before a
-fourth tone, and 一 before anything else. Both readings are reported, and the
-interface shows "tone 2 (dictionary 3)" so a learner is never told their
-dictionary is wrong. Rules 2 and 3 are about *which character* it is, not which
-tone, which is why the function takes the characters as well as the tones.
+**Do not "simplify" this by scoring character by character.** Sandhi is a word-level
+phenomenon; a per-character loop cannot see it.
 
-**Do not "simplify" this by scoring character by character.** Sandhi is a
-word-level phenomenon; a per-character loop cannot see it, and that was the whole
-reason words were out of scope until now.
-
-### Hearing it with a real voice — done, and it changed five things
+### Tuning against real voices is unfinished
 
 The engine is tested against synthetic contours whose true F0 is known by
-construction, which is the only way to test a pitch tracker — but for a long time
-**no human recording had ever been through it**, and this section was the standing
-instruction to go and get one. It has now happened: seven rounds of 是, ten of
-是不是 and seven of 中国人, all said at a natural rate into
-`records_from_the_real_microphone`.
+construction, which is the only way to test a pitch tracker — but a synthetic suite
+cannot see everything, and four real defects surfaced only once a human spoke into a
+microphone. Single characters are in good shape now (seven rounds of 是, all seven
+scored, six judging the fall correctly); **words are the open work**:
 
-**What it found is the argument for doing it.** The synthetic suite passed the
-whole time, and four things were wrong in ways no synthetic test could see — an
-analysis window too long to hold a fourth tone, a frame guard tied to nothing, a
-scoring floor sitting inside the spread of correct attempts, and a splitter that
-cut a word twice inside one silence. Each was fixed by reading a real measurement
-rather than by reasoning further from a model; **two of the four fixes proposed
-before the recordings arrived were wrong**, and the whole-word bug was not visible
-at all until a word was actually said.
-
-The 是 run, after the first three fixes: **seven rounds, all seven scored**, margins
-+17 to +67 ms over the floor, six of the seven judging a falling tone correctly at
-64–95.
-
-The word runs are where it fell apart, and the account is in "The splitter that cut
-twice in the same silence". Single characters are in good shape; **words are the
-open work.**
-
-What is still untuned:
-
-- **Segmentation on words.** The double-cut is fixed, but a boundary can still land
-  in the wrong place: in the rounds that split badly, a segment holding two
-  syllables' worth of pitch (a 750 ms "syllable", a 26-semitone range) is judged
-  against the shape of one tone. That is the largest remaining source of wrong
+- **Segmentation on words.** A boundary can still land in the wrong place: a segment
+  holding two syllables' worth of pitch (a 750 ms "syllable", a 26-semitone range) is
+  judged against the shape of one tone. That is the largest remaining source of wrong
   scores.
 - **The scoring constants.** Correct falls scored anywhere from 64 to 95, and one
   round in thirteen measured as level when the learner believed they had said a
   fourth tone. Whether that is a lapse, a variation in how the fall is measured, or
   `SCORE_DECAY_ST` being wrong has not been established.
 
-Both need the same treatment, and `records_from_the_real_microphone` is the
-instrument. Note for whoever runs it next: it takes the **character or word** on
-`HANZI_TUTOR_TONE_TEST`, prints per-syllable voicing and the split points, and the
-split points are the first thing to look at.
-
-### The analysis window that could not see a fourth tone
-
-**The report:** on both phones, a short word like 是 was refused outright unless it
-was said very slowly, and in a three-syllable word the middle syllable was rarely
-recognised.
-
-**The first diagnosis was wrong, and the way it was wrong is the lesson.** It
-looked like a minimum-duration gate: `contour_in` refuses any segment with less
-than `MIN_VOICED_MS` of measured voicing, and that number is not the length of the
-sound — a frame counts only when its whole analysis window holds a period, so the
-measurement runs short of the vowel. Lowering the gate from 90 ms to 60 ms and
-halving the hop looked like the fix, and on the synthetic 是 it was. **Then it was
-tried on a real voice, and three of six attempts were still refused** — with
-`voiced 10`, `13` and `11` frames where the floor wanted 15.
-
-What those rounds show is that the frames were never there to count. `f_min = 60`
-is what chooses the analysis window, because YIN searches two periods at the
-longest lag it covers: 60 Hz buys a **33 ms** window. A real fourth tone is `51` —
-it stays high and then drops hard — and **the pitch moves far enough inside 33 ms
-that no lag in the window holds a period**. YIN returned unvoiced for every frame,
-so the syllable was refused for having no voice in it. It was never a threshold
-that was set too high; it was a measurement that was not being made.
-
-Measured on a synthetic 是 whose vowel is 80 ms, with the fast fall a real tone 4
-has:
-
-| `f_min` | Window | Voiced frames | Measured |
-| --- | --- | --- | --- |
-| 60 Hz (old) | 33 ms | 11 | **refused** |
-| 80 Hz | 25 ms | 22 | 69 ms |
-| 100 Hz | 20 ms | 27 | 68 ms |
-
-So the window is 25 ms — `f_min = 80`, not lower and not higher. Lower leaves the
-fast fall invisible; **higher stops tracking a low voice at all**, which is what
-the same probe found: a 90 Hz male voice measured 84 ms at `f_min = 80` and **0 ms
-at 100**. `a_low_voice_is_still_tracked` pins that, and it is the test that has to
-fail before anyone shortens the window further.
-
-Five changes, all in `crates/hanzi-core/src/tone.rs`:
-
-| Change | Before | After |
-| --- | --- | --- |
-| `PitchConfig::f_min` — which sets the window | 60 Hz, window 33 ms | 80 Hz, window 25 ms |
-| `MIN_VOICED_MS` | 90 ms | 30 ms |
-| The frame guard | A separate `MIN_VOICED_FRAMES = 6`, unrelated to the hop | `min_voiced_frames`, derived from `MIN_VOICED_MS` and the hop |
-| `track_pitch`'s hop | `window / 4` = 8.3 ms | `window / 8` = 3.1 ms |
-| The splitter's floor | `MIN_SYLLABLE_FRAMES = 6` frames = 50 ms, length only | `min_voiced_frames`, as both a length floor *and* a voice floor — see "The splitter that cut twice in the same silence" |
-
-The splitter row was a latent bug rather than a tuning choice: it guaranteed 50 ms
-segments while the scorer asked for 90 ms, so it could cut out a syllable and then
-refuse it. Anything that changes one floor has to change the other, which is why
-they are now one function.
-
-**The tests could not see any of this, and that is worth knowing.** Every
-short-syllable test here builds its voice with `say`/`say_at` — a perfect tone with
-three steady harmonics, which YIN finds a period in almost anywhere. All 32 passed
-while a real 是 was being refused on a phone. `say_rough` adds the cycle-to-cycle
-jitter real phonation has, and
-`a_short_syllable_with_a_fast_fall_is_heard_at_all` is built on it: **flip
-`f_min` back to 60 and that test fails with the learner's exact message.** The
-even-fall tests cannot see it, because an even fall is measured perfectly well
-through a 33 ms window — which is precisely why they all passed.
-
-### The floor belongs below the distribution, not inside it
-
-After the window fix, the same voice gave five more rounds of a natural-rate 是.
-Their measured voicing:
-
-| round | voiced frames | measured | margin against 50 ms |
-| --- | --- | --- | --- |
-| 1 | 2 | refused | — |
-| 2 | 15 | 47 ms | **−3** |
-| 3 | 13 | 41 ms | **−7** |
-| 4 | 22 | 69 ms | +19 |
-| 5 | 25 | 78 ms | +28 |
-
-Rounds 2 and 3 are good 是 — a native-rate fourth tone, at peak levels as high as
-any other round — and the gate refused them, one of them by a single frame. Round 4
-and 5 scored `Match 88.0` and `Match 92.8` with clean falling contours.
-
-**A gate at 50 ms sat in the middle of the spread of correct attempts.** That is
-the whole error, and it is the third version of this constant:
-
-| | Value | What the reasoning was | Why it was wrong |
-| --- | --- | --- | --- |
-| 1 | 90 ms | A 是 vowel is 80–150 ms | Measured voicing runs short of the vowel |
-| 2 | 60 ms | Measured runs ~15 ms short, so allow for it | Argued from synthetic contours, which are not a voice |
-| 3 | 50 ms | The window fix would lift real attempts clear | The window fix helped, and 50 ms was *still* inside the spread |
-| 4 | **30 ms** | Below the distribution; its only job is rejecting transients | — |
-
-`MIN_VOICED_MS = 30` is ten frames at this hop, and those frames overlap: their
-windows cover about 53 ms of signal between them, against the one or two frames a
-transient manages. At 30 ms every one of the five rounds above is scored except the
-2-frame outlier, which is correctly refused at any threshold worth having.
-
-**The rule to take from this: a gate placed inside the distribution of correct
-attempts will refuse correct attempts, however carefully the number is argued for.**
-Every step before the last was argued from a model — a synthetic vowel, an
-arithmetic correction, a probe on a signal generator. None of them could have
-settled it, and each looked convincing at the time. The measurement that settled it
-took one person saying 是 five times into a microphone.
-
-Two things were tested against the same data and **ruled out**, which is worth
-knowing before anyone re-opens them:
-
-- **The 16 kHz resampler.** `resample` decimates a 48 kHz phone capture by linear
-  interpolation, with no anti-alias filter, and its own doc comment calls the
-  aliasing "a cosmetic problem for pitch". It is not the problem here: a synthetic
-  是 through 16 kHz direct, through 48 kHz clean, and through 48 kHz with a
-  broadband noise floor measured identically (22/69, 29/91, 42/131 voiced
-  frames/ms). A real resampler is still wanted for the ASR path, but not for this.
-- **YIN's threshold.** Loosening it from 0.15 to 0.25 gains about 15% more frames
-  on a jittery vowel and calls neither white noise nor a fricative voiced at 0.30,
-  so it is safe and it is a real lever. It is left at 0.15 because the floor was the
-  binding problem and changing both at once would have made the next measurement
-  unattributable. **If a voice still falls short, this is the next thing to move.**
-
-The instrument is the interactive `#[ignore]`d `records_from_the_real_microphone`
-test, which prints the voicing measured beside the floor, as a margin, and takes
-its measurement from `contour_in` rather than from the report — the report zeroes
-those fields when it refuses, so reading them there printed "voicing 0 ms" about a
-recording that had just been counted ten voiced frames.
-
-```text
-HANZI_TUTOR_TONE_TEST=是 HANZI_TUTOR_TONE_SECS=3 \
-  cargo test -p hanzi-tutor --lib -- --ignored --nocapture records_from_the_real_microphone
-```
-
-### The splitter that cut twice in the same silence
-
-Single characters were fixed by the window and the floor. **Words were still
-broken, and the hand test said so immediately.** On 是不是, six rounds of eight
-reported a middle syllable of zero voicing — "I could not hear syllable 2 clearly"
-— and on 中国人, four of seven did.
-
-The tell was in `split after:`. The two boundaries were **31 to 34 ms apart**, and
-31.25 ms is exactly what `min_voiced_frames` comes to at this hop. The search was
-placing both cuts at the least separation the rule allowed.
-
-**Why.** A boundary's cost is the frame's RMS, plus a penalty if the frame carries
-voice. The cheapest place in any recording is a quiet stretch, so with two
-boundaries to place, the search put both of them inside one silence — which costs
-almost nothing — rather than one at each end of it, which would cost a real
-consonant. A *frame-length* floor cannot prevent that: two cuts 31 ms apart in a
-260 ms silence satisfy it comfortably.
-
-The damage is worse than a missing syllable. The middle segment held no voice, so
-it was refused; and the third segment then held **two syllables' worth** of pitch.
-The hand test has a segment of 750 ms reported as one syllable, with a 26-semitone
-range — the contour of a whole word being judged against the shape of one tone.
-
-**The fix, and why it is the right shape.** A syllable has a vowel in it. Each
-segment must now hold at least `min_voiced` frames of *voice*, not merely that many
-frames; two cuts inside one silence leave a segment with no voice in it, so that
-placement becomes impossible. What survives is a boundary at each end of the
-silence, which is what a listener hears as the break.
-
-`find_boundaries` takes that as a second argument beside the length floor. They
-have the same value at the call site and are deliberately still two parameters,
-because they say different things — how long a segment must be, and how much voice
-it must contain — and the first does not imply the second. Both constraints shrink
-the legal predecessors to a *prefix* of the DP row, so the single-pass running
-minimum still works; the prefix-sum of the voiced flag is what makes the voice
-constraint expressible as a subtraction.
-
-`a_silence_between_two_syllables_is_not_cut_twice` pins it, built with
-`say_word_pausing` — silence between the syllables, because a fricative does not
-provoke this. **Disable the voice floor and that test fails with "the boundaries
-are 32 ms apart, so the middle syllable is a sliver: [184, 216]"**, which is the
-hand test's own number.
-
-**It worked, and the next run measured it.** Nine more rounds of 中国人 after the
-change, against seven before it:
-
-| | before | after |
-| --- | --- | --- |
-| Gap between the two boundaries | 32, 32, 87, 103 ms in 4 of 7 rounds | 344–709 ms in 9 of 9 |
-| Rounds with a syllable at 0 ms voicing | 4 of 7 | 0 of 9 |
-| Syllables at 0 ms voicing | 4 of 21 | 0 of 27 |
-
-Every gap is now wide enough to hold a syllable and every syllable has voice in it.
-That symptom is gone.
-
-**The next problem is not segmentation, and it is where the wrong scores come
-from.** The same run reported contour ranges of 26.7 semitones over 188 ms and 27.8
-over 306 ms. A semitone is a semitone: 26.7 of them is more than two octaves, and
-no voice moves two octaves in a fifth of a second — at durations that are one
-ordinary syllable, so the split is not the explanation either.
-
-That leaves the pitch *tracker*, and the likely shape of it is an **octave error**:
-YIN locking onto half the true frequency, which is what creaky voice at the end of
-a syllable provokes, and which shows up as exactly one octave — twelve semitones —
-in a range. A single such frame is enough, because `range_st` is `max − min` over
-the contour, so one outlier sets it, and `Contour::is_flat` keys off `range_st`.
-That would explain the tone 1 results in the same run: 中 came back `Match 85.0`
-with ranges of 0.9 and 1.1 st, and `OffTarget` with ranges of 1.5 to 3.4 st. The
-gap between 1.1 and 1.5 semitones is doing a lot of work.
-
-**Confirmed, on the next run.** The diagnostic was added, six more rounds of 中国人
-were said, and the correlation is exact:
-
-| | segment 1 | segment 2 | segment 3 |
-| --- | --- | --- | --- |
-| tracking jumps | **0, 0, 0, 0, 0, 0** | 6, 12, 9, 4, 4, 3 | 0, 4, 0, 2, 3, 4 |
-| range | 2.4, 3.0, 1.2, 2.1, 2.4, 4.6 st | 3.4, 4.7, **27.4**, 19.8, 19.8, 13.3 st | 6.3, 11.6, 9.6, 18.6, 9.7, 13.2 st |
-
-The segment with no jumps in every single round is the segment with a sane range.
-Every impossible range sits on a segment with jumps, and the Hz spans are things a
-voice cannot do: **83–441 Hz**, 133–433 Hz, 136–429 Hz — a factor of three, inside
-166 ms, around a median near 145 Hz.
-
-**The fix is in the contour, not the tracker.** `range_st` is `max − min`, so one
-wrong frame sets it, and `Contour::is_flat` — which decides whether a tone is
-settled by the flatness rule or handed to the shape comparison — is decided by
-`range_st`. One loud bad frame was therefore enough to turn a level tone 1 into
-"heard falling", which is what the learner was told again and again.
-
-`reject_outliers` drops any frame more than four semitones from the median of its
-neighbours, before the gap fill, so a dropped frame becomes a gap that
-`interpolate_gaps` already knows how to fill from the frames either side. Four
-semitones is generous by a wide margin: a fourth tone falls its whole twelve over
-150–300 ms, which is well under **one** semitone between frames twelve milliseconds
-apart. A *consistent* octave error is deliberately left alone — the contour has its
-mean removed before comparison, so a track that is an octave out throughout has the
-right shape, and only the jumps do damage.
-
-`one_frame_at_the_wrong_frequency_does_not_set_the_range` pins it, built straight
-from those numbers: a level track with two frames at three times the frequency.
-**Disable the rejection and it fails with "one bad frame set the range to 8.6 st"**
-— seven times `FLAT_ST`, so a level tone could never read as level again.
-
-**Measured on the next run**, five more rounds of 中国人 against the six before it:
-
-| | before | after |
-| --- | --- | --- |
-| Tracking jumps | 51 | 8 |
-| Largest range | 27.4 st | 9.2 st |
-| Segments over 10 st | 7 of 18 | 0 of 15 |
-| Impossible Hz spans | 83–441, 133–433, 136–429, 143–442 … | 81–184, in 1 of 15 |
-
-The verdicts changed character with it. Before, a level 中 was told "heard falling"
-off a range set by one frame. Now 中 reports ranges of 1.6 to 3.1 st, and is
-`Match` when it held and `OffTarget`/`Uncertain` when it drifted — a statement
-about the learner's tone 1 rather than about the estimator. **That is the difference
-that matters: the numbers are now about the voice.**
-
-**What is left.** The eight survivors are not spread evenly — they sit in 人, the
-final syllable, where creak is most likely. That is structural rather than a matter
-of tuning: `reject_outliers` catches an *isolated* frame, and a **run** of wrong
-frames is self-consistent, so the local median agrees with them. Widening the
-window would outvote a longer run at the cost of starting to read a real
-fourth-tone fall as movement; the honest fix is the tracker one below.
-
-**Left on the table, deliberately.** The tracker still makes the jumps; this stops
-them reaching the score. The root cause is that YIN runs frame by frame with no
-knowledge of the frame before it, so nothing stops it choosing a different
-multiple of the period — and creak at the end of a syllable is what provokes it. A
-continuity constraint (preferring the candidate lag nearest the previous frame's
-estimate) would fix it at source and improve `median_hz` as well. It is a larger
-change to the estimator, the tests for which are all synthetic, so it wants its own
-round with a real voice rather than being bolted on here.
-
-### The crackle on the first word, and not the second
-
-**The report:** on the iPhone, the first tap on a character's pronunciation often
-crackled, and the same character tapped again was clean. Android was unaffected.
-
-That is a warm-up problem, and `speech.rs` is where it lives. Every utterance did
-four expensive things back to back: `Speaker::speak` called `stop()` first, which
-on iOS released the audio session when nothing was speaking; then `engage_session`
-set the category and activated it; then the `AVSpeechSynthesizer` was constructed
-lazily on the first tap; then `speakUtterance` was called immediately. AVFoundation
-feeds buffers into the audio unit as soon as that call returns, and a buffer
-rendered before the route has finished starting is heard as a crackle. The second
-tap met a warm synthesiser and a route that had not yet powered down, which is
-exactly the "run it a second time" the report describes.
-
-Two changes:
-
-- **The session is held for `SESSION_HOLD_MS` (4 s) instead of being handed back
-  the instant a word ends.** A `SESSION_GENERATION` counter makes a stale timer
-  stand down when a new utterance has already claimed the session — the same
-  failure the `isSpeaking` check guards, one step further out in time. The timer
-  does its check and its release on the main thread, where `take_session` runs, so
-  a tap landing while it sleeps wins.
-- **`Speaker::prime`** builds the synthesiser and starts the route before anyone
-  asks, from the existing background voice warm-up thread. That is what makes the
-  *first* tap warm rather than only the second.
-
-`stop_on_main` no longer releases anything: the hold is armed by the cancellation
-callback, and `Speaker::speak` stops before it speaks, so releasing there was the
-cold start itself. The cost is that anything the app ducked stays ducked for four
-seconds rather than resuming the moment the word ends; a tap arriving after that
-window still meets a cold route, and holding the session for the app's whole
-foreground life would fix that too — at the price of keeping the learner's music
-down the entire time they practise.
-
-**Not changed, and worth knowing:** `audio.ts`'s `playSamples` builds a fresh
-`AudioContext` per utterance at the synthesis model's own rate (44100 Hz) and
-closes it on `ended`. That path is used only by the Phrases panel for a phrase
-with no bundled recording, so it is not what the character button was doing — but
-a cold context and a close-on-end are the same class of glitch and would be the
-next thing to look at if a crackle turns up on a *phrase* rather than a character.
-
-
-### A timing bug to not repeat
-
-The first hand test found a display bug worth recording, because it is the kind
-that makes a working result look broken. Syllable boundaries were reported as
-offsets from the **start of the recording**, while `voiced_ms` is a *duration*.
-Since the learner holds the button before speaking, the panel showed
-`Split at 1463 ms` beside `Voiced 308 ms` — impossible-looking, though the split
-was in the right place. **Anything measured in time here is measured from the
-first voiced frame**, and the test
-`a_word_never_scores_more_syllables_than_it_was_asked_for` asserts every boundary
-falls inside the voiced span, so the two cannot drift apart again. If you add a
-new timing field, give it the same baseline.
-
-Two ways in. Through the app: hold **Hold to say it** on the practice screen and
-release; the tone panel's *Voiced* figure is the same number this test prints. Or
-from a terminal, which also prints the contour statistics:
+`records_from_the_real_microphone` is the instrument; it takes the character or word
+on `HANZI_TUTOR_TONE_TEST` and prints per-syllable voicing and the split points,
+which are the first thing to look at:
 
 ```bash
-./scripts/with-cargo-env.sh cargo test -p hanzi-tutor --lib -- --ignored --nocapture \
+HANZI_TUTOR_TONE_TEST=是 HANZI_TUTOR_TONE_SECS=3 \
+  ./scripts/with-cargo-env.sh cargo test -p hanzi-tutor --lib -- --ignored --nocapture \
   records_from_the_real_microphone
 ```
 
-**That test waits for you**, and it did not always. As first written it opened the
-device the moment the process did and was finished inside two seconds, so the
-report was "no chance to speak before it finishes" — and the recording it scored
-was room tone. It now prints a prompt and records nothing until Enter, then says
-`>>> RECORDING — say X now <<<`, records, and prints the measurement; Enter again
-repeats, `q` finishes. Two things about it are load-bearing and easy to undo: the
-prompt is written with `println!` and never `print!`, because Rust's stdout is
-line-buffered and an unflushed prompt sits in the buffer while `read_line` blocks;
-and the device is opened *before* the prompt to speak rather than after it, so
-nobody talks into a microphone that is still opening.
+**That test waits for you**, and it did not always. It prints a prompt and records
+nothing until Enter, then says `>>> RECORDING — say X now <<<`, records, and prints
+the peak level, median pitch, voicing, the floor it was judged against and the margin;
+Enter repeats, `q` finishes. Three things about it are load-bearing: the prompt is
+written with `println!` and never `print!`, because Rust's stdout is line-buffered and
+an unflushed prompt sits in the buffer while `read_line` blocks; the device is opened
+*before* the prompt to speak, so nobody talks into a microphone that is still opening.
+The voicing it prints is measured by `contour_in`, not read from the report, which
+zeroes those fields when it refuses. And **a peak level of `0.0000` (or under the
+printed silence gate) means nothing reached the analyser** — either nobody spoke or the
+terminal has no microphone permission. The app bundle is a separate process with its own grant and can work there
+while the terminal does not.
 
-It prints the peak level, the median pitch, the voicing, the floor it was judged
-against and the margin between them. **A peak level of `0.0000` (or anything under
-the printed silence gate) means nothing reached the analyser** — either nobody
-spoke or the terminal has no microphone permission. The two are worth telling
-apart, because the app bundle is a separate process with its own grant and can
-work there while the terminal does not.
+### What the real recordings changed
+
+Five changes, all in `crates/hanzi-core/src/tone.rs`. Keep them together:
+
+| Change | Before | After |
+| --- | --- | --- |
+| `PitchConfig::f_min` — which sets the analysis window | 60 Hz, window 33 ms | 80 Hz, window 25 ms |
+| `MIN_VOICED_MS` | 90 ms | 30 ms |
+| The frame guard | A separate `MIN_VOICED_FRAMES = 6`, unrelated to the hop | `min_voiced_frames`, derived from `MIN_VOICED_MS` and the hop |
+| `track_pitch`'s hop | `window / 4` = 8.3 ms | `window / 8` = 3.1 ms |
+| The splitter's floor | `MIN_SYLLABLE_FRAMES = 6` frames = 50 ms, length only | `min_voiced_frames`, as both a length floor *and* a voice floor |
+
+Four rules came out of that work, each invisible in the source:
+
+- **The analysis window must be short enough to hold a fast fall.** `f_min` chooses
+  the window, because YIN searches two periods at the longest lag it covers: 60 Hz
+  buys a 33 ms window, and inside 33 ms a real fourth tone (51) moves so far that no
+  lag holds a period — so every frame came back unvoiced and a correct 是 was refused
+  for having no voice in it. 25 ms (`f_min = 80`) is the value; **lower leaves the
+  fast fall invisible, higher stops tracking a low voice at all** (a 90 Hz male voice
+  measured 84 ms at 80 and **0 ms** at 100). `a_low_voice_is_still_tracked` is the
+  test that must fail before anyone shortens the window further.
+- **A gate placed inside the distribution of correct attempts will refuse correct
+  attempts, however carefully the number is argued for.** `MIN_VOICED_MS` went
+  90 → 60 → 50 → **30** ms, and every step but the last was argued from a model — a
+  synthetic vowel, an arithmetic correction, a probe on a signal generator. At 50 ms,
+  two of five natural-rate rounds of 是 were refused by a few milliseconds. 30 ms is
+  ten frames at this hop and those frames overlap: their windows cover ~53 ms of
+  signal between them, against the one or two frames a transient manages. Its only job
+  is rejecting transients.
+- **The splitter must require voice, not merely length.** A boundary's cost is the
+  frame's RMS plus a penalty for carrying voice, so with two boundaries to place the
+  search put both inside one silence — 31 to 34 ms apart (the `split after:`
+  diagnostic's tell), exactly the minimum the old
+  floor allowed — leaving the middle segment voiceless and the third holding two
+  syllables (a 750 ms segment reported as one syllable, 26 semitones of range). Each
+  segment now needs `min_voiced` frames of *voice*, which makes that placement
+  impossible and puts the cuts at each end of the silence, where a listener hears the
+  break. `find_boundaries` takes length and voice as two parameters deliberately: they
+  say different things, and the first does not imply the second. Both constraints
+  shrink the legal predecessors to a *prefix* of the DP row, so the single-pass running
+  minimum still works; the prefix-sum of the voiced flag makes the voice constraint a
+  subtraction. `a_silence_between_two_syllables_is_not_cut_twice` pins it (built with
+  `say_word_pausing` — a fricative does not provoke this), and
+  `a_word_never_scores_more_syllables_than_it_was_asked_for` asserts every boundary
+  falls inside the voiced span.
+- **One bad frame must not set the range.** `range_st` is `max − min`, so a single
+  octave error — YIN locking onto half the true frequency, which creak at the end of a
+  syllable provokes — turned a level tone 1 into "heard falling", and
+  `Contour::is_flat` keys off `range_st`. `reject_outliers` drops any frame more than
+  four semitones from the median of its neighbours *before* the gap fill, so a dropped
+  frame becomes a gap `interpolate_gaps` already fills. Four semitones is generous: a
+  fourth tone falls its whole twelve over 150–300 ms, well under **one** semitone
+  between frames twelve milliseconds apart. A *consistent* octave error is deliberately
+  left alone — the contour has its mean removed before comparison, so a track an octave
+  out throughout has the right shape. Measured on the next run: tracking jumps 51 → 8,
+  largest range 27.4 → 9.2 st, segments over 10 st 7 of 18 → 0 of 15.
+  `one_frame_at_the_wrong_frequency_does_not_set_the_range` pins it.
+
+**The tests could not see any of this.** Every short-syllable test builds its voice
+with `say`/`say_at` — a perfect tone with three steady harmonics, which YIN finds a
+period in almost anywhere — so all 32 passed while a real 是 was refused on a phone.
+`say_rough` adds the cycle-to-cycle jitter real phonation has, and
+`a_short_syllable_with_a_fast_fall_is_heard_at_all` is built on it: flip `f_min` back
+to 60 and it fails with the learner's exact message. An even fall is measured fine
+through a 33 ms window, which is precisely why those tests passed. **Prefer a rough
+synthetic voice over a clean one for anything about what can be heard at all.**
+
+Two things were tested against the same data and **ruled out** — do not re-open them
+without new evidence:
+
+- **The 16 kHz resampler.** `resample` decimates by linear interpolation with no
+  anti-alias filter, and its doc comment calls the aliasing "a cosmetic problem for
+  pitch". A synthetic 是 through 16 kHz direct, through 48 kHz clean, and through
+  48 kHz with a broadband noise floor measured identically. A real resampler is still
+  wanted for the ASR path, but not for this.
+- **YIN's threshold.** Loosening it from 0.15 to 0.25 gains about 15% more frames on
+  a jittery vowel and calls neither white noise nor a fricative voiced at 0.30, so it
+  is a real lever and it is safe. It is left at 0.15 because the floor was the binding
+  problem and changing both at once would have made the next measurement
+  unattributable. **If a voice still falls short, this is the next thing to move.**
+
+**What is left, deliberately.** The tracker still makes the jumps; `reject_outliers`
+only stops them reaching the score. The survivors sit in 人, the final syllable, where
+creak is most likely — a *run* of wrong frames is self-consistent, so the local median
+agrees with them, and widening the window would start reading a real fourth-tone fall
+as movement. The root cause is that YIN runs frame by frame with no knowledge of the
+frame before it, so nothing stops it choosing a different multiple of the period. A
+continuity constraint (preferring the candidate lag nearest the previous frame's
+estimate) would fix it at source and improve `median_hz` too; it is a larger change to
+an estimator whose tests are all synthetic, so it wants its own round with a real
+voice.
 
 ### The four numbers that are judgement, not measurement
 
-All in `crates/hanzi-core/src/tone.rs`, all named and documented, and all
-calibrated against synthetic contours:
+All in `crates/hanzi-core/src/tone.rs`, all named and documented, and all calibrated
+against synthetic contours:
 
 | Constant | What it is |
 | --- | --- |
 | `SCORE_DECAY_ST` | How fast the score falls off with shape distance. A wrong tone currently scores in the 20s–50s and a match in the 90s |
-| `FLAT_ST` | Below this peak-to-peak span, in semitones, a contour is "level". Its input is `range_st`, which is `max − min` — see `reject_outliers` for why one bad frame must not be allowed to reach it |
+| `FLAT_ST` | Below this peak-to-peak span, in semitones, a contour is "level". Its input is `range_st`, which is `max − min` — see `reject_outliers` for why one bad frame must not reach it |
 | `DECIDE_MARGIN` | How much closer one tone must be before the difference is called real rather than "uncertain" |
 | `FLAT_MATCH_SCORE` / `FLAT_OFF_TARGET_SCORE` | What a level contour scores, since a level tone is settled by a rule rather than by a distance |
 
@@ -2497,137 +2094,122 @@ Two more, for the word path:
 | Constant | What it is |
 | --- | --- |
 | `VOICED_CUT_PENALTY` | What it costs to put a syllable boundary inside voiced speech. Larger than any plausible RMS, so a boundary prefers an unvoiced frame — which is where a consonant is, and where a listener hears the break |
-| `min_voiced_frames` | Shortest segment the splitter will make, and the floor the scorer applies, in one function. Derived from `MIN_VOICED_MS` and the hop. Used twice — as a length floor and as a *voice* floor, the second being what stops it cutting twice in one silence |
+| `min_voiced_frames` | Shortest segment the splitter will make, and the floor the scorer applies, in one function. Derived from `MIN_VOICED_MS` and the hop. Used twice — as a length floor and as a *voice* floor |
 
-And the floor itself, which is *not* one of the four judgement constants above:
+And the floor itself, which is *not* one of the judgement constants:
 
 | Constant | What it is |
 | --- | --- |
-| `MIN_VOICED_MS` | How much measured voicing a segment needs before a tone can be read from it. 30 ms, after 90 → 60 → 50 → 30 — see "The floor belongs below the distribution" for why every step but the last was wrong. Public, because the `records_from_the_real_microphone` test prints it beside what a real voice measured |
+| `MIN_VOICED_MS` | How much measured voicing a segment needs before a tone can be read from it. 30 ms, after 90 → 60 → 50 → 30. Public, because `records_from_the_real_microphone` prints it beside what a real voice measured |
 
 Re-tune these only against real recordings, and say in the commit what they were
-tuned against. `MIN_VOICED_MS` is the one that has now been re-tuned *without*
-one, from arithmetic and synthetic contours; the test named above is the
-instrument for correcting that.
+tuned against. `MIN_VOICED_MS` is the one re-tuned *without* one, from arithmetic and
+synthetic contours; the test named above is the instrument for correcting that.
+Anything that changes one floor has to change the other, which is why they are one
+function.
 
 ### Three decisions that look wrong and are deliberate
 
-1. **The comparison is about shape, not height.** Each contour's mean is removed
-   before comparison, so tone 1 (high level) and a level tone 3 are
-   indistinguishable from one syllable — the speaker's register is not knowable.
-   A flat contour is therefore *accepted* for both tones 1 and 3, with wording
-   that says so. This under-claims on purpose. Without the mean removal there is a
-   worse bug, which a test now pins: a falling contour scores closer to a
-   **rising** template than to a level one, because time warping can slide a fall
-   onto its own mirror while tone 2's shape is half as tall as tone 4's.
-2. **Amplitude is not scored.** Contours are normalised to unit RMS before the
-   distance is taken, so a shallow tone 4 scores as well as a deep one. The
-   measured span is reported in `rangeSemitones` and the panel shows it. Scoring
-   depth on one syllable flagged correct speech as wrong, which is the worse
-   error.
+README argues all three; the short form is what must not be undone.
+
+1. **The comparison is about shape, not height**, because each contour's mean is
+   removed first — register is unknowable from one syllable. A flat contour is
+   therefore *accepted* for both tone 1 and a level tone 3, and this under-claims on
+   purpose. Without the mean removal a falling contour scores closer to a **rising**
+   template than to a level one (a test pins it), which is the worse error.
+2. **Amplitude is not scored.** Contours are normalised to unit RMS before the distance
+   is taken, so a shallow tone 4 scores as well as a deep one; the span is reported in
+   `rangeSemitones`. Scoring depth on one syllable flagged correct speech as wrong.
 3. **A level contour is not scored by distance at all.** Normalising a near-flat
-   contour to unit RMS amplifies its own measurement noise into what looks like a
-   large movement, so a *correct* level tone would score badly for having been
-   measured imperfectly. It is settled by `FLAT_ST` and given a fixed score.
+   contour to unit RMS amplifies its own measurement noise into what looks like a large
+   movement, so a *correct* level tone would score badly. It is settled by `FLAT_ST` and
+   given a fixed score.
 
 ### The neutral tone, and a refusal that was in the wrong module
 
-Neutral tone was refused for a long time, and the reasoning was sound as far as it
-went: a neutral tone is short, and its pitch is set by the syllable before it, so
-scoring it from one syllable looks like it needs context this module does not
-have. What that missed is that "level" is still judgeable — and that the cost was
-paid on 的, the most common character in the language, whose tone button could not
-be pressed at all.
+Neutral tone was refused for a long time: it is short and its pitch is set by the
+syllable before it, so scoring it from one syllable looked like it needed context this
+module does not have. What that missed is that "level" is still judgeable — and that the
+cost was paid on 的, the most common character in the language, whose tone button could
+not be pressed at all. (README's "What it deliberately does not do" still says neutral
+tone is not scored; the code and this file are right.)
 
-Three things were wrong, and only one of them was in `tone.rs`:
+Three things were wrong, and only one was in `tone.rs`:
 
-1. **The refusal lived in `pinyin.rs`.** `tone_target` returned `None` when no
-   syllable carried a tone in `1..=4`. Whether a tone can be *judged* is a
-   question about the analysis, and `pinyin.rs` knows nothing about that — it is
-   the seam this file describes two sections up. The guard is gone: `pinyin.rs`
-   builds a target from whatever tones the reading has, and `tone.rs` decides what
-   it can say about them.
-2. **`tone.rs` refused it in two more places.** `is_scorable` is new and is the
-   one predicate both call sites use, so "which tones can be judged" has a single
-   answer rather than `(1..=4)` written out four times.
-3. **A neutral target has no template, and the code assumed every expected tone
-   had one.** `score_contour`'s moving branch does
-   `(1..=4).find(|t| *t == expected_tone).expect("the expected tone is one of the
-   four")`, which tone 5 would have panicked on — unreachable only because of the
-   guards in step 2. A moving contour against a neutral target is now answered by
-   a rule instead: any clear movement is wrong for a neutral tone, so the tone it
-   moved like is named and it is marked off-target, with no distance taken. Check
-   the `is_scorable` guards before teaching this module a sixth tone.
+1. **The refusal lived in `pinyin.rs`.** `tone_target` returned `None` when no syllable
+   carried a tone in `1..=4`. Whether a tone can be *judged* is a question about the
+   analysis, and `pinyin.rs` knows nothing about that — it is the seam described above.
+   The guard is gone: `pinyin.rs` builds a target from whatever tones the reading has,
+   and `tone.rs` decides what it can say about them.
+2. **`tone.rs` refused it in two more places.** `is_scorable` is now the one predicate
+   both call sites use, so "which tones can be judged" has a single answer rather than
+   `(1..=4)` written out four times.
+3. **A neutral target has no template, and the code assumed every expected tone had
+   one.** `score_contour`'s moving branch would have panicked on tone 5. A moving
+   contour against a neutral target is now answered by a rule: any clear movement is
+   wrong for a neutral tone, so the tone it moved like is named and it is marked
+   off-target, with no distance taken. Check the `is_scorable` guards before teaching
+   this module a sixth tone.
 
-What is judged is that it was level. What is **not** judged is how high or how
-long it was: the mean is removed from every contour because register is
-unknowable, and duration is not scored at all. That limit is said to the learner
-every time (`NEUTRAL_LIMIT`) rather than left as a footnote here, because 85 for a
-neutral tone means less than 85 for a rising one. If that ever needs to be more
-than "level", duration is the thing to add — it is the part of a neutral tone a
-listener actually hears — and it would need real recordings to calibrate, which
-this module still has none of.
+What is judged is that it was level. What is **not** judged is how high or how long it
+was: the mean is removed from every contour because register is unknowable, and duration
+is not scored at all. That limit is said to the learner every time (`NEUTRAL_LIMIT`),
+because 85 for a neutral tone means less than 85 for a rising one. If that ever needs to
+be more than "level", duration is the thing to add — the part of a neutral tone a
+listener actually hears — and it would need real recordings to calibrate.
 
 ### A phrase with no tone target is recognised, not refused
 
-Tone scoring stops at `MAX_TONE_SYLLABLES` because a longer run's syllable
-boundaries cannot be found from energy alone. That refusal is right, and it is
-still a refusal of the *tone score*. It was briefly a refusal of the whole
-attempt: the microphone button was disabled whenever there was no `ToneTarget`, and
-`listen_stop` returned an error for the same text. The text a personal vocabulary
-list collects is exactly the text this hits — a six-character phrase from a
-coursebook is longer than a word — so the model could be installed, idle, while
-the entry the learner most wanted to say could not be recorded.
+Tone scoring stops at `MAX_TONE_SYLLABLES` because a longer run's syllable boundaries
+cannot be found from energy alone. That refusal is right, and it is a refusal of the
+*tone score* only — it was briefly a refusal of the whole attempt (the microphone button
+was disabled, and `listen_stop` errored), which hit exactly the text a personal
+vocabulary list collects, so the model could sit installed and idle while the entry the
+learner most wanted to say could not be recorded.
 
-The fix is a seam, not a new feature. `heard_against` needed a `ToneTarget` only
-to get at the readings wanted for each character; the tones were never used for
-the comparison (they are dropped from both sides — that is what `base` is for).
-`heard_against_readings` takes those readings directly, and
-`AppState::wanted_readings` resolves them for any text the dataset can read,
-using the word's own entry when it divides and the characters otherwise — the same
-resolution `tone_target` does, minus the tones and minus the length cap.
+The fix is a seam, not a feature. `heard_against` needed a `ToneTarget` only to get at
+the readings wanted for each character; the tones were never used for the comparison
+(they are dropped from both sides — that is what `base` is for).
+`heard_against_readings` takes those readings directly, and `AppState::wanted_readings`
+resolves them for any text the dataset can read, using the word's own entry when it
+divides and the characters otherwise — the same resolution `tone_target` does, minus the
+tones and minus the length cap.
 
 What changed, in the order the recording meets it:
 
 - `speech_target` answers with **`tone`** (the target, or none) and **`recognize`**
-  (whether a model is installed). The button is offered when either is true, so a
-  long phrase on a device with no model is still disabled — with the reason, in
-  `sayBlocked` as always — because recording it would produce an empty answer.
-- `listen_stop` never errors for the text. It scores the pitch when there is a
-  target and otherwise transcribes, returning `toneScored: false`. The refusal
-  message ("practise a single character or a short word") is gone.
-- `TonePanel.svelte` branches on `toneScored`: the heading, badge, charts, key and
-  pitch statistics are the tone half, and a recognition-only result shows none of
-  them. **Never render a zero score for an unmeasured attempt** — it reads as "you
-  said it perfectly flat" rather than "this was not measured", which is why the
-  flag exists instead of an empty `syllables` being sniffed for.
-- `SpeechTarget.recognize` is read again when the screen changes, not only when the
-  text does: the model can be installed on the settings screen while a character
-  sits on the board, and the answer for that same text changes when it is.
+  (whether a model is installed). The button is offered when either is true, so a long
+  phrase on a device with no model is still disabled — with the reason, in `sayBlocked`
+  — because recording it would produce an empty answer.
+- `listen_stop` never errors for the text. It scores the pitch when there is a target
+  and otherwise transcribes, returning `toneScored: false`.
+- `TonePanel.svelte` branches on `toneScored`: the heading, badge, charts, key and pitch
+  statistics are the tone half, and a recognition-only result shows none of them.
+  **Never render a zero score for an unmeasured attempt** — it reads as "you said it
+  perfectly flat" rather than "this was not measured", which is why the flag exists
+  instead of an empty `syllables` being sniffed for.
+- `SpeechTarget.recognize` is read again when the screen changes, not only when the text
+  does: the model can be installed on the settings screen while a character sits on the
+  board, and the answer for that same text changes when it is.
 
-Two things to keep true if this is touched again. The **readings** path must keep
-the alignment rule — a reading that does not divide into one syllable per
-character is refused rather than compared out of step — because a wrong split
-reports a syllable the learner never said. And an empty `wanted` list is a
-legitimate state, not an error: it means the dataset could not read a character, so
-the transcription is shown without a comparison (`heard_against_readings` handles
-that case explicitly).
+Two things to keep true. The **readings** path must keep the alignment rule — a reading
+that does not divide into one syllable per character is refused rather than compared out
+of step, because a wrong split reports a syllable the learner never said. And an empty
+`wanted` list is a legitimate state, not an error: the dataset could not read a
+character, so the transcription is shown without a comparison.
 
 ### Android capture: `cpal`'s AAudio input starts and then never calls back
 
-**Android does not use `cpal` for capture, and this is why.** `capture.rs` uses
-`cpal` on every platform but Android, where the microphone is Kotlin's
-`AudioRecord` behind the platform bridge. The shape of the `cpal` failure is worth
-knowing, because it looks exactly like a dead microphone and nothing reports an
-error:
+**Android does not use `cpal` for capture, and this is why.** The shape of the failure
+looks exactly like a dead microphone, and nothing reports an error:
 
-- `open_stream()` returns **`AAUDIO_OK`**, `request_start()` returns 0, and the
-  stream reaches **`Started`** (state 4). It stays there.
+- `open_stream()` returns **`AAUDIO_OK`**, `request_start()` returns 0, and the stream
+  reaches **`Started`** (state 4). It stays there.
 - The data callback is **never invoked** — not once, in three seconds — so the
-  recording comes back with **zero samples**, `span_ms` and `voiced_ms` are both
-  0, and the learner is told "I could not hear enough voice to judge".
-- The registration is real (cpal sets `.data_callback(...)` before
-  `open_stream`), and cpal's error callback is registered too — and never fires.
+  recording comes back with **zero samples**, `span_ms` and `voiced_ms` are both 0, and
+  the learner is told "I could not hear enough voice to judge".
+- The registration is real (cpal sets `.data_callback(...)` before `open_stream`), and
+  cpal's error callback is registered too — and never fires.
 
 The emulator's logcat is what settled it, since the phone's is unreadable (§6):
 
@@ -2640,13 +2222,12 @@ AAudioStream: setState(s#1) from 3 to 4       ← Starting → Started
 AAudioStream: setState(s#1) from 4 to 11      ← closed on stop
 ```
 
-Setting a fixed callback size — which AAudio needs for input and cpal leaves
-unset, on advice that is about *output* latency — **does not fix it**, and that
-was tried first.
+Setting a fixed callback size — which AAudio needs for input and cpal leaves unset, on
+advice that is about *output* latency — **does not fix it**, and that was tried first.
 
-**What replaced it, and the evidence.** `AudioRecord` was probed through the
-Kotlin bridge on the same two devices and delivered the right number of samples on
-both, 19,200 for 1.2 s at 16 kHz, across five sources:
+**What replaced it.** `AudioRecord` was probed through the Kotlin bridge on the same
+two devices and delivered the right number of samples on both, 19,200 for 1.2 s at
+16 kHz, across five sources:
 
 | Source | Emulator peak | Phone peak |
 | --- | --- | --- |
@@ -2656,92 +2237,68 @@ both, 19,200 for 1.2 s at 16 kHz, across five sources:
 | `UNPROCESSED` | 32768 | 219 |
 | `CAMCORDER` | 8 | 581 |
 
-`VOICE_RECOGNITION` is the source used: it is the one tuned for speech, and on
-the phone it is ten times the level of `UNPROCESSED`, which is the theoretically
-purer choice for pitch and too quiet here to be one in practice. `MIC` is the
-fallback, for devices that will not admit to the first.
+`VOICE_RECOGNITION` is the source used: it is tuned for speech, and on the phone it is
+ten times the level of `UNPROCESSED`, which is the theoretically purer choice for pitch
+and too quiet here to be one in practice. `MIC` is the fallback.
 
-The samples do not cross the bridge as JSON — ten seconds of 16 kHz mono is
-320 kB. Kotlin writes them to `cacheDir/tone-recording.pcm` and Rust reads that
-file and **deletes it**, because an app that stores only what it has to should not
-leave a learner's voice in the cache. Verified end to end on the phone: a 2 s hold
-produces a 64,000-byte file, 85% of its samples non-zero.
+The samples do not cross the bridge as JSON — ten seconds of 16 kHz mono is 320 kB.
+Kotlin writes them to `cacheDir/tone-recording.pcm` and Rust reads that file and
+**deletes it**, because an app that stores only what it has to should not leave a
+learner's voice in the cache.
 
 Three things about this backend are easy to get wrong again:
 
-- **The platform is the authority on whether a recording is live.** Kotlin's
-  audio thread ends by itself at its cap or on an error, and Rust was not told —
-  so its own `active` flag went stale and every later press failed with "Already
-  listening." for the life of the process, reachable by holding the button past
-  the cap once. `Recorder::start` on Android now asks `recordStatus` first and
-  drops a stale flag rather than trusting it.
-- **Nothing blocks the main thread.** The commands run on it (§6), so `recordStop`
-  does not wait for the audio thread: it clears the flag and the thread answers
-  when the file is closed, which is also the only moment Rust can safely read it.
-- **The rate is 16 kHz**, which is `tone::TARGET_SAMPLE_RATE` — so Android skips
-  the resampling the `cpal` path needs rather than adding a step.
-
-### The push-to-talk button, and the gesture that cancelled it
-
-Three separate things made holding the button stop the recording, and only the
-first was obvious. All three are fixed; the second and third are the ones to
-remember, because both look like a broken microphone.
-
-1. **The button moved out from under the finger.** At the time, the label narrowed
-   to "Listening…" on press, and `startListening` cleared the previous judgement,
-   which removed the tone panel and pulled every control below it upwards. Either
-   one fires `pointerleave`, and `pointerleave` was wired to `stopListening`.
-   Fixed with `setPointerCapture`, by leaving the previous judgement on screen
-   while listening, and at the time a `min-width` so the label could not reflow
-   the row. The label is gone now — the button is a mouth glyph of a fixed size —
-   so that half of the cause cannot come back; the panel above it still can.
-2. **`touch-action`.** A finger held on a button inside a scrolling page is a
-   gesture the browser wants: it takes the pointer for a scroll and sends
-   `pointercancel`. `touch-action: none` on the button settles that.
-3. **The long press.** Android's text-selection gesture takes the pointer at
-   about half a second — **measured at 555 ms** — and sends `pointercancel`. This
-   is the one that survived every other fix, and it is why the practice board has
-   carried `user-select: none` and a `contextmenu` guard all along. The button
-   needed the same. It also explains a stray text-selection popup that appeared
-   over the app in a screenshot, which was the same gesture showing its face.
-
-Instrument the events rather than guessing here: listeners on the button for
-`pointerdown`/`pointerup`/`pointercancel`/`lostpointercapture` with timestamps
-say in one run what took three rebuilds to infer.
+- **The platform is the authority on whether a recording is live.** Kotlin's audio
+  thread ends by itself at its cap or on an error, and Rust was not told — so its own
+  `active` flag went stale and every later press failed with "Already listening." for
+  the life of the process, reachable by holding the button past the cap once.
+  `Recorder::start` on Android now asks `recordStatus` first and drops a stale flag.
+- **Nothing blocks the main thread.** The commands run on it (§6), so `recordStop` does
+  not wait for the audio thread: it clears the flag and the thread answers when the file
+  is closed, which is also the only moment Rust can safely read it.
+- **The rate is 16 kHz**, which is `tone::TARGET_SAMPLE_RATE` — so Android skips the
+  resampling the `cpal` path needs rather than adding a step.
 
 ### Things that will surprise you
 
+- **Anything measured in time here is measured from the first voiced frame.** Syllable
+  boundaries were once reported as offsets from the start of the recording while
+  `voiced_ms` is a *duration*, so the panel showed `Split at 1463 ms` beside
+  `Voiced 308 ms` — impossible-looking, though the split was in the right place.
+  `a_word_never_scores_more_syllables_than_it_was_asked_for` asserts every boundary
+  falls inside the voiced span, so the two cannot drift apart again. If you add a new
+  timing field, give it the same baseline.
+
 - **`cpal::Stream` is not `Send` on every backend**, so it cannot live in Tauri's
-  shared state. `capture.rs` owns one thread per recording and only plain data
-  crosses back. Do not "simplify" this by storing the stream in `AppState`.
-- **The microphone is opened and closed per utterance**, deliberately. It costs
-  tens of milliseconds and it means the system's recording indicator is lit only
-  while the learner is holding the button. A latency complaint and a privacy
-  property are the same line of code here.
+  shared state. `capture.rs` owns one thread per recording and only plain data crosses
+  back. Do not store the stream in `AppState`.
+- **The microphone is opened and closed per utterance**, deliberately. It costs tens
+  of milliseconds and means the system's recording indicator is lit only while the
+  learner is holding the button. A latency complaint and a privacy property are the
+  same line of code here.
 - **`Recording` must stay `Debug`**, because `Recorder::stop()`'s error path uses
-  `unwrap_err()`. That only fails in the `--lib` test target, so `cargo check`
-  will not catch its removal.
-- **A neutral-tone syllable is carried, and judged only on being level.** It
-  appears in the target and in the result; what can and cannot be seen from one
-  syllable is `tone::NEUTRAL_LIMIT`, and the learner is told it. Text past four
-  syllables is the case with no tone half at all, and it is recognised instead —
-  the button is disabled only when there is neither a target nor a model, which is
-  the one board a recording would answer nothing about.
+  `unwrap_err()`. That only fails in the `--lib` test target, so `cargo check` will not
+  catch its removal.
+- **A neutral-tone syllable is carried, and judged only on being level.** It appears
+  in the target and in the result; what can and cannot be seen from one syllable is
+  `tone::NEUTRAL_LIMIT`, and the learner is told it. Text past four syllables has no
+  tone half at all and is recognised instead — the button is disabled only when there
+  is neither a target nor a model, which is the one board a recording would answer
+  nothing about.
 - **Segmentation will cut where you did not mean it to.** Two syllables that run
-  together with no consonant between them — a vowel-initial second syllable — have
-  no unvoiced frame to cut at, and the search falls back to the quietest frame,
-  which may be wrong. This is why `boundariesMs` is reported to the interface: it
-  is the difference between a learner seeing a puzzling score and seeing that the
-  app mis-heard where the syllables were. Anything that improves this should
-  improve it *here*, and the tests to extend are the `say_word` ones.
-- **A `ToneResult` carries one entry per syllable of the target when
-  `toneScored` is true.** The interface zips them positionally against the
-  characters and readings, and `analyze` guarantees the length on that path. With
-  no target — text longer than a word — the list is empty and the transcription is
-  the whole answer. **Read `toneScored`, never the list's length**, or a long
-  phrase will be treated as a silent attempt; the IPC test
-  `a_tone_result_carries_one_entry_per_syllable` covers the tone path and
-  `text_too_long_for_tones_is_recognised_instead` covers the other.
-- **The verdict words live in Rust, not in the panel.** `TonePanel.svelte` styles
-  `detail`; it must not reword it, or the same judgement will be expressed in two
+  together with no consonant between them — a vowel-initial second syllable — have no
+  unvoiced frame to cut at, and the search falls back to the quietest frame, which may
+  be wrong. This is why `boundariesMs` is reported to the interface: it is the
+  difference between a learner seeing a puzzling score and seeing that the app
+  mis-heard where the syllables were. Anything that improves this should improve it
+  *here*, and the tests to extend are the `say_word` ones.
+- **A `ToneResult` carries one entry per syllable of the target when `toneScored` is
+  true.** The interface zips them positionally against the characters and readings, and
+  `analyze` guarantees the length on that path. With no target — text longer than a
+  word — the list is empty and the transcription is the whole answer. **Read
+  `toneScored`, never the list's length**, or a long phrase will be treated as a silent
+  attempt; the IPC test `a_tone_result_carries_one_entry_per_syllable` covers the tone
+  path and `text_too_long_for_tones_is_recognised_instead` covers the other.
+- **The verdict words (`match`, `off_target`, `uncertain`) live in Rust, not in the
+  panel.** `TonePanel.svelte` styles `detail`; it must not reword it, or the same judgement will be expressed in two
   places that drift.

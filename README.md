@@ -45,7 +45,7 @@ progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
 measure**, the **durable study store**, **tone practice**, **speech
 recognition** and optional **cross-device sync** through your own Dropbox — for
 characters *and words*, on desktop and on both mobile systems — are all implemented
-and tested; **409 automated tests** pass, and 4 more are
+and tested; **491 automated tests** pass, and 4 more are
 ignored unless a microphone or the speech model is present. A
 signed Android
 release bundle is built and runs on a physical phone, and the recognition model
@@ -84,7 +84,9 @@ filling in the Console listing, not code. What is not built yet is listed under
 - **Readings and meanings** — pinyin, English gloss, radical, stroke count, HSK
   level and frequency rank, plus the etymology mnemonic where one exists.
 - **Pronunciation** — hear any character or word through the system's own speech
-  synthesiser. Nothing is downloaded and nothing leaves the machine.
+  synthesiser, and hear a graded phrase from the clips that ship with the app, in the
+  one voice the course uses. Nothing is downloaded unless you install the optional
+  speech model, and nothing leaves the machine.
 - **Tone practice** — hold a button, say a character *or a whole word*, and see
   whether the tones were right. Your pitch is drawn as a curve against the shape
   each tone asks for — one chart per syllable, so a word tells you *which*
@@ -715,9 +717,13 @@ rather than only how much.
   recognition model is installed: the syllables you were asked for are known
   either way, so the panel reads back what was heard and shows no tone score at
   all — rather than a zero, which would read as a perfectly flat attempt.
-- **No neutral tone.** It is short and its pitch is set by the syllable before it,
-  so it is reported but not scored. A word containing one is still judged on its
-  other syllables, which is why 妈妈 works.
+- **The neutral tone is scored for being level, and only for that.** It is short and
+  its pitch is set by the syllable before it, and neither of those is judged: the
+  contour has its mean removed before comparison, so what is compared is shape.
+  Scoring that it was level is enough to tell 的 from 得 said as a full tone, and
+  refusing it would have left the most common character in the language as the one the
+  panel would not look at. The limit is stated to the learner every time
+  (`tone::NEUTRAL_LIMIT`).
 - **Segmentation is a heuristic and it is the weakest part.** It is tested against
   synthesised words whose boundary is known by construction, not yet against real
   multi-syllable speech. The panel reports where the app decided to split, so a
@@ -1247,47 +1253,30 @@ derived data rather than only the notices — see [`LICENSES.md`](LICENSES.md).
 See **[ROADMAP.md](ROADMAP.md)** for what to build next, in priority order, with
 approach notes and acceptance criteria. Distribution is done for the desktop —
 the notices ship in the bundle, the data and font need no download, and CI runs the
-suite on every push — and so are the two interface milestones: the stroke-order
-animation draws each stroke along its centre-line, and the board draws either by
-dragging or by clicking. The headline gaps are now:
+suite on every push — the two interface milestones are done (the stroke-order
+animation draws each stroke along its centre-line; the board draws either by
+dragging or by clicking), and so are speech recognition and cross-device sync. The
+headline gaps are now:
 
-1. **Pronunciation on Windows and Linux**, so the desktop app is not macOS-only.
-2. **The Android release.** The app runs on a phone, captures the microphone,
-   grades and speaks; a signed bundle is built. What remains is the paperwork Play
-   requires — publishing the privacy policy (the app asks for the microphone, so
-   one is mandatory) and filling in the Console listing, whose copy and artwork are
-   ready in [`store/`](store/). On iOS the app runs on device but the *release*
-   build does not link yet, which is a toolchain question rather than a code one
-   (ROADMAP M9, HANDOVER §6).
-3. **Tone practice against real voices.** Characters, words and now neutral tones
+1. **Pronunciation on Windows and Linux** (M6), so the desktop app is not
+   macOS-only. Nothing on that path is built, and it should not start before the
+   App Sandbox question is settled (HANDOVER §7).
+2. **The mobile releases** (M9). The app runs, draws, grades and speaks on both
+   platforms, and a signed Android bundle is built. What remains is packaging: the
+   Play paperwork — publishing the privacy policy (the app asks for the microphone,
+   so one is mandatory) and filling in the Console listing, whose copy and artwork
+   are ready in [`store/`](store/) — and, on iOS, a *release* build that links, which
+   is a toolchain question rather than a code one (HANDOVER §6).
+3. **Graded phrase audio** (M14). The HSK 1–2 clips are the corpus's own recordings
+   and the on-device path for a phrase with no clip is built, so the voice question for
+   the bundled set is settled. What remains is the app-level check, and the graded
+   readers' audio — that corpus publishes text only, so it still needs a voice.
+4. **Tone scoring against real voices** (M11). Characters, words and neutral tones
    all work and are confirmed by hand; what is untuned is the *scoring constants*,
-   which are still a judgement that has never been fitted to a real recording
-   (ROADMAP M11).
-4. **Recognising *what* was said** (M12). This needs a ~155 MB Mandarin ASR model,
-   which cannot be bundled. The project owner has settled the question: a download
-   is acceptable **provided it is optional, user-triggered, and installed from the
-   settings screen**, with the app working exactly as it does today for anyone who
-   declines. That screen now exists (ROADMAP's cross-cutting list); the recognition
-   itself is not built, and ROADMAP M12 records the constraints it must meet.
-5. **Syncing between devices** (M13) — **built, and exercised in earnest.** Connect a
-   Dropbox account from the settings screen on each device: the attempt log travels,
-   each device rebuilds its schedule from the whole of it, and a character practised
-   on one appears scheduled on the others. It syncs by itself when the app starts and
-   when you come back to it, with a line on the screen while it runs; *Sync now* is
-   there for doing it immediately. It is off until you connect, and Dropbox is only
-   ever given a folder its own app can see. Confirmed against a real Dropbox account
-   on **three devices at once** — a MacBook, an iPhone and an Android phone — merging
-   each way, including a device that had never seen a character picking up its
-   schedule from another's log. A schedule whose log does not go back to its first
-   attempt — one migrated from the old JSON files, which kept only the newest twenty
-   attempts — travels too, folded from a baseline its device captured, so the two
-   devices agree about that one as well. The sign-in is kept in the platform's own
-   secret store — the keychain on Apple's systems, the keystore on Android — and can be
-   put behind your fingerprint, face or device PIN on any of them. The vocabulary list
-   and the course cursor travel too:
-   an entry is edited and deleted rather than only appended to, so it is settled by
-   last-writer-wins on a three-part stamp, and the counters that only mean something
-   on the device that did the practising stay there.
+   which are still a judgement that has never been fitted to a real recording.
+5. **Tuning from real attempts** (ROADMAP's cross-cutting list). Every attempt is
+   now recorded in `hanzi.db`, but nothing exports them, so the shape tolerance and
+   the four grading weights are still set against synthetic jitter.
 
 If you are picking this project up to continue development, read
 **[HANDOVER.md](HANDOVER.md)** first — it covers the build environment, the
