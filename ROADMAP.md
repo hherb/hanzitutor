@@ -132,9 +132,10 @@ Deliberately left out, and why:
   rebuilding it is cheap and a merge format would be guesswork. The files are plain
   JSON if a backup is wanted.
 - **Per-character notes or a browsable history screen** — the board shows attempts,
-  best score and the next review, and the sidebar shows what is due. A history
-  browser would want the attempt log that M4's tuning also wants; defer to the
-  cross-cutting "attempt logging" item.
+  best score and the next review, and the sidebar shows what is due. A history browser
+  is now a screen over data that already exists: the log is recorded, exported and
+  analysed (see "Already shipped" under Cross-cutting polish), so this is interface
+  work rather than storage work.
 
 ---
 
@@ -208,8 +209,8 @@ Deliberately left out, and why:
   redistribution, so it is not used even though the upstream file carries it.
 - **A per-word progress card.** Progress is still per character, which is what the
   schedule is built on; a word practised from the dictionary records its characters
-  and leaves no entry behind. Adding word-level cards would want the attempt log that
-  M4's tuning also wants — the cross-cutting item again.
+  and leaves no entry behind. Word-level cards would be a second schedule over the same
+  log, which is now recorded and readable — a design question, not a data one.
 
 ---
 
@@ -650,8 +651,8 @@ What shipped, and the rules that still hold:
   every attempt recorded since the last save, so the log is not limited by the twenty
   attempts a card keeps for display. The test records 25 attempts on one character:
   the card shows the newest 20, `card.attempts` says 25, and the `attempt` table holds
-  all 25 in order. `Db::attempts` and `Db::attempt_count` read it back, which is what
-  the analysis in the cross-cutting "attempt logging" item will want.
+  all 25 in order. `Db::attempts` and `Db::attempt_count` read it back, which is what the
+  analysis reads today (schema 5 added the measures each attempt was graded from).
 - **The engine does not know.** `ProgressSink`, `VocabSink` and `CursorSink` in
   `hanzi-core` are the seam; `hanzi-store` is the only thing that knows SQL. The
   engine's tests are **unchanged** — they open a JSON file or nothing at all — and
@@ -668,16 +669,17 @@ What shipped, and the rules that still hold:
   database. `--user-dir` and `HANZI_TUTOR_DATA_DIR` keep working and now select the
   directory that holds `hanzi.db`.
 - **The app's first third-party *code*** is compiled in, so SQLite and `rusqlite`
-  joined the notice catalogue — twelve notices, each still pinned three ways by
+  joined the notice catalogue — 21 notices today, each still pinned three ways by
   `src-tauri/tests/licences.rs`.
 
 Deliberately not done, and why:
 
 - **No export of the log yet.** The ceiling is gone and the rows are readable
-  (`Db::attempts`), but nothing writes them out and `selfcheck` still tunes against
-  synthetic jitter. That is the second half of the cross-cutting "attempt logging"
-  item, and it is now a feature to build rather than a format to change first — which
-  was the point of doing this milestone with it in mind.
+  (`Db::attempts`), but nothing wrote them out and `selfcheck` still tuned against
+  synthetic jitter. That was the second half of the cross-cutting "attempt logging"
+  item, which **has since been built** — schema 5, the export and the analysis; see
+  "Already shipped" below. What is left of it is the tuning itself, which needs real
+  attempts to exist rather than more code.
 - **Achievements are still not a thing.** If they are added they must be derived from
   the log: a count stored separately from the attempts it counts is the second source
   of truth this project has twice refused.
@@ -719,18 +721,23 @@ Small, independently shippable, still open, roughly in value order:
   retention.
 - **Beginner stroke hints** — mark each stroke's start point and direction on the guide
   for the first attempts.
-- **Attempt logging for tuning** — record real attempts (locally, opt-in) so
-  `selfcheck`'s tolerance analysis can be re-run against real handwriting instead of
-  synthetic jitter. This is how the shape tolerance should eventually be set, and it is
-  now **half built**: M10 removed the ceiling, so every attempt is recorded in
-  `hanzi.db`'s `attempt` table and readable through `Db::attempts`. What is missing is
-  the rest — getting those attempts out (`hanzi-store` has no export), turning them into
-  the shape/ink/order distributions `selfcheck` prints today for synthetic jitter, and
-  the consent and privacy wording that "opt-in" implies. **Do that next**, against real
-  handwriting, rather than growing the schema again.
 - **Interface localisation** — the app teaches Chinese but speaks English.
 
 Already shipped, listed only so they are not re-added as open work:
+
+- **Attempt logging for tuning** — built, in three parts. **Schema 5** writes the
+  measures each attempt was graded from (`shape`, `position`, `ink`, `ink_coverage`,
+  `order_score`, `legible`, `order_correct`) into `hanzi.db`'s `attempt` table beside the
+  headline score, nullable so a row from before it — or from a peer, whose shard carries
+  only the score and the time — reads as *not measured* rather than as a zero. **The
+  export** is `export_practice_log`, on the settings screen as two buttons, writing the
+  whole log as JSON Lines or CSV. **The analysis** is `hanzi_store::analyse`, printed by
+  `pnpm run analyse-attempts`: percentiles per measure, the mass within ten points of
+  each bar, which measures are pinned at 1.0 and so measure nothing, whether a measure
+  separates passes from failures, and a check that the stored score really is the four
+  weights applied to the stored measures. It reports rather than concludes — it cannot
+  know whether an attempt was *right* — so what remains is not code: it is enough real
+  handwriting to re-set the shape tolerance and the four weights against.
 
 - **Import / export the vocabulary list** — M1: JSON export and import (lossless; merge
   or replace) plus CSV export. CSV *import* is deliberately out, because it is lossy.
@@ -770,8 +777,10 @@ Recorded honestly, because they bound how much the current scores mean:
 - **The ink weight is a first guess.** Shape, placement, ink and order each carry a
   quarter of the headline score, chosen for symmetry and to stop a third-inked
   character reading "Excellent" rather than from any data. Like the shape tolerance, it
-  wants real attempts to tune against — the same attempt log the cross-cutting item
-  asks for.
+  wants real attempts to tune against — and since schema 5 those attempts carry the
+  measures, so the waiting is for data rather than for code. `pnpm run analyse-attempts`
+  is what reads it, and a measure whose mean fails to separate passes from failures is
+  the first sign a quarter is in the wrong place.
 - **An isolated character has no context, so a polyphonic one may be read wrong.** 着
   on its own is read whichever way the synthesiser prefers. M3 fixed this for words —
   the word carries the reading, and 着急 is `zháojí` — but a single character met in the
@@ -794,8 +803,9 @@ Recorded honestly, because they bound how much the current scores mean:
   also blind to anything that depends on *how the pointer sampled* a stroke rather than
   where it went, which is how a placement metric built on the sample mean survived
   tuning while marking 18,763 strokes wrong under realistic input. `selfcheck` now
-  carries a density-perturbed pass as well as a noisy one; the remaining gap is real
-  handwriting rather than either synthetic case.
+  carries a density-perturbed pass as well as a noisy one, and schema 5 makes real
+  attempts available to the analysis — so the remaining gap is the attempts themselves,
+  not the instrument.
 - **CI checks the code, not the bundle.** The workflow runs `pnpm test`, `check:rust`
   and `check:web` on a macOS runner; it does not run `pnpm run build`, so a packaging
   regression — a resource path, a signing identity, a missing notice *file* — is still
@@ -804,12 +814,16 @@ Recorded honestly, because they bound how much the current scores mean:
   rather than an oversight.
 - **The bundle is signed but not notarised**, so the first launch on a Mac that has not
   seen the build needs a right-click-Open. See M5.
-- **The attempt log has no way out of the app yet.** It is recorded, unbounded and
-  readable from Rust (`Db::attempts`), but there is no export and no screen that shows
-  it, so its value is still latent — see the cross-cutting "attempt logging" item. A
-  migrated card also keeps a pre-import `attempts` *count* larger than the rows in the
-  log (the JSON it came from held only the newest 20), so anything that reads the log
-  as a complete history must not do that.
+- **The attempt log's value is latent until there is enough of it.** The log is
+  recorded, unbounded, exported (JSON Lines or CSV, from the settings screen) and
+  analysable (`pnpm run analyse-attempts`), so nothing about it is trapped or unread.
+  What it is short of is *measured* attempts: every row written before schema 5, and
+  every row merged in from a peer, has a score and no measures, because the shard format
+  carries only the score and the time. On this machine's own log that was 124 of 124
+  attempts, so the analysis correctly says there is nothing to analyse yet rather than
+  inventing a distribution. A migrated card also keeps a pre-import `attempts` *count*
+  larger than the rows in the log (the JSON it came from held only the newest 20), so
+  anything that reads the log as a complete history must not do that.
 - **The store is one file, so its failure modes are shared.** Losing `hanzi.db` — or
   corrupting it — costs the schedule, the list and the cursor at once, where three files
   used to fail independently. The isolation that replaces it is at the *import* rather

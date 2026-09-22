@@ -255,6 +255,12 @@ crates/hanzi-store/         the study database: SQLite, and nothing else.
   src/migrate.rs            the once-only, per-document import of the old JSON
   src/lib.rs                ProgressSink / VocabSink / CursorSink, and the
                             attempt log's reader (attempt_count, attempts)
+  src/export.rs             the log as JSON Lines or CSV — pure functions over rows
+  src/analyse.rs            what the log implies about the grader: percentiles,
+                            the mass near each bar, pinned measures, pass/fail
+                            separation, and the score-vs-measures check
+  examples/analyse-attempts.rs   `pnpm run analyse-attempts` prints a report for a
+                            study directory. Reads only; writes nothing
   tests/store.rs            the M10 acceptance criteria, from real saved files
 crates/hanzi-sync/          the sync format, the merge and the fold — no account
                             and no network in the merge itself
@@ -558,8 +564,8 @@ after each item) both do this now. The shape is the rule, not either file.
     a flawless attempt sums to exactly `1.0` and scores exactly `100` — the IPC
     contract test asserts `overall == 100.0`, so keep them dyadic. The equal split
     is what stops a character drawn with a third of its ink reading "Excellent"
-    (92 before M4, 85 after); it is a judgement, not a measurement, and the
-    attempt log the roadmap keeps asking for is what should tune it.
+    (92 before M4, 85 after); it is a judgement, not a measurement, and the attempt
+    log now carries the measures to check it against — `pnpm run analyse-attempts`.
 
 23. **Every notice that ships is named in one catalogue, and three things are
     checked against it.** `src-tauri/src/licences.rs` lists, for each notice, the
@@ -653,13 +659,27 @@ after each item) both do this now. The shape is the rule, not either file.
     say. The long sentence did not go away; it moved to `title`, which is a
     description once a name exists, and the reason a disabled control cannot be
     used still rides on the `.hint` under the row.
+29. **An attempt's measures are written all together or not at all, and `NULL` is
+    not `0.0`.** Schema 5 stores what an attempt was graded from — `shape`,
+    `position`, `ink`, `ink_coverage`, `order_score`, `legible`, `order_correct` —
+    beside its headline score. Every one of those columns is nullable, and that is
+    load-bearing: a row written before schema 5, and a row merged in from a peer,
+    has only the score and the time, because `hanzi-sync`'s shard format carries
+    only those. `NULL` means "not measured"; `0.0` means "measured, and wrong". A
+    reader that conflates them turns every unmeasured attempt into a perfectly bad
+    one, and `hanzi_store::analyse` would report a distribution it had invented.
+    The same rule governs the export: a row with no measures is written out with
+    empty measure fields rather than dropped, because "unmeasured" is not
+    "worthless". If measures are ever to travel, the shard format needs a version
+    first — a closed shard is never rewritten, so old shards will always be
+    measureless and must keep parsing.
 
 ## 5. The verification loop
 
 Run before every commit:
 
 ```bash
-pnpm test           # 491 tests: engine + data-pipeline units, the SQLite store,
+pnpm test           # 505 tests: engine + data-pipeline units, the SQLite store,
                     # sync convergence, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
@@ -718,6 +738,25 @@ lost weight to ink, and `sigma=50` legibility went 53.2% → 52.4% because the i
 bar now fails 8% of very rough attempts; `sigma=15` and `sigma=30` are unchanged.
 If you touch the rasteriser or the weights, re-read that table rather than
 assuming.
+
+**`selfcheck` is the synthetic half; `pnpm run analyse-attempts` is the real half.**
+
+```bash
+pnpm run analyse-attempts            # the app's own data directory
+pnpm run analyse-attempts -- DIR     # or a copy of one
+```
+
+It reads a study database and prints, for the attempts that carry measures, the
+percentiles of each measure, the share of attempts within ten points of each bar,
+which measures are pinned at 1.0, whether a measure's mean separates passes from
+failures, and how far the recorded score is from the four weights applied to the
+recorded measures. That last figure must be near zero: if it is not, the stored
+measures are not the ones that produced the stored score and nothing else in the
+report can be trusted. **It only reports** — it cannot know whether an attempt was
+*right* — so read it as "where is the bar deciding" and "which measure is not
+earning its quarter", not as an accuracy. **Run it against a copy, not the live
+directory**, and note that opening a database migrates it: analysing the real
+one applies schema 5 to it.
 
 **If you touched the store**, `crates/hanzi-store/tests/store.rs` is the suite that
 matters: it starts from documents written by the app's own JSON stores rather than
@@ -1601,17 +1640,23 @@ with the research already done so it can be done in one pass with merge tests.
   quarter each, chosen so a third-inked character cannot read "Excellent". The
   honest way to set them is the attempt log below, on real handwriting.
 - **Shape tolerance is tuned on synthetic jitter**, not on real learners. It wants
-  revisiting once there are real attempts to look at — ideally by logging attempts
-  and re-running the distribution analysis in `selfcheck`.
-- **The attempt log exists; what reads it is still to come.** M10 shipped the
-  unbounded log (`attempt`, with `Db::attempts` and `Db::attempt_count` to read it)
-  and the schedule shows the newest 20 attempts per character, but nothing yet
-  *exports* it and `selfcheck` still tunes against synthetic jitter. The
-  cross-cutting "attempt logging" item is half done on purpose: the ceiling is gone,
-  and the analysis that wanted it is the next thing to build. A migrated card's
-  `attempts` count can exceed the rows in the log — the JSON it came from kept only
-  the newest 20 — so any analysis must treat the log as starting at the import, not
-  at the learner's first attempt.
+  revisiting once there are real attempts to look at: schema 5 records the measures, so
+  `pnpm run analyse-attempts` is the instrument and the missing input is the attempts.
+- **The attempt log is built, and what is short is the data.** M10 shipped the
+  unbounded log (`attempt`, with `Db::attempts` and `Db::attempt_count` to read it) and
+  the schedule shows the newest 20 attempts per character. Schema 5 then added what an
+  attempt was graded from, `export_practice_log` (the settings screen's two buttons, or
+  the command) writes the log out as JSON Lines or CSV, and `hanzi_store::analyse` —
+  printed by `pnpm run analyse-attempts` — reports the distributions, the mass near each
+  bar, and which measures are pinned or fail to separate passes from failures. It
+  reports rather than concludes, because it cannot know whether an attempt was right, so
+  what remains is enough *measured* attempts to re-set the tolerance and the weights
+  against. On this machine's log that was 124 of 124 attempts unmeasured, all predating
+  schema 5 — which the analysis says plainly instead of inventing a distribution. Two
+  things to keep in mind when reading it: a migrated card's `attempts` count can exceed
+  the rows in the log (the JSON it came from kept only the newest 20), so the log starts
+  at the import rather than at the learner's first attempt; and a peer's attempts arrive
+  without measures, so a synced log is only measurable where it was written.
 - **Graded phrase audio (M14): the bundled voice is settled, the readers' is not.** The
   HSK 1–2 clips are the corpus's own **Apache-2.0 CosyVoice2 recordings**, fetched by
   `scripts/fetch-clip-audio.py` (819 phrases, 1,638 clips, zero missing takes) — decided on
