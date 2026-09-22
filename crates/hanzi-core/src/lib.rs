@@ -56,7 +56,7 @@ pub use grade::{
 };
 pub use raster::INK_WIDTH;
 pub use progress::{
-    build_queue, entry_progress, fold_attempts, fold_from, Attempt, AttemptMeasures,
+    build_queue, entry_standing, fold_attempts, fold_from, Attempt, AttemptMeasures,
     AttemptRecord, CardState, CardView, CursorDocument, CursorSink, CursorStore, CursorView,
     ProgressError, ProgressSink, ProgressStore, ProgressView, Rating, ReviewItem, ReviewSource,
     ReviewView, Scheduler, Sm2, KNOWN_INTERVAL_DAYS,
@@ -70,6 +70,6 @@ pub use tone::{
     ToneVerdict,
 };
 pub use vocab::{
-    Entry, EntryProgress, ImportSummary, VocabEntryView, VocabError, VocabSink, VocabStore,
-    VocabView,
+    Entry, EntryProgress, EntryStanding, ImportSummary, VocabEntryView, VocabError, VocabSink,
+    VocabStore, VocabView,
 };

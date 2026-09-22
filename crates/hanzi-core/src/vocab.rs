@@ -156,34 +156,61 @@ pub enum EntryProgress {
     Known,
 }
 
-/// One entry as the interface sees it: the entry itself, and how well it is known.
+/// What the **schedule** says about one entry — as opposed to what this device
+/// remembers about it.
 ///
-/// A view of its own rather than a field on [`Entry`], for the reason
-/// [`VocabView::warning`] is not a field of [`Document`]: the tag is **derived
-/// from the schedule**, and storing it would be a second source of truth for
-/// something the very next attempt changes — and it would travel in the exported
-/// JSON as though the learner had written it.
+/// Both answers come from the cards a character carries, which are folded from the
+/// synced attempt log, so they mean the same thing on every device. [`Entry`]'s own
+/// `attempts`, `best_score` and `last_practised` are the other kind of fact: this
+/// device's, deliberately outside the stamp that settles a merge, and the wrong
+/// source for either of these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryStanding {
+    /// How well it is known, for the tag on the card.
+    pub progress: EntryProgress,
+    /// Whether **every** character the board can draw for the entry has been
+    /// practised at least once — the question the drill's queue asks, because an
+    /// entry is recorded when all of its characters are written.
+    ///
+    /// The strict reading is deliberate: one character still untouched keeps the
+    /// entry out of the drill queue, so an entry abandoned half-written is offered
+    /// again rather than quietly counted as done. With **nothing** to draw it is
+    /// vacuously true, which is also the right answer for the queue — an entry the
+    /// board cannot ask for must not be offered.
+    pub all_characters_practised: bool,
+}
+
+/// One entry as the interface sees it: the entry itself, and what the schedule
+/// knows about it.
+///
+/// A view of its own rather than fields on [`Entry`], for the reason
+/// [`VocabView::warning`] is not a field of [`Document`]: these are **derived from
+/// the schedule**, and storing them would be a second source of truth for
+/// something the very next attempt changes — and they would travel in the exported
+/// JSON as though the learner had written them.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VocabEntryView {
     #[serde(flatten)]
     pub entry: Entry,
     /// `None` means **the schedule was not consulted** — a view the engine built
-    /// on its own, as a test fixture or a round trip through a document does. It
-    /// is deliberately not `New`, which is the schedule answering "no character
-    /// here has ever been practised": the same distinction schema 5 draws between
-    /// a null measure and a zero one, and for the same reason — a reader that
-    /// conflates them reports something it invented.
+    /// on its own, as a test fixture or a round trip through a document does. It is
+    /// deliberately not a `New`/`false` standing, which is the schedule answering
+    /// "nothing here has ever been practised": the same distinction schema 5 draws
+    /// between a null measure and a zero one, and for the same reason — a reader
+    /// that conflates them reports something it invented.
     #[serde(default)]
-    pub progress: Option<EntryProgress>,
+    pub standing: Option<EntryStanding>,
 }
 
 impl VocabEntryView {
-    /// The entry on its own, with no tag: what [`VocabStore::view`] can answer.
+    /// The entry on its own, with no standing: what [`VocabStore::view`] can
+    /// answer on its own.
     fn untagged(entry: Entry) -> Self {
         Self {
             entry,
-            progress: None,
+            standing: None,
         }
     }
 }

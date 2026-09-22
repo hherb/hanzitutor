@@ -553,7 +553,7 @@ fn vocabulary_entries_serialise_with_camel_case_fields() {
             "attempts",
             "bestScore",
             "lastPractised",
-            "progress",
+            "standing",
         ],
     );
     assert_eq!(json["entries"][0]["text"], serde_json::json!("学习"));
@@ -564,9 +564,21 @@ fn vocabulary_entries_serialise_with_camel_case_fields() {
     let added = json["entries"][0]["addedAt"].as_str().unwrap();
     assert!(added.ends_with('Z') && added.len() == 20, "got {added}");
     // A view the engine built on its own has consulted no schedule, and that is
-    // `null` rather than `"new"`: "nobody asked" and "nothing has ever been
-    // practised" are different answers, and only one of them is true here.
-    assert_eq!(json["entries"][0]["progress"], serde_json::Value::Null);
+    // `null` rather than a `new`/`false` standing: "nobody asked" and "nothing has
+    // ever been practised" are different answers, and only one is true here.
+    assert_eq!(json["entries"][0]["standing"], serde_json::Value::Null);
+}
+
+#[test]
+fn a_standing_serialises_as_the_interface_spells_it() {
+    let standing = hanzi_core::EntryStanding {
+        progress: hanzi_core::EntryProgress::Known,
+        all_characters_practised: true,
+    };
+    expect_keys(
+        &serde_json::to_value(standing).unwrap(),
+        &["progress", "allCharactersPractised"],
+    );
 }
 
 #[test]
@@ -602,7 +614,7 @@ fn each_entry_carries_what_the_schedule_says_about_it() {
     // which is `new`, and not `learning`: there is nothing to be part-way through.
     let view = state.vocab_view();
     let entry = view.entries.iter().find(|e| e.entry.id == id).unwrap();
-    assert_eq!(entry.progress, Some(EntryProgress::New));
+    assert_eq!(entry.standing.unwrap().progress, EntryProgress::New);
 
     // Write one character of the two, a few times over, starting a month back.
     // 学 climbs; 习 has no card at all, so the entry can never be `known`
@@ -626,18 +638,23 @@ fn each_entry_carries_what_the_schedule_says_about_it() {
             .iter()
             .find(|e| e.entry.id == id)
             .unwrap()
-            .progress
+            .standing
+            .unwrap()
     };
     assert_eq!(
-        stamped("2026-08-12T09:00:00Z"),
-        Some(EntryProgress::Learning),
+        stamped("2026-08-12T09:00:00Z").progress,
+        EntryProgress::Learning,
         "学 is scheduled weeks out now, but 习 has never been written"
+    );
+    assert!(
+        !stamped("2026-08-12T09:00:00Z").all_characters_practised,
+        "and half-written is not written through, whatever the tag says"
     );
     // And once the card falls due, that outranks everything: it is what the
     // review queue will offer next.
     assert_eq!(
-        stamped("2026-12-01T09:00:00Z"),
-        Some(EntryProgress::Due)
+        stamped("2026-12-01T09:00:00Z").progress,
+        EntryProgress::Due
     );
 }
 
@@ -679,17 +696,58 @@ fn a_character_the_board_cannot_draw_does_not_hold_an_entry_back() {
     // never have a card, and the entry would sit at `learning` for ever.
     let view = state.tag_vocab_at(state.lock_vocab().view(), "2026-08-20T09:00:00Z");
     let entry = view.entries.iter().find(|e| e.entry.id == id).unwrap();
-    assert_eq!(entry.progress, Some(EntryProgress::Known));
+    assert_eq!(entry.standing.unwrap().progress, EntryProgress::Known);
+    assert!(
+        entry.standing.unwrap().all_characters_practised,
+        "and it is written through, which counting the comma would also prevent"
+    );
 
-    let with_punctuation = hanzi_core::entry_progress(
+    let with_punctuation = hanzi_core::entry_standing(
         &['你', '好', '！'],
         &state.lock_progress().store,
         "2026-08-20T09:00:00Z",
     );
     assert_eq!(
-        with_punctuation,
+        with_punctuation.progress,
         EntryProgress::Learning,
         "which is what counting the comma would do to every sentence"
+    );
+    assert!(!with_punctuation.all_characters_practised);
+}
+
+/// The fault the standing exists for, at the layer the drill's queue reads.
+#[test]
+fn an_entry_practised_on_another_device_is_written_through_here() {
+    // A device that has just synced: the cards are in the schedule because a peer
+    // wrote them, and this device's own record is untouched — which is exactly the
+    // state `lastPractised` reports as "never practised", and what used to make a
+    // freshly synced phone offer a queue of everything the laptop had finished.
+    let state = state();
+    let id = state
+        .lock_vocab()
+        .store
+        .add_entry("学习", "xuéxí", "to study", Some("Lesson 1"))
+        .expect("adding should succeed")
+        .id;
+    state.lock_vocab().save();
+    {
+        let mut progress = state.lock_progress();
+        for ch in ['学', '习'] {
+            progress
+                .store
+                .record_at(ch, 90.0, "2026-09-01T09:00:00Z")
+                .unwrap();
+        }
+        progress.save();
+    }
+
+    let view = state.vocab_view();
+    let entry = view.entries.iter().find(|e| e.entry.id == id).unwrap();
+    assert_eq!(entry.entry.attempts, 0, "this device never wrote it");
+    assert_eq!(entry.entry.last_practised, None, "nor does it claim to have");
+    assert!(
+        entry.standing.unwrap().all_characters_practised,
+        "but the schedule knows it was written, so the drill leaves it alone here too"
     );
 }
 

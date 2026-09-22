@@ -1873,10 +1873,21 @@
       }
     }
 
-    // Otherwise the first entry not yet practised, and the top once every entry
-    // has been — such a list is due for review, not finished.
+    // Otherwise the first entry not yet written through, and the top once every
+    // entry has been — such a list is due for review, not finished.
+    //
+    // "Practised" is the **schedule's** answer, not this device's record: it says
+    // every character the board can draw for the entry has been written at least
+    // once somewhere, which the cards are folded from the synced attempt log to
+    // know. `lastPractised` would answer for this device alone, and that is the
+    // fault this replaces — a phone that had just synced offered a queue of
+    // everything the laptop had already finished.
+    //
+    // No standing at all means the schedule was not consulted, and that is read as
+    // *not* practised: a queue must never silently drop an entry it knows nothing
+    // about.
     if (resume === null) {
-      const unpractised = entries.filter((entry) => entry.lastPractised === null);
+      const unpractised = entries.filter((entry) => !entry.standing?.allCharactersPractised);
       resume = unpractised.length > 0 ? unpractised : entries;
       const skipped = entries.length - unpractised.length;
       const fallback =

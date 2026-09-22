@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use hanzi_core::{
-    build_lessons, build_queue, entry_progress, now_iso8601, BoardSize, CursorStore, CursorView,
+    build_lessons, build_queue, entry_standing, now_iso8601, BoardSize, CursorStore, CursorView,
     Dataset, Grade, Pace, ProgressStore, ProgressView, ReviewView, SettingsStore, SettingsView,
     ToneVerdict, VocabStore, VocabView,
 };
@@ -1082,24 +1082,25 @@ impl AppState {
     /// `view` is owned rather than borrowed for the same reason: whoever built it
     /// has already let the list go.
     ///
-    /// ## Why the tag is not just "practised?"
+    /// ## Why neither answer is "practised?"
     ///
     /// Because `attempts` and `last_practised` are this **device's** own — they are
     /// not part of the stamp that settles a merge — so a list that has just synced
-    /// would read "not practised" for a word the other device knows well. The tag
-    /// is derived from the cards, which are folded from the synced attempt log, so
-    /// it means the same thing on every device.
+    /// would read "not practised" for a word the other device knows well, and the
+    /// drill's queue would offer everything the other device had already finished.
+    /// Both answers here are derived from the cards, which are folded from the
+    /// synced attempt log, so they mean the same thing on every device.
     pub fn tag_vocab(&self, view: VocabView) -> VocabView {
         self.tag_vocab_at(view, &now_iso8601())
     }
 
-    /// The same, at a caller-supplied time — the seam that makes the tag testable
-    /// without waiting for a due date, exactly as [`ProgressStore::view_at`] is
-    /// for the schedule itself.
+    /// The same, at a caller-supplied time — the seam that makes the standing
+    /// testable without waiting for a due date, exactly as
+    /// [`ProgressStore::view_at`] is for the schedule itself.
     pub fn tag_vocab_at(&self, mut view: VocabView, now: &str) -> VocabView {
         let progress = self.lock_progress();
         for entry in &mut view.entries {
-            entry.progress = Some(entry_progress(
+            entry.standing = Some(entry_standing(
                 &self.judgeable(&entry.entry),
                 &progress.store,
                 now,

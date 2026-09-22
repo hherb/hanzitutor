@@ -1607,19 +1607,27 @@ the exact symptom reported.
 1. **The stored position wins** when it names an entry still in the list. It is
    exactly where the learner stopped, and it is the only thing that can carry a
    position *between* devices.
-2. Otherwise the drill starts at **the first entry not yet practised**
-   (`last_practised`), which needs no storage and is the right answer for a list
-   worked through in order.
-3. If every entry has been practised, it starts at **the top**: such a list is due
-   for review, not finished.
+2. Otherwise the drill starts at **the first entry not yet written through**,
+   where "written through" is the **schedule's** answer — every character the board
+   can draw for it has a card — and not this device's `last_practised`. That is the
+   whole of the decision recorded under "One consequence" below.
+3. If every entry has been written through, it starts at **the top**: such a list is
+   due for review, not finished.
 4. A drill that is not one named group — everything, or the unfiled remainder —
    keeps no position, because there is no list to keep a place in.
+
+An entry with **no** standing at all (the schedule was not consulted) is read as
+*not* written through, so a queue never silently drops something it knows nothing
+about. That is the conservative reading, and it is why the field is `Option` rather
+than a `bool` that defaults to false.
 
 ### What was established, so it is not redone
 
 * `vocab_entry` carries `attempts` and `last_practised`; `vocab_record_attempt`
   writes both; both are on the IPC boundary as `VocabEntry.attempts` /
-  `.lastPractised`. That is what makes rule 2 above free.
+  `.lastPractised`. They are now only a **local record**: rule 2 above used to be
+  built on `last_practised` and is not any more — see "One consequence" below — and
+  nothing else on that screen reads them either.
 * A position is per **group**, so `VocabularyPanel` passes the group alongside the
   entries, and a row's own Practise button passes none.
 
@@ -1642,9 +1650,10 @@ the exact symptom reported.
   is nothing to reconcile per device: the stamp settles it. Per *group* is the
   load-bearing part — a position only means anything against the list it was taken
   in, so `merge_vocab_cursors` never compares one group's stamp with another's.
-* **Resuming skips entries already practised** (`last_practised IS NOT NULL`) when
-  there is no stored position, and **the drill restarts from the top** when every
-  entry has been practised: such a list is due for review, not finished.
+* **Resuming skips entries already written through** when there is no stored
+  position, and **the drill restarts from the top** when every entry has been: such
+  a list is due for review, not finished. What "written through" means was decided
+  later and lives below — it is the schedule's answer, not `last_practised`.
 * **Deletion clears a position** (the group is gone, so `delete_vocab_cursor`
   drops its row).
 
@@ -1696,6 +1705,12 @@ is gone reading as no position, and clearing — one through the state layer, th
 on the merge (including that positions for different groups are never compared),
 and one end-to-end on two databases syncing through a folder store.
 
+The queue's question has three in `hanzi-core` (written through only when every
+character has a card; nothing to draw counts as done; and that it is a different
+question from the tag), one through the state layer asserting that an entry
+practised on another device reads as written through here while `attempts` and
+`last_practised` are still zero, and one on the wire spelling of the standing.
+
 The publish-on-change path has ten more, in `src-tauri/src/sync.rs`: what it writes
 (read back over a real `FolderStore`, so the claim is about the document rather than
 about "something was sent"), that it sends nothing with no account, no network or a
@@ -1709,25 +1724,55 @@ passes for the wrong reason.
 ### Where this got to, and what is next
 
 Confirmed on hardware, not inferred: a drill **resumes at the right word** on both
-an iPhone and an Android phone, and the position travels between them. Both items
-this section left open are now built — the position is published as it changes, and
-each entry carries a progress tag; both are below.
+an iPhone and an Android phone, and the position travels between them. Everything
+this section left open is now built — the position is published as it changes, each
+entry carries a progress tag, and the drill's queue is the same on every device;
+all three are below.
 
-**One consequence to decide, not a bug.** Because `last_practised` is per device,
-a phone that resumes at the right word still works through entries the other
-device has finished — its queue is longer. Either that fact starts travelling too,
-or the queue is honestly per-device and should be labelled that way. The tag is the
-half of that which could be settled without new state: it reads the schedule, which
-is the same on every device, and the card no longer shows the per-device counts at
-all.
+### The queue is the same on every device, and the fact that travels is the schedule
+
+**Settled.** The consequence recorded here was that `last_practised` is per device,
+so a phone that resumed at the right word still offered a longer queue than the
+laptop — everything the laptop had already finished was, to the phone, unattempted.
+The two ways out were to make that fact travel or to label the queue per-device.
+**Neither was needed**: what the queue should ask is already answered by the
+schedule, which is the same on every device because it is folded from the synced
+attempt log.
+
+So the queue's question is now `EntryStanding::all_characters_practised` — *every
+character the board can draw for this entry has a card* — and `last_practised` is
+no longer read by anything on that screen. Three things about the rule:
+
+- **Strict, not partial.** Not "some character has a card": an entry abandoned
+  after one character must stay in the queue, or the drill quietly drops
+  half-written work. A drill records an entry only when all of its characters are
+  graded, so "all of them have a card" is the entry-level analogue of the same
+  thing.
+- **Nothing to draw counts as done** (vacuously true), which is what keeps an entry
+  the board cannot ask for out of the queue instead of offering an empty board.
+- **No standing at all is read as not done**, so a view the schedule never reached
+  cannot silently vanish from a drill. That is why the field is `Option`, and it is
+  invariant 29's rule again: "not asked" is not "no".
+
+**What `last_practised` is still for: nothing on this screen.** `attempts`,
+`best_score` and `last_practised` stay on the wire and in the database as a local
+record — they are what a *per-device* view would show, labelled as such — but the
+drill queue, the progress tag and the card's own copy all come from the schedule
+now. Do not reintroduce a reader: a queue built on `last_practised` is a queue that
+disagrees with the other device, which is the fault this replaced. The fields are
+deliberately still **not** part of the three-part stamp, so they do not travel, and
+making them travel would be the other branch of the decision — not needed while the
+schedule answers the question.
 
 ### The progress tag: derived from the schedule, never stored
 
 **Built.** Each entry on the vocabulary screen carries one of four states — `new` /
 `learning` / `due` / `known` — derived, on every view, from the SM-2 cards of the
-entry's characters. The rule is `hanzi_core::progress::entry_progress`; the
-threshold is `KNOWN_INTERVAL_DAYS` (21); the join is `AppState::tag_vocab`, which is
-the only place the list, the dataset and the schedule meet.
+entry's characters. Both halves of what the schedule says travel together, in
+`EntryStanding`: the tag, and `allCharactersPractised` for the drill queue (below).
+The rule is `hanzi_core::progress::entry_standing`; the threshold is
+`KNOWN_INTERVAL_DAYS` (21); the join is `AppState::tag_vocab`, which is the only
+place the list, the dataset and the schedule meet.
 
 Four decisions hold it up:
 
@@ -1741,11 +1786,11 @@ Four decisions hold it up:
   character due outranks everything. A tag that overstates how well something is
   known is worse than no tag, so the rule is a conjunction — never an average, and
   never a count of how many characters are done.
-- **`None` is not `new`.** The tag is `Option<EntryProgress>` on the wire: `None`
-  means the schedule was not consulted (a view the engine built on its own), which
-  is a different answer from "no character of this has ever been written". The panel
-  shows no tag rather than inventing one — invariant 29's `NULL`-is-not-`0.0` rule,
-  applied to a tag instead of a measure.
+- **`None` is not `new`.** The standing is `Option<EntryStanding>` on the wire:
+  `None` means the schedule was not consulted (a view the engine built on its own),
+  which is a different answer from "no character of this has ever been written". The
+  panel shows no tag rather than inventing one — invariant 29's `NULL`-is-not-`0.0`
+  rule, applied to a tag instead of a measure.
 - **Only the characters the board can draw are judged** — `Dataset::is_practisable`,
   the same set `teachable_characters` sends and practice filters by, so a comma in a
   sentence cannot hold an entry at `learning` for ever.

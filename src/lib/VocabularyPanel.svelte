@@ -566,11 +566,11 @@
                    signals on one row are two sources of truth for one question.
                    `attempts` and `bestScore` are still on the wire; nothing on
                    this screen reads them. -->
-              {#if entry.progress}
+              {#if entry.standing}
                 <span
-                  class="progress {entry.progress}"
-                  title={PROGRESS[entry.progress].note}
-                >{PROGRESS[entry.progress].label}</span>
+                  class="progress {entry.standing.progress}"
+                  title={PROGRESS[entry.standing.progress].note}
+                >{PROGRESS[entry.standing.progress].label}</span>
               {/if}
             </span>
           </span>

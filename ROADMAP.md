@@ -744,24 +744,29 @@ Already shipped, listed only so they are not re-added as open work:
   three-part stamp, and it travels: `vocab-cursor.json` is a per-device shard and
   `merge_vocab_cursors` settles it **per group**, so one group's later stamp never
   drags another. A drill opens at the stored position, falls back to the first
-  entry not yet practised, and starts at the top once all of them have been.
+  entry not yet written through, and starts at the top once all of them have been.
   Deliberately keyed by the group's **name** rather than a new stable group id:
   a random id is minted per device, so already-synced devices would fork a shared
-  group and its cursor would never merge. **The position is published when it
-  changes**, not at the next sync: `SyncService::publish_positions_soon` sends that
-  one document on a thread, under `auto`'s three refusals (no account, a locked
-  sign-in, no network), without the sync gate and without pulling anything — so a
-  drill finished on the phone is on the laptop the moment the laptop looks. HANDOVER
-  §6a has the reasoning.
+  group and its cursor would never merge. **The queue is the same on every device**:
+  "not yet practised" is the schedule's answer — every character the board can draw
+  for the entry has a card — rather than this device's `last_practised`, which made a
+  phone that had just synced offer everything the laptop had already finished.
+  `attempts`, `bestScore` and `lastPractised` remain a local record that nothing on
+  that screen reads. **The position is published when it changes**, not at the next
+  sync: `SyncService::publish_positions_soon` sends that one document on a thread,
+  under `auto`'s three refusals (no account, a locked sign-in, no network), without
+  the sync gate and without pulling anything — so a drill finished on the phone is on
+  the laptop the moment the laptop looks. HANDOVER §6a has the reasoning.
 - **A progress tag per vocabulary entry** — built. Each entry shows one of four
   states — `new`, `learning`, `due`, `known` — derived from the **SM-2 cards** of the
-  characters the board can draw (`hanzi_core::progress::entry_progress`, with a
+  characters the board can draw (`hanzi_core::progress::entry_standing`, with a
   three-week interval as the `known` line), never from `attempts`/`bestScore`, which
-  belong to one device. An entry is only as known as its weakest character, `None`
-  on the wire means the schedule was not consulted rather than "never practised", and
-  the tag *replaced* the per-device practice record on the card — HANDOVER §6a has
-  the reasoning. The re-measure it prompted also fixed a group name running under
-  the row's buttons.
+  belong to one device. An entry is only as known as its weakest character, and the
+  tag travels with `allCharactersPractised` in one optional `standing` object, where
+  `None` means the schedule was not consulted rather than "never practised". It
+  *replaced* the per-device practice record on the card — HANDOVER §6a has the
+  reasoning. The re-measure it prompted also fixed a group name running under the
+  row's buttons.
 - **Import / export the vocabulary list** — M1: JSON export and import (lossless; merge
   or replace) plus CSV export. CSV *import* is deliberately out, because it is lossy.
 - **A settings screen** — `src/lib/SettingsPanel.svelte` edits the four preferences

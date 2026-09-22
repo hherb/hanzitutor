@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::grade::Grade;
 use crate::time::{add_seconds, now_iso8601, parse_iso8601};
-use crate::vocab::{Entry, EntryProgress};
+use crate::vocab::{Entry, EntryProgress, EntryStanding};
 
 /// Format version written into the documents. Bump when the shape changes and
 /// add a migration; a document from the future is refused rather than guessed at.
@@ -42,7 +42,7 @@ pub const FORMAT_VERSION: u32 = 1;
 /// Three weeks, which is the line the spaced-repetition tools call a *mature*
 /// card: the ladder climbs 12 hours, 1 day, 6 days and then multiplies by the
 /// ease factor, so a character that has been answered well five times in a row is
-/// around here. It is a floor and not a guess — see [`entry_progress`] for why the
+/// around here. It is a floor and not a guess — see [`entry_standing`] for why the
 /// tag is only ever as good as the **weakest** character of an entry.
 ///
 /// The interface's wording for `Known` names this in weeks; the two are one
@@ -824,7 +824,8 @@ pub fn fold_from(
     baseline
 }
 
-/// How well the learner knows one entry, from the schedule.
+/// What the schedule says about one vocabulary entry: how well it is known, and
+/// whether it has been written through.
 ///
 /// ## What it is not
 ///
@@ -832,15 +833,14 @@ pub fn fold_from(
 /// that is the whole reason it exists. Those are this device's own — they are not
 /// part of the stamp that settles a merge — so a list that has just synced reads
 /// "not practised" on a device that has never written the word, however well the
-/// other device knows it. This is derived from the cards the attempt log folds
-/// into, so it says the same thing everywhere.
+/// other device knows it. Both answers here come from the cards the attempt log
+/// folds into, so they say the same thing everywhere.
 ///
-/// ## The rule, in the order it is decided
+/// ## The tag, in the order it is decided
 ///
 /// 1. **No card for any character** → `New`. Nobody has ever written it, on any
 ///    device. Note that this is the *schedule* saying so: an entry the app never
-///    tagged is [`None`](crate::vocab::VocabEntryView::progress), which is not the
-///    same answer.
+///    asked about is `None`, which is not the same answer.
 /// 2. **Any character due now** → `Due`, before anything else, because that is
 ///    what the review queue will offer next.
 /// 3. **Any character with no card, or any whose interval is below
@@ -852,15 +852,26 @@ pub fn fold_from(
 /// never practised at all — keeps the whole entry out of `Known`. A tag that
 /// overstates how well something is known is worse than no tag.
 ///
+/// ## And the other half: `all_characters_practised`
+///
+/// A card is created by *any* first attempt, so "every character has one" is the
+/// schedule's answer to "has this entry been written through?" — the question the
+/// drill's queue asks. It is deliberately not "does a card exist for *some*
+/// character": an entry abandoned after one character must stay in the queue, or
+/// the drill would quietly drop the half-written work. And it is not
+/// `last_practised`, which would answer for one device only — which is exactly the
+/// fault this replaces, where a phone that had just synced offered a queue of
+/// everything the laptop had already finished.
+///
 /// `characters` is the set the board can actually ask for, which the caller
 /// filters through `Dataset::is_practisable`: the punctuation in a sentence is
 /// skipped by practice, so counting it here would leave such an entry at
-/// `Learning` for ever.
-pub fn entry_progress(
+/// `Learning` for ever — and would keep it out of the drill for ever too.
+pub fn entry_standing(
     characters: &[char],
     store: &ProgressStore,
     now: &str,
-) -> EntryProgress {
+) -> EntryStanding {
     let mut judged = 0usize;
     let mut missing = false;
     let mut due = false;
@@ -877,16 +888,24 @@ pub fn entry_progress(
         }
     }
 
-    if judged == 0 {
-        return EntryProgress::New;
+    // Vacuous when there is nothing to draw, which is also the honest answer for
+    // the queue: an entry the board cannot ask for must not be offered to it.
+    let all_characters_practised = !missing;
+
+    let progress = if judged == 0 {
+        EntryProgress::New
+    } else if due {
+        EntryProgress::Due
+    } else if missing || young {
+        EntryProgress::Learning
+    } else {
+        EntryProgress::Known
+    };
+
+    EntryStanding {
+        progress,
+        all_characters_practised,
     }
-    if due {
-        return EntryProgress::Due;
-    }
-    if missing || young {
-        return EntryProgress::Learning;
-    }
-    EntryProgress::Known
 }
 
 /// Build the review queue.
@@ -1414,7 +1433,7 @@ mod tests {
         // practice count instead of from the schedule.
         let store = ProgressStore::in_memory();
         assert_eq!(
-            entry_progress(&['学', '习'], &store, "2026-09-19T09:00:00Z"),
+            entry_standing(&['学', '习'], &store, "2026-09-19T09:00:00Z").progress,
             EntryProgress::New
         );
     }
@@ -1429,9 +1448,12 @@ mod tests {
         // One easy pass, today, so it is neither due nor settled.
         store.record_at('习', 100.0, at).unwrap();
 
-        assert_eq!(entry_progress(&['学', '习'], &store, at), EntryProgress::Learning);
         assert_eq!(
-            entry_progress(&['学'], &store, at),
+            entry_standing(&['学', '习'], &store, at).progress,
+            EntryProgress::Learning
+        );
+        assert_eq!(
+            entry_standing(&['学'], &store, at).progress,
             EntryProgress::Known,
             "the character on its own is settled, so it is the young one that stopped it"
         );
@@ -1442,7 +1464,7 @@ mod tests {
         let mut store = ProgressStore::in_memory();
         mature(&mut store, "学");
         assert_eq!(
-            entry_progress(&['学', '习'], &store, "2026-09-19T09:00:00Z"),
+            entry_standing(&['学', '习'], &store, "2026-09-19T09:00:00Z").progress,
             EntryProgress::Learning
         );
     }
@@ -1457,7 +1479,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            entry_progress(&['学', '习'], &store, "2026-09-19T09:01:00Z"),
+            entry_standing(&['学', '习'], &store, "2026-09-19T09:01:00Z").progress,
             EntryProgress::Due,
             "a failure comes back within the minute"
         );
@@ -1483,7 +1505,7 @@ mod tests {
             "two good reviews should be short of the line: {card:?}"
         );
         assert_eq!(
-            entry_progress(&['好'], &store, &reviewed),
+            entry_standing(&['好'], &store, &reviewed).progress,
             EntryProgress::Learning
         );
 
@@ -1497,7 +1519,7 @@ mod tests {
             "four good reviews should be past it: {card:?}"
         );
         assert_eq!(
-            entry_progress(&['好'], &store, &reviewed),
+            entry_standing(&['好'], &store, &reviewed).progress,
             EntryProgress::Known
         );
     }
@@ -1509,9 +1531,56 @@ mod tests {
         // of anything, and evidence is what this reports.
         let store = ProgressStore::in_memory();
         assert_eq!(
-            entry_progress(&[], &store, "2026-09-19T09:00:00Z"),
+            entry_standing(&[], &store, "2026-09-19T09:00:00Z").progress,
             EntryProgress::New
         );
+    }
+
+    // ---- and whether it has been written through ---------------------------
+
+    #[test]
+    fn an_entry_is_written_through_only_when_every_character_has_a_card() {
+        let at = "2026-09-19T09:00:00Z";
+        let mut store = ProgressStore::in_memory();
+
+        assert!(
+            !entry_standing(&['学', '习'], &store, at).all_characters_practised,
+            "nothing written yet"
+        );
+        store.record_at('学', 100.0, at).unwrap();
+        assert!(
+            !entry_standing(&['学', '习'], &store, at).all_characters_practised,
+            "half of it is not the entry: one character written keeps it in the queue"
+        );
+        store.record_at('习', 30.0, at).unwrap();
+        assert!(
+            entry_standing(&['学', '习'], &store, at).all_characters_practised,
+            "a card each, whatever the scores were — this asks whether it was written"
+        );
+    }
+
+    #[test]
+    fn an_entry_with_nothing_to_draw_counts_as_written_through() {
+        // Vacuously true, and deliberately so: this is what keeps an entry the
+        // board cannot ask for out of the drill queue, rather than offering the
+        // learner a board with nothing on it.
+        let store = ProgressStore::in_memory();
+        assert!(entry_standing(&[], &store, "2026-09-19T09:00:00Z").all_characters_practised);
+    }
+
+    #[test]
+    fn the_two_answers_are_independent() {
+        // One written character is *practised* and nowhere near *known*: the queue
+        // asks the first question and the tag answers the second, and conflating
+        // them would either drop unlearned entries from the drill or keep finished
+        // ones in it for ever.
+        let at = "2026-09-19T09:00:00Z";
+        let mut store = ProgressStore::in_memory();
+        store.record_at('好', 100.0, at).unwrap();
+
+        let standing = entry_standing(&['好'], &store, at);
+        assert!(standing.all_characters_practised);
+        assert_ne!(standing.progress, EntryProgress::Known);
     }
 
     // ---- due-ness and the queue -------------------------------------------

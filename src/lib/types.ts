@@ -239,20 +239,39 @@ export interface VocabEntry {
   bestScore: number | null;
   lastPractised: string | null;
   /**
-   * How well this entry is known, from the **schedule** rather than from the
-   * counts above.
+   * What the **schedule** says about this entry, or `null` when it was not
+   * consulted.
    *
-   * `attempts`, `bestScore` and `lastPractised` belong to this device — they are
-   * not part of the stamp that settles a merge — so a list that has just synced
-   * reads "not practised" for a word the other device knows well. This is derived
-   * from the cards the synced attempt log folds into, so it means the same thing
-   * everywhere.
-   *
-   * `null` means the schedule was not consulted, which is **not** `"new"`: the
-   * same distinction schema 5 draws between a null measure and a zero one. The
-   * panel then shows no tag rather than inventing one.
+   * Both answers in there are derived from the SM-2 cards, which are folded from
+   * the synced attempt log, so they mean the same thing on every device. The three
+   * fields above are the opposite kind of fact: this device's own. They are kept
+   * as a local record and nothing on the vocabulary screen decides anything from
+   * them — in particular the drill's queue does not, because a device that had
+   * just synced would otherwise offer everything the other device had finished.
    */
-  progress: EntryProgress | null;
+  standing: EntryStanding | null;
+}
+
+/**
+ * What the schedule says about one entry.
+ *
+ * `null` for the whole object means the schedule was not consulted, which is
+ * **not** the same as a `new`/`false` standing — the distinction schema 5 draws
+ * between a null measure and a zero one. A reader that conflates them reports
+ * something it invented.
+ */
+export interface EntryStanding {
+  /** How well the entry is known, for the tag on the card. */
+  progress: EntryProgress;
+  /**
+   * Whether every character the board can draw for this entry has been practised
+   * at least once — the question the drill's queue asks, since an entry is
+   * recorded only when all of its characters are written.
+   *
+   * Strict on purpose: one character still untouched keeps the entry in the queue,
+   * so half-written work is offered again rather than counted as done.
+   */
+  allCharactersPractised: boolean;
 }
 
 /**
@@ -261,7 +280,7 @@ export interface VocabEntry {
  * `new` is no character of the entry ever practised, `due` is something due now,
  * `known` is every character scheduled weeks out with none due, and `learning` is
  * everything between — including an entry with one character never practised at
- * all. See `hanzi_core::progress::entry_progress` for the rule.
+ * all. See `hanzi_core::progress::entry_standing` for the rule.
  */
 export type EntryProgress = "new" | "learning" | "due" | "known";
 
