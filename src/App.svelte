@@ -1909,6 +1909,12 @@
     // On the board, so "it started at the beginning again" arrives with its
     // reason attached instead of being a mystery to report.
     if (outcome !== "") statusMessage = `${where}${outcome}`;
+    else if (scope === null)
+      // And the case where there is no group at all is said too: a drill with
+      // nowhere to keep a place is the one failure that looks exactly like a
+      // lost place, and it is invisible unless it is named.
+      statusMessage =
+        "this drill is not one group, so no place is being kept — practise a group to resume";
   }
 
   /**

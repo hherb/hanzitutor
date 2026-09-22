@@ -46,6 +46,17 @@ pnpm run check:rust && pnpm run check:web
 Then `pnpm run dev` to launch it. `pnpm run build` makes a **signed** `.app` and
 `.dmg` — see §8 for what that involves and what ends up inside.
 
+**If the app keeps asking for your login password, use `pnpm run dev:signed`.**
+The Dropbox sign-in lives in the login keychain, and macOS grants a keychain item
+to a specific program by its designated requirement. An unsigned dev build's
+requirement is its code hash, which changes on every rebuild, so the keychain
+treats each build as a stranger and prompts. `pnpm run dev:signed` builds the dev
+binary, signs it with a stable identity (`scripts/sign-dev-binary.sh`, which picks
+an Apple Development certificate and uses the app's own identifier), and then runs
+`tauri dev`. It will prompt **once** to let the new signature at the existing item,
+and not again — until a Rust change relinks the binary, when it needs signing
+again. That is dev-only: no hardened runtime, no timestamp, no notarisation.
+
 `./scripts/fetch-data.sh` is only wanted when you are changing the data pipeline:
 it re-downloads the ~33 MB of upstream text into gitignored `data/raw/`, restores
 any deleted licence text or font, and `pnpm run prepare-data` then rebuilds the
