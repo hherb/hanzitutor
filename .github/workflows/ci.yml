@@ -69,6 +69,11 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # The interface's own suite: the stroke animation's geometry, which the
+      # Rust tests cannot see and the type-checker cannot judge.
+      - name: Test the interface
+        run: pnpm run test:web
+
       - name: Lint the Rust
         run: pnpm run check:rust
 

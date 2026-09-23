@@ -40,6 +40,7 @@ pnpm run fetch-sherpa
 #    artifact, the interface font and the licence texts are all committed, so a
 #    clone builds without downloading anything else.
 pnpm test                        # expect 567 passed, 0 failed, 4 ignored
+pnpm run test:web                # the interface's own suite (vitest)
 pnpm run check:rust && pnpm run check:web
 ```
 
@@ -391,6 +392,8 @@ src/
   lib/CharacterThumb.svelte one small picture of one character's attempt
   lib/render.ts             canvas painting, the stroke-order sweep,
                             font<->display transforms, colours
+  lib/render.test.ts        that geometry and those frames, pinned — vitest,
+                            `pnpm run test:web` (§5)
   lib/FeedbackPanel.svelte  report -> readable advice
   lib/TonePanel.svelte      the learner's pitch contour drawn over the expected
                             tone shape, with the verdict Rust worded
@@ -426,7 +429,7 @@ store/                      the Play listing's copy and artwork
 scripts/                    fetch-data, fetch-sherpa, fetch-phrases, fetch-tts,
                             with-cargo-env, tauri-cli, build-release,
                             probe-app-sandbox, check-audio.py, cosyvoice-say.py
-.github/workflows/ci.yml    test + clippy + svelte-check on push
+.github/workflows/ci.yml    cargo test + vitest + clippy + svelte-check on push
 ```
 
 **The seam to preserve:** `hanzi-core` must stay free of Tauri and platform
@@ -985,11 +988,12 @@ Run before every commit:
 ```bash
 pnpm test           # 618 tests: engine + data-pipeline units, the SQLite store,
                     # sync convergence, IPC contract, speech, notices, data-dir flag
+pnpm run test:web   # 26 tests: the interface's stroke geometry, under vitest
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
 
-These three are exactly what `.github/workflows/ci.yml` runs on every push and
+These four are exactly what `.github/workflows/ci.yml` runs on every push and
 pull request, on a macOS runner, with no data step — plus `pnpm run fetch-sherpa`,
 because that is the only input cargo does not obtain for itself.
 
@@ -997,6 +1001,22 @@ because that is the only input cargo does not obtain for itself.
 pipeline's parsing — which upstream fields are trusted and how a word's reading is
 chosen — is covered by the same run. Without the feature flag the nine
 `prepare-data` tests silently do not run.
+
+**The interface has its own suite now, and it is the only thing testing what the
+board draws.** It exists because the stroke-order animation had no automated test
+at all: drawing cannot be driven from here (§6) and the frontend had no runner, so
+the sweep was checked by capturing the app's own window. `src/lib/render.test.ts`
+pins the geometry instead — `prefixAt`, `sampleAlong` and `strokeRadii`, which
+`render.ts` exports for it, plus the frames `drawScene` and `drawThumb` emit. It
+needs no browser: a fake `Path2D`, and a recording canvas context whose
+`isPointInPath` is a predicate the test supplies, let a synthetic outline as simple
+as a vertical strip pin the width measurement exactly, including where it clamps.
+Every value asserted is hand-computed, and each of the four mutations tried against
+it (the prefix fraction dropped, samples taken at bin starts, the width margin and
+clamps removed, the font-space y-flip removed) is caught. **If you touch
+`src/lib/render.ts`, run it.** `vitest.config.ts` merges the Vite config, so a
+future test that imports a `.svelte` file gets the compiler without further
+wiring, and the environment stays `node` — do not reach for jsdom without a reason.
 
 **If you touched the grading path**, also run `pnpm run selfcheck`:
 

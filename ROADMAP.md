@@ -329,8 +329,8 @@ What shipped, and the rules that still hold:
   which still launches locally, since Apple Silicon refuses a completely unsigned
   binary. The identity is not written into `src-tauri/tauri.conf.json`, because that
   file is committed.
-- **CI**, `.github/workflows/ci.yml`: `pnpm test`, `check:rust` and `check:web` on
-  push and pull request, on a macOS runner, with no data step.
+- **CI**, `.github/workflows/ci.yml`: `pnpm test`, `test:web`, `check:rust` and
+  `check:web` on push and pull request, on a macOS runner, with no data step.
 - **The version string is pinned in one test.** `Cargo.toml`,
   `src-tauri/tauri.conf.json` and `package.json` each carry a version, and the About
   screen reports a fourth copy; `src-tauri/tests/licences.rs` fails if they disagree.
@@ -905,8 +905,8 @@ Recorded honestly, because they bound how much the current scores mean:
   carries a density-perturbed pass as well as a noisy one, and schema 5 makes real
   attempts available to the analysis — so the remaining gap is the attempts themselves,
   not the instrument.
-- **CI checks the code, not the bundle.** The workflow runs `pnpm test`, `check:rust`
-  and `check:web` on a macOS runner; it does not run `pnpm run build`, so a packaging
+- **CI checks the code, not the bundle.** The workflow runs `pnpm test`, `test:web`,
+  `check:rust` and `check:web` on a macOS runner; it does not run `pnpm run build`, so a packaging
   regression — a resource path, a signing identity, a missing notice *file* — is still
   caught by hand. Building on every push costs a release compile plus a DMG, and the
   notices themselves are pinned by tests that do run, so this is a deliberate trade
@@ -969,13 +969,15 @@ Recorded honestly, because they bound how much the current scores mean:
 - **The course is frequency-ordered only.** It starts at 的 (8 strokes), which is right
   for reading but a demanding first character to *write*. A hand-ordered or
   stroke-count-ascending mode may suit a beginner better.
-- **The stroke-order animation has no automated test.** Drawing cannot be driven from
-  here (HANDOVER §6), and the frontend has no test runner at all, so the sweep was
-  checked by capturing the app's own window rather than by asserting anything:
-  `pnpm test` and `check:web` cover it only as far as it type-checks. The pure geometry
-  behind it — `prefixAt`, `sampleAlong`, `strokeRadii` in `src/lib/render.ts` — is the
-  obvious first thing a `vitest` run should pin, since it is arithmetic over arrays and
-  needs no canvas.
+- **The stroke-order animation's geometry is tested now; a real drawing still is not.**
+  `pnpm run test:web` runs `vitest` in a Node environment (no jsdom), and
+  `src/lib/render.test.ts` pins `prefixAt`, `sampleAlong`, `strokeRadii` — which
+  `render.ts` exports for it — and the frames `drawScene`/`drawThumb` emit, through a
+  fake `Path2D` and a recording canvas context. Every value is hand-computed, and
+  deliberately breaking the prefix fraction, the sample positions, the width clamps or
+  the font-space flip each fails it. What it does not replace: drawing cannot be driven
+  from here (HANDOVER §6), so watching a *real* stroke reveal still needs a person, and
+  the assertions are about geometry rather than pixels.
 - **The sweep uses one band radius per stroke**, taken from its widest point, so a
   strongly tapered stroke starts revealing a little ahead of the pen at its thin end.
   The alternative is a radius per centre-line segment; it is only visible on a slow

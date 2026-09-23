@@ -239,8 +239,12 @@ function drawGhost(ctx: CanvasRenderingContext2D, scene: Scene) {
  * The cost is a few hundred hit tests per character, paid once, on the first
  * frame of the first animation for that character and cached thereafter; nothing
  * here runs while the animation is idle.
+ *
+ * Exported for `render.test.ts`: the measurement is arithmetic over the outline
+ * and the centre-line, so it is pinned there against a fake canvas rather than
+ * only exercised by watching the animation.
  */
-function strokeRadii(ctx: CanvasRenderingContext2D, character: Character): number[] {
+export function strokeRadii(ctx: CanvasRenderingContext2D, character: Character): number[] {
   const cached = widthCache.get(character);
   if (cached) return cached;
 
@@ -297,12 +301,18 @@ function measureStrokeRadius(
   return Math.min(MAX_SWEEP_RADIUS, Math.max(MIN_SWEEP_RADIUS, widest * 1.15 + 6));
 }
 
-/** Points spread evenly by length along a polyline, with their local direction. */
-function sampleAlong(
+/**
+ * Points spread evenly by length along a polyline, with their local direction.
+ *
+ * Exported for `render.test.ts`, which pins the sample positions and tangents;
+ * the animation itself only ever reaches it through [`measureStrokeRadius`].
+ */
+export function sampleAlong(
   points: Point[],
   count: number,
 ): { point: Point; tangent: Point }[] {
   const out: { point: Point; tangent: Point }[] = [];
+  if (points.length === 0) return out;
   const total = polylineLength(points);
   if (total <= 0) return [{ point: points[0], tangent: { x: 1, y: 0 } }];
   for (let k = 0; k < count; k++) {
@@ -386,8 +396,11 @@ export function polylineLength(points: Point[]): number {
 /**
  * The start of `points`, cut off `progress` of the way along it by length —
  * never by index, because the samples are not evenly spaced.
+ *
+ * Exported for `render.test.ts`. The caller clamps `progress` to `0..=1`
+ * ([`drawSweptStroke`]); this function trusts the value it is given.
  */
-function prefixAt(points: Point[], progress: number): Point[] {
+export function prefixAt(points: Point[], progress: number): Point[] {
   if (points.length === 0) return [];
   const total = polylineLength(points);
   if (total <= 0) return [points[0]];

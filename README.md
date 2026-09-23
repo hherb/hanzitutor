@@ -1042,6 +1042,7 @@ store/                      the Play listing: copy, answers, icon, artwork
 ```bash
 pnpm test             # the whole Rust suite: 618 tests, 4 more ignored
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
+pnpm run test:web     # the interface's own suite, under vitest
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check
 pnpm run check:rust   # clippy, warnings denied
@@ -1050,6 +1051,11 @@ pnpm run check:rust   # clippy, warnings denied
 `pnpm test` enables hanzi-core's `prepare` feature so that the data pipeline's
 parsing — which upstream fields are trusted, and how a word's reading is chosen —
 is covered by the same run as everything else.
+
+`pnpm run test:web` is the interface's own suite: `src/**/*.test.ts` under vitest,
+in a Node environment with no browser. It holds what neither the Rust tests nor the
+type-checker can see — today, the stroke animation's geometry in
+`src/lib/render.test.ts`, against a fake `Path2D` and a recording canvas context.
 
 Four tests are `#[ignore]`d because they need something a test run cannot arrange
 — a microphone, or a 163 MB download. They are the ones worth running by hand
@@ -1259,9 +1265,10 @@ prompt for a build Apple has not seen.
 
 ### CI
 
-`.github/workflows/ci.yml` runs `pnpm test`, `pnpm run check:rust` and
-`pnpm run check:web` on every push to `main` and every pull request, on a macOS
-runner. It needs no data step, because the artifact is committed. A Linux runner
+`.github/workflows/ci.yml` runs `pnpm test`, `pnpm run test:web`,
+`pnpm run check:rust` and `pnpm run check:web` on every push to `main` and every
+pull request, on a macOS runner. It needs no data step, because the artifact is
+committed. A Linux runner
 would work too, but `cargo test --workspace` would first need Tauri's system
 dependencies (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`,
 `librsvg2-dev`, `patchelf`).
