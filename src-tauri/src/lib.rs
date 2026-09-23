@@ -110,6 +110,7 @@ pub fn run() {
             commands::search_words,
             commands::search_characters,
             commands::tone_sets,
+            commands::radicals,
             commands::grade_attempt,
             commands::speak,
             commands::stop_speaking,

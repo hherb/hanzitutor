@@ -184,6 +184,45 @@ export const INTRO_PAGES: Page[] = [
  * short list, and one honest page beats three padded ones.
  */
 export const NOTES: Record<string, Page[]> = {
+  "0.5.10": [
+    {
+      title: "What's new in 0.5.10",
+      lead:
+        "Characters are shown as the parts they are built from. A new Radicals " +
+        "screen collects them, and every character's page now says what it is made " +
+        "of. Nothing about how your writing is graded has changed, and your " +
+        "practice history, schedule and vocabulary are untouched.",
+      points: [
+        {
+          name: "Radicals",
+          what:
+            "A new screen in the sidebar, ordered by how many characters each part " +
+            "unlocks — so the ones worth learning first are at the top. Each row " +
+            "gives the part, what it means and the count; open one to see every " +
+            "character that uses it.",
+        },
+        {
+          name: "What a character is built from",
+          what:
+            "A character's page lists its parts in the order they are read and " +
+            "names the arrangement: 说 is 讠 and 兑 side by side, 草 is 艹 over 早, " +
+            "言 is 亠, 二 and 口 stacked. Every part the board can draw is a button " +
+            "that puts it on the board on its own.",
+        },
+        {
+          name: "Practising a family",
+          what:
+            "From a radical you can write the part itself, or every character that " +
+            "uses it, most common first — 言 opens over three hundred of them, " +
+            "including 说, 话 and 请.",
+        },
+      ],
+      note:
+        "The part a character is classified under is the full dictionary form (言, " +
+        "人, 水), while the shape inside the character is that same part written " +
+        "small (讠, 亻, 氵). Seeing the two together is the point of the screen.",
+    },
+  ],
   "0.5.9": [
     {
       title: "What's new in 0.5.9",

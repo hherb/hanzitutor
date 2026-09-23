@@ -111,6 +111,18 @@ filling in the Console listing, not code. What is not built yet is listed under
   shapes are ghosted in red where a stroke should have gone.
 - **Readings and meanings** — pinyin, English gloss, radical, stroke count, HSK
   level and frequency rank, plus the etymology mnemonic where one exists.
+- **Radicals, taught as families** — the parts the characters are built from,
+  with what each one means and every character in the course that shares it,
+  ordered by how many characters it unlocks. A character's page names its radical
+  and its meaning and opens the family. The radical shown is the **Kangxi head
+  form** (`言`, `人`, `水`); the shape inside the character is that same radical's
+  combining form (`讠`, `亻`, `氵`), and seeing them together is the point. The
+  radical itself can be written on the board, and so can the whole family.
+- **What a character is built from** — every character's Make Me a Hanzi
+  decomposition, read from its IDS string: 说 is 讠 + 兑, 草 is 艹 + 早, 言 is
+  亠 + 二 + 口, with the arrangement named in words. Every part the board can draw
+  is a button that puts it on the board on its own, which is how a character stops
+  being a picture.
 - **Pronunciation** — hear any character or word through the system's own speech
   synthesiser, and hear a graded phrase from the clips that ship with the app, in the
   one voice the course uses. Nothing is downloaded unless you install the optional
@@ -959,7 +971,9 @@ crates/hanzi-core/          engine + data, no UI dependency
                             progress.rs and vocab.rs
   src/geom.rs               resampling, normalisation, distance measures
   src/grade.rs              pairing, order analysis, verdicts, scoring
-  src/dataset.rs            characters, the word dictionary, artifact loading
+  src/dataset.rs            characters, the word dictionary, artifact loading,
+                            the derived radical families and decompositions
+  src/decompose.rs          an IDS string → the parts a character is built from
   src/curriculum.rs         frequency list → lessons
   src/vocab.rs              the personal vocabulary list
   src/progress.rs           per-character history, SM-2 scheduling, review queue
@@ -1006,6 +1020,7 @@ src/lib/                    Svelte components
   render.ts                 canvas painting, the stroke-order sweep, verdict colours
   WordsPanel.svelte         the HSK word list: search, browse, practise
   CharacterPanel.svelte     the character set: search, a character's page, practise
+  RadicalsPanel.svelte      the radicals: meaning, and the characters that share one
   TonePairsPanel.svelte     tone pairs: hear them, quiz them, send them to the board
   ShortcutCard.svelte       the key list, in a corner rather than over the board
   shortcuts.ts              the keys themselves, read by the card and the handler
@@ -1025,7 +1040,7 @@ store/                      the Play listing: copy, answers, icon, artwork
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 385 tests, 4 more ignored
+pnpm test             # the whole Rust suite: 603 tests, 4 more ignored
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run selfcheck    # engine behaviour over the whole real dataset
 pnpm run check:web    # svelte-check

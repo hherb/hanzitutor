@@ -175,6 +175,7 @@ fn character_serialises_with_camel_case_fields() {
             "pinyin",
             "definition",
             "etymology",
+            "decomposition",
             "outlines",
             "medians",
         ],
@@ -466,9 +467,11 @@ fn a_character_search_serialises_with_the_fields_the_panel_reads() {
             "hsk",
             "strokeCount",
             "radical",
+            "radicalMeaning",
             "pinyin",
             "definition",
             "etymology",
+            "components",
             "inCourse",
         ],
     );
@@ -769,6 +772,244 @@ fn a_vowel_difference_is_not_a_tone_difference() {
         sets.iter().any(|set| set.base == "nu"),
         "and so does the u syllable"
     );
+}
+
+// ---- radicals ---------------------------------------------------------------
+
+#[test]
+fn a_radical_serialises_with_the_fields_the_screen_reads() {
+    let state = state();
+    let families = state.radicals();
+    let json = serde_json::to_value(&families[0]).unwrap();
+    expect_keys(
+        &json,
+        &[
+            "radical",
+            "pinyin",
+            "meaning",
+            "strokeCount",
+            "etymology",
+            "characters",
+        ],
+    );
+    // The members are bare glyphs: the family is a drill list, and the board
+    // asks for the geometry of the one character it is about to teach.
+    assert_eq!(
+        json["characters"][0],
+        serde_json::json!(families[0].characters[0].to_string()),
+        "a member crosses the wire as its own one-character string"
+    );
+}
+
+#[test]
+fn every_family_holds_the_course_characters_that_name_its_radical() {
+    let state = state();
+
+    // 言 is the radical of 说, 话, 请 and hundreds more, and its meaning is the
+    // radical character's own definition rather than a second hand-written table.
+    let speech = state
+        .radicals()
+        .into_iter()
+        .find(|family| family.radical == '言')
+        .expect("言 is a radical the course uses");
+    assert!(
+        speech.characters.len() > 100,
+        "expected a large family, got {}",
+        speech.characters.len()
+    );
+    for ch in ['说', '话', '请'] {
+        assert!(
+            speech.characters.contains(&ch),
+            "{ch} should be in the 言 family"
+        );
+    }
+    assert!(
+        speech.meaning.contains("speech"),
+        "言's own definition should be the family's meaning, got {:?}",
+        speech.meaning
+    );
+
+    // Every member really is classified under the family it appears in, and is a
+    // character the course can teach.
+    for family in state.radicals() {
+        assert!(!family.characters.is_empty(), "an empty family was returned");
+        for ch in &family.characters {
+            let character = state.character(*ch).expect("a member is in the dataset");
+            assert_eq!(
+                character.radical, family.radical,
+                "{ch} is listed under the wrong radical"
+            );
+            assert!(character.is_teachable(), "{ch} is in no lesson");
+        }
+    }
+}
+
+#[test]
+fn the_radicals_are_the_whole_set_and_ranked_by_how_much_they_unlock() {
+    let state = state();
+    let families = state.radicals();
+
+    // The whole derived list, one family per radical the course uses. The real
+    // artifact names a couple of hundred of them, so a handful would mean the
+    // derivation had broken.
+    assert!(
+        families.len() > 150,
+        "expected the whole set of radicals, got {}",
+        families.len()
+    );
+
+    // Most productive first: the count is the reason the screen exists.
+    assert!(
+        families
+            .windows(2)
+            .all(|pair| pair[0].characters.len() >= pair[1].characters.len()),
+        "families are not ranked by how many characters they unlock"
+    );
+
+    // One family per radical, and no members left out: the families partition the
+    // teachable characters that name a radical.
+    let mut radicals: Vec<char> = families.iter().map(|family| family.radical).collect();
+    let distinct = radicals.len();
+    radicals.sort_unstable();
+    radicals.dedup();
+    assert_eq!(radicals.len(), distinct, "a radical appears twice");
+    assert!(
+        families[0].characters.len() > 100,
+        "the most productive radical should unlock many characters, got {}",
+        families[0].characters.len()
+    );
+
+    // And the count in the panel is the list itself, in course order.
+    for family in &families {
+        let mut ranks: Vec<u32> = family
+            .characters
+            .iter()
+            .map(|ch| state.character(*ch).unwrap().rank)
+            .collect();
+        let sorted = ranks.clone();
+        ranks.sort_unstable();
+        assert_eq!(ranks, sorted, "a family is not in course order");
+    }
+}
+
+#[test]
+fn a_character_carries_its_radicals_meaning() {
+    let state = state();
+    let view = state.search_characters("说", None, 10);
+    let summary = view
+        .characters
+        .iter()
+        .find(|character| character.ch == '说')
+        .expect("说 is in the dataset");
+
+    // The Kangxi head form the character is classified under, and what it means.
+    assert_eq!(summary.radical, '言');
+    assert_eq!(summary.radical_meaning, "words, speech; speak, say");
+
+    // And the same answer the Radicals screen gives, because both read the same
+    // entry rather than a copy of it.
+    let family = state
+        .radicals()
+        .into_iter()
+        .find(|family| family.radical == '言')
+        .unwrap();
+    assert_eq!(summary.radical_meaning, family.meaning);
+}
+
+// ---- decomposition ----------------------------------------------------------
+
+#[test]
+fn components_serialise_with_the_fields_the_screen_reads() {
+    let state = state();
+    let view = state.search_characters("说", None, 10);
+    let json = serde_json::to_value(&view).unwrap();
+    let components = &json["characters"][0]["components"];
+    expect_keys(components, &["raw", "layout", "parts"]);
+    expect_keys(&components["parts"][0], &["ch", "drawable"]);
+}
+
+#[test]
+fn a_character_is_shown_as_the_parts_it_is_built_from() {
+    let state = state();
+
+    let of = |query: &str| {
+        state
+            .search_characters(query, None, 10)
+            .characters
+            .into_iter()
+            .find(|character| character.ch == query.chars().next().unwrap())
+            .expect("a character in the dataset")
+            .components
+    };
+
+    // 说 is 讠 beside 兑, and the arrangement is the outermost operator's.
+    let speech = of("说");
+    assert_eq!(speech.raw, "⿰讠兑");
+    assert_eq!(speech.layout, "left and right");
+    assert_eq!(
+        speech.parts.iter().map(|part| part.ch).collect::<Vec<_>>(),
+        vec![Some('讠'), Some('兑')]
+    );
+
+    // 言 is 亠 over (二 over 口): a nested arrangement flattened in reading order.
+    let words = of("言");
+    assert_eq!(words.layout, "above and below");
+    assert_eq!(
+        words.parts.iter().map(|part| part.ch).collect::<Vec<_>>(),
+        vec![Some('亠'), Some('二'), Some('口')]
+    );
+
+    // 草 is 艹 over 早. The source decomposes one level, so 早 stays whole.
+    let grass = of("草");
+    assert_eq!(
+        grass.parts.iter().map(|part| part.ch).collect::<Vec<_>>(),
+        vec![Some('艹'), Some('早')]
+    );
+}
+
+#[test]
+fn a_component_says_whether_the_board_can_write_it() {
+    let state = state();
+
+    // Every part of every searched character: `drawable` must be exactly the
+    // board's own answer, which is "there is stroke geometry to grade against".
+    for query in ["说", "草", "言", "你", "好", "的", "国"] {
+        let summary = state
+            .search_characters(query, None, 10)
+            .characters
+            .into_iter()
+            .find(|character| character.ch == query.chars().next().unwrap())
+            .unwrap();
+        for part in &summary.components.parts {
+            let Some(ch) = part.ch else {
+                assert!(!part.drawable, "an unnamed part cannot be drawn");
+                continue;
+            };
+            let can_write = state
+                .character(ch)
+                .map(|character| !character.medians.is_empty())
+                .unwrap_or(false);
+            assert_eq!(
+                part.drawable, can_write,
+                "{ch} disagrees with the dataset about being writable"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_character_with_no_decomposition_says_so_with_no_parts() {
+    let state = state();
+    // 一 is a single stroke: Make Me a Hanzi has no decomposition for it, and
+    // the answer is "no parts", not a fabricated one.
+    let summary = state.search_characters("一", None, 10);
+    let one = summary
+        .characters
+        .iter()
+        .find(|character| character.ch == '一')
+        .expect("一 is in the dataset");
+    assert!(one.components.parts.is_empty());
+    assert_eq!(one.components.raw, "");
 }
 
 #[test]

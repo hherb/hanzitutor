@@ -700,14 +700,19 @@ Small, independently shippable, still open, roughly in value order:
   rather than a colour swap.
 - **UI scale / accessibility** — larger text and a bigger board; the board already
   sizes itself from its container.
-- **Component / radical teaching** — the decomposition and radical fields are already
-  in the dataset but only displayed, not taught. Radical-based groupings would help
-  retention.
 - **Beginner stroke hints** — mark each stroke's start point and direction on the guide
   for the first attempts.
 - **Interface localisation** — the app teaches Chinese but speaks English.
 
 Already shipped, listed only so they are not re-added as open work:
+
+- **Component / radical teaching** — built as M15: a Radicals screen over the
+  derived `Dataset::radicals` grouping, each radical's meaning taken from its own
+  character entry and every course character that shares it, a radical and its
+  whole family writable on the board, and the character page showing what a
+  character is built from with every writable part tappable. The radical half
+  needed no data change; the decomposition half carried a new field into the
+  artifact and moved the magic to `HANZID03`. See M15 and HANDOVER §6d.
 
 - **Attempt logging for tuning** — built, in three parts. **Schema 5** writes the
   measures each attempt was graded from (`shape`, `position`, `ink`, `ink_coverage`,
@@ -1873,6 +1878,70 @@ silent buffer cannot become amplified hiss.
   fetching the synthesis model.
 - **The app-level check this milestone has not done**: a phrase with a bundled clip is heard
   in the running app, from the committed clips, with no model installed.
+
+---
+
+## M15 — Radical and component teaching
+
+The dataset has always held each character's radical, and Make Me a Hanzi has
+always held its decomposition; the app printed the radical and stored nothing of
+the decomposition. This milestone teaches both, so a character stops being a
+picture and becomes parts.
+
+### What shipped
+
+- **A Radicals screen** (`src/lib/RadicalsPanel.svelte`, HANDOVER §6d). Every
+  radical the course uses, most productive first, with what it means and how many
+  characters it unlocks; one radical's page shows its own reading, stroke count
+  and etymology, the characters that share it, and two ways to practise — the
+  radical itself, or the whole family. A character's page names its radical's
+  meaning and opens the family.
+- **The grouping is derived, not stored.** `Dataset::radicals` groups the course's
+  teachable characters by the radical each already carries, beside `tone_sets` for
+  the same reasons. A radical's meaning is that glyph's **own entry** — 言 is a
+  character with the definition `"words, speech; speak, say"` — so the screen and
+  the character page cannot disagree. All 214 radicals the frequency list uses have
+  a definition and stroke geometry, which is why this half needed **no** artifact
+  change.
+- **The head form is the lesson.** The stored radical is the Kangxi form (言, 人,
+  水); the shape inside the character is a combining form (讠, 亻, 氵). Two thirds of
+  the radicals differ this way, and a family is a list of characters that look
+  different and belong together.
+- **Decomposition, from Make Me a Hanzi's IDS string.** `Character` gained a
+  `decomposition` field (`说` → `⿰讠兑`), `ARTIFACT_MAGIC` moved to `HANZID03` and
+  the artifact was regenerated: 9,508 of 9,574 characters carry one.
+  `hanzi_core::decompose` reads it — twelve IDS operators, nested sequences
+  flattened, `？` kept as a gap — and marks each part with whether the board can
+  write it. A character's page shows 说 as 讠 + 兑, 草 as 艹 + 早 and 言 as 亠 + 二 +
+  口, with every writable part a button that puts it on the board.
+- **Both halves practise through the one board.** A family and a component are new
+  `Source` values on the existing practice path; nothing about grading, the ghost
+  or progress recording is forked (invariant 10).
+
+### Acceptance criteria
+
+- The Radicals screen lists every radical the course uses, ranked by how many
+  characters it unlocks, each with a meaning that matches the radical character's
+  own definition.
+- Every character listed under a radical really is classified under it, and is in
+  the course.
+- A radical, a whole family, and any writable component of a shown character can
+  be written on the board, and the attempt is recorded like any other.
+- A character with no decomposition, and a decomposition with an unnamed part, are
+  both shown honestly rather than guessed at.
+- The artifact's magic moved with its payload (`HANZID03`), and an artifact from
+  the previous format fails loudly rather than decoding into nonsense.
+
+### Deliberately not done
+
+- **The decomposition is not a tree on screen.** Nested IDS sequences are
+  flattened to the parts in reading order, and the outermost arrangement is named
+  in words. Drawing the arrangement geometrically would be a picture of the
+  character, which the board already does better.
+- **No new grading or drill kind.** A component is practised as the character it
+  is, on the same board, with the same four measures.
+- **The decomposition was not added to the word dictionary.** A word's structure
+  is its characters in turn, which the board already walks one at a time.
 
 ---
 

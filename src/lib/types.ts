@@ -107,6 +107,12 @@ export interface Character {
   pinyin: string[];
   definition: string;
   etymology: string;
+  /**
+   * Make Me a Hanzi's decomposition as an IDS string, e.g. `"⿰讠兑"` for 说:
+   * a layout operator followed by the parts it arranges. Empty when the source
+   * has none. {@link CharacterSummary.components} is the readable form.
+   */
+  decomposition: string;
   /** SVG path data in font space (y up), one per stroke, in stroke order. */
   outlines: string[];
   /** Stroke centre-lines in display space (y down), in stroke order. */
@@ -146,6 +152,39 @@ export interface CharacterLevelCount {
   characters: number;
 }
 
+// ---- decomposition --------------------------------------------------------
+
+/**
+ * One part of a character's {@link Decomposition}.
+ *
+ * `ch` is `null` where Make Me a Hanzi could not name the part. The gap is kept
+ * rather than dropped, because without it the arrangement described by `layout`
+ * would not be true.
+ */
+export interface Component {
+  /** The part, or `null` where the source could not name it. */
+  ch: string | null;
+  /** True when the board can draw it, so it can be written on its own. */
+  drawable: boolean;
+}
+
+/**
+ * What a character is built from.
+ *
+ * Derived in Rust (`hanzi_core::decompose`) from the IDS string the artifact
+ * stores, with each part already marked as drawable. Nested sequences are
+ * flattened, so the parts are the character's own components: 草 is 艹 and 早,
+ * never 艹, 日, 十.
+ */
+export interface Decomposition {
+  /** The IDS string as stored, e.g. `"⿰讠兑"`. Empty when there is none. */
+  raw: string;
+  /** The outermost arrangement in words, e.g. `"left and right"`. */
+  layout: string;
+  /** The parts, in reading order. */
+  parts: Component[];
+}
+
 // ---- the character dictionary ---------------------------------------------
 
 /**
@@ -165,10 +204,21 @@ export interface CharacterSummary {
   strokeCount: number;
   /** Kangxi radical, or `"\0"` when unknown. */
   radical: string;
+  /**
+   * What that radical means, from the dataset's own entry for the glyph, or `""`
+   * when the dataset cannot describe it. The same string the Radicals screen
+   * shows, because both read the one entry.
+   */
+  radicalMeaning: string;
   /** Every reading the dataset knows, most common first. */
   pinyin: string[];
   definition: string;
   etymology: string;
+  /**
+   * What the character is built from, with each part marked drawable. This is
+   * the readable form of {@link Character.decomposition}.
+   */
+  components: Decomposition;
   /**
    * True when the character is in the course's frequency order, so it can be
    * found by browsing and shown in a lesson. A character found by search can be
@@ -214,6 +264,39 @@ export interface ToneSet {
   base: string;
   /** The members, tone 1 first. Two or more by construction. */
   members: ToneSetMember[];
+}
+
+// ---- radicals -------------------------------------------------------------
+
+/**
+ * One radical, and the course's characters that use it.
+ *
+ * Derived in Rust (`hanzi_core::Dataset::radicals`) rather than stored, because
+ * a character stores its radical and nothing groups characters by it.
+ *
+ * The radical is the **Kangxi head form** the characters are classified under
+ * (言, 人, 水). The combining shape a learner sees inside the character — 讠, 亻,
+ * 氵 — is the same radical written differently, which is what makes a family
+ * worth showing together. The meaning is that radical character's own
+ * definition, so this screen and the character page cannot disagree.
+ */
+export interface RadicalGroup {
+  /** The radical, in the Kangxi form the characters are classified under. */
+  radical: string;
+  /** The radical's own reading(s), most common first. Empty when unknown. */
+  pinyin: string[];
+  /** What the radical means. Empty when the dataset cannot describe it. */
+  meaning: string;
+  /** The radical's own stroke count, or 0 when unknown. */
+  strokeCount: number;
+  /** The radical's etymology hint, when Make Me a Hanzi has one. */
+  etymology: string;
+  /**
+   * The course's characters that use it, most common first. Never empty — a
+   * group exists because a character named it — and the length is the count the
+   * index shows.
+   */
+  characters: string[];
 }
 
 // ---- the word dictionary --------------------------------------------------

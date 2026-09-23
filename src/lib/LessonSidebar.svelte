@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Navigation for the seven screens.
+   * Navigation for the eight screens.
    *
    * Course: the built-in frequency-ordered lessons, one lesson open at a time,
    * with how much of each has been practised and what is due for review.
@@ -8,6 +8,8 @@
    * Words: the HSK dictionary, filtered by level.
    * Characters: the character set, looked up by character, reading or meaning,
    * filtered by HSK level — the way out of the course's linear order.
+   * Radicals: the parts the characters are built from, each with its meaning and
+   * the characters that share it — the grouping that makes a character make sense.
    * Phrases: graded phrases with bundled pronunciation, for listening and
    * repetition practice.
    * Settings: the learner's own preferences.
@@ -28,12 +30,20 @@
       | "vocabulary"
       | "words"
       | "characters"
+      | "radicals"
       | "tones"
       | "phrases"
       | "settings"
       | "about";
     onSwitchView: (
-      view: "course" | "vocabulary" | "words" | "characters" | "tones" | "phrases",
+      view:
+        | "course"
+        | "vocabulary"
+        | "words"
+        | "characters"
+        | "radicals"
+        | "tones"
+        | "phrases",
     ) => void;
     lessons: Lesson[];
     activeLesson: number;
@@ -192,6 +202,8 @@
         {wordsTotal.toLocaleString()} HSK words
       {:else if view === "characters"}
         {charactersTotal.toLocaleString()} characters
+      {:else if view === "radicals"}
+        the parts the characters are built from
       {:else if view === "tones"}
         one syllable, one character per tone
       {:else if view === "settings"}
@@ -216,6 +228,9 @@
     </button>
     <button class:on={view === "characters"} onclick={() => onSwitchView("characters")}>
       Characters
+    </button>
+    <button class:on={view === "radicals"} onclick={() => onSwitchView("radicals")}>
+      Radicals
     </button>
     <button class:on={view === "tones"} onclick={() => onSwitchView("tones")}>
       Tones
@@ -416,7 +431,7 @@
     color: var(--muted);
   }
 
-  /* Two columns rather than one row: seven screens on one line leave each button
+  /* Two columns rather than one row: eight screens on one line leave each button
      too narrow for its own label, so the labels wrap inside them ("My list" on two
      lines) and the row is clipped rather than scrolled. A grid keeps every label on
      one line and the box a fixed height — which is also what a phone's sheet, where

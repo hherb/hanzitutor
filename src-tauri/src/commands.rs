@@ -6,8 +6,9 @@
 
 use hanzi_core::{
     build_lessons, grade_with_outlines, tone::ToneAttempt, AttemptMeasures, BoardSize, Character,
-    CursorView, GradeOptions, GradeReport, Grade, Heard, Lesson, Pace, Point, ProgressView,
-    ReviewView, SettingsView, TextLookup, ToneSet, ToneVerdict, ToneTarget, VocabView, Word,
+    CursorView, Dataset, Decomposition, GradeOptions, GradeReport, Grade, Heard, Lesson, Pace,
+    Point, ProgressView, RadicalGroup, ReviewView, SettingsView, TextLookup, ToneSet, ToneVerdict,
+    ToneTarget, VocabView, Word,
 };
 use serde::Serialize;
 use std::sync::{Arc, MutexGuard};
@@ -101,10 +102,20 @@ pub struct CharacterSummary {
     pub stroke_count: u8,
     /// Kangxi radical, or `'\0'` when unknown.
     pub radical: char,
+    /// What that radical means, from the dataset's own entry for the glyph, or
+    /// `""` when the dataset cannot describe it. Sent beside the glyph so the
+    /// character page can say `radical 言 — words, speech` without a second call,
+    /// and so it cannot disagree with what the Radicals screen shows.
+    pub radical_meaning: String,
     /// Every reading the dataset knows, most common first.
     pub pinyin: Vec<String>,
     pub definition: String,
     pub etymology: String,
+    /// What the character is built from: the parts, in reading order, and how
+    /// they are arranged. Derived from the stored IDS string by
+    /// [`hanzi_core::decompose`], with each part already marked as drawable — so
+    /// the screen never needs a second list of what the board can write.
+    pub components: Decomposition,
     /// True when the character is in the course's frequency order, so it can be
     /// found by browsing and shown in a lesson. A character can be found by
     /// search and still be false here, which the panel says rather than hiding.
@@ -123,16 +134,27 @@ pub struct CharacterSearchView {
 
 impl CharacterSummary {
     /// Trim a character down to what a search result shows.
-    fn of(character: &Character) -> Self {
+    ///
+    /// `dataset` is here for one field: the radical's meaning is the radical
+    /// character's own definition, so it has to be looked up rather than
+    /// re-stated. Passing the dataset keeps that a single source of truth.
+    fn of(dataset: &Dataset, character: &Character) -> Self {
         Self {
             ch: character.ch,
             rank: character.rank,
             hsk: character.hsk,
             stroke_count: character.stroke_count,
             radical: character.radical,
+            radical_meaning: dataset
+                .get(character.radical)
+                .map(|radical| radical.definition.clone())
+                .unwrap_or_default(),
             pinyin: character.pinyin.clone(),
             definition: character.definition.clone(),
             etymology: character.etymology.clone(),
+            components: dataset
+                .decomposition(character.ch)
+                .unwrap_or_default(),
             in_course: character.is_teachable(),
         }
     }
@@ -194,7 +216,7 @@ impl AppState {
                 .dataset
                 .search_characters(query, level, limit)
                 .into_iter()
-                .map(CharacterSummary::of)
+                .map(|character| CharacterSummary::of(&self.dataset, character))
                 .collect(),
             total: self.dataset.count_characters(query, level),
         }
@@ -213,6 +235,15 @@ impl AppState {
     /// list is what comes back, capped at [`TONE_SET_PAGE`] on the command.
     pub fn tone_sets(&self, limit: usize) -> Vec<ToneSet> {
         self.dataset.tone_sets(limit)
+    }
+
+    /// The radicals the course uses, most productive first, each with the
+    /// characters that share it.
+    ///
+    /// Derived on each call rather than stored — see
+    /// [`hanzi_core::Dataset::radicals`], which is where the rules live.
+    pub fn radicals(&self) -> Vec<RadicalGroup> {
+        self.dataset.radicals()
     }
 
     /// Everything needed to display and practise one character: stroke outlines
@@ -326,6 +357,19 @@ pub fn search_characters(
 pub fn tone_sets(state: State<'_, AppState>, limit: Option<usize>) -> Vec<ToneSet> {
     let limit = limit.unwrap_or(TONE_SET_PAGE).clamp(1, TONE_SET_PAGE);
     state.tone_sets(limit)
+}
+
+// ---- radicals ---------------------------------------------------------------
+
+/// Every radical the course uses, with its meaning and its characters.
+///
+/// The whole derived list in one call — a couple of hundred families, the way
+/// `tone_sets` sends every set — because the screen filters what it holds rather
+/// than asking again for each filter, and the index and a family's members have
+/// to come from the same derivation to agree.
+#[tauri::command]
+pub fn radicals(state: State<'_, AppState>) -> Vec<RadicalGroup> {
+    state.radicals()
 }
 
 #[tauri::command]

@@ -74,6 +74,7 @@ mod tests {
             pinyin: vec![],
             definition: String::new(),
             etymology: String::new(),
+            decomposition: String::new(),
             outlines: vec!["M 0 0 L 1 1 Z".into()],
             medians: vec![vec![Point::new(0.0, 0.0), Point::new(1.0, 1.0)]],
         }

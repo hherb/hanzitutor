@@ -14,6 +14,7 @@
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
   import PhrasesPanel from "./lib/PhrasesPanel.svelte";
+  import RadicalsPanel from "./lib/RadicalsPanel.svelte";
   import SettingsPanel from "./lib/SettingsPanel.svelte";
   import ShortcutCard from "./lib/ShortcutCard.svelte";
   import StartupWizard from "./lib/StartupWizard.svelte";
@@ -41,6 +42,7 @@
     Point,
     PracticeItem,
     ProgressView,
+    RadicalGroup,
     ReviewView,
     SettingsPatch,
     SettingsView,
@@ -59,18 +61,26 @@
   } from "./lib/types";
 
   type Mode = "trace" | "recall";
-  /** Which of the seven top-level screens is showing. */
+  /** Which of the eight top-level screens is showing. */
   type View =
     | "course"
     | "vocabulary"
     | "words"
     | "characters"
+    | "radicals"
     | "tones"
     | "phrases"
     | "settings"
     | "about";
   /** Where the current practice session draws its characters from. */
-  type Source = "course" | "vocabulary" | "review" | "words" | "characters" | "tones";
+  type Source =
+    | "course"
+    | "vocabulary"
+    | "review"
+    | "words"
+    | "characters"
+    | "radicals"
+    | "tones";
 
   /** One character's worth of a multi-character entry: what was drawn, and the
    * grade it got. `report` is null when the character is still to be written. */
@@ -518,6 +528,16 @@
   let characterQuery = $state("");
   /** A note from the characters screen, e.g. what was just added to the list. */
   let characterMessage = $state<string | null>(null);
+
+  // ---- radicals -------------------------------------------------------------
+  /**
+   * The radical whose family page the radicals screen has open.
+   *
+   * Held here rather than in the panel so the character screen's "Family" button
+   * can open a family and land on it: the same glyph is the selection on both
+   * screens, so there is one answer to "which radical am I looking at".
+   */
+  let radicalSelection = $state<string | null>(null);
   /**
    * Every character the board can draw.
    *
@@ -738,6 +758,7 @@
       !(view === "vocabulary" && source !== "vocabulary") &&
       !(view === "words" && source !== "words") &&
       !(view === "characters" && source !== "characters") &&
+      !(view === "radicals" && source !== "radicals") &&
       !(view === "tones" && source !== "tones") &&
       view !== "phrases" &&
       view !== "settings" &&
@@ -2286,6 +2307,19 @@
     void api.log(`practising ${characters.length} searched characters`);
   }
 
+  /**
+   * Write one component of a character on the board.
+   *
+   * A component that is itself a character — 兑 in 说, 早 in 草 — is a thing to
+   * learn to write, and the character page offers exactly the ones the dataset
+   * can draw. It goes to the board as a single character with no reading or
+   * meaning attached, so the board fills both from the character's own entry.
+   */
+  function practiseComponent(ch: string) {
+    startPractice([{ text: ch, entryId: null, pinyin: "", meaning: "" }], "characters");
+    void api.log(`practising the component ${ch}`);
+  }
+
   /** Put a looked-up character in the personal list, reading and meaning filled in. */
   function addCharacterToList(character: CharacterSummary) {
     const group = vocabSelection && vocabSelection !== "" ? vocabSelection : null;
@@ -2350,6 +2384,45 @@
   /** The whole derived list of tone sets; the panel filters what it holds. */
   function loadToneSets(): Promise<ToneSet[]> {
     return api.toneSets();
+  }
+
+  // ---- radicals ------------------------------------------------------------
+
+  /**
+   * Drill a radical family: the radical itself, or the characters that use it.
+   *
+   * The characters go to the board as single characters with no reading or
+   * meaning attached, so the board shows each one's own from the dataset — the
+   * same path the course and the character screen use. This is the fifth source
+   * of practice, and it adds nothing to the board: `startPractice` and
+   * `targetChar` already decide everything about what is asked for.
+   */
+  function practiseRadicals(characters: string[]) {
+    if (characters.length === 0) return;
+    startPractice(
+      characters.map((ch) => ({ text: ch, entryId: null, pinyin: "", meaning: "" })),
+      "radicals",
+    );
+    void api.log(`practising ${characters.length} characters of a radical family`);
+  }
+
+  /** The whole derived list of radical families; the panel filters what it holds. */
+  function loadRadicals(): Promise<RadicalGroup[]> {
+    return api.radicals();
+  }
+
+  /**
+   * Open a radical's family from the character page.
+   *
+   * The selection is shared with the radicals screen rather than passed to it, so
+   * arriving from a character and clicking a row there is the same state.
+   */
+  function showRadicalFamily(radical: string) {
+    radicalSelection = radical;
+    leavePractice();
+    view = "radicals";
+    statusMessage = null;
+    characterMessage = null;
   }
 
   /** Return to the course sequence. */
@@ -2487,9 +2560,11 @@
         ? "words"
         : source === "characters"
           ? "characters"
-          : source === "tones"
-            ? "tones"
-            : "vocabulary";
+          : source === "radicals"
+            ? "radicals"
+            : source === "tones"
+              ? "tones"
+              : "vocabulary";
     leavePractice();
     view = target;
     statusMessage = null;
@@ -2693,6 +2768,14 @@
         onPractiseWords={practiseWords}
         onAddToList={addCharacterToList}
         onShowInCourse={showCharacterInCourse}
+        onShowRadical={showRadicalFamily}
+        onPractisePart={practiseComponent}
+      />
+    {:else if view === "radicals" && source !== "radicals"}
+      <RadicalsPanel
+        load={loadRadicals}
+        onPractise={practiseRadicals}
+        bind:selected={radicalSelection}
       />
     {:else if view === "tones" && source !== "tones"}
       <TonePairsPanel load={loadToneSets} {voice} onPractise={practiseToneSet} />

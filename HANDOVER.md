@@ -243,6 +243,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Progress and SRS (M2) | Done — SM-2 behind a `Scheduler` trait; the review queue is drawn from the course and the list together |
 | Words (M3) | Done — search by character, reading or meaning; a word is read and spoken whole (着急 is `zháojí` where the isolated 着 has no context) |
 | Characters (lookup, §6b) | Done — the whole character set searched by character, reading, meaning, or a word typed as characters or pinyin; a per-character page with its facts, its progress and every HSK word using it; level filter with an "Outside HSK" row |
+| Radicals and components (M15, §6d) | Done — a Radicals screen over the derived families, each radical's meaning and the characters that share it, the radical and its family writable on the board, and every character's decomposition (说 = 讠 + 兑) with each writable part tappable |
 | Settings screen | Done — four preferences; an unchosen one is resolved from the device or the system |
 | The startup reading: the introduction, and what's new | Done — a first run is shown four pages of introduction, an install that has run before is shown the notes for the running version; each read once **per device** (a `settings` row), both replayable from the settings screen, and the board's keys are dead while either is up (§4, invariant 31) |
 | Durable study store (M10) | Done — one `hanzi.db`; the old JSON imported once and left byte-identical; an unbounded attempt log |
@@ -308,7 +309,9 @@ crates/hanzi-core/          grading engine. No Tauri, no UI, no platform code.
   src/raster.rs             stroke ink: scanline fill, pen bands, amount/coverage
   src/grade.rs              Hungarian pairing, order analysis, verdicts, scoring
   src/dataset.rs            Character + Word models, character and word search,
-                            artifact loading
+                            artifact loading, and the derived radical families
+  src/decompose.rs          an IDS string -> the parts a character is built from,
+                            and how they are arranged (§6d)
   src/curriculum.rs         frequency list -> lessons
   src/vocab.rs              the personal vocabulary list, and VocabSink
   src/settings.rs           Settings, Pace, BoardSize, SettingsSink, and the
@@ -394,6 +397,8 @@ src/
   lib/WordsPanel.svelte     the HSK word list: search, browse, practise
   lib/CharacterPanel.svelte the character set: search, a character's own page
                             (meaning, readings, facts, the words using it), practise
+  lib/RadicalsPanel.svelte  the radicals: meaning, and the characters that share one
+                            (§6d)
   lib/ShortcutCard.svelte   the board's keys, in a corner rather than over it (§6c)
   lib/shortcuts.ts          the keys as data — read by that card and by the handler
   lib/due.ts                due dates in words, shared by the board and that page
@@ -602,12 +607,14 @@ after each item) both do this now. The shape is the rule, not either file.
     for the same reason. There are tests for all three.
 
 16. **The artifact is versioned by its magic, and the magic must move with the
-    payload.** `ARTIFACT_MAGIC` is `HANZID02` since M3 added the word list; `01`
-    carried a bare `Vec<Character>`. `postcard` is not self-describing, so
+    payload.** `ARTIFACT_MAGIC` is `HANZID03` since M15 added each character's
+    decomposition; `02` added the word list, and `01` carried a bare
+    `Vec<Character>`. `postcard` is not self-describing, so
     decoding an old payload with the new struct would produce plausible nonsense
     rather than an error. Anything that changes the payload shape — adding a
     field to `Character` or `Word`, or adding a third list — must bump the magic
-    and regenerate. There is a test that feeds the old `HANZID01` bytes in and
+    and regenerate (`pnpm run prepare-data`; the artifact is committed). There is
+    a test that feeds the old `HANZID01` bytes in and
     requires a loud failure.
 
 17. **The word dictionary holds multi-character words only.** A single character
@@ -2083,6 +2090,88 @@ startup sheet** (invariant 31 — a covering sheet owns Escape and nothing behin
 is live), **then Escape closes this card**, and only then the shortcuts
 themselves.
 
+
+## 6d. Radical families, and why they needed no data change
+
+The **Radicals** screen (`src/lib/RadicalsPanel.svelte`) is the first thing here
+that teaches structure rather than characters: the radicals the course uses, what
+each one means, and every character that shares it. Seven things about it are
+decisions.
+
+- **It is derived, not stored — and that was checked before it was built.** The
+  question was whether the artifact had to change, and the answer is no: a
+  character already carries `radical`, and — verified against the raw data —
+  **all 214 radicals the frequency list uses have a definition in Make Me a Hanzi
+  and stroke geometry in `graphics.txt`**. So a family can be built, explained
+  and *written on the board* from what already ships. This is why the whole
+  feature is a new screen rather than an `ARTIFACT_MAGIC` bump; the decomposition
+  half of the same roadmap item does need one, and is deliberately a separate
+  step.
+- **`Dataset::radicals` is the one derivation**, beside `tone_sets`, for the same
+  reason: it is a grouping of data the dataset holds one character at a time, it
+  is testable without a window, and one answer serves every screen. The command
+  returns the whole list the way `tone_sets` does — a couple of hundred families
+  — so the index and a family's members come from the same call and cannot
+  disagree.
+- **A radical's meaning is the radical character's own definition.** `言` is a
+  character in the dataset, so its family carries `"words, speech; speak, say"`
+  rather than a hand-written table of 214 glosses that could drift from the
+  character page. A radical the dataset cannot describe keeps an **empty**
+  meaning, not an invention. The same lookup is what `CharacterSummary` now sends
+  as `radicalMeaning`.
+- **The Kangxi head form is the radical; the shape in the character is a
+  combining form of it.** The stored radical for 说 is 言 because that is what
+  the frequency list classifies it under, while the learner sees 讠. That
+  difference is the lesson: a family is a list of characters that look different
+  and belong together. Two thirds of the radicals differ this way (他/亻, 这/辶,
+  河/氵, 说/讠), which is exactly why the grouping is worth showing.
+- **Only the course's characters are in a family** (`is_teachable`), the same
+  rule the tone sets use: a family is something to drill, and a character in no
+  lesson has no place in the course behind it.
+- **Families are ranked by how many characters they unlock**, then by the most
+  common member's rank, then by codepoint. The count is the reason to learn a
+  radical at all, so it is the sort key the screen shows; the tie-breaks keep the
+  order fixed and put the more useful radical first.
+- **Practice is the fifth source, and it forks nothing.** The board already
+  decides everything from `targetChar` (invariant 10), so a family drill is
+  `startPractice` with `Source = "radicals"` and single characters carrying no
+  reading or meaning — the board fills those from the dataset, exactly as the
+  course and the character screen do. The panel owns no IPC: the list is injected
+  through a `load` prop the way the tone screen's is.
+
+The selection is `radicalSelection` in `App.svelte` rather than state inside the
+panel, so the character page's **Radical family** button opens a family and the
+row you click there are the same selection. `CharacterPanel` gained only that
+button and the gloss beside the glyph; it still does not know the screen exists.
+
+**Decomposition is the second half, and it did need a data change.** Make Me a
+Hanzi's `decomposition` — an IDS string such as `⿰讠兑` for 说 — lives in
+`data/raw/dictionary.txt` and was not in the artifact, so `Character` gained a
+`decomposition` field, `ARTIFACT_MAGIC` moved to `HANZID03` (invariant 16) and
+`pnpm run prepare-data` regenerated `hanzi.bin.gz` (9,508 of 9,574 characters
+carry one). `crates/hanzi-core/src/decompose.rs` reads it; the module docs carry
+the grammar, and these four things are the decisions:
+
+- **The parts are flattened, and the arrangement is named in words.** A nested
+  sequence is read in order, so 言 (`⿱亠⿱二口`) comes back as 亠, 二, 口 and the
+  outermost operator says `"above and below"`. Drawing the arrangement as a
+  picture would be a worse rendering of what the board already draws.
+- **A component that is itself a character is not taken apart again.** 草 is 艹
+  and 早, never 艹, 日, 十: the source decomposes one level, and 早 is the glyph the
+  learner is being shown.
+- **An unnamed part is kept as a gap.** `？` becomes a part with `ch: null`, not a
+  dropped one — without it, `"above and below"` would be describing a character
+  that is not what is on screen.
+- **Drawability is the dataset's answer, passed in.** `parse` takes a predicate,
+  so `Dataset::decomposition` is the only place that decides whether a part can be
+  written, and the interface never holds a second list. A part the board cannot
+  draw is still shown; it is just not a button.
+
+The derived form crosses the wire as `CharacterSummary.components` — the raw
+string, the arrangement and the parts — while `Character.decomposition` stays the
+stored string. Both are tested against the real artifact in
+`tests/ipc_contract.rs`: 说 is 讠 + 兑, 草 is 艹 + 早, 言 is 亠 + 二 + 口, and every
+part's `drawable` flag is checked against the character's own stroke geometry.
 
 ## 7. Open decisions
 

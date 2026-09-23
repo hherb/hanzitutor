@@ -49,6 +49,9 @@ struct DictionaryLine {
     pinyin: Vec<String>,
     #[serde(default)]
     radical: String,
+    /// The IDS string that says what the character is built from, e.g. `⿰讠兑`.
+    #[serde(default)]
+    decomposition: String,
     #[serde(default)]
     etymology: Option<Etymology>,
 }
@@ -110,6 +113,7 @@ struct Lexical {
     pinyin: Vec<String>,
     definition: String,
     etymology: String,
+    decomposition: String,
 }
 
 fn main() -> ExitCode {
@@ -176,6 +180,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             entry.etymology = etymology.hint.trim().to_string();
         }
         entry.radical = single_char(&row.radical).unwrap_or('\0');
+        // `？` is Make Me a Hanzi's "cannot say", not a decomposition. Storing it
+        // would make every screen test for it; storing nothing says the same
+        // thing once, here.
+        entry.decomposition = match row.decomposition.trim() {
+            "" | "？" => String::new(),
+            found => found.to_string(),
+        };
         dict_lines += 1;
     }
 
@@ -254,6 +265,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             pinyin: lex.pinyin,
             definition: lex.definition,
             etymology: lex.etymology,
+            decomposition: lex.decomposition,
             outlines: row.strokes,
             medians,
         });
@@ -275,6 +287,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let character_count = characters.len();
     let ranked = characters.iter().filter(|c| c.rank > 0).count();
     let with_etymology = characters.iter().filter(|c| !c.etymology.is_empty()).count();
+    let with_decomposition = characters
+        .iter()
+        .filter(|c| !c.decomposition.is_empty())
+        .count();
     let with_pinyin = characters.iter().filter(|c| !c.pinyin.is_empty()).count();
     let avg_strokes = characters.iter().map(|c| c.medians.len()).sum::<usize>() as f64
         / characters.len().max(1) as f64;
@@ -313,6 +329,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("  characters            {character_count}");
     println!("  with pinyin           {with_pinyin}");
     println!("  with etymology        {with_etymology}");
+    println!("  with decomposition    {with_decomposition}");
     println!("  ranked / teachable    {ranked}");
     println!("  average strokes       {avg_strokes:.1}");
     println!("  words                 {word_count} ({words_with_meaning} with a definition)");

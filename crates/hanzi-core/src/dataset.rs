@@ -23,13 +23,16 @@ use std::io::Read;
 
 use serde::{Deserialize, Serialize};
 
+use crate::decompose::Decomposition;
 use crate::geom::Point;
 
 /// Magic bytes and format version at the head of an uncompressed artifact.
 ///
-/// `02` added the word list. A stale artifact fails loudly on the magic rather
-/// than decoding into nonsense, because `postcard` is not self-describing.
-pub const ARTIFACT_MAGIC: &[u8; 8] = b"HANZID02";
+/// `02` added the word list. `03` added each character's decomposition — the IDS
+/// string that says what a character is built from. A stale artifact fails loudly
+/// on the magic rather than decoding into nonsense, because `postcard` is not
+/// self-describing.
+pub const ARTIFACT_MAGIC: &[u8; 8] = b"HANZID03";
 
 /// One character, with everything needed both to display it and to grade a
 /// handwritten attempt at it.
@@ -50,6 +53,13 @@ pub struct Character {
     pub definition: String,
     /// Short mnemonic hint, when one exists.
     pub etymology: String,
+    /// Make Me a Hanzi's decomposition as an IDS string, e.g. `⿰讠兑` for 说:
+    /// a layout operator followed by the parts it arranges. Empty when the
+    /// source has none, and `？` stands where it could not name a part.
+    ///
+    /// It is stored raw and read by [`crate::decompose::parse`], which is what
+    /// turns it into parts a screen can draw.
+    pub decomposition: String,
     /// SVG path data in **font space**, one entry per stroke, in stroke order.
     /// Render within `scale(1, -1) translate(0, -900)` over a 1024x1024 box.
     pub outlines: Vec<String>,
@@ -707,6 +717,105 @@ impl Dataset {
         sets
     }
 
+    // ---- radicals -----------------------------------------------------------
+
+    /// One group per radical: the radical's own meaning, and the course's
+    /// characters that use it.
+    ///
+    /// The grouping is **derived**, because a character stores its radical and
+    /// nothing groups characters by it. Deriving it here rather than in the
+    /// interface is the same choice [`Self::tone_sets`] makes: it is one answer
+    /// for every screen that wants it, and it is testable without a window.
+    ///
+    /// Five rules, each a decision:
+    ///
+    /// * **The course's characters only** ([`Character::is_teachable`]). A family
+    ///   is something to drill, and a character in no lesson can be neither
+    ///   browsed nor drilled with the course behind it.
+    /// * **The radical's own entry is the source of its meaning.** `言` is a
+    ///   character in the dataset with the definition `"words, speech; to speak,
+    ///   to say"`, so a group carries that rather than a second hand-written
+    ///   table that could disagree with the character page. A radical the
+    ///   dataset cannot describe keeps an empty meaning instead of an invention.
+    /// * **The stored radical is the Kangxi head form** (`言`, `人`, `水`), which
+    ///   is what dictionaries classify under. The combining form a learner sees
+    ///   in the character — `讠`, `亻`, `氵` — is a *shape* of the same radical,
+    ///   which is exactly what makes a family worth showing together.
+    /// * **Members stay in course order**, so a family reads most-common-first
+    ///   like every other list in the app.
+    /// * **Families are ranked by how many characters they unlock**, most first,
+    ///   because that is the reason to learn a radical at all. Equal counts are
+    ///   broken by the family's most common member, so the more useful radical
+    ///   comes first, and then by codepoint so the order is fixed.
+    pub fn radicals(&self) -> Vec<RadicalGroup> {
+        // A `BTreeMap` so the families start in one fixed order and the sort
+        // below is the only thing that decides the order that is returned.
+        let mut members: BTreeMap<char, Vec<char>> = BTreeMap::new();
+        for character in self.ranked() {
+            if character.radical == '\0' {
+                continue;
+            }
+            members
+                .entry(character.radical)
+                .or_default()
+                .push(character.ch);
+        }
+
+        // `best_rank` orders the families and is not part of one: it is the rank
+        // of the family's most common member, which `ranked()` guarantees is the
+        // first. Kept beside the group rather than on it so the wire format does
+        // not carry an ordering key the screen has no use for.
+        let mut ordered: Vec<(u32, RadicalGroup)> = members
+            .into_iter()
+            .map(|(radical, characters)| {
+                let best_rank = characters
+                    .first()
+                    .and_then(|ch| self.get(*ch))
+                    .map(|c| rank_key(c.rank))
+                    .unwrap_or(u32::MAX);
+                // The radical's own entry, which is the same entry the character
+                // page shows for the glyph on its own.
+                let own = self.get(radical);
+                let group = RadicalGroup {
+                    radical,
+                    pinyin: own.map(|c| c.pinyin.clone()).unwrap_or_default(),
+                    meaning: own.map(|c| c.definition.clone()).unwrap_or_default(),
+                    stroke_count: own.map(|c| c.stroke_count).unwrap_or(0),
+                    etymology: own.map(|c| c.etymology.clone()).unwrap_or_default(),
+                    characters,
+                };
+                (best_rank, group)
+            })
+            .collect();
+
+        ordered.sort_by(|(a_rank, a), (b_rank, b)| {
+            b.characters
+                .len()
+                .cmp(&a.characters.len())
+                .then_with(|| a_rank.cmp(b_rank))
+                .then_with(|| a.radical.cmp(&b.radical))
+        });
+        ordered.into_iter().map(|(_, group)| group).collect()
+    }
+
+    // ---- decomposition ------------------------------------------------------
+
+    /// What a character is built from, or `None` when it is not in the dataset.
+    ///
+    /// The parsing lives in [`crate::decompose`]; this is the one place it is
+    /// given the dataset's answer to "can the board write this part", so the
+    /// interface never has to hold a second list of what is drawable.
+    ///
+    /// A character with no decomposition still comes back, with no parts: "this
+    /// character is not a composition" is an answer, and a different one from
+    /// "this character is not in the dataset at all".
+    pub fn decomposition(&self, ch: char) -> Option<Decomposition> {
+        let character = self.get(ch)?;
+        Some(crate::decompose::parse(&character.decomposition, |part| {
+            self.is_practisable(part)
+        }))
+    }
+
     /// What the dataset can tell about a piece of study text before the user
     /// edits it.
     ///
@@ -827,6 +936,34 @@ pub struct ToneSet {
     pub members: Vec<ToneSetMember>,
 }
 
+/// One radical, and the course's characters that use it.
+///
+/// Derived by [`Dataset::radicals`] rather than stored, because it is a grouping
+/// of data the dataset holds one character at a time. The radical is the Kangxi
+/// head form the character records (`言`, `人`, `水`); the meaning is that same
+/// character's own definition, so the family and the character page cannot
+/// disagree about what the glyph means.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RadicalGroup {
+    /// The radical, in the Kangxi form the characters are classified under.
+    pub radical: char,
+    /// The radical's own reading(s), most common first. Empty when the dataset
+    /// has no entry for the glyph on its own.
+    pub pinyin: Vec<String>,
+    /// What the radical means, e.g. `"words, speech; to speak, to say"` for 言.
+    /// Empty when the dataset cannot describe it, rather than invented.
+    pub meaning: String,
+    /// The radical's own stroke count, `0` when unknown. It is what the family
+    /// costs to learn before any character in it.
+    pub stroke_count: u8,
+    /// The radical's etymology hint, when Make Me a Hanzi has one.
+    pub etymology: String,
+    /// The course's characters that use it, most common first. Never empty: a
+    /// group exists because a character named it.
+    pub characters: Vec<char>,
+}
+
 /// Fold a reading for searching: drop tone marks and spacing, lowercase, and
 /// treat `v` and `ü` as the same letter so a learner can type `nv` for 女.
 ///
@@ -892,6 +1029,7 @@ mod tests {
             pinyin: vec!["yī".into()],
             definition: "test".into(),
             etymology: String::new(),
+            decomposition: String::new(),
             outlines: (0..strokes).map(|i| format!("M {i} 0 L {i} 100 Z")).collect(),
             medians: (0..strokes)
                 .map(|i| vec![Point::new(i as f32, 0.0), Point::new(i as f32, 100.0)])
@@ -1592,5 +1730,132 @@ mod tests {
             "the cap takes the best sets, not the first ones found"
         );
         assert_eq!(dataset.tone_sets(10).len(), 2);
+    }
+
+    /// A character classified under `radical`, which is the field the family
+    /// grouping reads. The radical itself needs an entry of its own to have a
+    /// meaning, so the fixtures below put one in the dataset.
+    fn under(ch: char, radical: char, definition: &str, rank: u32) -> Character {
+        Character {
+            radical,
+            ..lexeme(ch, &[], definition, 1, rank)
+        }
+    }
+
+    #[test]
+    fn characters_sharing_a_radical_become_one_family() {
+        // 言 with 说/话/请 under it, and 水 with 河/海. Two families, and the
+        // radical's meaning is the radical character's own definition.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('言', &["yán"], "words, speech", 0, 0),
+            lexeme('水', &["shuǐ"], "water, liquid", 0, 0),
+            under('说', '言', "to speak", 100),
+            under('话', '言', "speech", 200),
+            under('请', '言', "to invite", 300),
+            under('河', '水', "river", 400),
+            under('海', '水', "sea", 500),
+        ]);
+
+        let families = dataset.radicals();
+        assert_eq!(families.len(), 2, "one family per radical used");
+        // 言 has three members to 水's two, so it comes first.
+        assert_eq!(families[0].radical, '言');
+        assert_eq!(families[0].meaning, "words, speech");
+        assert_eq!(families[0].pinyin, vec!["yán".to_string()]);
+        assert_eq!(
+            families[0].characters,
+            vec!['说', '话', '请'],
+            "members stay in course order, most common first"
+        );
+        assert_eq!(families[1].radical, '水');
+        assert_eq!(families[1].meaning, "water, liquid");
+        assert_eq!(families[1].characters, vec!['河', '海']);
+    }
+
+    #[test]
+    fn a_family_is_ranked_by_how_many_characters_it_unlocks() {
+        // 人 unlocks three characters and 木 one, so 人 comes first however
+        // common its members are — the count is the point of the screen.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('人', &["rén"], "person", 0, 0),
+            lexeme('木', &["mù"], "tree", 0, 0),
+            under('他', '人', "he", 3),
+            under('你', '人', "you", 4),
+            under('们', '人', "plural", 5),
+            under('林', '木', "woods", 1),
+        ]);
+
+        let families = dataset.radicals();
+        assert_eq!(families[0].radical, '人');
+        assert_eq!(families[0].characters.len(), 3);
+        assert_eq!(families[1].radical, '木');
+    }
+
+    #[test]
+    fn families_with_the_same_size_lead_with_their_most_common_member() {
+        // Both families hold two characters; 口's best is rank 10 and 女's is
+        // rank 20, so 口 comes first however the radicals sort by codepoint.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('口', &["kǒu"], "mouth", 0, 0),
+            lexeme('女', &["nǚ"], "woman", 0, 0),
+            under('吃', '口', "to eat", 10),
+            under('唱', '口', "to sing", 11),
+            under('好', '女', "good", 20),
+            under('她', '女', "she", 21),
+        ]);
+
+        let radicals: Vec<char> = dataset.radicals().into_iter().map(|g| g.radical).collect();
+        assert_eq!(radicals, vec!['口', '女']);
+    }
+
+    #[test]
+    fn a_character_in_no_lesson_is_not_in_a_family() {
+        // ⺀ has a radical and no rank, so it is in no lesson and no drill.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('水', &["shuǐ"], "water", 0, 0),
+            under('河', '水', "river", 400),
+            under('⺀', '水', "ice", 0),
+        ]);
+
+        let families = dataset.radicals();
+        assert_eq!(families.len(), 1);
+        assert_eq!(families[0].characters, vec!['河']);
+    }
+
+    #[test]
+    fn a_radical_the_dataset_cannot_describe_keeps_an_empty_meaning() {
+        // The radical glyph itself need not be in the dataset. A family still
+        // exists — the characters name it — and it invents no meaning for it.
+        let dataset = Dataset::from_chars(vec![under('说', '言', "to speak", 100)]);
+
+        let families = dataset.radicals();
+        assert_eq!(families.len(), 1);
+        assert_eq!(families[0].radical, '言');
+        assert_eq!(families[0].meaning, "");
+        assert_eq!(families[0].pinyin, Vec::<String>::new());
+        assert_eq!(families[0].stroke_count, 0);
+    }
+
+    #[test]
+    fn a_character_with_no_radical_is_in_no_family() {
+        let mut nameless = under('口', '口', "mouth", 100);
+        nameless.radical = '\0';
+        let dataset = Dataset::from_chars(vec![nameless]);
+
+        assert!(dataset.radicals().is_empty());
+    }
+
+    #[test]
+    fn the_radical_carries_its_own_strokes_and_hint() {
+        // A radical is itself a character that can be written and explained, so
+        // the family carries that material rather than only the group.
+        let mut radical = lexeme('木', &["mù"], "tree; wood", 0, 0);
+        radical.stroke_count = 4;
+        radical.etymology = "A tree with branches and roots".into();
+        let dataset = Dataset::from_chars(vec![radical, under('林', '木', "woods", 100)]);
+
+        let family = &dataset.radicals()[0];
+        assert_eq!(family.stroke_count, 4);
+        assert_eq!(family.etymology, "A tree with branches and roots");
     }
 }

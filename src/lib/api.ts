@@ -18,6 +18,7 @@ import type {
   Point,
   MicrophoneStatus,
   ProgressView,
+  RadicalGroup,
   ReviewView,
   SettingsPatch,
   SayStatus,
@@ -121,6 +122,18 @@ export const searchCharacters = (query: string, level: number | null, limit?: nu
  */
 export const toneSets = (limit?: number) =>
   invoke<ToneSet[]>("tone_sets", { limit: limit ?? null });
+
+// ---- radicals -------------------------------------------------------------
+
+/**
+ * Every radical the course uses, most productive first, with its meaning and the
+ * characters that share it.
+ *
+ * The whole derived list in one call, the way the tone sets come — the index and
+ * a family's members have to come from the same derivation to agree, and the
+ * screen filters what it holds rather than asking again for each filter.
+ */
+export const radicals = () => invoke<RadicalGroup[]>("radicals");
 
 /**
  * Grade an attempt. `strokes` are in display space (0..=1024, y downwards), in

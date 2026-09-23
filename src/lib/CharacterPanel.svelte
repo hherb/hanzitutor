@@ -41,6 +41,22 @@
     onAddToList: (character: CharacterSummary) => void;
     /** Put the character on the board in the course it belongs to. */
     onShowInCourse: (ch: string) => void;
+    /**
+     * Open the radical's family on the radicals screen: every character that
+     * shares it, and what the radical means. The radical shown here is the
+     * Kangxi head form, and the shapes inside the characters are its combining
+     * forms — which is exactly what that screen draws out.
+     */
+    onShowRadical: (radical: string) => void;
+    /**
+     * Write one component of the shown character on the board.
+     *
+     * A component that is itself a character — 兑 in 说 — is worth writing on its
+     * own, which is how a character stops being a picture and becomes parts. The
+     * panel only offers this for parts the dataset can draw, which the backend
+     * has already marked.
+     */
+    onPractisePart: (ch: string) => void;
   }
 
   let {
@@ -55,6 +71,8 @@
     onPractiseWords,
     onAddToList,
     onShowInCourse,
+    onShowRadical,
+    onPractisePart,
   }: Props = $props();
 
   let characters = $state<CharacterSummary[]>([]);
@@ -278,7 +296,10 @@
           <ul class="facts">
             <li>{strokeLabel(shown)}</li>
             {#if shown.radical && shown.radical !== "\u0000"}
-              <li>radical <span lang="zh-Hans">{shown.radical}</span></li>
+              <li>
+                radical <span lang="zh-Hans">{shown.radical}</span>{#if shown.radicalMeaning}
+                  — {shown.radicalMeaning}{/if}
+              </li>
             {/if}
             {#if shown.hsk > 0}<li>HSK {shown.hsk}</li>{/if}
             {#if shown.rank > 0}<li>frequency #{shown.rank}</li>{/if}
@@ -296,11 +317,68 @@
             <p class="etymology">{shown.etymology}</p>
           {/if}
 
+          {#if shown.components.parts.length > 0}
+            <!-- What the character is built from. The parts are drawn rather
+                 than described, and each one the board can write is a button:
+                 writing 兑 on its own is how 说 stops being a picture. The
+                 arrangement comes from the outermost IDS operator, and the raw
+                 string is the source, so it is in the title rather than lost. -->
+            <div
+              class="components"
+              title="Make Me a Hanzi decomposition: {shown.components.raw}"
+            >
+              <p class="components-title">
+                Built from
+                {#if shown.components.layout}
+                  <span class="components-layout">({shown.components.layout})</span>
+                {/if}
+              </p>
+              <ul class="parts">
+                {#each shown.components.parts as part, index (index)}
+                  <li>
+                    {#if part.ch && part.drawable}
+                      <button
+                        class="part"
+                        lang="zh-Hans"
+                        onclick={() => onPractisePart(part.ch!)}
+                        disabled={busy}
+                        title="Write {part.ch} on the board"
+                      >
+                        {part.ch}
+                      </button>
+                    {:else if part.ch}
+                      <span
+                        class="part fixed"
+                        lang="zh-Hans"
+                        title="The board has no strokes for this part, so it cannot be written on its own"
+                      >
+                        {part.ch}
+                      </span>
+                    {:else}
+                      <span class="part unknown" title="Make Me a Hanzi could not name this part"
+                        >?</span
+                      >
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
+
           <div class="actions">
             <button class="primary" onclick={() => onPractise(shown)} disabled={busy}>
               Practise
             </button>
             <button onclick={() => onAddToList(shown)} disabled={busy}>+ List</button>
+            {#if shown.radical && shown.radical !== "\u0000"}
+              <button
+                onclick={() => onShowRadical(shown.radical)}
+                disabled={busy}
+                title="Every character that shares this radical, and what it means"
+              >
+                Radical family
+              </button>
+            {/if}
             {#if shown.inCourse}
               <button
                 onclick={() => onShowInCourse(shown.ch)}
@@ -623,6 +701,58 @@
     font-size: 0.78rem;
     line-height: 1.5;
     color: var(--muted-strong);
+  }
+
+  /* What the character is built from: the parts, in reading order, each one
+     writable when the board has strokes for it. */
+  .components {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .components-title {
+    margin: 0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--muted-strong);
+  }
+  .components-layout {
+    font-weight: 400;
+    color: var(--muted);
+  }
+  .parts {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+  }
+  .parts li {
+    display: flex;
+  }
+  .part {
+    width: 2.3rem;
+    height: 2.3rem;
+    padding: 0;
+    font-family: var(--hanzi-font);
+    font-size: 1.25rem;
+    line-height: 1;
+    text-align: center;
+  }
+  .part.fixed,
+  .part.unknown {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    color: var(--muted);
+    cursor: default;
+  }
+  .part.unknown {
+    font-family: inherit;
   }
 
   .actions {

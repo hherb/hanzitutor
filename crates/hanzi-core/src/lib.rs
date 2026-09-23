@@ -31,6 +31,7 @@
 
 pub mod curriculum;
 pub mod dataset;
+pub mod decompose;
 pub mod geom;
 pub mod grade;
 pub mod pinyin;
@@ -42,8 +43,10 @@ pub mod tone;
 pub mod vocab;
 
 pub use curriculum::{build_lessons, lesson_at, Lesson};
+pub use decompose::{Component, Decomposition};
 pub use dataset::{
-    Artifact, Character, CharacterHint, Dataset, TextLookup, ToneSet, ToneSetMember, Word,
+    Artifact, Character, CharacterHint, Dataset, RadicalGroup, TextLookup, ToneSet, ToneSetMember,
+    Word,
 };
 pub use geom::Point;
 pub use pinyin::{
