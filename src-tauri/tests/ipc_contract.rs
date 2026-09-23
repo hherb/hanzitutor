@@ -2881,6 +2881,53 @@ fn a_stale_vocabulary_list_tombstones_what_a_sync_brought() {
 }
 
 #[test]
+fn no_file_command_takes_a_path_from_the_webview() {
+    // The commands that write a file used to take `path: String` from the
+    // frontend and hand it to `std::fs`, which made them "write anywhere the
+    // process can write" primitives — including over the study database. They
+    // now open the dialog themselves, so the only path written to is one the
+    // learner chose in a native dialog.
+    //
+    // That is a property of the *signatures*, and a signature is not something a
+    // behavioural test can see: a future command could reintroduce a `path` and
+    // every other test here would still pass. So the source is read, the
+    // commands that exist are found by their attribute, and the ones that touch
+    // files are required to take no path.
+    let source = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands.rs"),
+    )
+    .expect("commands.rs is part of the crate");
+
+    let signatures: Vec<&str> = source
+        .split("#[tauri::command]")
+        .skip(1)
+        .filter_map(|block| {
+            // The signature is what follows the attributes, up to the body.
+            let after_attrs = block.split("\npub ").nth(1)?;
+            after_attrs.split('{').next()
+        })
+        .collect();
+    assert!(
+        signatures.len() > 40,
+        "found only {} commands; the parse is wrong, not the code",
+        signatures.len()
+    );
+
+    // The three that write or read a file. Each must name the dialog rather than
+    // a parameter, and must take no `path`-shaped argument.
+    for name in ["vocab_export", "vocab_import", "export_practice_log"] {
+        let signature = signatures
+            .iter()
+            .find(|s| s.contains(&format!("fn {name}(")))
+            .unwrap_or_else(|| panic!("{name} should still be a command"));
+        assert!(
+            !signature.contains("path"),
+            "{name} takes a path from the webview again: {signature}"
+        );
+    }
+}
+
+#[test]
 fn the_practice_log_exports_every_attempt_with_its_measures() {
     // The end of the tuning chain: what a learner wrote leaves the database as a
     // file. The measures have to be in it, because they are the reason the log is
@@ -2912,7 +2959,7 @@ fn the_practice_log_exports_every_attempt_with_its_measures() {
     }
 
     let message = state
-        .export_practice_log(export.to_str().unwrap(), "jsonl")
+        .export_practice_log(&export, "jsonl")
         .expect("exporting should work");
     assert!(message.contains("2 attempts"), "{message}");
     assert!(message.contains("1 with grading measures"), "{message}");
@@ -2944,7 +2991,7 @@ fn the_practice_log_exports_every_attempt_with_its_measures() {
     // The same rows in the other shape: a header and one line per attempt.
     let csv = dir.join("log.csv");
     state
-        .export_practice_log(csv.to_str().unwrap(), "csv")
+        .export_practice_log(&csv, "csv")
         .expect("the CSV export should work too");
     let written = std::fs::read_to_string(&csv).unwrap();
     let lines: Vec<&str> = written.lines().collect();
@@ -2953,7 +3000,7 @@ fn the_practice_log_exports_every_attempt_with_its_measures() {
 
     // A format nobody knows is refused rather than written as something else.
     assert!(state
-        .export_practice_log(export.to_str().unwrap(), "xlsx")
+        .export_practice_log(&export, "xlsx")
         .is_err());
 
     std::fs::remove_dir_all(&dir).ok();

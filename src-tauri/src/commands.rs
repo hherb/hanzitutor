@@ -1042,40 +1042,123 @@ pub fn vocab_record_attempt(
     Ok(committed(&state, vocab))
 }
 
-/// Write the list to `path` as `format`, which is `"json"` (lossless) or
-/// `"csv"` (for spreadsheets). Returns a note for the interface.
+/// Ask for a path to write to, with the dialog owned here rather than by the
+/// caller.
+///
+/// **The path must never cross the IPC boundary as a free-form string.** These
+/// commands used to take a `path` from the frontend and hand it to `std::fs`,
+/// which made every one of them a "write anywhere the process can write"
+/// primitive: the interface does pick the path with the dialog plugin, but the
+/// command trusted whatever arrived instead of the learner's choice. Since these
+/// commands also *overwrite*, that included the study database itself and the
+/// shell profiles of anything that could call the IPC. Showing the dialog here
+/// removes the question: the only path written to is one the learner chose in a
+/// native dialog a moment ago, and the frontend never gets to name a file.
+///
+/// The save dialog's own answer is already restricted to a real path on desktop
+/// (`FilePath::Url` is a `file://`/`content://` URI and is refused here).
+fn ask_where_to_save(
+    app: &tauri::AppHandle,
+    title: &str,
+    file_name: &str,
+    filter: (&str, &[&str]),
+) -> Result<Option<std::path::PathBuf>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let chosen = app
+        .dialog()
+        .file()
+        .set_title(title)
+        .set_file_name(file_name)
+        .add_filter(filter.0, filter.1)
+        // Blocking is right *because* this command is `async`: Tauri runs an
+        // async command on the async runtime rather than the main thread, and
+        // the plugin marshals the dialog onto the main thread itself. A
+        // synchronous command would deadlock here — the plugin's own docs say so.
+        .blocking_save_file();
+    match chosen {
+        None => Ok(None),
+        Some(path) => path
+            .simplified()
+            .into_path()
+            .map(Some)
+            .map_err(|e| format!("that file cannot be written: {e}")),
+    }
+}
+
+/// Write the list to a file the learner chooses, as `format`: `"json"`
+/// (lossless) or `"csv"` (for spreadsheets). Returns a note for the interface.
+///
+/// `None` when the learner closes the dialog without choosing: a cancelled
+/// export is not a failure, and the interface says nothing rather than reporting
+/// one. The dialog is here rather than in the frontend so no path arrives over
+/// IPC — see [`ask_where_to_save`].
 #[tauri::command]
-pub fn vocab_export(
+pub async fn vocab_export(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
-    path: String,
     format: String,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     let vocab = state.lock_vocab();
     let count = vocab.store.entries().len();
-    let (contents, label) = match format.as_str() {
+    let (contents, label, extension) = match format.as_str() {
         "json" => (
             vocab.store.export_json().map_err(|e| e.to_string())?,
             "JSON",
+            "json",
         ),
-        "csv" => (vocab.store.export_csv(), "CSV"),
+        "csv" => (vocab.store.export_csv(), "CSV", "csv"),
         other => return Err(format!("unknown export format {other:?}")),
     };
-    std::fs::write(&path, contents).map_err(|e| format!("could not write {path}: {e}"))?;
-    Ok(format!("Exported {count} entries as {label} to {path}"))
+    drop(vocab);
+
+    let title = format!("Export vocabulary as {label}");
+    let file_name = format!("hanzi-vocabulary.{extension}");
+    let Some(path) = ask_where_to_save(&app, &title, &file_name, (label, &[extension]))? else {
+        return Ok(None);
+    };
+
+    std::fs::write(&path, contents)
+        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    Ok(Some(format!(
+        "Exported {count} entries as {label} to {}",
+        path.display()
+    )))
 }
 
-/// Read a previously exported document from `path`.
+/// Read a previously exported document from a file the learner chooses.
 ///
 /// `merge` false replaces the current list; true adds to it, skipping entries
-/// whose text is already present in the same group.
+/// whose text is already present in the same group. `None` when the dialog was
+/// closed. As with the export, the dialog is here so no path arrives over IPC.
 #[tauri::command]
-pub fn vocab_import(
+pub async fn vocab_import(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
-    path: String,
     merge: bool,
-) -> Result<VocabOutcome, String> {
-    let json =
-        std::fs::read_to_string(&path).map_err(|e| format!("could not read {path}: {e}"))?;
+) -> Result<Option<VocabOutcome>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    // Blocking on an `async` command, and so off the main thread — see
+    // [`ask_where_to_save`], whose reasoning applies here unchanged.
+    let chosen = app
+        .dialog()
+        .file()
+        .set_title(if merge {
+            "Add to your list"
+        } else {
+            "Replace your list"
+        })
+        .add_filter("JSON", &["json"])
+        .blocking_pick_file();
+    let Some(chosen) = chosen else {
+        return Ok(None);
+    };
+    let path = chosen
+        .simplified()
+        .into_path()
+        .map_err(|e| format!("that file cannot be read: {e}"))?;
+
+    let json = std::fs::read_to_string(&path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
 
     let mut vocab = state.lock_vocab();
     let summary = vocab
@@ -1099,7 +1182,7 @@ pub fn vocab_import(
         message.push_str(&format!(", {} new groups", summary.groups_added));
     }
 
-    Ok(VocabOutcome { view, message })
+    Ok(Some(VocabOutcome { view, message }))
 }
 
 // ---- practice progress and review ------------------------------------------
@@ -1153,14 +1236,27 @@ pub fn record_progress(
 ///
 /// The log is the learner's own record of their own handwriting, so this is how
 /// it leaves the app: a file they choose, written locally. No upload, no account.
-/// The work is in [`AppState::export_practice_log`], where it can be tested.
+/// The dialog is here rather than in the frontend so no path arrives over IPC —
+/// see [`ask_where_to_save`] — and `None` means the learner chose no file. The
+/// content and the write are in [`AppState::export_practice_log`], where they can
+/// be tested.
 #[tauri::command]
-pub fn export_practice_log(
+pub async fn export_practice_log(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
-    path: String,
     format: String,
-) -> Result<String, String> {
-    state.export_practice_log(&path, &format)
+) -> Result<Option<String>, String> {
+    let label = match format.as_str() {
+        "jsonl" => "JSON Lines",
+        "csv" => "CSV",
+        other => return Err(format!("unknown export format {other:?}")),
+    };
+    let title = format!("Export your practice log as {label}");
+    let file_name = format!("hanzi-practice-log.{format}");
+    let Some(path) = ask_where_to_save(&app, &title, &file_name, (label, &[&format]))? else {
+        return Ok(None);
+    };
+    state.export_practice_log(&path, &format).map(Some)
 }
 
 /// What is due for review now, most overdue first, from the course and the

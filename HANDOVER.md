@@ -581,6 +581,19 @@ after each item) both do this now. The shape is the rule, not either file.
     eventually writes a five-digit year that parses as garbage. Do not widen the
     format without handling that.
 
+    **`parse_iso8601` accepts a written instant or nothing, and "accepts" means
+    `iso8601_from_unix` gives the string back unchanged.** Every numeric field is
+    a fixed-width run of *ASCII digits* — `str::parse::<i64>` alone is not enough,
+    because it reads a sign: `2026-09-19T-1:-1:-1Z` has the delimiters in the
+    right places, passes every upper-bound check and parses to a *different
+    instant on the previous day*, and `+123-09-19T00:00:00Z` parses to a negative
+    Unix time that `add_seconds` then refuses, so a card carrying it is due for
+    ever. Ranges are checked at both ends (year 0..=9999, hour 0..=23, minute and
+    second 0..=59), which makes the accepted range and the representable one the
+    same range. `anything_it_accepts_is_an_instant_it_would_have_written` states
+    it as one predicate and pins both reported spells; keep it failing if the
+    sign is ever readmitted.
+
 13. **Progress is recorded where the character is graded**, in `check()`, not when
     the learner advances. That is what makes one card cover the course, the
     vocabulary list and review alike, and what makes "practise, relaunch, and it
@@ -926,12 +939,51 @@ after each item) both do this now. The shape is the rule, not either file.
       `a_sign_in_the_store_cannot_describe_is_adopted_as_the_locked_item_it_must_be`
       both fail against the old `protection()`; keep them that way.
 
+35. **A CSV field is a safety boundary, and the leading apostrophe is the part
+    that is not RFC 4180.** `csv_field` in `vocab.rs` is the one quoting rule,
+    shared by the vocabulary export and the attempt log, and quoting alone does
+    **not** neutralise a field: Excel, LibreOffice, Google Sheets and Numbers
+    read a cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return
+    as a *formula*, and CSV quoting is stripped on load — `"=1+1"` is still the
+    formula `=1+1`. The vocabulary list holds learner text, including text that
+    arrived from somebody else's shared list through `import_json`, so an export
+    is a delivery route for live code. The rule is one line and easy to
+    "simplify": a dangerous first character gets `'` in front, **before** the
+    field is quoted if it needs it. Ordinary fields are untouched.
+    `a_field_a_spreadsheet_would_run_is_defused` covers both writers, and both
+    copies fail against the old `csv_field`.
+
+36. **A file path never crosses the IPC boundary as a value the frontend chose.**
+    `vocab_export`, `vocab_import` and `export_practice_log` take no `path`: each
+    opens its own dialog with `tauri-plugin-dialog` and does the I/O with the
+    path the learner picked. They used to take `path: String` and hand it to
+    `std::fs`, which made every one of them a "write anywhere the process can
+    write" primitive — the interface *did* use the dialog, but the command
+    trusted whatever string arrived, so anything that could call the IPC could
+    overwrite the study database or a shell profile.
+
+    Three consequences to keep, and the first is the one a future change is most
+    likely to undo:
+
+    - **They are `async` commands, and that is load-bearing.** Tauri runs an
+      async command off the main thread, which is what lets the *blocking*
+      dialog call block; the plugin marshals the dialog onto the main thread
+      itself, and its own docs say a main-thread blocking call deadlocks. Making
+      one of these a plain `fn` again would hang the app.
+    - **The commands answer `Option`.** `None` is "the learner closed the
+      dialog", which is not an error, and the interface returns quietly. A
+      cancelled export must never read as a failed one.
+    - **`no_file_command_takes_a_path_from_the_webview` reads the source** to
+      check the three signatures, because a signature is invisible to a
+      behavioural test: a future command could reintroduce `path` and every other
+      test would still pass. It fails against the old signatures.
+
 ## 5. The verification loop
 
 Run before every commit:
 
 ```bash
-pnpm test           # 613 tests: engine + data-pipeline units, the SQLite store,
+pnpm test           # 618 tests: engine + data-pipeline units, the SQLite store,
                     # sync convergence, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
@@ -1037,6 +1089,34 @@ says what came due — but **drawing cannot be automated here** (§6), so those 
 lines need a human at the trackpad. Everything downstream of them is covered by
 the IPC tests, which drive `AppState::load` → record → save → reload against real
 temp files.
+
+**If you touched `tauri.conf.json`'s `app.security`, the file dialogs or the CSP,
+the check that matters is a real window, not a unit test.** The CSP is injected at
+runtime by Tauri as it serves the built assets, so neither `pnpm run vite:build`
+nor the dev server's HTML shows it. What proves it is the bundled app: build it
+(`tauri build --debug --no-bundle`, or the wrapper if the Vite hook misbehaves),
+run `.cargo-target/debug/hanzi-tutor --user-dir <tmp>`, and require
+`[webview] course loaded: …` in its log. That line only appears once the frontend
+has booted and called IPC, so it fails the moment a directive is too strict — the
+two that would take the app out are `connect-src` losing `ipc:` or
+`http://ipc.localhost`. A blank window with no `[webview]` lines *is* that failure,
+but note a debug binary run without building the bundle looks identical, so build
+first. `a_content_security_policy_is_set_and_still_allows_the_ipc_transport` in
+`tests/licences.rs` pins the policy through Tauri's own config deserialisation,
+which is the half a test can hold.
+
+The file dialogs' failure mode is a hang rather than a blank window, and it is one
+signature change away, so it is worth re-checking by hand. `vocab_export`,
+`vocab_import` and `export_practice_log` are **`async` commands on purpose**: Tauri
+then runs them off the main thread, which is what lets `blocking_save_file` /
+`blocking_pick_file` block — the plugin marshals the dialog onto the main thread
+itself. Made into plain `fn`s they deadlock the app the first time one is called,
+and nothing in the suite would catch it. The smallest check is a throwaway
+`src-tauri/src/bin/probe.rs` that calls `blocking_save_file` from a
+`std::thread::spawn` and prints what it returns: the dialog appears, and picking a
+file prints its path while cancelling prints `None`. `no_file_command_takes_a_path_from_the_webview`
+in `tests/ipc_contract.rs` covers the other half — that no path argument comes
+back.
 
 ## 6. Traps that cost time here
 

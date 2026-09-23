@@ -222,11 +222,25 @@ export const vocabRemoveGroup = (name: string, purge: boolean) =>
 export const vocabRecordAttempt = (id: number, score: number) =>
   invoke<VocabView>("vocab_record_attempt", { id, score });
 
-export const vocabExport = (path: string, format: "json" | "csv") =>
-  invoke<string>("vocab_export", { path, format });
+/**
+ * Export the list as JSON or CSV, to a file the learner chooses.
+ *
+ * The save dialog is opened by the backend, so no path is passed in: the only
+ * file this can write is one the learner picked in a native dialog. Resolves
+ * `null` when they closed the dialog without choosing.
+ */
+export const vocabExport = (format: "json" | "csv") =>
+  invoke<string | null>("vocab_export", { format });
 
-export const vocabImport = (path: string, merge: boolean) =>
-  invoke<VocabOutcome>("vocab_import", { path, merge });
+/**
+ * Import a previously exported JSON document, from a file the learner chooses.
+ *
+ * `merge` false replaces the list; true adds to it. The open dialog is the
+ * backend's, for the same reason as [`vocabExport`]. Resolves `null` when the
+ * dialog was closed.
+ */
+export const vocabImport = (merge: boolean) =>
+  invoke<VocabOutcome | null>("vocab_import", { merge });
 
 /**
  * Where the learner got to in one of their own groups, as an entry id.
@@ -242,13 +256,15 @@ export const setVocabCursor = (group: string, entryId: number | null) =>
   invoke<void>("set_vocab_cursor", { group, entryId });
 
 /**
- * Write the practice log to `path`, as JSON Lines or CSV.
+ * Write the practice log as JSON Lines or CSV, to a file the learner chooses.
  *
  * The whole log, every attempt, whether or not it carries the measures it was
- * graded from. Returns the line to show the learner.
+ * graded from. The save dialog is the backend's, so no path is passed in and the
+ * only file this can write is the one the learner picked. Resolves `null` when
+ * they closed the dialog without choosing; otherwise the line to show them.
  */
-export const exportPracticeLog = (path: string, format: "jsonl" | "csv") =>
-  invoke<string>("export_practice_log", { path, format });
+export const exportPracticeLog = (format: "jsonl" | "csv") =>
+  invoke<string | null>("export_practice_log", { format });
 
 // ---- practice progress and review -----------------------------------------
 

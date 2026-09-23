@@ -44,10 +44,21 @@ pub fn iso8601_from_unix(seconds: i64) -> String {
 /// Parse an ISO-8601 UTC string back to a Unix timestamp.
 ///
 /// Accepts exactly what [`iso8601_from_unix`] produces, and nothing else: a
-/// timestamp the app wrote can always be read back, and anything else is
-/// rejected rather than guessed at. A date that does not exist, such as
-/// `2026-02-30`, is rejected too, because the civil round-trip would otherwise
-/// silently normalise it to March.
+/// timestamp the app wrote can always be read back, anything else is rejected
+/// rather than guessed at, and any string this accepts is one
+/// [`iso8601_from_unix`] formats back to *itself*. A date that does not exist,
+/// such as `2026-02-30`, is rejected too, because the civil round-trip would
+/// otherwise silently normalise it to March.
+///
+/// The round-trip property is the reason every field is parsed as a fixed-width
+/// run of **ASCII digits** rather than with `str::parse`, which accepts a sign:
+/// `2026-09-19T-1:-1:-1Z` is twenty characters with the delimiters in the right
+/// places, so an `i64` parse reads the negative fields, every upper-bound check
+/// passes, and the string parses to a *different instant* on the previous day.
+/// The same parse accepts `+123-09-19T00:00:00Z`, whose negative Unix time
+/// [`add_seconds`] refuses — a card carrying it could never advance. Requiring a
+/// digit in every numeric position rejects both, and every other `i64`-parseable
+/// spelling, in one go.
 pub fn parse_iso8601(text: &str) -> Option<i64> {
     let bytes = text.as_bytes();
     if bytes.len() != 20
@@ -60,17 +71,30 @@ pub fn parse_iso8601(text: &str) -> Option<i64> {
     {
         return None;
     }
-    let number = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
+    // A fixed-width run of digits, so no field can carry a sign, a space or any
+    // other spelling the formatter would never write.
+    let number = |range: std::ops::Range<usize>| -> Option<i64> {
+        let field = text.get(range)?;
+        if !field.as_bytes().iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        field.parse::<i64>().ok()
+    };
     let year = number(0..4)?;
     let month = number(5..7)?;
     let day = number(8..10)?;
     let hour = number(11..13)?;
     let minute = number(14..16)?;
     let second = number(17..19)?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    if hour > 23 || minute > 59 || second > 59 {
+    // Both ends of every field, so nothing outside the formatter's range can be
+    // read back: four digits hold 0..=9999, and the clock is a real one.
+    if !(0..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute)
+        || !(0..=59).contains(&second)
+    {
         return None;
     }
     let days = days_from_civil(year, month as u32, day as u32);
@@ -172,9 +196,58 @@ mod tests {
             "2026-09-19T24:00:00Z",      // no such hour
             "2026-09-19T00:60:00Z",      // no such minute
             "2026-09-19T00:12:60Z",      // no such second
+            "2026-09-19T-1:-1:-1Z",      // signed fields; parsed to the day before
+            "+123-09-19T00:00:00Z",      // a signed year, and before the epoch
+            "-001-09-19T00:00:00Z",      // the same, spelled the other way
+            "2026-09-19T+1:00:00Z",      // a signed hour
+            "2026-09-19T 1:00:00Z",      // a blank where a digit belongs
+            "2026-09-19T01:02:0 Z",      // and the same in the seconds
+            "２０２６-09-19T00:00:00Z", // full-width digits are not ASCII digits
         ] {
             assert_eq!(parse_iso8601(bad), None, "{bad:?} should be rejected");
         }
+    }
+
+    #[test]
+    fn anything_it_accepts_is_an_instant_it_would_have_written() {
+        // The round-trip property stated forwards, as one predicate rather than
+        // a list of cases: a parser that answers `Some` has understood the text
+        // completely, and `iso8601_from_unix` gives that understanding back.
+        fn means_exactly_one_instant(text: &str) -> bool {
+            match parse_iso8601(text) {
+                Some(unix) => iso8601_from_unix(unix) == text,
+                None => true,
+            }
+        }
+
+        // The inverse direction of the round trip, over both ends of every
+        // field. An accepted string that reformats as something else is the bug
+        // this check exists for: `self.due.as_str() <= now` in `CardState::is_due`
+        // assumes the text the parser read back means exactly one instant.
+        for good in [
+            "0000-01-01T00:00:00Z", // the first instant the width can spell
+            "0000-12-31T23:59:59Z",
+            "0001-01-01T00:00:00Z",
+            "1970-01-01T00:00:00Z",
+            "2026-09-19T00:12:34Z",
+            "9999-12-31T23:59:59Z", // and the last
+        ] {
+            let unix = parse_iso8601(good).unwrap_or_else(|| panic!("{good} should parse"));
+            assert_eq!(iso8601_from_unix(unix), good, "{good} should reformat as itself");
+        }
+        // The last instant is `MAX_UNIX`, so the accepted range and the
+        // representable one are the same range.
+        assert_eq!(parse_iso8601("9999-12-31T23:59:59Z"), Some(MAX_UNIX));
+
+        // The two spells an `i64` parse let through, and the reason the rule is
+        // "reject or round-trip" rather than "reject these fields": both are
+        // twenty characters with the delimiters in the right places, so nothing
+        // but the fields themselves can separate them from a real timestamp.
+        // The first parses to the *day before* — a different instant that the
+        // schedule compares as text; the second parses, but to a negative Unix
+        // time [`add_seconds`] will not move, so its card is due for ever.
+        assert!(means_exactly_one_instant("2026-09-19T-1:-1:-1Z"));
+        assert!(means_exactly_one_instant("+123-09-19T00:00:00Z"));
     }
 
     #[test]

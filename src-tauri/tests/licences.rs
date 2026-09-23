@@ -88,6 +88,77 @@ fn every_licence_text_in_the_directory_is_catalogued() {
     );
 }
 
+/// The Content Security Policy the app actually compiles, as Tauri reads it.
+///
+/// Parsed through Tauri's own types rather than by hand: this is the same
+/// deserialisation `generate_context!` walks, so a test that passes here is a
+/// policy the build would accept, and a malformed one fails here instead of at
+/// bundle time.
+#[test]
+fn a_content_security_policy_is_set_and_still_allows_the_ipc_transport() {
+    let config: tauri::Context<tauri::Wry> = tauri::generate_context!("tauri.conf.json");
+    let policy = config
+        .config()
+        .app
+        .security
+        .csp
+        .clone()
+        .expect(
+            "a CSP must be set: with it off, any injected markup can load remote \
+             script and the webview can make outbound requests, which is the one \
+             claim this app makes that a CSP is what enforces",
+        );
+
+    let directives: std::collections::HashMap<String, tauri::utils::config::CspDirectiveSources> =
+        policy.into();
+    let sources = |name: &str| -> Vec<String> {
+        let directive = directives
+            .get(name)
+            .unwrap_or_else(|| panic!("the CSP has no {name} directive"));
+        match serde_json::to_value(directive).unwrap() {
+            serde_json::Value::Array(list) => list
+                .into_iter()
+                .map(|v| v.as_str().expect("a source is a string").to_string())
+                .collect(),
+            serde_json::Value::String(inline) => {
+                inline.split_whitespace().map(str::to_string).collect()
+            }
+            other => panic!("{name} is neither a list nor a string: {other}"),
+        }
+    };
+
+    // Nothing loads by default except what the app itself serves. Every asset the
+    // frontend asks for — the clip manifests, the font, the audio — is relative,
+    // so `'self'` covers them without naming an origin.
+    assert!(
+        sources("default-src").contains(&"'self'".to_string()),
+        "default-src should be 'self'"
+    );
+
+    // The IPC transport. `ipc:` is the custom scheme and `http://ipc.localhost`
+    // is what Windows and Android route it through; dropping either makes the
+    // whole interface unable to call a command, which is the failure this test
+    // exists to catch rather than a hardening question.
+    let connect = sources("connect-src");
+    for needed in ["ipc:", "http://ipc.localhost"] {
+        assert!(
+            connect.contains(&needed.to_string()),
+            "connect-src is missing {needed}, so IPC would be blocked: {connect:?}"
+        );
+    }
+
+    // `devCsp` is deliberately unset. If one is ever added, the production
+    // policy keeps shipping unchanged — `csp` is what is injected into builds,
+    // and the separate field exists so a development-only origin cannot reach a
+    // release by accident. Setting one is therefore the moment to re-read both.
+    let raw: serde_json::Value = serde_json::from_str(&read("src-tauri/tauri.conf.json")).unwrap();
+    assert!(
+        raw["app"]["security"].get("devCsp").is_none(),
+        "devCsp is now set: the development policy has diverged from the one \
+         that ships, so check the production `csp` above still stands on its own"
+    );
+}
+
 #[test]
 fn the_bundle_copies_exactly_the_catalogued_notices() {
     let config = tauri_config();

@@ -185,4 +185,22 @@ mod tests {
         let row = csv.lines().nth(1).unwrap();
         assert!(row.starts_with("\",\""), "the comma is quoted: {row}");
     }
+
+    #[test]
+    fn a_field_a_spreadsheet_would_run_is_defused() {
+        // The same safety boundary as the vocabulary list's export, through this
+        // writer: an attempt's device id is a peer's, so it arrives from outside
+        // the app, and a CSV is opened in a spreadsheet by design. Quoting alone
+        // would not help — CSV quoting is stripped on load.
+        let mut row = attempt("=", Some(measured()));
+        row.device_id = "@SUM(1+1)".into();
+        let csv = attempts_to_csv(&[row]);
+        let line = csv.lines().nth(1).unwrap();
+        assert!(line.contains("'="), "the character is defused: {line}");
+        assert!(line.contains("'@SUM(1+1)"), "the device is defused: {line}");
+
+        // An ordinary attempt is untouched, marker and all.
+        let plain = attempts_to_csv(&[attempt("好", Some(measured()))]);
+        assert!(plain.lines().nth(1).unwrap().starts_with("好,"));
+    }
 }

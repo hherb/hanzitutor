@@ -1,10 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import {
-    confirm as confirmDialog,
-    open as pickFile,
-    save as pickSavePath,
-  } from "@tauri-apps/plugin-dialog";
+  // Confirmation only. The open/save dialogs for the vocabulary list and the
+  // practice log are opened by the backend, so that a file path never crosses
+  // the IPC boundary as a value the frontend chose.
+  import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
   import * as api from "./lib/api";
   import CharacterPanel from "./lib/CharacterPanel.svelte";
   import CharacterThumb from "./lib/CharacterThumb.svelte";
@@ -2025,16 +2024,14 @@
 
   async function exportVocabulary(format: "json" | "csv") {
     try {
-      const extension = format === "json" ? "json" : "csv";
-      const path = await pickSavePath({
-        title: `Export vocabulary as ${format.toUpperCase()}`,
-        defaultPath: `hanzi-vocabulary.${extension}`,
-        filters: [{ name: format.toUpperCase(), extensions: [extension] }],
-      });
-      if (!path) return;
+      // The save dialog lives in the backend, so the command opens it and
+      // writes the file in one step: a path never travels over IPC. `null`
+      // means the learner closed the dialog, which is not a failure.
       vocabBusy = true;
-      statusMessage = await api.vocabExport(path, format);
-      void api.log(statusMessage);
+      const message = await api.vocabExport(format);
+      if (message === null) return;
+      statusMessage = message;
+      void api.log(message);
     } catch (cause) {
       error = `Export failed: ${cause}`;
     } finally {
@@ -2051,17 +2048,13 @@
    * can be checked against real attempts afterwards, anywhere, without the app.
    */
   async function exportPracticeLog(format: "jsonl" | "csv") {
-    const label = format === "jsonl" ? "JSON Lines" : "CSV";
     try {
-      const path = await pickSavePath({
-        title: `Export your practice log as ${label}`,
-        defaultPath: `hanzi-practice-log.${format}`,
-        filters: [{ name: label, extensions: [format] }],
-      });
-      if (!path) return;
+      // Backend-owned dialog, as for the vocabulary export.
       logBusy = true;
-      logMessage = await api.exportPracticeLog(path, format);
-      void api.log(logMessage);
+      const message = await api.exportPracticeLog(format);
+      if (message === null) return;
+      logMessage = message;
+      void api.log(message);
     } catch (cause) {
       error = `Export failed: ${cause}`;
     } finally {
@@ -2071,15 +2064,11 @@
 
   async function importVocabulary(merge: boolean) {
     try {
-      const path = await pickFile({
-        title: merge ? "Add to your list" : "Replace your list",
-        multiple: false,
-        directory: false,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-      if (typeof path !== "string") return;
+      // Backend-owned open dialog: the import command both picks the file and
+      // reads it, so the frontend cannot name one.
       vocabBusy = true;
-      const outcome = await api.vocabImport(path, merge);
+      const outcome = await api.vocabImport(merge);
+      if (outcome === null) return;
       applyVocab(outcome.view);
       statusMessage = outcome.message;
       void api.log(`vocabulary import: ${outcome.message}`);
