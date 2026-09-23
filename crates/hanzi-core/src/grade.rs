@@ -297,8 +297,28 @@ struct PairMetrics {
     reversed: bool,
 }
 
+/// Bound a score to `0..=1`, and send anything that is not a number to `0.0`.
+///
+/// `f32::clamp` does **not** do this: it returns `NaN` for a `NaN` input. So a
+/// measure that reached infinity or `NaN` — a coordinate large enough that
+/// squaring its delta overflowed did it — used to pass straight through the
+/// clamp that looks like a guarantee. Every headline score is documented as a
+/// fraction, and a caller cannot tell a `NaN` fraction from a real one, so the
+/// bound is enforced here rather than assumed.
+///
+/// Non-finite goes to `0.0` rather than to the nearest end of the range: a score
+/// that could not be measured is the worst score, which is the same answer
+/// [`position_score`] already gives a stroke with no extent at all.
+fn bounded(score: f32) -> f32 {
+    if score.is_finite() {
+        score.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
 pub fn shape_score(distance: f32) -> f32 {
-    (1.0 - distance / SHAPE_TOL).clamp(0.0, 1.0)
+    bounded(1.0 - distance / SHAPE_TOL)
 }
 
 /// How close the stroke sits to the reference, in absolute box coordinates.
@@ -329,7 +349,10 @@ fn position_score(points: &[Point], reference: &[Point]) -> f32 {
         0.0
     };
     let penalty = 0.65 * (centroid_offset / POSITION_TOL) + 0.35 * (size_mismatch / SIZE_TOL);
-    (1.0 - penalty).clamp(0.0, 1.0)
+    // `size_mismatch` is `(du - dr) / max(du, dr)`, which is `∞ / ∞` = `NaN` once
+    // a coordinate is large enough for its delta to square to infinity. `bounded`
+    // is what turns that into a score instead of a `NaN` that travels.
+    bounded(1.0 - penalty)
 }
 
 /// Grade `attempt` against a reference character's stroke medians.
@@ -389,7 +412,16 @@ fn grade_inner(
     let mut kept = Vec::new();
     let mut stray = 0usize;
     for (i, stroke) in attempt.iter().enumerate() {
-        if geom::path_length(stroke) < stray_below {
+        // A stroke with no finite point is not a stroke. `NaN` and `±∞` cannot
+        // come from a pointer, and one of them in the geometry turns every
+        // comparison it touches into nonsense — the cost matrix, the fitted
+        // transform and the headline scores alike. Such a mark is counted as a
+        // stray, the same as a tap too short to be a stroke, so the report still
+        // says it was seen rather than dropping it in silence. The order matters
+        // as well as the answer: a non-finite stroke is refused before its length
+        // is measured, because that length would be `NaN` too.
+        let finite = stroke.iter().all(|p| p.x.is_finite() && p.y.is_finite());
+        if !finite || geom::path_length(stroke) < stray_below {
             stray += 1;
         } else {
             kept.push(Kept {
@@ -747,6 +779,22 @@ fn fit_on_matched(
     }
     let fit = geom::fit_similarity(&user_points, &ref_points);
     let offset = geom::length_centroid(&user_points).distance_to(geom::length_centroid(&ref_points));
+
+    // A fit is a placement transform, so it only means something when the scale
+    // and the offset it describes are real numbers. Coordinates large enough to
+    // overflow `f32` squares can produce an infinite radius — and `∞ / ∞` for the
+    // scale — and applying a `NaN` transform would spread the nonsense to every
+    // stroke instead of leaving them as they were drawn. `None` already means
+    // "no fit", so an unfittable attempt simply gets none.
+    if !fit.scale.is_finite()
+        || !offset.is_finite()
+        || !fit.from_centroid.x.is_finite()
+        || !fit.from_centroid.y.is_finite()
+        || !fit.to_centroid.x.is_finite()
+        || !fit.to_centroid.y.is_finite()
+    {
+        return None;
+    }
     Some((fit, offset))
 }
 
@@ -754,7 +802,10 @@ fn fit_on_matched(
 ///
 /// This is the O(n^3) Hungarian algorithm (Kuhn–Munkres) in the compact
 /// potential-updating form, with row 0 / column 0 used as sentinels.
-/// `cost` must be square and non-negative. Returns `assign[row] = col`.
+/// `cost` must be square and non-negative. Returns `assign[row] = col`, with
+/// `usize::MAX` for a row no finite cost could place — which the caller reads as
+/// "not matched". A non-finite cost is not solvable and is refused rather than
+/// followed, because following it never terminates.
 fn hungarian(cost: &[Vec<f64>]) -> Vec<usize> {
     let n = cost.len();
     if n == 0 {
@@ -772,6 +823,10 @@ fn hungarian(cost: &[Vec<f64>]) -> Vec<usize> {
         let mut j0 = 0usize;
         let mut minv = vec![f64::INFINITY; n + 1];
         let mut used = vec![false; n + 1];
+        // The potentials before this row's search, so an unsolvable row can put
+        // them back. See the bail-out below.
+        let (u_before, v_before) = (u.clone(), v.clone());
+        let mut solvable = true;
         loop {
             used[j0] = true;
             let i0 = p[j0];
@@ -791,6 +846,22 @@ fn hungarian(cost: &[Vec<f64>]) -> Vec<usize> {
                     j1 = j;
                 }
             }
+            // `delta` is `+∞` when no unused column offered a finite cost, which
+            // is what a row of `NaN` or `+∞` costs looks like from here: every
+            // comparison against either is false, so nothing improves. There is
+            // no augmenting path to follow, and following it anyway would update
+            // the potentials with `∞` and come back to the sentinel column for
+            // ever. The row is abandoned instead — the caller reads `usize::MAX`
+            // as "not matched" — which is the only outcome that is not a hang.
+            //
+            // The callers hand this a finite matrix, because every metric is
+            // bounded, so this is the documented precondition enforced rather
+            // than a case the grader produces. It is enforced here because the
+            // failure it prevents is an infinite loop in a synchronous command.
+            if !delta.is_finite() {
+                solvable = false;
+                break;
+            }
             for j in 0..=n {
                 if used[j] {
                     u[p[j]] += delta;
@@ -803,6 +874,19 @@ fn hungarian(cost: &[Vec<f64>]) -> Vec<usize> {
             if p[j0] == 0 {
                 break;
             }
+        }
+        if !solvable {
+            // Leave the row unmatched, and leave nothing else changed. Two
+            // things have to be undone rather than merely not done: the search
+            // updated the potentials on its way to the column it could not
+            // extend, and a half-updated potential is not a valid state for the
+            // rows still to come; and `way` holds a path that never reached the
+            // sentinel, so walking it would rewrite `p` into a matching that is
+            // not one. Restoring the potentials makes the remaining rows behave
+            // exactly as if this row were not in the matrix.
+            u = u_before;
+            v = v_before;
+            continue;
         }
         loop {
             let j1 = way[j0];
@@ -1215,6 +1299,143 @@ mod tests {
         assert_eq!(report.given_strokes, 2);
         assert!(report.count_ok, "a stray tap should not count as a stroke");
         assert!(report.is_perfect(), "{report:#?}");
+    }
+
+    /// Coordinates no pointer can produce must be graded, not spun on.
+    ///
+    /// `Point::distance_to` squares its deltas in `f32`, so a coordinate near
+    /// `1e19` overflows to infinity. The size mismatch in `position_score` then
+    /// became `inf / inf` = NaN, `.clamp(0.0, 1.0)` passed the NaN straight
+    /// through — `f32::clamp` returns NaN for a NaN input — the cost matrix
+    /// carried it, and `hungarian` never returned: every comparison against NaN
+    /// is false, so no column ever improved `delta` and `j1` stayed 0 for ever.
+    /// `grade_attempt` is a synchronous command, so that was a pegged core and a
+    /// board that never came back.
+    ///
+    /// The contract asserted here is the one that matters: the call finishes, and
+    /// everything it reports is a real number. Which score an absurd stroke gets
+    /// is not the point — that it is a score at all is.
+    #[test]
+    fn a_stroke_with_absurd_coordinates_is_graded_rather_than_hanging() {
+        let reference = shi_reference();
+        let options = GradeOptions::default();
+
+        for v in [
+            1e19f32,
+            1e20,
+            1e30,
+            f32::MAX,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+        ] {
+            let attempt = vec![vec![Point::new(v, 0.0), Point::new(0.0, 0.0)]];
+            let report = grade(&reference, &attempt, &options);
+
+            assert!(
+                report.overall.is_finite(),
+                "v = {v} scored {}",
+                report.overall
+            );
+            assert!((0.0..=100.0).contains(&report.overall));
+            for value in [
+                report.shape_score,
+                report.position_score,
+                report.ink_score,
+                report.ink_coverage,
+                report.order_score,
+            ] {
+                assert!(
+                    value.is_finite() && (0.0..=1.0).contains(&value),
+                    "v = {v} reported {value}"
+                );
+            }
+            for stroke in &report.strokes {
+                assert!(
+                    stroke.score.is_finite(),
+                    "v = {v} reported a stroke score of {}",
+                    stroke.score
+                );
+            }
+        }
+    }
+
+    /// A stroke with no finite point is not a stroke.
+    ///
+    /// It is counted as stray, the way a tap too short to be a stroke is: the
+    /// report still says the mark was seen, and nothing downstream has to cope
+    /// with a position that is not a position.
+    #[test]
+    fn a_stroke_with_no_finite_point_is_a_stray_mark() {
+        let reference = shi_reference();
+        let attempt = vec![
+            reference[0].clone(),
+            vec![Point::new(f32::NAN, 10.0), Point::new(20.0, 20.0)],
+            vec![Point::new(f32::INFINITY, 0.0), Point::new(0.0, 0.0)],
+        ];
+        let report = grade(&reference, &attempt, &GradeOptions::default());
+
+        assert_eq!(report.stray_strokes, 2, "both non-finite marks are strays");
+        assert_eq!(report.given_strokes, 1, "only the real stroke was kept");
+        assert!(report.overall.is_finite());
+    }
+
+    /// The solver's documented precondition, enforced rather than assumed.
+    ///
+    /// `hungarian` says its matrix must be square and non-negative and relies on
+    /// that to terminate. A matrix it cannot solve must come back unmatched, not
+    /// spin: this is the guard that makes the difference between a wrong score
+    /// and a wedged process. Both spellings of "no finite cost" are covered —
+    /// NaN, where every comparison is false, and `+∞`, where `∞ < ∞` is.
+    #[test]
+    fn hungarian_survives_a_matrix_it_cannot_solve() {
+        let unsolvable = |value: f64| vec![vec![value, value], vec![value, value]];
+        assert_eq!(
+            hungarian(&unsolvable(f64::NAN)),
+            vec![usize::MAX, usize::MAX]
+        );
+        assert_eq!(
+            hungarian(&unsolvable(f64::INFINITY)),
+            vec![usize::MAX, usize::MAX]
+        );
+
+        // A row that cannot be placed must not take a solvable row down with it.
+        let mixed = vec![
+            vec![f64::INFINITY, f64::INFINITY],
+            vec![1.0, 2.0],
+        ];
+        assert_eq!(
+            hungarian(&mixed),
+            vec![usize::MAX, 0],
+            "the row with no finite cost is left unmatched; the other still pairs"
+        );
+
+        // The harder shape: the search reaches a finite column, then finds no
+        // finite way out of it. Potentials were updated on the way in, so a
+        // guard that only stopped the loop would leave them half-updated and
+        // corrupt the rows still to come. The assertion is the property rather
+        // than an exact answer — whatever it decides must be a *matching*.
+        let dead_end = vec![
+            vec![1.0, 1.0, f64::INFINITY],
+            vec![1.0, f64::INFINITY, f64::INFINITY],
+            vec![f64::INFINITY, 3.0, 1.0],
+        ];
+        let solved = hungarian(&dead_end);
+        assert_eq!(solved.len(), 3);
+        let mut taken: Vec<usize> = solved.iter().copied().filter(|c| *c != usize::MAX).collect();
+        let assigned = taken.len();
+        taken.sort_unstable();
+        taken.dedup();
+        assert_eq!(taken.len(), assigned, "a column was assigned to two rows");
+        assert!(taken.iter().all(|c| *c < 3), "a column out of range");
+        for (row, col) in solved.iter().enumerate() {
+            if *col != usize::MAX {
+                assert!(
+                    dead_end[row][*col].is_finite(),
+                    "row {row} was matched to a column it has no finite cost for"
+                );
+            }
+        }
     }
 
     #[test]

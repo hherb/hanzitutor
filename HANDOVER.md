@@ -820,6 +820,39 @@ after each item) both do this now. The shape is the rule, not either file.
     what makes the notes show**: `src/lib/startupPages.ts`'s `NOTES` is keyed by
     version, so it is looked at at that moment and not before (see §8).
 
+32. **A grade always terminates, and every number it reports is a real one.** The
+    board's grading runs synchronously on the `grade_attempt` command, so a
+    failure here does not surface as an error — it surfaces as a pegged core and
+    a board that never comes back, with nothing to cancel it. Three guards keep
+    that from being possible, and each is load-bearing rather than tidy:
+
+    - **`hungarian` refuses a cost it cannot solve instead of following it.**
+      Its own doc always said the matrix must be square and non-negative and its
+      loop relies on that to terminate. A row of `NaN` or `+∞` costs makes every
+      comparison false — `NaN < x` and `∞ < ∞` alike — so no column ever improves
+      `delta`, `j1` stays at the sentinel, and the augmenting loop returns to
+      column 0 for ever. It now leaves that row unmatched (`usize::MAX`, which
+      the caller already reads as "not matched") and moves on.
+    - **`f32::clamp` is not a bound, so `bounded()` is.** `clamp(0.0, 1.0)`
+      returns `NaN` for a `NaN` input, which is exactly how the `NaN` reached the
+      cost matrix in the first place: a coordinate near `1e19` squares to
+      infinity in `Point::distance_to`, the size mismatch became `∞ / ∞`, and the
+      clamp that looks like a guarantee passed it straight through. Every
+      headline score now goes through `grade::bounded`, which sends anything
+      non-finite to `0.0` — the same answer a stroke with no extent already gets.
+    - **A stroke with no finite point is not a stroke.** `NaN` and `±∞` cannot
+      come from a pointer, so `grade_inner` counts such a mark as a stray (the
+      way a tap too short to be a stroke is) before any geometry runs, and
+      `fit_on_matched` returns `None` rather than applying a transform whose
+      scale or offset is not a number.
+
+    The property to keep is not "these inputs score well" but **"any input
+    scores at all, finitely"**: `a_stroke_with_absurd_coordinates_is_graded_rather_than_hanging`
+    walks a coordinate through `1e19`, `1e20`, `1e30`, `f32::MAX`, both
+    infinities and `NaN` and requires a finite report each time. None of this
+    changes a legitimate attempt: for finite, in-box input every guard is the
+    branch it always took.
+
 ## 5. The verification loop
 
 Run before every commit:
