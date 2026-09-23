@@ -890,12 +890,48 @@ after each item) both do this now. The shape is the rule, not either file.
     no columns, no stamp, no device id, no rows — and that retrying completes.
     Both were checked against the old code: all three new tests fail there.
 
+34. **The record is the authority for how the sign-in is protected; a read is not
+    asked.** `sync:account` in `meta` holds the `Protection` that `save` reported
+    when the item was written, and `SyncService::protection` answers from it and
+    nothing else. That is not tidiness — the shape looks like one and is not.
+
+    Apple's data-protection keychain returns the password and **nothing about the
+    access control on it**, so an item written with no constraint and one behind a
+    fingerprint are the same read. The code used to fill that silence with
+    `UserPresence`, and `protection()` preferred the cached read to the record — so
+    the first time a run touched the token, which is the first sync and therefore
+    every automatic sync, the rest of that run stopped syncing by itself and the
+    settings screen said the sign-in was behind a fingerprint. Per-run on a healthy
+    device; on an upgraded one it was written into the record and lasted for ever.
+
+    Three rules follow, and the middle one is what makes the other two safe:
+
+    - **A read reports only what it can prove.** `TokenStore::load` may answer
+      `Protection::Unknown`, which now means a third thing: *there is an item and
+      this store cannot say how it is protected*. Apple's read does exactly that,
+      and the login-keychain fallback is still `KeychainOnly` because an item there
+      cannot carry an access control at all.
+    - **Adoption is the one place the store's silence is answered from history.**
+      An item with *no record at all* predates the record, and the record arrived in
+      the same build as the default of asking for nothing — so that item was written
+      by a build that always put the token behind a fingerprint. `SyncService::record`
+      records `UserPresence` and still writes the switch, because on a device with no
+      switch the item *is* the learner's preference. This is the only place that
+      inference may stand, because it is the only place where "no record" is evidence.
+    - **A double that round-trips `Protection` faithfully cannot express any of
+      this** — which is exactly why nothing caught it. `MemoryStore::read_reports`
+      lets a test say what a read answers regardless of what the write stored:
+      `guessing()` is the old Apple lie and `undecided()` is the honest silence.
+      `a_read_that_guesses_the_worst_does_not_override_what_the_write_recorded` and
+      `a_sign_in_the_store_cannot_describe_is_adopted_as_the_locked_item_it_must_be`
+      both fail against the old `protection()`; keep them that way.
+
 ## 5. The verification loop
 
 Run before every commit:
 
 ```bash
-pnpm test           # 610 tests: engine + data-pipeline units, the SQLite store,
+pnpm test           # 613 tests: engine + data-pipeline units, the SQLite store,
                     # sync convergence, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check

@@ -185,7 +185,12 @@ pub struct SyncSummaryView {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Protection {
-    /// Nothing is stored yet, or the platform has no secret store at all.
+    /// Nothing is stored yet, the platform has no secret store at all, or — the case
+    /// only a *read* can produce — there is an item but this store cannot say how it
+    /// is protected. Apple's data-protection keychain is that third case: the password
+    /// comes back and the access control on it does not, so an item written with no
+    /// constraint and one behind a fingerprint are the same read. The record in `meta`
+    /// is what tells them apart, because `save` is what wrote it down.
     #[default]
     Unknown,
     /// In the data-protection keychain with no constraint on it: released to this
@@ -832,15 +837,28 @@ impl SyncService {
         Ok(found)
     }
 
-    /// What the already-read sign-in was protected by, without reading it.
+    /// What the stored sign-in is protected by, without reading it.
+    ///
+    /// **The record is the authority**, and this asks nothing else. The write that
+    /// created the item is what knew how it turned out — `save` reports it, and both
+    /// connect and the fingerprint switch write it down — so believing the record is
+    /// the only answer that cannot be a guess.
+    ///
+    /// A *read* is deliberately not consulted, and that is the fix for a bug worth
+    /// naming, because the shape looks like a tidiness choice and is not. Apple's
+    /// data-protection keychain returns the password and nothing about the access
+    /// control on it: an item written with no constraint and one behind a fingerprint
+    /// are the same read. The code answered `UserPresence` for both, and this function
+    /// preferred that cached answer to the record — so the first time a run touched the
+    /// token (which is the first sync, and an automatic sync is exactly that) every
+    /// later automatic sync in that run was skipped as though the learner had asked
+    /// for a fingerprint, and the settings screen said so too. Per-run on a healthy
+    /// device, and permanent on an upgraded one.
+    ///
+    /// With no record this *is* the adoption path: it reads the store once, writes
+    /// down what it found, and answers from that. See [`Self::record`] for what it
+    /// does with a store that cannot say.
     fn protection(&self) -> Protection {
-        // Scoped so the lock is not held across `record`, which can take it.
-        {
-            let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
-            if let Open::Known(Some((_, protection))) = &*open {
-                return *protection;
-            }
-        }
         self.record().map(|r| r.protection).unwrap_or_default()
     }
 
@@ -906,7 +924,20 @@ impl SyncService {
         if let Some(record) = self.read_record() {
             return Some(record);
         }
-        let (account, protection) = self.sign_in().ok().flatten()?;
+        let (account, reported) = self.sign_in().ok().flatten()?;
+        // A store that cannot say what protection its item carries — Apple's
+        // data-protection keychain — is answered from the history here, and the
+        // history is not a guess. The record and the *default of asking for nothing*
+        // arrived in the same build, so an item with **no record at all** was written
+        // by a build that always put the token behind a fingerprint: there was no way
+        // to ask for one and no way to have an item that asks for nothing. This is
+        // also the only place that inference is allowed to stand, because it is the
+        // only place where "no record" is evidence.
+        let protection = if reported == Protection::Unknown {
+            Protection::UserPresence
+        } else {
+            reported
+        };
         let stored = Stored {
             account_id: account.account_id,
             protection,
@@ -918,6 +949,11 @@ impl SyncService {
         // for a fingerprint, and a launch would read it — which is a prompt at a
         // moment nobody chose, once per launch, for ever. Saying nothing when the
         // item asks for nothing is right, because that is what absent means.
+        //
+        // This writes a *preference*, which is why it is confined to the case where
+        // the item is known to be locked: the write above is what the item is, and
+        // the switch is what the learner wants — and on an item written by a build
+        // with no switch, those are the same thing.
         if protection == Protection::UserPresence {
             let _ = self.write_lock(true);
         }
@@ -1075,7 +1111,17 @@ trait TokenStore: Send + Sync {
     fn available(&self) -> bool;
     /// Whether this platform can ask for a fingerprint at all.
     fn can_lock(&self) -> bool;
-    /// Read the sign-in, and how well it turned out to be protected.
+    /// Read the sign-in, and how well the store can say it is protected.
+    ///
+    /// The protection is what this store can **prove** about the item it found,
+    /// which is not always what the item is. Apple's data-protection keychain
+    /// returns the password and nothing about the access control on it, so an item
+    /// written with no constraint and one behind a fingerprint are the same read.
+    /// [`Protection::Unknown`] is that answer — *there is an item, and this store
+    /// cannot say how it is protected* — and it is deliberately **not**
+    /// [`Protection::UserPresence`]. The record in `meta` is what knows, because the
+    /// write that created the item knew what it managed; see
+    /// [`SyncService::protection`].
     fn load(&self) -> Result<Option<(Account, Protection)>, String>;
     /// Write the sign-in, asking for a fingerprint on every read if `locked`.
     fn save(&self, account: &Account, locked: bool) -> Result<Protection, String>;
@@ -1341,8 +1387,18 @@ impl TokenStore for Keychain {
         // `save`: a build the system cannot identify may not reach the
         // data-protection keychain *at all*, and that is a refusal to open that
         // keychain rather than an answer about this item.
+        //
+        // **What the item is protected by is not in this answer.** The read returns
+        // the password and nothing about the access control on it, and every item
+        // this app creates lives in the data-protection keychain either way — so an
+        // item written with no constraint and one behind a fingerprint are the same
+        // read. `Unknown` says that honestly; `UserPresence` was a guess that the
+        // rest of the service believed, which is how every Apple device came to look
+        // as though its sign-in were behind a fingerprint. The login-keychain
+        // fallback is different and *is* provable: an item there cannot carry an
+        // access control at all.
         let (found, protection) = match security_framework::passwords::generic_password(protected()) {
-            Ok(bytes) => (Some(bytes), Protection::UserPresence),
+            Ok(bytes) => (Some(bytes), Protection::Unknown),
             Err(error)
                 if error.code() == ERR_SEC_ITEM_NOT_FOUND
                     || error.code() == ERR_SEC_MISSING_ENTITLEMENT =>
@@ -1489,6 +1545,17 @@ mod tests {
         reports: Mutex<Option<Protection>>,
         /// A store that fails every read, to prove that some paths do not read.
         refuse: bool,
+        /// What a read reports, whatever the write stored.
+        ///
+        /// `None` — the truth — is what a store that round-trips faithfully does, and
+        /// what every other test wants. This exists because the Apple keychain's read
+        /// cannot answer that question at all: the password comes back and the access
+        /// control on it does not, so an item written with no constraint and one behind
+        /// a fingerprint are the same read. `Some(Protection::Unknown)` is what it
+        /// answers now that it says so honestly, and `Some(Protection::UserPresence)`
+        /// is what it used to answer — the guess the bug was made of. A double that can
+        /// only tell the truth is a double that cannot express either.
+        read_reports: Option<Protection>,
     }
 
     impl MemoryStore {
@@ -1500,6 +1567,7 @@ mod tests {
                 reads: Mutex::new(0),
                 reports: Mutex::new(None),
                 refuse: false,
+                read_reports: None,
             }
         }
 
@@ -1529,6 +1597,25 @@ mod tests {
             }
         }
 
+        /// A store that keeps the sign-in but cannot say how it is protected, and says
+        /// so. What an Apple data-protection item looks like from the reading side.
+        fn undecided() -> Self {
+            Self {
+                read_reports: Some(Protection::Unknown),
+                ..Self::working()
+            }
+        }
+
+        /// A store whose read cannot tell either, and guesses the worst — which is what
+        /// the Apple keychain used to answer before it was taught to say `Unknown`, and
+        /// what the reported bug was made of.
+        fn guessing() -> Self {
+            Self {
+                read_reports: Some(Protection::UserPresence),
+                ..Self::working()
+            }
+        }
+
         fn reads(&self) -> usize {
             *self.reads.lock().unwrap()
         }
@@ -1546,7 +1633,16 @@ mod tests {
             if self.refuse {
                 return Err("this store was not supposed to be read".to_string());
             }
-            Ok(self.account.lock().unwrap().clone())
+            // The protection a read can report is not always the one the write
+            // managed — that is the whole point of `read_reports`.
+            Ok(self
+                .account
+                .lock()
+                .unwrap()
+                .clone()
+                .map(|(account, stored)| {
+                    (account, self.read_reports.unwrap_or(stored))
+                }))
         }
         fn save(&self, account: &Account, locked: bool) -> Result<Protection, String> {
             // A store that can honour the request does, which is what the real one
@@ -2012,6 +2108,116 @@ mod tests {
         // writes the switch down as well, and the launch does not read it at all.
         let db = database("adopt-locked");
         let store = std::sync::Arc::new(MemoryStore::working());
+        store
+            .save(
+                &Account {
+                    refresh_token: "from-an-older-build".to_string(),
+                    account_id: Some("dbid:OLD".to_string()),
+                },
+                true,
+            )
+            .unwrap();
+
+        let http = connecting_http();
+        let service = with_http(Some(db.clone()), &store, &http, true);
+
+        let view = service.view();
+        assert!(view.connected, "the older sign-in is adopted: {}", view.message);
+        assert_eq!(view.protection, Protection::UserPresence);
+        assert!(view.locked, "and the switch now says what the item needs");
+        assert_eq!(db.meta_value(LOCK_KEY).unwrap().as_deref(), Some("on"));
+        assert_eq!(store.reads(), 1, "one read to adopt it, and that is the last one");
+
+        match service.auto() {
+            AutoSync::Skipped { reason } => assert!(reason.contains("fingerprint"), "{reason}"),
+            other => panic!("a locked sign-in is not read at launch: {other:?}"),
+        }
+        assert_eq!(http.calls(), 0, "and nothing was sent");
+        assert_eq!(store.reads(), 1, "nor was the keychain asked again");
+    }
+
+    #[test]
+    fn a_read_that_guesses_the_worst_does_not_override_what_the_write_recorded() {
+        // The bug exactly as it was, and the reason a double that can only tell the
+        // truth could never catch it. Apple's read answered `UserPresence` for *every*
+        // item — one with no access control and one behind a fingerprint are the same
+        // read — and `protection()` preferred that answer to the record. So the first
+        // time a run touched the token, which is the first sync and therefore every
+        // automatic sync, the rest of that run stopped syncing by itself and the
+        // settings screen said the sign-in was behind a fingerprint.
+        let db = database("guessing");
+        let store = std::sync::Arc::new(MemoryStore::guessing());
+        let http = connecting_http();
+
+        let service = with_http(Some(db.clone()), &store, &http, true);
+        connect(&service);
+        assert_eq!(service.view().protection, Protection::DeviceOnly);
+        assert!(!service.view().locked, "asking for nothing is the default");
+
+        // A later run reads the token, which is the moment the guess used to land.
+        let next = with_http(Some(db), &store, &http, true);
+        assert_eq!(next.account().unwrap().refresh_token, "refresh-me");
+        assert_eq!(store.reads(), 1, "the token is read once, as designed");
+
+        assert_eq!(
+            next.view().protection,
+            Protection::DeviceOnly,
+            "the record says what the write did, not what the read guessed"
+        );
+        assert!(!next.view().locked);
+        match next.auto() {
+            AutoSync::Synced { .. } => {}
+            other => panic!("an item that asks for nothing is still synced by itself: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_store_that_cannot_say_how_an_item_is_protected_does_not_displace_the_record() {
+        // The same shape with the honest silence the Apple read gives today. Both ends
+        // have to hold: a read that guesses must not become the answer, and a read that
+        // admits it cannot tell must not either — the record is what the write knew.
+        let db = database("undecided");
+        let store = std::sync::Arc::new(MemoryStore::undecided());
+        let http = connecting_http();
+
+        // Connecting writes definite knowledge down: the write knows what it managed.
+        let service = with_http(Some(db.clone()), &store, &http, true);
+        connect(&service);
+        assert_eq!(service.view().protection, Protection::DeviceOnly);
+        assert!(!service.view().locked, "asking for nothing is the default");
+
+        // A later run has to read the token, and that read is the moment the store's
+        // answer used to poison everything after it.
+        let next = with_http(Some(db), &store, &http, true);
+        assert!(next.view().connected);
+        assert_eq!(store.reads(), 0, "drawing the screen still reads nothing");
+        assert_eq!(next.account().unwrap().refresh_token, "refresh-me");
+        assert_eq!(store.reads(), 1, "the first thing that needs it reads it once");
+
+        assert_eq!(
+            next.view().protection,
+            Protection::DeviceOnly,
+            "the record says what the write did, not what the read could not tell"
+        );
+        assert!(!next.view().locked);
+
+        // And the consequence that matters: automatic syncing still happens.
+        match next.auto() {
+            AutoSync::Synced { .. } => {}
+            other => panic!("an item that asks for nothing is still synced by itself: {other:?}"),
+        }
+        assert_eq!(store.reads(), 1, "and believing the record cost no extra read");
+    }
+
+    #[test]
+    fn a_sign_in_the_store_cannot_describe_is_adopted_as_the_locked_item_it_must_be() {
+        // The other half of the same mode, and the upgrade path. An item with *no
+        // record at all* is the only place the store's silence is answered from the
+        // history: the record and the default of asking for nothing arrived in the
+        // same build, so an item predating the record was written by a build that
+        // always put the token behind a fingerprint. There was no switch to leave off.
+        let db = database("adopt-undecided");
+        let store = std::sync::Arc::new(MemoryStore::undecided());
         store
             .save(
                 &Account {
