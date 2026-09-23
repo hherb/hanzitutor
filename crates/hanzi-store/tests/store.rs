@@ -953,6 +953,79 @@ fn a_schema_two_database_gains_attempt_provenance_without_renumbering() {
     finish(&dir);
 }
 
+#[test]
+fn a_log_an_interrupted_upgrade_left_unnamed_is_repaired_and_never_silently_dropped() {
+    // The failure this pins. Schema 3 added `device_id` and `seq` to `attempt` as
+    // an `ALTER` followed by the `UPDATE` that filled them in, and each statement
+    // committed on its own, so a crash between the two left the columns present and
+    // every row NULL. Because each step is guarded by "does the column exist?", the
+    // next open skipped the backfill and the database never healed. What a learner
+    // got was an app that opened as though nothing were wrong, an export that
+    // failed with SQLite's own words about a column type, and a device whose whole
+    // earlier history had quietly disappeared from what sync publishes.
+    let dir = dir("interrupted-upgrade");
+    let db = Db::open(&dir).unwrap();
+    let device = db.device_id().to_string();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    for i in 0..3 {
+        let at = format!("2026-09-19T09:0{i}:00Z");
+        store.record_at('好', 70.0 + i as f32, &at).unwrap();
+    }
+    store.save().unwrap();
+    drop(store);
+
+    // The interruption, reproduced: the columns are there and the rows are not
+    // filled in, and the version still says 2 because the upgrade never finished.
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        conn.execute("DROP INDEX attempt_origin", []).unwrap();
+        conn.execute("UPDATE attempt SET device_id = NULL", []).unwrap();
+        conn.execute("UPDATE attempt SET seq = NULL", []).unwrap();
+        conn.execute("UPDATE meta SET value = '2' WHERE key = 'schema'", [])
+            .unwrap();
+    }
+
+    // Opening repairs it. The attempts are this device's own work again, named in
+    // the order they happened.
+    let db = Db::open(&dir).unwrap();
+    let log = db.attempts(None).unwrap();
+    assert_eq!(log.len(), 3, "no attempt was lost");
+    for attempt in &log {
+        assert_eq!(attempt.device_id, device);
+        assert!(attempt.seq > 0, "the row was left unnamed");
+    }
+    assert_eq!(
+        db.own_attempts().unwrap().len(),
+        3,
+        "`own_attempts` filters on the device, so a NULL device is the half that \
+         vanished from publish without a word"
+    );
+
+    // And if a row is stranded anyway — a repair that did not happen, or an older
+    // build writing to the file after this one opened it — publishing reports it
+    // rather than leaving it behind, and the message names the fault instead of
+    // SQLite's column type.
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        conn.execute("UPDATE attempt SET device_id = NULL WHERE id = 1", [])
+            .unwrap();
+    }
+    let publish_failure = db.own_attempts().unwrap_err();
+    assert!(publish_failure.contains("no device"), "{publish_failure}");
+    assert!(publish_failure.contains('1'), "{publish_failure}");
+    let read_failure = db.attempts(None).unwrap_err();
+    assert!(
+        read_failure.contains("did not finish an upgrade"),
+        "the message must name the fault: {read_failure}"
+    );
+    assert!(
+        !read_failure.contains("Invalid column type"),
+        "SQLite's own words are what this replaces: {read_failure}"
+    );
+
+    finish(&dir);
+}
+
 // ---- schema 5: what an attempt was graded from -----------------------------
 //
 // The headline score is one number, and it is not enough to check the grader

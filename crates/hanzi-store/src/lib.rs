@@ -85,7 +85,7 @@ impl Db {
         // used to make their own directories as they wrote; this is that
         // behaviour, moved to where the file is now opened.
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let conn = Connection::open(&path).map_err(|e| at(&path, e))?;
+        let mut conn = Connection::open(&path).map_err(|e| at(&path, e))?;
         // Write-ahead logging is what makes an interrupted write survivable:
         // a half-finished transaction is rolled back out of the log rather than
         // left in the main database.
@@ -121,7 +121,10 @@ impl Db {
                 ));
             }
         }
-        schema::apply(&conn).map_err(|e| at(&path, e))?;
+        // The whole upgrade is one transaction — see [`schema::apply`] — so a
+        // database this build cannot finish migrating is left exactly as it was
+        // rather than half-changed, and the next open tries again.
+        schema::apply(&mut conn).map_err(|e| at(&path, e))?;
         // `apply` has already generated this if the database was new or predated
         // schema 3; reading it back here is what makes every write in this
         // session able to name its own device without touching the table again.
@@ -227,6 +230,31 @@ impl Db {
     pub fn own_attempts(&self) -> Result<Vec<LoggedAttempt>, String> {
         let conn = self.lock();
         let path = self.path();
+
+        // The query below filters on `device_id = ?`, so a row whose device is
+        // `NULL` matches nothing and simply is not there. That silence was the
+        // dangerous half of a half-finished upgrade: this device's entire
+        // pre-upgrade log vanished from what `publish` offers, the sync watermark
+        // then advanced past attempts that had never been uploaded, and nothing
+        // said so. The backfills at open repair that state, and this is the guard
+        // for the case where they somehow did not — reporting is the one thing
+        // that must happen instead of omitting. `device_id` leads the
+        // `attempt_origin` index, so this is a lookup rather than a table scan.
+        let stranded: i64 = conn
+            .query_row("SELECT COUNT(*) FROM attempt WHERE device_id IS NULL", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| at(&path, e))?;
+        if stranded > 0 {
+            return Err(format!(
+                "{} holds {stranded} attempt(s) with no device, so they cannot be \
+                 published under this device's name — the database did not finish an \
+                 upgrade. Reopening the app repairs it, and syncing before then would \
+                 leave those attempts behind.",
+                path.display()
+            ));
+        }
+
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {ATTEMPT_COLUMNS} FROM attempt
@@ -326,10 +354,33 @@ fn read_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoggedAttempt> {
         }
         _ => None,
     };
+    let id: i64 = row.get(0)?;
+    // A row with no device or no sequence number cannot be named, and it means the
+    // database never finished the upgrade that adds them. Read as a plain `String`
+    // and `i64` it arrived as SQLite's own words — "Invalid column type Null at
+    // index: 1, name: device_id" — which names the storage type rather than the
+    // fault, and is indistinguishable from a corrupt file. The backfills at open
+    // make this unreachable; it is spelled out anyway because the failure it
+    // replaces was confusing enough to be worth never seeing again.
+    let device_id: Option<String> = row.get(1)?;
+    let seq: Option<i64> = row.get(2)?;
+    let (Some(device_id), Some(seq)) = (device_id, seq) else {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Null,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "attempt {id} has no device or sequence number, so it cannot be \
+                     named or published — the database did not finish an upgrade"
+                ),
+            )),
+        ));
+    };
     Ok(LoggedAttempt {
-        id: row.get(0)?,
-        device_id: row.get(1)?,
-        seq: row.get(2)?,
+        id,
+        device_id,
+        seq,
         ch: row.get(3)?,
         at: row.get(4)?,
         score: row.get(5)?,

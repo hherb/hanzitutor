@@ -853,12 +853,49 @@ after each item) both do this now. The shape is the rule, not either file.
     changes a legitimate attempt: for finite, in-box input every guard is the
     branch it always took.
 
+33. **A schema upgrade commits as a whole, and a backfill runs on every open.**
+    `schema::apply` wraps the create, the `ALTER`s, their backfills and the
+    version stamp in **one immediate transaction**. That is not tidiness: each
+    statement used to commit on its own, so a crash between an `ALTER TABLE` and
+    the `UPDATE` that fills the new column in left the column present and its rows
+    `NULL` — and because every step is guarded by "does this column exist?", the
+    next open skipped the very backfill that would have repaired it. The database
+    never healed, `Db::open` succeeded as though nothing were wrong, the log
+    failed to read with SQLite's own words (`Invalid column type Null at index:
+    1`), and `own_attempts` — which filters on `device_id = ?` — silently returned
+    nothing, so this device's whole earlier history vanished from what sync
+    published and the watermark then advanced past it.
+
+    Three things follow, and all three are load-bearing:
+
+    - **The `ALTER` and its backfill are separate decisions.** The column is added
+      only if missing; the `UPDATE … WHERE <column> IS NULL` runs on *every* open.
+      It is a no-op on a healthy database and repairs one an older build left
+      half-upgraded. Gating the two together is exactly what made the damage
+      permanent, so do not "tidy" them back into one `if`.
+    - **The transaction is `Immediate`.** It writes from its first statement, and a
+      deferred transaction that reads `PRAGMA table_info` first could meet
+      `SQLITE_BUSY_SNAPSHOT` — which the busy handler must not retry — turning
+      contention into a failure to open a healthy file.
+    - **A row that cannot be named is reported, never dropped.** `read_attempt`
+      answers a `NULL` device or sequence with a sentence naming the fault rather
+      than a column type, and `own_attempts` counts the rows its filter would have
+      hidden and refuses rather than omitting them. The backfills make both
+      unreachable; they exist because the failure they replace was silent.
+
+    `a_log_an_interrupted_upgrade_left_unnamed_is_repaired_and_never_silently_dropped`
+    builds the damaged file exactly (columns present, rows `NULL`, version 2) and
+    requires the log back; `an_upgrade_that_fails_changes_nothing_and_can_be_run_again`
+    makes one migration step fail deliberately and requires that *nothing* moved —
+    no columns, no stamp, no device id, no rows — and that retrying completes.
+    Both were checked against the old code: all three new tests fail there.
+
 ## 5. The verification loop
 
 Run before every commit:
 
 ```bash
-pnpm test           # 567 tests: engine + data-pipeline units, the SQLite store,
+pnpm test           # 610 tests: engine + data-pipeline units, the SQLite store,
                     # sync convergence, IPC contract, speech, notices, data-dir flag
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
