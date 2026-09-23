@@ -1,6 +1,6 @@
 # Hanzi Tutor — privacy policy
 
-**Last updated: 23 September 2026**
+**Last updated: 22 September 2026.**
 
 Hanzi Tutor is an offline application for practising simplified Chinese
 handwriting. This policy describes what the app does with information. It is
@@ -128,12 +128,14 @@ Questions about this policy can be sent to **support@hherb.com**.
 
 <!--
   This policy is published at **https://hherb.com/hanzi-tutor/privacy**, which is
-  the URL the Play Console listing points at. The contact address is real and
-  monitored (set 23 September 2026, replacing a placeholder). Keep this file and
-  the published page in step — the page is what Play reads, and the project's rule
-  is that the listing, the README and `LICENSES.md` name every way the app can
-  reach the network. On 23 September 2026 this file was brought back in step with
-  the page: it had said "two things" and omitted the synthesis download.
+  the URL the Play Console listing points at. The date above mirrors the published
+  page, which was already correct; this file was the stale copy — it had said
+  "two things can reach the network" and omitted the synthesis download that the
+  page already listed. The contact
+  address is real and monitored (`support@hherb.com`, filling in a placeholder on
+  23 September 2026). Keep this file and the page in step — the page is what Play
+  reads, and the project's rule is that the listing, the README and `LICENSES.md`
+  name every way the app can reach the network.
 
   What still blocks submission is **not** this file: it is the Play developer
   account. The plan is a **business (organization) account**, which is exempt from
