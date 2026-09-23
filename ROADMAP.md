@@ -585,12 +585,19 @@ is carried when the iPad is not, and practice on it is the point.
   toolchain/Tauri-version question rather than a change here, recorded with the
   evidence in `HANDOVER.md` §6. Until it is resolved, a device build is a debug build,
   which is fine for practice and not for distribution.
-- **The Play submission itself.** `app-universal-release.aab` is built and signed, and
-  the same code has been installed and used on a device as a release APK. What remains
-  is the paperwork: publishing `docs/privacy-policy.md` at a public URL (Play requires
+- **The Play submission itself, and it is waiting on the developer account.**
+  `app-universal-release.aab` is built and signed, and the same code has been installed
+  and used on a device as a release APK. What remains is the paperwork: publishing
+  `docs/privacy-policy.md` at a public URL on the project's own website (Play requires
   one because of the microphone), pasting the copy from `store/listing.md`, and
   answering the Data safety and content-rating questionnaires whose answers are written
-  out there.
+  out there. The policy is published at **https://hherb.com/hanzi-tutor/privacy** and
+  the listing points at it. **As of 23 September 2026 none of it can be uploaded**: the
+  plan is a business (organization) account — exempt from the 12-testers-for-14-days
+  closed-test rule that applies to personal accounts created on or after
+  13 November 2023 — and Google has not yet accepted the organization's D-U-N-S number,
+  which is with an accountant. The contact address is set (`support@hherb.com`); the
+  app side is ready.
 - **Two things still need a person rather than a program**: hearing the pronunciation
   on the phone, and a stylus run on the board to check palm rejection.
 
@@ -1710,8 +1717,10 @@ and the list and the sidebar retired themselves **while the apps were still runn
 - Practising offline for any length of time and then syncing loses no attempt.
 - A card whose `attempts` exceeds its logged rows keeps its schedule through the baseline
   path.
-- With sync unconfigured the app makes no network request, and `hanzi-sync` is the only
-  module besides `asr.rs` that can open a socket.
+- With sync unconfigured, nothing the app does on its own makes a network request —
+  the only requests are the two model downloads, each behind its own button — and
+  `hanzi-sync` is one of only three modules that can open a socket, the others being
+  `asr.rs` and `say.rs`.
 
 **Left out, and why.**
 

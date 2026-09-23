@@ -368,7 +368,8 @@ src-tauri/
   src/commands.rs           the IPC surface; thin wrappers over AppState methods
   src/state.rs              embedded dataset, speech warm-up, the stores
   src/asr.rs                the recognition model: manifest, download, recogniser.
-                            One of the only modules that opens a socket
+                            One of three modules that open a socket, with `say.rs`
+                            and `sync.rs`; each only when asked
   src/say.rs                the synthesis model, on asr.rs's rules exactly
   src/sync.rs               the sync account and the platform secret store
   src/licences.rs           the catalogue of notices that ship; see §8
@@ -759,8 +760,10 @@ after each item) both do this now. The shape is the rule, not either file.
     with a *worse* error than the one it gives when it simply fetches.
 27. **Tone practice never depends on the speech model, and the transcript is never
     a pronunciation score.** Two rules that protect the same thing from opposite
-    sides. `asr.rs` holds the only code in the app that opens a socket, and it runs
-    only because somebody pressed the install button; with no model installed
+    sides. `asr.rs` opens a socket only because somebody pressed the install button
+    — `say.rs` is the same, and `sync.rs` reaches only the learner's own Dropbox,
+    once they connect it; nothing on that list runs on its own. With no model
+    installed
     `Asr::recognize` returns `Ok(None)`, the panel draws exactly what it always
     drew, and nothing prompts. That is not a fallback to be tidied up — it is the
     state the app ships in. And a recogniser's language model is built to repair
@@ -1817,8 +1820,24 @@ back.
 - **Play needs more than an AAB.** Because the app asks for the microphone, the
   listing requires a published privacy policy and a Data safety declaration, and the
   answers have to match what the app really does. `docs/privacy-policy.md` and
-  `store/listing.md` hold both; the policy still needs a real contact address and a
-  public URL before submission, and both are marked with TODOs.
+  `store/listing.md` hold both. The contact address is real (`support@hherb.com`) and
+  the policy is published at **https://hherb.com/hanzi-tutor/privacy**, which the
+  listing points at. **Keep that page and the file in step.** On 23 September 2026 the
+  file was found to say "two things can reach the network" and to omit the ~61 MB
+  MeloTTS synthesis download that `say.rs` fetches — the published page already listed
+  it — so the file was corrected to match. Two model downloads (`asr.rs`, `say.rs`) and
+  Dropbox sync are the whole network surface; `grep -rln "ureq\|reqwest" src-tauri/src`
+  is the check.
+- **The Play submission waits on the developer account, not on the app.** The plan is
+  a **business (organization) account**, which is exempt from Google's
+  12-testers-for-14-days closed-test rule — personal accounts created on or after
+  13 November 2023 are subject to it, which would put a 4–6 week closed test in front
+  of any production release. Google has not yet accepted the organization's
+  **D-U-N-S number**; that is with an accountant. Nothing can be uploaded until it
+  clears, so do not start the listing as if a track existed. The app side is ready and
+  checkable now: target SDK 36, `versionCode` 5011, exactly the four declared
+  permissions plus AndroidX's own (see `store/listing.md`), icon 512×512, feature
+  graphic 1024×500 and three 1080×1920 screenshots.
 - **The version code comes from the app version.** `tauri.properties` derives `3000`
   from `0.3.0`, and Play requires it to increase with every upload, so a second upload
   means bumping the version in `Cargo.toml` and `tauri.conf.json` first.

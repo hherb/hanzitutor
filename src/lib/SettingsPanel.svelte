@@ -670,8 +670,9 @@
           working whatever this is set to. Recognising <em>which</em> syllable you
           said is a different problem, with no model-free answer: a learner's own
           voice cannot be pre-recorded. That needs a speech model, and this app does
-          not ship one. It is the only thing this app ever <em>downloads</em>, and it
-          happens only if you press the button beside this.
+          not ship one. It is fetched only if you press the button beside this — and
+          so is the pronunciation model below; those two downloads are the only
+          things this app ever fetches, each only when you ask.
         </span>
       </div>
       <div class="how">

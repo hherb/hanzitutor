@@ -85,8 +85,8 @@ Requires no account. No ads. No in-app purchases.
 
 - **Category:** Education
 - **Tags:** Language learning, Handwriting
-- **Contact email:** *<!-- TODO --> the same address as the privacy policy*
-- **Privacy policy URL:** *<!-- TODO: publish `docs/privacy-policy.md` and link it here -->*
+- **Contact email:** support@hherb.com
+- **Privacy policy URL:** https://hherb.com/hanzi-tutor/privacy
 
 ## Data safety
 
@@ -154,21 +154,29 @@ python3 scripts/make-store-assets.py screenshot raw.png store/phone-screenshots/
 
 ## Before submitting
 
-1. Publish `docs/privacy-policy.md` at a public URL and put it in the listing.
-2. Replace the placeholder contact address in the privacy policy.
-3. Upload `app-universal-release.aab` — **not** the APK; Play only accepts
+**The current blocker is the developer account, not the app.** The plan is a
+business (organization) Play account, which is exempt from Google's
+12-testers-for-14-days closed-test rule (that rule applies to personal accounts
+created on or after 13 November 2023); Google has not yet accepted the
+organization's D-U-N-S number, and that is with an accountant. Nothing here can be
+uploaded until it clears. See `docs/privacy-policy.md` for the same note.
+
+`docs/privacy-policy.md` is published at **https://hherb.com/hanzi-tutor/privacy**,
+and the listing points there. Keep the file and the page in step.
+
+1. Upload `app-universal-release.aab` — **not** the APK; Play only accepts
    bundles for new apps.
-4. Enrol in Play App Signing. The key in `~/.android/hanzitutor-upload.jks` is
+2. Enrol in Play App Signing. The key in `~/.android/hanzitutor-upload.jks` is
    then the *upload* key; Google holds the app signing key, and a lost upload
    key can be reset from the Play Console.
-5. Check the version code. Play needs it to increase with every upload, and it
+3. Check the version code. Play needs it to increase with every upload, and it
    is derived from the app version (`0.2.0` → `2000`) in `tauri.properties`.
    Bump the version in `Cargo.toml` / `tauri.conf.json` before a second upload.
-6. Complete the Data safety and content rating questionnaires using the answers
+4. Complete the Data safety and content rating questionnaires using the answers
    above. The permission list Play shows is read from the artifact, so check it
    there rather than here: `aapt2 dump permissions` on the `.aab` or the APK should
    list four `uses-permission` lines — `RECORD_AUDIO`, `INTERNET`, `USE_BIOMETRIC`
    and `USE_FINGERPRINT` — and one more the app declares for itself,
    `com.hanzitutor.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, which AndroidX
    adds to guard a broadcast receiver.
-7. Test on a device from the internal testing track before promoting.
+5. Test on a device from the internal testing track before promoting.
