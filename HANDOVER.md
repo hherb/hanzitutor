@@ -2352,6 +2352,22 @@ screen shows, and it cannot be lost in packaging. The file copy is what a
 redistributor can read without launching the app, which is the conventional form of
 the obligation.
 
+**The mobile shells add two more copies of `LICENSES.md`, and they are tracked.** For
+iOS and Android the bundle's notices are *staged resources*: `bundle.resources` in
+`tauri.conf.json` maps `../LICENSES.md` to `licences/PROVENANCE.md`, and a build
+writes the tree into `src-tauri/gen/apple/assets/licences/` and
+`src-tauri/gen/android/app/src/main/assets/licences/`. Those trees are committed
+(they are what makes the generated projects complete), and a mobile build
+**regenerates** them — so a change to `LICENSES.md` that is not followed by a mobile
+build leaves the committed copies behind, which shows up as an unexplained diff the
+next time somebody builds a phone. That happened: `f96296c` added the readers'-audio
+paragraphs to `LICENSES.md` and neither staged copy was refreshed, so both sat one
+release behind until the 0.5.9 iOS build rewrote the Apple one. They are copies, not
+sources: bringing them back in step is copying `LICENSES.md` over them, exactly as
+the build does, and the four are then byte-identical. Nothing pins them (the licences
+test reads the catalogue, `licences/` and the bundle config), so this is the one
+notice obligation with no tripwire on it.
+
 ### Verifying a build, by hand
 
 There is no test for the packaged artefact, because there is no packaged artefact in

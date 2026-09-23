@@ -382,6 +382,18 @@ what this app bundles, unmodified, at both speeds. Its notice is reproduced
 inside `licences/NO7Z-hsk-sentences-audio.txt` so the upstream chain of provenance
 stays legible.
 
+**The readers' audio, in contrast, is this project's own.** That corpus publishes
+text only, so every one of its 1,184 clips was synthesised here with **MeloTTS**
+(MIT, noticed separately), from text under CC BY 4.0. Nothing was taken from
+upstream but the sentences, their pinyin and their glosses, and the changes are
+recorded in that corpus's notice. Its text carries **no share-alike** condition,
+which is what makes it the simplest of the two to redistribute.
+
+**Each corpus's directory carries its own note.** `public/audio/no7z/README.md`
+and `public/audio/harukicoder/README.md` state the source, the licence, the
+attribution the licence requires and the changes made, so the obligation travels
+with the files a reader actually receives and not only with the installed app.
+
 The bundled recordings and the on-device synthesiser are therefore **two different
 voices**, deliberately: a phrase with a recording is heard in the course's voice, a
 phrase without one is spoken by the device.
