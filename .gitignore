@@ -86,3 +86,4 @@ apps/tone-trainer/src-tauri/gen/schemas/
 # --- Editor / OS ---------------------------------------------------------
 #.idea/
 .DS_Store
+src-tauri/embedded.provisionprofile
