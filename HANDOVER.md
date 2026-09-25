@@ -2671,7 +2671,8 @@ part's `drawable` flag is checked against the character's own stroke geometry.
 
 ### Still open
 
-- **The App Store path's sandboxing is done (2026-09-25); the packaging isn't.**
+- **The App Store path's sandboxing and packaging are both done (2026-09-25
+  and 2026-09-26).**
   `probe-app-sandbox.sh`'s guess above was right: `speech.rs`'s macOS backend
   moved off `/usr/bin/say`/`/usr/bin/afplay` onto in-process
   `AVSpeechSynthesizer`, the same backend iOS already used, widened to
@@ -2690,13 +2691,49 @@ part's `drawable` flag is checked against the character's own stroke geometry.
   the network under sandbox — this environment has no reliable way to click
   through a GUI (§6 already notes why: AppleScript/System Events need
   Accessibility, not Screen Recording), so that half is a human check.
-  **Still not done at all**: Mac App Store *packaging* — an Apple Distribution
-  signing identity, a Mac App Store provisioning profile, and a
-  `.pkg`/`productbuild` (or Tauri-native equivalent) step for
-  Transporter/App Store Connect upload. `build-release.sh` only knows
-  Developer ID signing for direct distribution; none of the above exists yet,
-  and it is a separate piece of work, deliberately not started alongside the
-  sandboxing.
+  **The packaging half followed the next day**: `scripts/build-appstore.sh`,
+  a separate script from `build-release.sh` rather than a mode flag on it —
+  Apple Distribution signing rather than Developer ID, a `.pkg` rather than a
+  `.dmg`, no notarisation (App Review replaces it). The account already had
+  both certificates it needs (`security find-identity`: "Apple Distribution"
+  and "3rd Party Mac Developer Installer"), so the only manual step was a Mac
+  App Store provisioning profile from the Apple Developer website — Tauri has
+  no macOS Xcode-project generation and no App Store-aware bundle type at all
+  (`ios`/`android` are the only platform subcommands the CLI has; `-b` only
+  knows `ios, app, dmg`), so there is no automatic-signing route the way there
+  is for iOS. Two non-obvious things cost real time getting the script right:
+  - **`plutil`'s keypath syntax reads an unescaped `.` as nesting, not as
+    part of a key's own name.** `application-identifier` and
+    `team-identifier` are entitlement keys named `com.apple.application-
+    identifier` and `com.apple.developer.team-identifier` — real dots, not
+    nesting — and both `plutil -extract` and `plutil -insert` need them
+    written `com\.apple\.application-identifier` or they fail with "Key path
+    not found", silently reading it as `Entitlements → com → apple →
+    application-identifier`, four levels deep, none of which exist. This bit
+    twice in the same script, once on extract and once on insert, and is easy
+    to hit again in any future script that reads or writes an entitlements
+    or provisioning-profile plist by key name from the shell.
+  - **`productbuild` writes a handful of "write: Permission denied" lines to
+    stderr regardless of anything this script does**, reproduced by running
+    `productbuild` completely on its own with no relation to the app being
+    signed. The package it writes is still correctly signed either way
+    (`pkgutil --check-signature`, and the certificate chain in its own
+    stdout) — worth knowing before treating it as a sign this script did
+    something wrong.
+
+  Verified: `codesign --verify --deep --strict` passes on the re-signed app;
+  `codesign -d --entitlements -` shows the sandbox/network/audio-input
+  entitlements from the earlier work **and**
+  `application-identifier`/`team-identifier` from the embedded profile;
+  `pkgutil --check-signature` reports the `.pkg` signed by the installer
+  certificate with a valid chain to the Apple Root CA. `spctl -a -vv`
+  reporting **"rejected"** on both the `.app` and the `.pkg` is expected, not
+  a fault to chase: Mac App Store builds are never notarised, and `spctl`'s
+  Gatekeeper policy only recognises notarised or actually-App-Store-installed
+  content — what actually matters is `origin=` naming the right certificate,
+  which it does. **Not done here**: actually uploading through Transporter or
+  clicking Submit for Review in App Store Connect — the script gets a valid,
+  signed `.pkg` onto disk and stops there, deliberately.
 - **The ink measure is proven, but half of it cannot fire yet.** The canvas paints
   every stroke at one fixed width, so nothing a learner does on a trackpad can put
   down *less* ink than `INK_WIDTH` and the `faint` verdict is unreachable in daily

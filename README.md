@@ -1296,6 +1296,36 @@ bundle/macos/Hanzi Tutor.app
 bundle/dmg/Hanzi Tutor_0.5.0_aarch64.dmg
 ```
 
+### Shipping the Mac App Store build
+
+```bash
+./scripts/build-appstore.sh
+```
+
+A separate script from the one above, not a flag on it: this signs with an
+*Apple Distribution* certificate rather than *Developer ID*, embeds a Mac App
+Store provisioning profile, and packages the result as a `.pkg` rather than a
+`.dmg` — App Review replaces notarisation, so there is nothing to staple
+either. It needs one thing this script cannot get for you: a Mac App Store
+provisioning profile for `com.hanzitutor.app`, downloaded from
+[developer.apple.com/account](https://developer.apple.com/account) (Certificates,
+IDs & Profiles → Profiles → **+** → Mac App Store Connect → this app's ID →
+your Apple Distribution certificate) and saved as
+`src-tauri/embedded.provisionprofile` — gitignored, the same as
+`src-tauri/gen/apple/Signing.xcconfig`, since it is tied to your account.
+
+The result lands beside the direct-distribution one, in
+`.cargo-target/release/bundle/appstore/Hanzi Tutor_0.5.11.pkg`. The script
+verifies its own signature (`codesign --verify --deep --strict`,
+`pkgutil --check-signature`) before it finishes; `spctl` reporting the result
+"rejected" if you check it yourself afterwards is expected, not a fault — Mac
+App Store builds are never notarised, and `spctl`'s Gatekeeper policy only
+recognises notarised or actually-App-Store-installed content, not a
+freshly-signed `.pkg` sitting on disk before Apple's seen it. What actually
+matters is `origin=` naming your own certificate, which is what confirms the
+signature itself is valid. From there, Transporter (free from the Mac App
+Store) is the way to actually upload it.
+
 ### Shipping the Android build
 
 ```bash
