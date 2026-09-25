@@ -15,20 +15,33 @@
   form: everything works in `tauri dev` and in an unsigned build, then capture
   returns silence in the signed, notarised bundle.
 
-  ## What is deliberately absent
+  ## App Sandbox
 
-  `com.apple.security.app-sandbox` is **not** here. Sandboxing the app is a
-  separate decision that has not been taken, and taking it silently as part of a
-  microphone change would be the wrong way round: HANDOVER.md records that the
-  App Store path is untested and that the sandbox is expected to break the
-  `say`-based macOS pronunciation backend, which is a real problem to solve
-  rather than a flag to flip. When that work happens, this file is where the
-  sandbox entitlement belongs, and `com.apple.security.device.audio-input` below
-  is already the one capture will need once it is sandboxed.
+  `com.apple.security.app-sandbox` is here now, for the Mac App Store listing
+  — HANDOVER.md has the history: the real blocker was never the sandbox
+  entitlement itself but the pronunciation backend, which used to spawn
+  `/usr/bin/say` and `/usr/bin/afplay`, and a sandboxed process cannot spawn
+  either. `speech.rs` moved macOS onto the same in-process
+  `AVSpeechSynthesizer` iOS already used, which needs no such entitlement.
+
+  `com.apple.security.network.client` is required separately: it restricts
+  *any* outgoing TCP connection under sandbox, including a raw-socket Rust
+  client, not only `URLSession` traffic — `ureq` (Dropbox sync in `sync.rs`,
+  the ASR/TTS model downloads in `say.rs`) is not exempt just because it does
+  not go through Apple's own networking stack.
+
+  Nothing else needs an entitlement: the app's own files (`hanzi.db`, the
+  cached models) are read and written inside the sandbox container
+  automatically, and opening the Dropbox OAuth URL in the system browser needs
+  none either.
 -->
 <plist version="1.0">
 <dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
 	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<key>com.apple.security.network.client</key>
 	<true/>
 </dict>
 </plist>

@@ -1698,6 +1698,77 @@ back.
   not running, which is treated as ordinary "not installed" rather than a fault —
   see the caveat now in `README.md` under
   [Recognising what was said](README.md#recognising-what-was-said).
+- **The TTS model's download progress bar never appeared — a real bug, found
+  on a physical run rather than in any test (2026-09-25).** The ASR download
+  showed a proper progress bar; the TTS one showed only a static "Starting…"
+  button. Both settings-screen components are correct and symmetric — the
+  bug was entirely in `Say::install` (`src-tauri/src/say.rs`), which ran the
+  whole download **on the calling thread** and returned only once it
+  finished, unlike `Asr::install`
+  (`crates/hanzi-hearing/src/asr.rs`), which spawns a thread and returns
+  immediately. `say_install`'s own doc comment even claimed the frontend
+  "calls it from a background task and polls `say_status` for progress" —
+  true of the JS call site, irrelevant to whether the Rust command itself
+  blocks: since `sayInstall()`'s promise did not resolve until the download
+  was already done, the poll that would have shown progress never got a
+  chance to start. Fixed by giving `Say::install` the same
+  `std::thread::spawn` + `Arc<Mutex<Install>>` shape `Asr::install` already
+  had, and moving `fetch_all` out of `impl Say` into a free function taking
+  `&Arc<Mutex<Install>>` explicitly, so it can be moved into the spawned
+  thread. **The lesson**: a command that "looks async" because the frontend
+  awaits it from a background task can still block synchronously on the Rust
+  side — the two are independent, and only reading the actual `fn install`
+  body (not its doc comment) settles which.
+- **Porting macOS's speech backend to `AVSpeechSynthesizer` (2026-09-25) found
+  two real bugs in the *existing, shipped* iOS pattern, not just new macOS
+  ones — worth reading even if iOS is not what you are touching.**
+  1. **A synchronous, delegate-free AVFoundation call is not automatically
+     safe off the main thread, and "it's just a read-only class query" is not
+     a proof.** `list_voices` was first written to call
+     `AVSpeechSynthesisVoice::speechVoices()` directly, skipping `with_main`
+     on the reasoning that a stateless query needs no consistent thread.
+     Measured, not assumed, and wrong: it hung indefinitely the first time a
+     test called it from a non-main thread — confirmed with `timeout` and a
+     redirected-to-file run, since the default parallel `cargo test` output
+     hides a hung thread behind other tests' passing lines. Put back through
+     `with_main` (below).
+  2. **`with_main`'s dispatch to `DispatchQueue::main()` needs a real run loop
+     servicing that queue, and `cargo test` has none — on *any* thread,
+     including its own actual main thread.** iOS never surfaced this: its
+     `with_main`-gated code is `cfg(target_os = "ios")` and simply does not
+     compile into a `cargo test` binary run on a macOS host. Widening the
+     same code to macOS put it in every `cargo test` run on this machine, and
+     a `#[cfg(test)]`-only patch inside `hanzi-voice` **does not fix it**: a
+     downstream crate (`hanzi-tutor`, in `tests/ipc_contract.rs`) links
+     `hanzi-voice` as an ordinary dependency, where `cfg(test)` is never true,
+     so its own tests still hung on the exact same call. `cfg(test)` does not
+     cross a crate boundary; a bug in a dependency's production code is still
+     production code from the dependent's point of view. Fixed properly:
+     macOS's `with_main` now dispatches to a dedicated worker thread this
+     module spawns and owns for the process's life (a channel, not
+     `DispatchQueue::main()`), which needs no run loop anywhere and is
+     therefore correct in `cargo test`, in `hanzi-tutor`'s tests, and in the
+     shipped app alike — not merely a test workaround. iOS's `with_main` is
+     untouched, since its `DispatchQueue::main()` dispatch is proven and
+     working there (the real app has a UIKit run loop) and does not need
+     fixing.
+  3. **A third bug rode along with the second and was easy to miss**:
+     `Drop for Speaker` calls `stop()` unconditionally, and on macOS `stop()`
+     now goes through `stop_on_main`/`with_main` too — so *any* test that so
+     much as constructs a `Speaker::default()` and lets it drop, having never
+     called `speak`, was hanging on drop alone, independent of whichever bug
+     above you think you have fixed. `SPEECH_EVER_CREATED`, a plain
+     `AtomicBool` set the first time a synthesiser is actually built, lets
+     `stop_on_main` return immediately without touching the worker thread at
+     all when nothing has ever spoken — fixing the tests and, as a real
+     side effect rather than a hack, saving a thread hop in the shipped app
+     for every `stop()` call before the first `speak()`.
+
+  **The lesson, if this pattern gets reused for a fourth platform**: prove any
+  claim like "this needs no consistent thread" or "this is safe under
+  `cargo test`" by actually running the test with a timeout, not by reading
+  the Apple documentation and reasoning about it — both bugs above looked
+  correct on paper and both hung in practice.
 - **A build produced by `tauri ios build` embeds the frontend; it does not use the
   dev server.** A layout change therefore needs `vite:build` *and* a Rust rebuild to
   re-embed — a couple of minutes per look. `ios dev --open` is the only HMR route on
@@ -2600,23 +2671,32 @@ part's `drawable` flag is checked against the character's own stroke geometry.
 
 ### Still open
 
-- **The App Store path is untested, and one part of it is at risk.** A Mac App
-  Store build must be sandboxed, and `speech.rs` pronounces by spawning
-  `/usr/bin/say`, which a sandbox may refuse. `scripts/probe-app-sandbox.sh` was
-  written to settle it and **could not do so from here**: applying any sandbox
-  profile is refused in this environment (`sandbox-exec -p '(version 1)(allow
-  default)' …` → `sandbox_apply: Operation not permitted`), and an app signed with
-  `com.apple.security.app-sandbox` and launched through launchd ran with the
-  entitlement present but unenforced. The script reports "inconclusive" rather than
-  a false answer. Run it from a normal login session, or put a build on TestFlight
-  and try *hear it* there. If `say` is refused, the macOS backend wants
-  `AVSpeechSynthesizer` in process — **not a new design**: `speech.rs` already
-  speaks that way on iOS, so it is the same backend behind a `cfg`. Settle this
-  before writing M6's three backends. There is also an answer that removes the
-  question: the pre-rendered audio pack in
-  [`docs/research/ASR_TTS_CLAUDE_RESEARCH.md`](docs/research/ASR_TTS_CLAUDE_RESEARCH.md)
-  §4.4 takes synthesis off the runtime path for the bundled curriculum, and M14's
-  clips are that answer in part already.
+- **The App Store path's sandboxing is done (2026-09-25); the packaging isn't.**
+  `probe-app-sandbox.sh`'s guess above was right: `speech.rs`'s macOS backend
+  moved off `/usr/bin/say`/`/usr/bin/afplay` onto in-process
+  `AVSpeechSynthesizer`, the same backend iOS already used, widened to
+  `cfg(any(target_os = "ios", target_os = "macos"))` rather than duplicated —
+  see §6 for the two real bugs that surfaced doing it and how they were fixed.
+  `src-tauri/Entitlements.plist` now carries `com.apple.security.app-sandbox`
+  and `com.apple.security.network.client` alongside the microphone entitlement
+  that was already there. Verified: a Developer ID-signed release build
+  (`scripts/build-release.sh`) carries both new entitlements
+  (`codesign -d --entitlements -`), launches, and its own stderr shows the new
+  backend resolving a real voice (`[speech] using voice Tingting (zh-CN)`) and
+  reading/writing the study database from inside
+  `~/Library/Containers/com.hanzitutor.app/` — the sandbox container — with no
+  `sandboxd` denials in the unified log. **Not verified here**: actually
+  listening to the audio, and the Dropbox connect / live model download over
+  the network under sandbox — this environment has no reliable way to click
+  through a GUI (§6 already notes why: AppleScript/System Events need
+  Accessibility, not Screen Recording), so that half is a human check.
+  **Still not done at all**: Mac App Store *packaging* — an Apple Distribution
+  signing identity, a Mac App Store provisioning profile, and a
+  `.pkg`/`productbuild` (or Tauri-native equivalent) step for
+  Transporter/App Store Connect upload. `build-release.sh` only knows
+  Developer ID signing for direct distribution; none of the above exists yet,
+  and it is a separate piece of work, deliberately not started alongside the
+  sandboxing.
 - **The ink measure is proven, but half of it cannot fire yet.** The canvas paints
   every stroke at one fixed width, so nothing a learner does on a trackpad can put
   down *less* ink than `INK_WIDTH` and the `faint` verdict is unreachable in daily

@@ -215,10 +215,14 @@ impl Say {
         }
     }
 
-    /// Fetch the weights, reporting progress as it goes.
+    /// Fetch the weights, reporting progress as it goes, on a thread of its
+    /// own.
     ///
-    /// Runs on the calling thread; the settings screen calls it from a task, as
-    /// it does for the recognition model.
+    /// Returns as soon as the download has been started, because a 50+ MB
+    /// download that a command blocked on would leave the settings screen
+    /// showing a button that never comes back rather than the progress bar
+    /// [`Say::status`] is there to drive — see [`crate::asr`]'s `install`,
+    /// which this mirrors.
     pub fn install(&self) -> Result<(), String> {
         let Some(dir) = self.model_dir() else {
             return Err("This build has nowhere to put the model.".to_string());
@@ -233,94 +237,18 @@ impl Say {
             install.error = None;
         }
 
-        if let Err(why) = self.fetch_all(&dir) {
-            let mut install = self.install.lock().expect("say install slot");
-            install.state = InstallState::Failed;
-            install.error = Some(why.clone());
-            return Err(why);
-        }
-
-        let mut install = self.install.lock().expect("say install slot");
-        install.state = InstallState::Installed;
-        Ok(())
-    }
-
-    /// Download every file, verifying each against its digest.
-    fn fetch_all(&self, dir: &Path) -> Result<(), String> {
-        fs::create_dir_all(dir)
-            .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(Duration::from_secs(30))
-            // Per read rather than overall: a 53 MB file legitimately takes a
-            // while on a slow line that is working perfectly well.
-            .timeout_read(Duration::from_secs(120))
-            .user_agent(concat!("HanziTutor/", env!("CARGO_PKG_VERSION")))
-            .build();
-
-        let mut done: u64 = 0;
-        for spec in MODEL.files {
-            let destination = dir.join(spec.name);
-
-            // A file already present and correct is not fetched again, so an
-            // interrupted install resumes rather than starting over.
-            if file_matches(&destination, spec.sha256) {
-                done += spec.bytes;
-                if let Ok(mut install) = self.install.lock() {
-                    install.downloaded = done;
-                }
-                continue;
-            }
-
-            let url = format!("{}/{}", MODEL.base, spec.name);
-            let response = agent
-                .get(&url)
-                .call()
-                .map_err(|e| format!("could not download {url}: {e}"))?;
-            let mut reader = response.into_reader();
-
-            // Written to a temporary name and renamed only once verified, so a
-            // failed download is never visible as a usable file.
-            let partial = dir.join(format!("{}.partial", spec.name));
-            let file = File::create(&partial)
-                .map_err(|e| format!("could not write {}: {e}", partial.display()))?;
-            let mut file = std::io::BufWriter::new(file);
-
-            let mut hasher = Sha256::new();
-            let mut buffer = vec![0u8; 64 * 1024];
-            let mut written: u64 = 0;
-            loop {
-                let read = reader
-                    .read(&mut buffer)
-                    .map_err(|e| format!("the download stopped after {written} bytes: {e}"))?;
-                if read == 0 {
-                    break;
-                }
-                file.write_all(&buffer[..read])
-                    .map_err(|e| format!("could not write to disk after {written} bytes: {e}"))?;
-                hasher.update(&buffer[..read]);
-                written += read as u64;
-                if let Ok(mut install) = self.install.lock() {
-                    install.downloaded = done + written;
+        let progress = Arc::clone(&self.install);
+        std::thread::spawn(move || {
+            let outcome = fetch_all(&dir, &progress);
+            let mut install = progress.lock().expect("say install slot");
+            match outcome {
+                Ok(()) => install.state = InstallState::Installed,
+                Err(message) => {
+                    install.state = InstallState::Failed;
+                    install.error = Some(message);
                 }
             }
-            file.flush()
-                .map_err(|e| format!("could not flush {}: {e}", partial.display()))?;
-            drop(file);
-
-            let got = format!("{:x}", hasher.finalize());
-            if got != spec.sha256 {
-                let _ = fs::remove_file(&partial);
-                return Err(format!(
-                    "{} did not match its recorded digest — deleted rather than used. \
-                     Expected {}, got {got}.",
-                    spec.name, spec.sha256
-                ));
-            }
-            fs::rename(&partial, &destination)
-                .map_err(|e| format!("could not move {} into place: {e}", spec.name))?;
-            done += written;
-        }
+        });
         Ok(())
     }
 
@@ -367,6 +295,86 @@ impl Say {
         let rate = model.sample_rate();
         Ok(Some((samples, rate)))
     }
+}
+
+/// Download every file, verifying each against its digest. Runs on the
+/// install thread.
+fn fetch_all(dir: &Path, install: &Arc<Mutex<Install>>) -> Result<(), String> {
+    fs::create_dir_all(dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(30))
+        // Per read rather than overall: a 53 MB file legitimately takes a
+        // while on a slow line that is working perfectly well.
+        .timeout_read(Duration::from_secs(120))
+        .user_agent(concat!("HanziTutor/", env!("CARGO_PKG_VERSION")))
+        .build();
+
+    let mut done: u64 = 0;
+    for spec in MODEL.files {
+        let destination = dir.join(spec.name);
+
+        // A file already present and correct is not fetched again, so an
+        // interrupted install resumes rather than starting over.
+        if file_matches(&destination, spec.sha256) {
+            done += spec.bytes;
+            if let Ok(mut install) = install.lock() {
+                install.downloaded = done;
+            }
+            continue;
+        }
+
+        let url = format!("{}/{}", MODEL.base, spec.name);
+        let response = agent
+            .get(&url)
+            .call()
+            .map_err(|e| format!("could not download {url}: {e}"))?;
+        let mut reader = response.into_reader();
+
+        // Written to a temporary name and renamed only once verified, so a
+        // failed download is never visible as a usable file.
+        let partial = dir.join(format!("{}.partial", spec.name));
+        let file = File::create(&partial)
+            .map_err(|e| format!("could not write {}: {e}", partial.display()))?;
+        let mut file = std::io::BufWriter::new(file);
+
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0u8; 64 * 1024];
+        let mut written: u64 = 0;
+        loop {
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|e| format!("the download stopped after {written} bytes: {e}"))?;
+            if read == 0 {
+                break;
+            }
+            file.write_all(&buffer[..read])
+                .map_err(|e| format!("could not write to disk after {written} bytes: {e}"))?;
+            hasher.update(&buffer[..read]);
+            written += read as u64;
+            if let Ok(mut install) = install.lock() {
+                install.downloaded = done + written;
+            }
+        }
+        file.flush()
+            .map_err(|e| format!("could not flush {}: {e}", partial.display()))?;
+        drop(file);
+
+        let got = format!("{:x}", hasher.finalize());
+        if got != spec.sha256 {
+            let _ = fs::remove_file(&partial);
+            return Err(format!(
+                "{} did not match its recorded digest — deleted rather than used. \
+                 Expected {}, got {got}.",
+                spec.name, spec.sha256
+            ));
+        }
+        fs::rename(&partial, &destination)
+            .map_err(|e| format!("could not move {} into place: {e}", spec.name))?;
+        done += written;
+    }
+    Ok(())
 }
 
 /// True when `path` exists and hashes to `expected`.

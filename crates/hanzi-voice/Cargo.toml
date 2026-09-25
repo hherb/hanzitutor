@@ -24,11 +24,13 @@ cpal = "0.18"
 # `register_android_plugin` is the only way to reach the Java side.
 tauri = { version = "2", features = [] }
 
-# iOS speaks in process through AVSpeechSynthesizer, and the audio session is
-# AVFAudio too; both are `objc2` bindings, which are already in the tree through
-# Tauri. AVFoundation's objects are not `Send`, so speech happens on the main
-# thread and `dispatch2` is how the work gets there.
-[target.'cfg(target_os = "ios")'.dependencies]
+# iOS and macOS both speak in process through AVSpeechSynthesizer, which is
+# an `objc2` binding already in the tree through Tauri (the audio session
+# AVSpeechSynthesizer's iOS half also uses is AVFAudio too, but has no macOS
+# equivalent — see the AVAudioSession-gated code in speech.rs, which stays
+# iOS-only). AVFoundation's objects are not `Send`, so speech happens on the
+# main thread and `dispatch2` is how the work gets there.
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-avf-audio = "0.3"
