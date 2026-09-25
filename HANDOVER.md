@@ -1652,6 +1652,52 @@ back.
   `-allowProvisioningUpdates` to provision the app. Xcode writes `DEVELOPMENT_TEAM`
   into the generated `project.pbxproj` when it does; that line is **not** committed,
   for the same reason the macOS signing identity is not in `tauri.conf.json`.
+- **Running `xcodegen generate` directly is a stricter regeneration than `tauri ios
+  build`/`ios dev`, and it exposed the same "team ID in a committed file" trap from
+  a different angle (2026-09-25).** The Xcode-integration MCP tools drive the
+  project through Xcode itself, not through the Tauri CLI, so there is no
+  `-allowProvisioningUpdates` step to resolve a team on the fly — the target needs
+  a real `DEVELOPMENT_TEAM` build setting or Xcode refuses with "Signing … requires
+  a development team." Fixing an unrelated problem (below) needed `xcodegen
+  generate` run by hand, which regenerates `project.pbxproj` **from `project.yml`
+  alone** — it does not go through whatever the Tauri CLI's own build additionally
+  merges in, so anything only ever set by hand in Xcode's UI (a chosen team, and
+  separately the hand-added `NSMicrophoneUsageDescription`, `NSFaceIDUsageDescription`
+  and `UIApplicationSceneManifest` keys in `hanzi-tutor_iOS/Info.plist`) is silently
+  gone after it runs. The fix that keeps both this working and the team ID out of a
+  committed file: `configFiles: { debug: Signing.xcconfig, release: Signing.xcconfig }`
+  in `project.yml`, pointing at a **gitignored** `Signing.xcconfig` (template
+  committed as `Signing.xcconfig.example`) — the reference survives regeneration,
+  the team ID never does. The three Info.plist keys have no such environment escape
+  hatch (they are not secrets), so they went into `project.yml`'s `info.properties`
+  instead, which is the only thing a direct `xcodegen generate` reads.
+  **Watch for this again if `xcodegen generate` is ever run by hand**: diff
+  `hanzi-tutor_iOS/Info.plist` against `HEAD` afterwards, because nothing enforces
+  that every hand-added key has a `project.yml` counterpart.
+- **The exported IPA can be signed for App Store Connect, not only for
+  debugging, and this was verified end to end on 2026-09-25.** `ExportOptions.plist`
+  shipped with `method = debugging` (development-signed, TestFlight/App Store
+  reject it); changed to `app-store-connect` and a full `xcodebuild archive` +
+  `-exportArchive` with `-allowProvisioningUpdates` produced an IPA signed with an
+  **Apple Distribution** certificate and an **iOS Team Store Provisioning
+  Profile**, `get-task-allow = false` — checked in the archive's own
+  `DistributionSummary.plist`, not assumed from the export succeeding. Also added
+  `ITSAppUsesNonExemptEncryption: false` to `project.yml`'s `info.properties`
+  (the app only ever does plain HTTPS/TLS) so App Store Connect does not ask the
+  export-compliance question on every upload.
+- **The ASR and TTS models moved from the data directory to the platform cache
+  directory (2026-09-25), and existing installs are migrated rather than
+  re-downloading.** Both are large (163–241 MB), fetched only on request and
+  re-verified by digest — not user data — so they do not belong in Application
+  Support, which iCloud/iTunes backs up. `AppState::relocate_model_cache` in
+  `state.rs` runs once, right after `AppState::assemble` in `lib.rs`'s `setup`:
+  it `fs::rename`s `asr`/`say` out of the old data-directory location into
+  `app_cache_dir()` if the old one exists and the new one does not — a metadata
+  move regardless of model size, not a re-download. The trade this accepts: a
+  cache directory can be purged by the OS under low disk space while the app is
+  not running, which is treated as ordinary "not installed" rather than a fault —
+  see the caveat now in `README.md` under
+  [Recognising what was said](README.md#recognising-what-was-said).
 - **A build produced by `tauri ios build` embeds the frontend; it does not use the
   dev server.** A layout change therefore needs `vite:build` *and* a Rust rebuild to
   re-embed — a couple of minutes per look. `ios dev --open` is the only HMR route on

@@ -87,7 +87,15 @@ pub fn run() {
                     None
                 }
             };
-            let state = AppState::assemble(prepared, data_dir);
+            let mut state = AppState::assemble(prepared, data_dir.clone());
+            // The ASR and TTS models are large, fetched only when asked for and
+            // re-verified by digest rather than treated as user data, so they
+            // belong in the platform's cache directory — excluded from backup —
+            // rather than in Application Support beside the study database.
+            // Anything a build before this existed already downloaded is moved
+            // over rather than re-fetched; see `relocate_model_cache`.
+            let cache_dir = app.path().app_cache_dir().ok();
+            state.relocate_model_cache(data_dir.as_deref(), cache_dir.as_deref());
             // Sync gets the database itself rather than any of the three views over
             // it, because what it moves is the attempt log underneath them.
             //

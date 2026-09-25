@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use hanzi_core::{
@@ -544,6 +544,30 @@ impl AppState {
     /// the slow one is finished before there is a webview to ask for anything.
     pub fn load(data_dir: Option<PathBuf>) -> Result<Self, String> {
         Ok(Self::assemble(Self::prepare()?, data_dir))
+    }
+
+    /// Point the ASR and TTS models at `cache_dir` instead of the data
+    /// directory [`Self::assemble`] put them in, migrating anything a build
+    /// before this existed already downloaded.
+    ///
+    /// The two models are large, fetched only on request and re-verified by
+    /// digest rather than treated as user data, so they belong in the
+    /// platform's cache directory — excluded from backup, and reclaimable by
+    /// the OS under low disk space — not in Application Support beside the
+    /// study database. Only the real app calls this, once, right after
+    /// [`Self::assemble`]; the tests construct `Asr` and `Say` under the data
+    /// directory they are given and have no cache directory to move to, which
+    /// is also what a platform with no [`resolve_data_dir`] equivalent for
+    /// caches gets.
+    pub fn relocate_model_cache(&mut self, data_dir: Option<&Path>, cache_dir: Option<&Path>) {
+        let (Some(data_dir), Some(cache_dir)) = (data_dir, cache_dir) else {
+            return;
+        };
+        for model in ["asr", "say"] {
+            migrate_model_dir(&data_dir.join(model), &cache_dir.join(model));
+        }
+        self.asr = Asr::new(Some(cache_dir));
+        self.say = Say::new(Some(cache_dir));
     }
 
     /// Re-read every store a sync can have rewritten.
@@ -1311,6 +1335,34 @@ pub fn resolve_data_dir(app: &AppHandle, cli: Option<PathBuf>) -> Result<PathBuf
         .map_err(|e| format!("could not locate the application data directory: {e}"))
 }
 
+/// Move `old` to `new`, if `old` is there and `new` is not yet.
+///
+/// A rename rather than a copy: both directories live in the same app
+/// container, so this is a metadata change regardless of how large the model
+/// underneath it is — the point of doing this at all is to stop paying for it
+/// twice, not to trade one copy for a slower one. A failed rename leaves `old`
+/// exactly as it was, so the model just stays where [`AppState::assemble`]
+/// already found it and the old data directory is used again this run.
+fn migrate_model_dir(old: &Path, new: &Path) {
+    if !old.is_dir() || new.exists() {
+        return;
+    }
+    if let Some(parent) = new.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            eprintln!("[data] could not create {}: {error}", parent.display());
+            return;
+        }
+    }
+    match std::fs::rename(old, new) {
+        Ok(()) => eprintln!("[data] moved {} to {}", old.display(), new.display()),
+        Err(error) => eprintln!(
+            "[data] could not move {} to {}: {error}",
+            old.display(),
+            new.display()
+        ),
+    }
+}
+
 /// Apply the learner's chosen voice — if the settings name one — and report
 /// which voice is really in use, on a thread of this call's own.
 ///
@@ -1416,5 +1468,88 @@ mod tests {
         assert_eq!(override_dir(None, Some("")), None);
         assert_eq!(override_dir(None, Some("   ")), None);
         assert_eq!(override_dir(None, None), None);
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "state-test-{}-{label}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn migrating_moves_what_was_downloaded_under_the_old_location() {
+        let old = scratch("old").join("asr");
+        let new = scratch("new").join("asr");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("model.onnx"), b"a model").unwrap();
+
+        migrate_model_dir(&old, &new);
+
+        assert!(!old.exists(), "the old directory should be gone");
+        assert_eq!(std::fs::read(new.join("model.onnx")).unwrap(), b"a model");
+    }
+
+    #[test]
+    fn migrating_does_nothing_when_there_is_nothing_at_the_old_location() {
+        let old = scratch("absent").join("asr");
+        let new = scratch("new").join("asr");
+
+        migrate_model_dir(&old, &new);
+
+        assert!(!new.exists());
+    }
+
+    #[test]
+    fn migrating_does_not_overwrite_a_model_already_at_the_new_location() {
+        // A build that has already migrated, or that downloaded straight to the
+        // new location, must not have a stray old directory clobber it.
+        let old = scratch("old").join("asr");
+        let new = scratch("new").join("asr");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("model.onnx"), b"stale").unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join("model.onnx"), b"current").unwrap();
+
+        migrate_model_dir(&old, &new);
+
+        assert!(old.exists(), "the old directory is left for the learner to clear");
+        assert_eq!(std::fs::read(new.join("model.onnx")).unwrap(), b"current");
+    }
+
+    #[test]
+    fn relocating_without_both_directories_leaves_the_models_where_they_were() {
+        let data_dir = scratch("data");
+        std::fs::create_dir_all(data_dir.join("asr")).unwrap();
+        std::fs::write(data_dir.join("asr").join("model.onnx"), b"a model").unwrap();
+
+        let mut state = AppState::load(Some(data_dir.clone())).unwrap();
+        state.relocate_model_cache(Some(&data_dir), None);
+
+        // No cache directory to move to — e.g. a platform `resolve_data_dir` can
+        // resolve but that has no cache-directory equivalent — so the model
+        // already downloaded must still be exactly where it was.
+        assert!(data_dir.join("asr").join("model.onnx").is_file());
+    }
+
+    #[test]
+    fn relocating_moves_a_model_into_the_cache_directory() {
+        let data_dir = scratch("data");
+        let cache_dir = scratch("cache");
+        std::fs::create_dir_all(data_dir.join("say")).unwrap();
+        std::fs::write(data_dir.join("say").join("model.onnx"), b"a voice").unwrap();
+
+        let mut state = AppState::load(Some(data_dir.clone())).unwrap();
+        state.relocate_model_cache(Some(&data_dir), Some(&cache_dir));
+
+        assert!(!data_dir.join("say").exists());
+        assert_eq!(
+            std::fs::read(cache_dir.join("say").join("model.onnx")).unwrap(),
+            b"a voice"
+        );
     }
 }

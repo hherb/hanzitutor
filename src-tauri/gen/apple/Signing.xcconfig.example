@@ -1,0 +1,13 @@
+// Copy this file to `Signing.xcconfig` (gitignored) and fill in your own
+// team ID. `project.yml` points every configuration at `Signing.xcconfig` via
+// `configFiles`, so `xcodegen generate` needs the file to exist, but its
+// *contents* are deliberately not committed — the team ID is specific to
+// whoever is signing the build, the same reason the macOS signing identity
+// is not in `tauri.conf.json`. See HANDOVER.md §6 for the build that made
+// this necessary and the one that made a committed team ID the wrong fix
+// before it.
+//
+// Find your team ID in Xcode: Settings → Accounts → your Apple ID → your
+// team → the parenthesised ID next to its name.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+CODE_SIGN_STYLE = Automatic

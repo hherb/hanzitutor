@@ -7,6 +7,11 @@ fileGroups: [../../src]
 configs:
   debug: debug
   release: release
+# Not committed: see Signing.xcconfig.example. Points every configuration at
+# the same file since debug and release sign with the same team here.
+configFiles:
+  debug: Signing.xcconfig
+  release: Signing.xcconfig
 settingGroups:
   app:
     base:
@@ -62,6 +67,11 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.5.11
         CFBundleVersion: "0.5.11"
+        ITSAppUsesNonExemptEncryption: false
+        NSFaceIDUsageDescription: ""
+        NSMicrophoneUsageDescription: "Hanzi Tutor listens while you hold the button, to check the tone of what you said. The recording is scored on this device and is never saved or sent anywhere."
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
     entitlements:
       path: hanzi-tutor_iOS/hanzi-tutor_iOS.entitlements
     scheme:
@@ -100,7 +110,9 @@ targets:
       - sdk: UIKit.framework
       - sdk: WebKit.framework
     preBuildScripts:
-      - script: node tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
+      - script: |
+          export PATH="$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"
+          node tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
         name: Build Rust Code
         basedOnDependencyAnalysis: false
         outputFiles:

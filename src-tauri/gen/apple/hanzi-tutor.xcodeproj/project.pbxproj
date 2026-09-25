@@ -43,27 +43,27 @@
 		06A48D8C511B6EF25EBCFAFA /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
 		170444226820C9FF9EC1B92A /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		1784F9500E1D9FF390B7ED41 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
-		23FFB8422D4BEC040AE2A636 /* Hanzi Tutor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Hanzi Tutor.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		32C7BDA131B0CA80178E136F /* commands.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = commands.rs; sourceTree = "<group>"; };
+		23FFB8422D4BEC040AE2A636 /* hanzi-tutor_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "hanzi-tutor_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		29E83EBCEB55C484608A02D4 /* sync.rs */ = {isa = PBXFileReference; path = sync.rs; sourceTree = "<group>"; };
+		32C7BDA131B0CA80178E136F /* commands.rs */ = {isa = PBXFileReference; path = commands.rs; sourceTree = "<group>"; };
+		430584592F24B058D698B844 /* say.rs */ = {isa = PBXFileReference; path = say.rs; sourceTree = "<group>"; };
 		44E6AAE2E6C1ED8E48661D92 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
-		633AC5AC67BCACF30BE83B4C /* platform.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = platform.rs; sourceTree = "<group>"; };
+		5FBCB8A9915C85F47822E0B9 /* hanzi-tutor_iOSrelease.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "hanzi-tutor_iOSrelease.entitlements"; sourceTree = "<group>"; };
+		633AC5AC67BCACF30BE83B4C /* platform.rs */ = {isa = PBXFileReference; path = platform.rs; sourceTree = "<group>"; };
 		69140A7CA6B27E7707B98F10 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
 		6C015D08BFF051A786AF2890 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
-		6F23E15330664CAC00F69B87 /* hanzi-tutor_iOSrelease.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "hanzi-tutor_iOSrelease.entitlements"; sourceTree = "<group>"; };
-		7F4B979F1939FB550C892896 /* speech.rs */ = {isa = PBXFileReference; lastKnownFileType = file; path = speech.rs; sourceTree = "<group>"; };
 		819E67DB12645A256B75EDCF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		85A42E4ABE081E0E13F26A09 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		924B5C0105DF3BA2A57E9C2F /* main.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = main.rs; sourceTree = "<group>"; };
-		A904F01CF8B5CE6FCD763E9D /* licences.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = licences.rs; sourceTree = "<group>"; };
-		B262F025D8D47AA538FFEA66 /* capture.rs */ = {isa = PBXFileReference; lastKnownFileType = file; path = capture.rs; sourceTree = "<group>"; };
+		924B5C0105DF3BA2A57E9C2F /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
+		A904F01CF8B5CE6FCD763E9D /* licences.rs */ = {isa = PBXFileReference; path = licences.rs; sourceTree = "<group>"; };
 		B2E0298129C8D20162B6334D /* hanzi-tutor_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "hanzi-tutor_iOS.entitlements"; sourceTree = "<group>"; };
 		C4636AAE19785C8A94A6A39C /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
-		C69E33E6544558C32686D38D /* state.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = state.rs; sourceTree = "<group>"; };
+		C69E33E6544558C32686D38D /* state.rs */ = {isa = PBXFileReference; path = state.rs; sourceTree = "<group>"; };
+		C8C2B32A19D493A53C76EE57 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 		E80DB9BCAE0904CF5DD31D4A /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
-		ED372E90047B1FBDFEA9E48A /* lib.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = lib.rs; sourceTree = "<group>"; };
+		ED372E90047B1FBDFEA9E48A /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
 		F224DB69919C22923A7226A4 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		F50773287EA3054E195C8C72 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
-		F912D8957FA4F5663C014EB5 /* asr.rs */ = {isa = PBXFileReference; lastKnownFileType = file; path = asr.rs; sourceTree = "<group>"; };
 		FDFC3586C1DEA246F468C4D9 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -90,9 +90,18 @@
 		222BAB982131C88733D11F90 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				23FFB8422D4BEC040AE2A636 /* Hanzi Tutor.app */,
+				23FFB8422D4BEC040AE2A636 /* hanzi-tutor_iOS.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		416FA68D83B79FE6A3A5D04C /* apple */ = {
+			isa = PBXGroup;
+			children = (
+				C8C2B32A19D493A53C76EE57 /* Signing.xcconfig */,
+			);
+			name = apple;
+			path = .;
 			sourceTree = "<group>";
 		};
 		4E1AFBB97F7A2F0C32AF34AC /* Sources */ = {
@@ -122,8 +131,8 @@
 		99275013035B0092E4E0D7AE /* hanzi-tutor_iOS */ = {
 			isa = PBXGroup;
 			children = (
-				6F23E15330664CAC00F69B87 /* hanzi-tutor_iOSrelease.entitlements */,
 				B2E0298129C8D20162B6334D /* hanzi-tutor_iOS.entitlements */,
+				5FBCB8A9915C85F47822E0B9 /* hanzi-tutor_iOSrelease.entitlements */,
 				85A42E4ABE081E0E13F26A09 /* Info.plist */,
 			);
 			path = "hanzi-tutor_iOS";
@@ -156,15 +165,14 @@
 		B6C669A6CF13CBC70297CDE5 /* src */ = {
 			isa = PBXGroup;
 			children = (
-				F912D8957FA4F5663C014EB5 /* asr.rs */,
-				B262F025D8D47AA538FFEA66 /* capture.rs */,
 				32C7BDA131B0CA80178E136F /* commands.rs */,
 				ED372E90047B1FBDFEA9E48A /* lib.rs */,
 				A904F01CF8B5CE6FCD763E9D /* licences.rs */,
 				924B5C0105DF3BA2A57E9C2F /* main.rs */,
 				633AC5AC67BCACF30BE83B4C /* platform.rs */,
-				7F4B979F1939FB550C892896 /* speech.rs */,
+				430584592F24B058D698B844 /* say.rs */,
 				C69E33E6544558C32686D38D /* state.rs */,
+				29E83EBCEB55C484608A02D4 /* sync.rs */,
 			);
 			name = src;
 			path = ../../src;
@@ -176,6 +184,7 @@
 				69140A7CA6B27E7707B98F10 /* assets */,
 				819E67DB12645A256B75EDCF /* Assets.xcassets */,
 				E80DB9BCAE0904CF5DD31D4A /* LaunchScreen.storyboard */,
+				416FA68D83B79FE6A3A5D04C /* apple */,
 				89ACEA75F38A421DCD3256F9 /* Externals */,
 				99275013035B0092E4E0D7AE /* hanzi-tutor_iOS */,
 				4E1AFBB97F7A2F0C32AF34AC /* Sources */,
@@ -183,6 +192,20 @@
 				9D2EB6C1027AC8B6FAFA7529 /* Frameworks */,
 				222BAB982131C88733D11F90 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		"TEMP_0D71C834-99EF-4593-8904-65379D2AE29E" /* x86_64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = x86_64;
+			sourceTree = "<group>";
+		};
+		"TEMP_71D7294F-9BDF-4624-98F0-9E1A22009CA0" /* arm64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = arm64;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -206,7 +229,7 @@
 			packageProductDependencies = (
 			);
 			productName = "hanzi-tutor_iOS";
-			productReference = 23FFB8422D4BEC040AE2A636 /* Hanzi Tutor.app */;
+			productReference = 23FFB8422D4BEC040AE2A636 /* hanzi-tutor_iOS.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -217,6 +240,12 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					A5B34DE4A61B272D270C7E94 = {
+						DevelopmentTeam = X5DWXB4283;
+						ProvisioningStyle = Automatic;
+					};
+				};
 			};
 			buildConfigurationList = 5582346020E94903A215C0CC /* Build configuration list for PBXProject "hanzi-tutor" */;
 			developmentRegion = en;
@@ -270,7 +299,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "node tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}";
+			shellScript = "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH\"\nnode tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -290,10 +319,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
-				ARCHS = arm64;
+				ARCHS = (
+					arm64,
+				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "hanzi-tutor_iOS/hanzi-tutor_iOS.entitlements";
-				CODE_SIGN_IDENTITY = "Apple Distribution";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -305,20 +336,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				"LIBRARY_SEARCH_PATHS[arch=arm64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
-				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				PRODUCT_BUNDLE_IDENTIFIER = com.hanzitutor.app;
 				PRODUCT_NAME = "Hanzi Tutor";
 				SDKROOT = iphoneos;
@@ -331,10 +350,12 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
-				ARCHS = arm64;
+				ARCHS = (
+					arm64,
+				);
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = "hanzi-tutor_iOS/hanzi-tutor_iOSrelease.entitlements";
-				CODE_SIGN_IDENTITY = "Apple Distribution";
+				CODE_SIGN_ENTITLEMENTS = "hanzi-tutor_iOS/hanzi-tutor_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -346,20 +367,8 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				"LIBRARY_SEARCH_PATHS[arch=arm64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
-				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				PRODUCT_BUNDLE_IDENTIFIER = com.hanzitutor.app;
 				PRODUCT_NAME = "Hanzi Tutor";
 				SDKROOT = iphoneos;
@@ -370,6 +379,7 @@
 		};
 		685149440EB2634343BF2B6B /* debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C8C2B32A19D493A53C76EE57 /* Signing.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -401,7 +411,6 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGN_IDENTITY = "Apple Distribution: Horst Herb (X5DWXB4283)";
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -434,6 +443,7 @@
 		};
 		EFF2FA5FA849290C89EB543C /* release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C8C2B32A19D493A53C76EE57 /* Signing.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -465,7 +475,6 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGN_IDENTITY = "Apple Distribution: Horst Herb (X5DWXB4283)";
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;

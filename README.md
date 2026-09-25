@@ -851,8 +851,15 @@ Nothing else changes when it is absent: tone practice works, the panel looks
 exactly as it always has, and nothing ever prompts. Install it from
 **Settings → Recognising what was said**, where the address, the download size
 (163 MB), the on-disk size (241 MB) and the licence are all stated *before* the
-button is pressed. The download is checked against a pinned SHA-256, cached in the
-application data directory, and can be removed again from the same screen.
+button is pressed. The download is checked against a pinned SHA-256 and cached in
+the platform's **cache directory** rather than in Application Support — deliberately,
+since a 163 MB file that is re-downloaded on request and re-verified by digest is
+not user data and does not belong in an iCloud or device backup. The trade is that
+the OS is free to purge a cache directory under low disk space while the app is not
+running. That is not treated as a fault: the settings screen's own install check
+runs the same digest test on the next launch, reports the model as absent if it is
+gone, and offers the same button again — nothing else in the app notices either
+way. It can also be removed deliberately from the same screen.
 
 | | |
 | --- | --- |
@@ -956,8 +963,9 @@ Two consequences are worth knowing before they surprise you:
   `tauri ios init` drops it, and the app then builds cleanly and dies at launch.
   All of the mobile build traps are in HANDOVER.md.
 - **The weights are a download on a phone too.** 163 MB over the phone's own
-  connection, into the application data directory, exactly as on the desktop. The
-  app offers it, states the size first, and everything else works without it.
+  connection, into the platform's cache directory, exactly as on the desktop — see
+  the purge caveat under [Recognising what was said](#recognising-what-was-said).
+  The app offers it, states the size first, and everything else works without it.
 
 ## Architecture
 
@@ -1397,7 +1405,7 @@ launching the app. Both copies come from the same source file at build time, and
 test requires them to agree, so they cannot drift.
 
 **None of that includes the speech model.** It is 163 MB compressed, 241 MB
-unpacked, lives in the application data directory rather than the bundle, and is
+unpacked, lives in the platform's cache directory rather than the bundle, and is
 fetched only if the learner asks for it — so the bundle stays self-contained and a
 fresh install is exactly as offline as it always was.
 

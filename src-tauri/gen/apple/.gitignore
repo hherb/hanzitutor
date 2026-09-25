@@ -1,6 +1,9 @@
 xcuserdata/
 build/
 Externals/
+# The real signing config — see Signing.xcconfig.example. The team ID belongs
+# to whoever is building, not to the repository.
+Signing.xcconfig
 # Staged by `scripts/fetch-sherpa.sh --ios` and named in project.yml. A build
 # input rather than source, like the native libraries it comes from.
 SherpaOnnxC.xcframework/
