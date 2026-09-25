@@ -5,9 +5,9 @@
 //! testable without opening a window — see `tests/ipc_contract.rs`.
 
 use hanzi_core::{
-    build_lessons, grade_with_outlines, tone::ToneAttempt, AttemptMeasures, BoardSize, Character,
-    CursorView, Dataset, Decomposition, GradeOptions, GradeReport, Grade, Heard, Lesson, Pace,
-    Point, ProgressView, RadicalGroup, ReviewView, SettingsView, TextLookup, ToneSet, ToneVerdict,
+    build_lessons, grade_with_outlines, tone::ToneAttempt, AttemptMeasures, Character, CursorView,
+    Dataset, Decomposition, GradeOptions, GradeReport, Grade, Heard, Lesson, Point, ProgressView,
+    RadicalGroup, ReviewView, SettingsPatch, SettingsView, TextLookup, ToneSet, ToneVerdict,
     ToneTarget, VocabView, Word,
 };
 use serde::Serialize;
@@ -15,9 +15,9 @@ use std::sync::{Arc, MutexGuard};
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::asr::AsrStatus;
+use hanzi_hearing::AsrStatus;
 use crate::say::SayStatus;
-use crate::capture::MicrophoneStatus;
+use hanzi_voice::MicrophoneStatus;
 use crate::licences::{AppInfo, LicenceNotice};
 use crate::state::{AppState, ProgressState, VocabState};
 use crate::sync::{AutoSync, SyncService, SyncView};
@@ -79,9 +79,62 @@ pub struct CharacterLevelCount {
 #[serde(rename_all = "camelCase")]
 pub struct WordSearchView {
     /// The page itself, best match first.
-    pub words: Vec<Word>,
+    pub words: Vec<WordSummary>,
     /// How many words matched in total; `words` is capped to one page.
     pub total: usize,
+}
+
+/// One word as a list row: the word, and the tone of each of its characters.
+///
+/// The pairing is done here rather than in the interface because the rule that
+/// says which syllable of a reading belongs to which character lives in
+/// [`hanzi_core::pinyin`] — a second copy of it in TypeScript is exactly the
+/// kind of drift this project keeps out. The tone is the **dictionary** one: 你好
+/// is `3 + 3`, the tones the characters are learnt with, not the `2 + 3` tone
+/// practice scores it as. The two answer different questions, and a colour is a
+/// memory aid for the character rather than a judgement of a recording.
+///
+/// Both vectors are **empty** when the reading will not divide one syllable per
+/// character, which is the honest answer: the interface then falls back to each
+/// character's own tone, which is right for everything but a polyphone.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WordSummary {
+    #[serde(flatten)]
+    pub word: Word,
+    /// One tone per character of [`Word::text`], tone 1..=5.
+    pub tones: Vec<u8>,
+    /// The reading split one syllable per character, for colouring the pinyin
+    /// beside the characters.
+    pub syllables: Vec<String>,
+}
+
+impl WordSummary {
+    fn of(word: &Word) -> Self {
+        let (tones, syllables) = match hanzi_core::pinyin::aligned_reading(&word.text, &word.pinyin) {
+            Some(list) => (
+                list.iter().map(|s| s.tone).collect(),
+                list.into_iter().map(|s| s.text).collect(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
+        Self {
+            word: word.clone(),
+            tones,
+            syllables,
+        }
+    }
+}
+
+impl std::ops::Deref for WordSummary {
+    type Target = Word;
+
+    /// Transparent in Rust as well as on the wire: the flattened serialisation
+    /// already makes this a `Word` with two extra fields, so a reader that only
+    /// wants the word says `row.text` either way.
+    fn deref(&self) -> &Word {
+        &self.word
+    }
 }
 
 /// One character as a search result: everything a list row and a detail card
@@ -193,7 +246,7 @@ impl AppState {
                 .dataset
                 .search_words(query, level, limit)
                 .into_iter()
-                .cloned()
+                .map(WordSummary::of)
                 .collect(),
             total: self.dataset.count_words(query, level),
         }
@@ -304,6 +357,24 @@ pub fn character(state: State<'_, AppState>, ch: char) -> Result<Character, Stri
 #[tauri::command]
 pub fn teachable_characters(state: State<'_, AppState>) -> Vec<char> {
     state.dataset.practisable_characters()
+}
+
+/// Every character that has a tone of its own, as `(character, tone)`.
+///
+/// The fallback a tone colour reads when there is no reading to colour a
+/// character against: a lesson's list, a radical's family, a search result, a
+/// character's components. One call for the whole table — it is about 9,000
+/// pairs — because the alternative is a question per glyph on screens that show
+/// hundreds of them, and the answer never changes while the app is running.
+///
+/// Only characters whose **own reading** carries a tone are in it; a character
+/// the dataset cannot read has no tone and is left out rather than given a
+/// neutral one, which would be an invention. The table is sorted by codepoint so
+/// the answer is stable, and the interface is expected to fold it into a map.
+/// For the *rule* see [`hanzi_core::Dataset::character_tones`].
+#[tauri::command]
+pub fn character_tones(state: State<'_, AppState>) -> Vec<(char, u8)> {
+    state.dataset.character_tones()
 }
 
 // ---- the word dictionary ----------------------------------------------------
@@ -1294,49 +1365,24 @@ pub fn settings(state: State<'_, AppState>) -> SettingsView {
 
 /// Change one or more settings.
 ///
-/// Every argument is **optional, and absent means "leave this preference
-/// alone"** — that is what lets the settings screen send only the control the
-/// learner touched instead of resetting the other three on the way past.
+/// `patch` is one object with a field per preference, and **an absent field means
+/// "leave this preference alone"** — that is what lets the settings screen send
+/// only the control the learner touched instead of resetting the others on the
+/// way past. It is a single struct rather than one argument per preference
+/// because a preference is a field of a document, and the flat form had already
+/// reached the point where one more could not be added; see
+/// [`hanzi_core::SettingsPatch`], which is where the shape, the spellings of
+/// "clear" and the refusal of a name this build does not know all live.
 ///
-/// Each preference that *can be un-chosen* spells its own clear, because a
-/// missing argument already means "leave alone" and so cannot double as
-/// "clear":
-///
-/// - `clickToDraw`: `true`/`false` to choose. Going back to the device's own
-///   answer is its own command, [`clear_click_to_draw`], since `null` over the
-///   wire is exactly what an omitted argument looks like.
-/// - `voice`: a name to choose, `""` to go back to the automatic voice. A voice
-///   is never legitimately nameless, so the empty string is free to mean this.
-/// - `animationPace` / `boardSize`: closed sets, so every value is a choice.
-/// - `introSeen`: `true` once the introduction has been dismissed. It is here
-///   rather than behind a command of its own because it is stored the same way
-///   and saved the same way; the interface — not this screen — is what sends it,
-///   and replaying the introduction deliberately sends nothing, so that reading
-///   it again never depends on clearing the record first.
-/// - `whatsNewSeen`: the version whose "what's new" pages have been read, sent
-///   when they are dismissed. A version rather than a flag: the next release is
-///   news again, and a boolean could not say which release had been read.
+/// The interface's `SettingsPatch` is checked against that struct by
+/// `settings_the_screen_can_round_trip_through_a_patch`, so the two names for one
+/// document cannot drift apart.
 ///
 /// The change is written straight away; the view that comes back is what the
 /// interface should render, warning included.
 #[tauri::command]
-pub fn update_settings(
-    state: State<'_, AppState>,
-    click_to_draw: Option<bool>,
-    voice: Option<String>,
-    animation_pace: Option<Pace>,
-    board_size: Option<BoardSize>,
-    intro_seen: Option<bool>,
-    whats_new_seen: Option<String>,
-) -> SettingsView {
-    state.update_settings(
-        click_to_draw,
-        voice.as_deref(),
-        animation_pace,
-        board_size,
-        intro_seen,
-        whats_new_seen.as_deref(),
-    )
+pub fn update_settings(state: State<'_, AppState>, patch: SettingsPatch) -> SettingsView {
+    state.update_settings(patch)
 }
 
 /// Go back to the device's own answer for how a stroke is drawn.

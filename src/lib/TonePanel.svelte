@@ -24,6 +24,9 @@
    * here: `verdict` picks the styling, `detail` is the sentence.
    */
   import type { Grade, ToneResult, ToneSyllableResult } from "./types";
+  import { TONE_NAME, transcriptDisplay } from "./transcript";
+  import TonedPinyin from "./TonedPinyin.svelte";
+  import TonedText from "./TonedText.svelte";
 
   interface Props {
     result: ToneResult;
@@ -36,15 +39,6 @@
     good: "Good",
     fair: "Fair",
     poor: "Needs work",
-  };
-
-  /** Which tone the character asks for, in words rather than a number. */
-  const TONE_NAME: Record<number, string> = {
-    1: "high level",
-    2: "rising",
-    3: "dipping",
-    4: "falling",
-    5: "neutral",
   };
 
   const WIDTH = 132;
@@ -130,6 +124,26 @@
       ? `heard the ${many ? "syllables" : "syllable"} asked for`
       : `heard ${many ? "different syllables" : "a different syllable"}`;
   });
+
+  /**
+   * What to show for the transcription's characters and its reading.
+   *
+   * All of the reasoning lives in `transcript.ts`, where it is testable: a
+   * syllable the recogniser heard correctly **at the same tone** shows the character
+   * the exercise asked for, because within one syllable a character carries no
+   * information beyond its reading — while a syllable it heard *differently*, in
+   * sound or in tone, keeps the model's character, which is the evidence this block
+   * exists to report. The letters follow the same question: when the transcription
+   * differs from what was asked for, every syllable takes the dictionary tone mark
+   * of the character the model wrote (`cóng` for 从), so the learner sees the
+   * tonality of what was recognised; an identical transcription stays plain.
+   */
+  const transcript = $derived(
+    transcriptDisplay(
+      result.heard,
+      result.syllables.map((syllable) => syllable.ch),
+    ),
+  );
 </script>
 
 <section class="tone" class:uncertain={result.toneScored && result.verdict === "uncertain"}>
@@ -159,20 +173,34 @@
       <div class="words-head">
         <span class="words-tag">Recognised</span>
         {#if result.heard.text}
-          <span class="words-glyphs" lang="zh-Hans">{result.heard.text}</span>
+          <!-- The target character stands in where the model wrote a homophone:
+               the sound was measured to match, so the spelling was never in
+               question. See `transcript.ts` for the rule. -->
+          <span class="words-glyphs" lang="zh-Hans"><TonedText text={transcript.text} /></span>
         {/if}
-        {#if result.heard.base}
-          <span class="words-base">{result.heard.base}</span>
+        {#if transcript.reading}
+          <span class="words-base">{transcript.reading}</span>
         {/if}
         <span class="badge" class:good={heardAllMatched} class:uncertain={!heardAllMatched}>
           {heardLabel}
         </span>
       </div>
+      {#if transcript.substituted}
+        <p class="words-note">
+          The model wrote a different character for {result.heard.syllables.length > 1
+            ? "one of these syllables"
+            : "this syllable"} — a homophone, so the same sound. Only the sound was
+          compared, and it matched; the character is not judged and the tone below
+          comes from the pitch.
+        </p>
+      {/if}
       {#if result.heard.syllables.length > 0}
         <ul class="words-syllables">
           {#each result.heard.syllables as syllable, index (index)}
             <li class:ok={syllable.matches}>
-              <span class="plain">{syllable.base}</span>
+              <span class="plain"
+                >{transcript.differs ? syllable.reading || syllable.base : syllable.base}</span
+              >
               {#if !syllable.matches}
                 <span class="wanted">wanted {syllable.wanted}</span>
               {/if}
@@ -198,8 +226,24 @@
       {#each result.syllables as syllable (syllable.position)}
         <figure class="syllable" class:wrong={syllable.attempt.verdict === "off_target"}>
           <figcaption>
-            <span class="glyph" lang="zh-Hans">{syllable.ch}</span>
-            <span class="reading">{syllable.reading}</span>
+            <!--
+              Coloured by the **spoken** tone, not the dictionary one, and this is
+              the one screen where those differ. Everywhere else a colour is a
+              memory aid for the character, so 你好 is brown then brown; here the
+              panel's own sentence beside the glyph says "tone 2 · rising
+              (dictionary 3)", and a colour that contradicted the words next to it
+              would read as a bug rather than as the sandhi rule it is illustrating.
+            -->
+            <span class="glyph" lang="zh-Hans"
+              ><TonedText text={syllable.ch} tones={[syllable.spoken]} /></span
+            >
+            <span class="reading"
+              ><TonedPinyin
+                text={syllable.reading}
+                syllables={[syllable.reading]}
+                tones={[syllable.spoken]}
+              /></span
+            >
             <span class="expected">{label(syllable)}</span>
           </figcaption>
 
@@ -365,9 +409,10 @@
     line-height: 1.1;
     color: var(--ink, #2c2a24);
   }
-  /* No tone marks anywhere in this block: the transcription says which syllables
-     were heard, and a dictionary tone attached to a character would be a claim
-     about the voice that this cannot support. See the `Heard` type. */
+  /* A tone mark appears when the transcription differs from what was asked for, and
+     it is the *character's* dictionary reading — what makes `cóng` identify 从 —
+     not the voice. An identical transcription stays plain; the tone is measured
+     from the pitch. */
   .words-base {
     font-size: 0.85rem;
     color: var(--muted, #6b6455);
@@ -406,6 +451,14 @@
   .words-detail {
     margin: 0.45rem 0 0;
     font-size: 0.78rem;
+    line-height: 1.45;
+    color: var(--muted, #6b6455);
+  }
+  /* Why the character above is not the one the model chose. Kept quiet: it is an
+     explanation of a display decision, not a finding. */
+  .words-note {
+    margin: 0.4rem 0 0;
+    font-size: 0.72rem;
     line-height: 1.45;
     color: var(--muted, #6b6455);
   }

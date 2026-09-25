@@ -26,6 +26,8 @@
   import { onMount } from "svelte";
   import * as api from "./api";
   import Icon from "./Icon.svelte";
+  import TonedPinyin from "./TonedPinyin.svelte";
+  import TonedText from "./TonedText.svelte";
   import type { ToneSet, ToneSetMember } from "./types";
 
   interface Props {
@@ -324,8 +326,12 @@
                     onclick={() => answer(set, member)}
                     disabled={quiz.picked !== null}
                   >
-                    <span class="glyph" lang="zh-Hans">{member.ch}</span>
-                    <span class="reading">{member.reading}</span>
+                    <span class="glyph" lang="zh-Hans"
+                      ><TonedText text={member.ch} tones={[member.tone]} /></span
+                    >
+                    <span class="reading"
+                      ><TonedPinyin text={member.reading} syllables={[member.reading]} tones={[member.tone]} /></span
+                    >
                   </button>
                 {/each}
               </div>
@@ -352,8 +358,12 @@
                   >
                     <Icon name="speaker" />
                   </button>
-                  <span class="glyph" lang="zh-Hans">{member.ch}</span>
-                  <span class="reading">{member.reading}</span>
+                  <span class="glyph" lang="zh-Hans"
+                    ><TonedText text={member.ch} tones={[member.tone]} /></span
+                  >
+                  <span class="reading"
+                    ><TonedPinyin text={member.reading} syllables={[member.reading]} tones={[member.tone]} /></span
+                  >
                   <span class="meaning">{member.definition || "—"}</span>
                 </div>
               {/each}

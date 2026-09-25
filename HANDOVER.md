@@ -252,7 +252,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Tone pairs | Done — the sidebar's Tones screen derives minimal pairs from the dataset, hears them, quizzes which reading was spoken, and sends the set to the board for the contour comparison; the derivation rules and their three traps are §9 |
 | Speech recognition (M12) | Done — an optional ~163 MB SenseVoice model, installed from the settings screen |
 | Cross-device sync (M13) | Done — an optional Dropbox account, off by default, merging the attempt log (§7) |
-| Mobile shells (M9) | Runs on a physical iPhone and on Android hardware; the iOS release build and the Play paperwork are outstanding (ROADMAP M9) |
+| Mobile shells (M9) | Runs on a physical iPhone and on Android hardware; an iOS release build links, installs and then crashes at launch while the debug build runs, so iOS device builds are debug ones and the Play paperwork is outstanding (ROADMAP M9) |
 | Graded phrase audio (M14) | In progress — the HSK 1–2 clips are the corpus's own recordings, and the Phrases screen and optional synthesis model are built; the graded readers' voice is still open (ROADMAP M14) |
 | Pronunciation | The system synthesiser on macOS, iOS and Android; the bundled clips cover the graded phrases on any platform |
 | Network | Off unless the learner asks: two optional model downloads (recognition, synthesis) and an optional Dropbox sync |
@@ -364,6 +364,28 @@ crates/hanzi-sync/          the sync format, the merge and the fold — no accou
   src/http.rs, oauth.rs, dropbox.rs   the hand-written Dropbox client over `ureq`
   src/reach.rs              the network probe a launch sync makes first
   tests/                    convergence, two-device and Dropbox tests
+crates/hanzi-voice/         microphone capture and system pronunciation. Moved out
+                            of `src-tauri` by M16 so the standalone tone trainer
+                            could have them without a copy; see §10
+  src/capture.rs            capture: cpal everywhere but Android, where it is
+                            Kotlin's AudioRecord over the platform bridge
+  src/speech.rs             the platform synthesiser: macOS `say`, iOS
+                            AVSpeechSynthesizer, Android TextToSpeech
+  src/platform.rs           the Kotlin plugin bridge, registered through Tauri's
+                            mobile-plugin machinery. **Takes `Bridge { package,
+                            class }`**: each app ships its own plugin under its own
+                            application id
+apps/tone-trainer/          the standalone tone-practice app (M16, §10). Its own npm
+                            project, its own dev-server port (1421), its own Tauri
+                            config — and no interface shared with this app
+  src-tauri/src/lib.rs      the practice state and the IPC surface
+  src-tauri/src/platform.rs this app's `Bridge` — a few lines, and the only reason
+                            this module exists in the app at all
+  src-tauri/tests/tone_sets.rs  the pairs really are minimal, and a synthetic tone
+                            is judged as that tone through the app's own path
+  src/App.svelte            Hear (a quiz) and Say (push-to-talk) over one set list
+  src/lib/ToneChart.svelte  the pitch chart, lifted from `src/lib/TonePanel.svelte`
+  src/lib/api.ts, types.ts  its own IPC wrappers and its own TS mirror
 src-tauri/
   src/commands.rs           the IPC surface; thin wrappers over AppState methods
   src/state.rs              embedded dataset, speech warm-up, the stores
@@ -373,13 +395,13 @@ src-tauri/
   src/say.rs                the synthesis model, on asr.rs's rules exactly
   src/sync.rs               the sync account and the platform secret store
   src/licences.rs           the catalogue of notices that ship; see §8
-  src/platform.rs           the mobile plugin bridge (Android insets, back,
-                            keystore) and the Kotlin/AVFoundation seams
-  src/capture.rs            microphone capture: cpal everywhere but Android
-  src/speech.rs             the platform synthesiser: macOS `say`, iOS
-                            AVSpeechSynthesizer, Android TextToSpeech
+  src/platform.rs           a shim: this app's Android package and class, re-exporting
+                            `crate::platform::call` so the rest of the crate did not
+                            have to change when the bridge moved to hanzi-voice
   tests/ipc_contract.rs     locks the JSON contract the UI reads
   tests/licences.rs         pins the notices, the version and the bundle config
+  tests/tone_calibration.rs `records_from_the_real_microphone`, which moved here
+                            from `capture.rs` because it needs the dataset
   Info.plist                NSMicrophoneUsageDescription, merged over the
                             generated plist at build time
   Info.ios.plist            the scene manifest, plus the same microphone string
@@ -398,6 +420,11 @@ src/
   lib/FeedbackPanel.svelte  report -> readable advice
   lib/TonePanel.svelte      the learner's pitch contour drawn over the expected
                             tone shape, with the verdict Rust worded
+  lib/transcript.ts         what the recognition block shows: a matched syllable
+                            displays the character asked for rather than the
+                            homophone the model wrote (§9)
+  lib/transcript.test.ts    that rule from both sides — substitute only where the
+                            sounds matched (§5)
   lib/WordsPanel.svelte     the HSK word list: search, browse, practise
   lib/CharacterPanel.svelte the character set: search, a character's own page
                             (meaning, readings, facts, the words using it), practise
@@ -769,9 +796,15 @@ after each item) both do this now. The shape is the rule, not either file.
     state the app ships in. And a recogniser's language model is built to repair
     the very errors a learner makes, so its output must never be presented as
     praise: compare transcripts as **readings with the tone stripped**
-    (`pinyin::heard_against`), never as characters, never with tone marks, and
-    never with a hotwords file pointed at the expected answer. The tone comes from
-    the pitch contour and from nowhere else.
+    (`pinyin::heard_against`), never as characters, and never with a hotwords file
+    pointed at the expected answer. The **comparison** never sees a tone mark; the
+    *display* shows the model's own reading with its dictionary tone marks whenever
+    its transcription is not the text that was asked for, and shows the model's own
+    character wherever those tones differ from the target's — `cóng` is 从, where a
+    bare `cong` is equally 葱 and 匆, and a syllable whose sound matched at the wrong
+    tone is exactly what a tone drill needs to see. An identical transcription stays
+    plain. The tone that was said comes from the pitch contour and from nowhere
+    else.
 28. **A control's accessible name contains the words printed on it.** Every button
     on the board's control row carries a visible name — Hint, Strokes, Listen,
     (hold…), Undo, Clear, Back, Show target, Check/Next — and WCAG 2.5.3 is the
@@ -989,9 +1022,10 @@ after each item) both do this now. The shape is the rule, not either file.
 Run before every commit:
 
 ```bash
-pnpm test           # 618 tests: engine + data-pipeline units, the SQLite store,
+pnpm test           # 650 tests: engine + data-pipeline units, the SQLite store,
                     # sync convergence, IPC contract, speech, notices, data-dir flag
-pnpm run test:web   # 26 tests: the interface's stroke geometry, under vitest
+pnpm run test:web   # 69 tests: the interface's stroke geometry, the tone tables,
+                    # and the markup the toned components render, under vitest
 pnpm run check:rust # clippy with -D warnings
 pnpm run check:web  # svelte-check
 ```
@@ -1313,9 +1347,83 @@ back.
   passed while the real list never matched, so the app quietly used another voice.
 - **`say -v '?'` takes ~1 s** and lists every voice twice. Resolve it lazily and
   warm it on a background thread; never on the startup path.
+- **Never kill a `say` process to stop speech on macOS.** This was the cause of
+  pronunciation that was *clipped and crackling on macOS and nowhere else*, and it
+  is worth understanding before touching `hanzi-voice/src/speech.rs`. `say` needs
+  about a third of a second before it makes any sound, so killing it to start the
+  next utterance — which `Speaker::speak` did on every call — tore down a
+  CoreAudio unit mid-stream. Measured with the app's own pattern (spawn, wait
+  0.5 s, SIGKILL), each attempt was audible for **170 ms of a 4.4 s utterance**;
+  the click at the cut is the crackle. Android and iOS never had it because
+  neither kills a process: both are asked to stop in process. The backend now
+  renders the utterance to a file with `say -o` and plays it with `afplay`, so the
+  process that gets interrupted is reading a file. **It is also faster** — `say -o`
+  renders any length in ~0.9 s because it does not wait for playback, so a short
+  word is ~1.05 s against ~1.8 s, and a repeat is a cache hit.
+- **`say` exits 0 with ~11 ms of near-silence when it cannot use the voice it was
+  named** — no error, nothing on either stream. Before this was known, that was
+  indistinguishable from the clipping above. `render()` measures the file it got
+  and refuses anything under 50 ms, so it is a message rather than a silence.
+  Anything that changes how a voice is resolved should keep that floor.
+- **`cargo run` re-links the binary even when it compiles nothing, and re-linking
+  replaces the code signature with the linker's ad-hoc one.** This breaks any flow
+  that signs a dev binary and then launches it through cargo — which is what
+  `pnpm dev:signed` used to be, and why it could never have worked for either app.
+  Measured: `Identifier=com.hanzitutor.tone` right after `sign-dev-binary.sh`, and
+  `Identifier=tone_trainer-<hash>, Signature=adhoc` right after the `cargo run`
+  that follows it, with `Finished dev profile in 0.17s` and no compilation in
+  between. `scripts/dev-signed.sh` exists for this: it starts vite, builds, signs,
+  and then **execs the binary directly**, so no cargo can strip the signature.
+  Rust changes need the script re-run; frontend edits still hot-reload.
+- **macOS keys microphone permission to the build's signature, and a denied
+  microphone returns silence rather than an error.** An ad-hoc-signed dev binary's
+  designated requirement is its own code hash, so every rebuild is a new program to
+  `TCC`: the prompt returns, and a build that is never granted it records **pure
+  silence** — the app reports "I could not hear enough voice to judge" and nothing
+  anywhere mentions permission. A bare terminal-launched binary has no *responsible
+  application* to ask about at all, which is why the dev binary can never get the
+  grant; run the signed `.app` (`pnpm build` in `apps/tone-trainer`) and grant it
+  once. Diagnose with a one-second recorder probe: 71,680 samples at **peak
+  0.000000** with the device open means denied, not broken.
 - **Keep pointer-frequency data out of `$state`.** The in-progress stroke lives in
   a plain variable in `PracticeCanvas.svelte` and only schedules a repaint; making
   it reactive would deep-proxy on every pointer move.
+- **A second `node_modules` means a second lockfile, and the supply-chain policy
+  checks each on its own.** `apps/tone-trainer` is its own npm project, and pnpm's
+  `minimumReleaseAge` (24 h in the DSH environment) rejects any lockfile holding a
+  package published inside that window. The root's lockfile is old enough to pass;
+  a *freshly resolved* trainer lockfile is not, and the failure is total — pnpm
+  refuses the whole lockfile and `pnpm build` dies before the frontend step.
+  Two traps inside this one:
+  - **The versions must be pinned, not ranged.** `^5.57.0` resolved `svelte` to
+    5.57.1, which pulled `esrap` 2.3.9 and `magic-string` 1.4.2 — both too new —
+    and a fresh `vite` resolve took `rolldown` 1.2.10, *published the same day*.
+    Pinning the trainer's devDependencies to the exact versions the root already
+    resolves (svelte 5.57.0, vite-plugin-svelte 7.3.0, vite 8.3.0, svelte-check
+    4.7.6, typescript 5.9.3) brings `esrap` to 2.3.8, `magic-string` to 1.4.1 and
+    `rolldown` to 1.2.9, and the lockfile passes with **no overrides at all**.
+  - **pnpm 11 no longer reads the `pnpm` field in package.json.** It says so —
+    `The "pnpm" field in package.json is no longer read by pnpm. The following
+    keys were ignored: "pnpm.overrides"` — and settings now live in
+    `pnpm-workspace.yaml`. An override that appears to do nothing is this, not a
+    selector syntax problem.
+  The durable fix is a pnpm workspace at the repository root (one lockfile, one
+  resolution for both apps); until then, bump the trainer's pins only to versions
+  already in the root lockfile.
+- **`pnpm build` in `apps/tone-trainer` signs with whatever identity is around, and
+  an ad-hoc signature silently loses the microphone grant.** The trainer's `build`
+  goes through `scripts/build-release.sh` (which detects Developer ID Application)
+  rather than calling `tauri build` directly, because a bare `tauri build` produced
+  an ad-hoc-signed bundle with `Identifier=tone_trainer-<hash>` — a *different
+  program* to `TCC`, so the microphone permission granted to
+  `com.hanzitutor.tone` no longer applies and capture returns silence again. If a
+  rebuild asks for the microphone afresh, check `codesign -dvv` for
+  `Authority=Developer ID Application` before concluding anything else.
+- **`scripts/build-release.sh` takes `TAURI_ROOT`**, and the CLI runs **from that
+  directory**. Both matter: the Tauri CLI reads `src-tauri/tauri.conf.json`
+  relative to the working directory, so without the `cd` a request for the
+  trainer's bundle silently bundles the *main app* instead — which is exactly what
+  happened the first time, and it looked like it had worked.
 - **Vite must ignore `.cargo-target/` and `.cargo-home/`** (already configured) or
   the dev server thrashes watching build output.
 - **`cargo build`: the dev profile is `opt-level = 1`** for both the workspace and
@@ -1482,14 +1590,58 @@ back.
   1284×2778), so "what does the screen actually show?" is a question this machine
   answers itself. `devicectl … --console` is the intended channel for the app's own
   log lines, though it did not forward Rust's stderr here.
-- **iOS *release* builds do not link; debug does.** `ios build` without `--debug`
-  fails at the app link with `symbol(s) not found for architecture arm64` for every
-  Tauri Swift entry point (`_run_plugin_command`, `_register_plugin`,
-  `_on_webview_created`, `_log_stdout`, `_init_plugin_dialog`). In the archives, those
-  symbols are **local** (`t`) in `Products/Release-iphoneos/libTauri.a` where
-  `Products/Debug-iphoneos/libTauri.a` exports them (`T`), so the Rust staticlib can
-  only bundle them in a debug build. That wants a Tauri or Swift toolchain version,
-  not a change here; until then a device build is `--debug`.
+- **iOS *release* builds link, but only through a profile override in the root
+  `Cargo.toml`.** Without it, `ios build` links fine with `--debug` and fails
+  without it: `symbol(s) not found for architecture arm64` for every Tauri Swift
+  entry point (`_run_plugin_command`, `_register_plugin`, `_on_webview_created`,
+  `_log_stdout`, `_init_plugin_dialog`). In the archives, those symbols are
+  **local** (`t`) in `Products/Release-iphoneos/libTauri.a` where
+  `Products/Debug-iphoneos/libTauri.a` exports them (`T`) — measured again on
+  2026-09-25 with Xcode 27 and tauri 2.11.5. The cause is in Tauri's own source,
+  not in the toolchain version: `mobile/ios-api/Sources/Tauri/Tauri.swift`
+  declares them `@_cdecl(…)` on **internal** functions, which the Release Swift
+  configuration gives local linkage. Tauri's `dev` branch still does, so
+  upgrading does not help.
+  `swift-rs` picks the Swift configuration from the `DEBUG` environment variable
+  cargo sets for the *consumer's* build script — the crates that build a Swift
+  package are `tauri`, `tauri-plugin-dialog` and `tauri-plugin-opener` (each gets
+  its own `out/swift-rs`) — so `[profile.release.package.tauri] debug = 1` (and
+  one each for the two plugins) makes them build the Debug Swift product, which
+  links. `debug = 1` is line tables only, the cheapest setting that still sets
+  that variable; the `CARGO_PROFILE_RELEASE_PACKAGE_…` environment form is **not**
+  supported, so it has to be in the manifest. A new plugin with Swift glue needs a
+  line of its own.
+- **…and a release build that links still does not run. Use `--debug` on a
+  device.** The release IPA installs and then dies immediately:
+  `App terminated due to signal 11`, and the crash report is `EXC_BAD_ACCESS`
+  (`SIGSEGV`, `KERN_INVALID_ADDRESS`) in `objc_retain`, called from
+  `-[UIApplication _connectUISceneFromFBSScene:transitionContext:]`. Measured on
+  HHIP1 against iOS 27 on 2026-09-25: the debug build of the same commit runs, the
+  release build of it does not, and reinstalling the debug IPA right after a
+  release crash launches normally — so it is the configuration and not the
+  install, the signing or the device. **No frame of this app is on the stack**,
+  which points at the object UIKit was handed earlier rather than at anything
+  running: `tao` 0.35.3 builds the scene configuration in
+  `application:configurationForConnectingSceneSession:options:`
+  (`platform_impl/ios/view.rs`, which sets `TaoSceneDelegate`) and UIKit retains
+  the delegate when it connects the scene. A lifetime bug there would be invisible
+  at `-Onone` and fatal under optimisation, which is exactly the split observed.
+  Worth trying first, because the two configurations fail in *opposite* ways:
+  `UIApplicationSceneManifest` in `gen/apple/hanzi-tutor_iOS/Info.plist` is a
+  **hand-added** key that is not in `project.yml`, and it is what puts tao into
+  scene mode. Without it the app traps instead, but in a *debug-only* runtime
+  issue (`…EvaluateRuntimeIssueForNoSceneLifecycleAdoption…`, which is what the
+  crashes of 2026-09-19 were) — so a release build without the key may well run
+  where the debug one cannot. That is a hypothesis, not a measurement.
+- **The distribution gap after that is signing, not linking.** The exported IPA is
+  development-signed (`ExportOptions.plist` says `method = debugging`), so
+  TestFlight needs a distribution certificate and profile, and the CLI can export
+  for it directly with `--export-method app-store-connect` (or `release-testing`).
+  `ios build --open` is the way to work in Xcode: the project exists at
+  `gen/apple/hanzi-tutor.xcodeproj`, but **opening it cold does not build** — its
+  "Build Rust Code" phase runs `tauri ios xcode-script`, which reads the options
+  the parent CLI persists and has no fallback, so it panics with
+  `failed to read CLI options … Connection refused`.
 - **`crate-type` carries `staticlib`, `cdylib` and `rlib`, and it cannot be
   per-target.** Tauri's template includes `cdylib` for Android; cargo also builds it
   for iOS, where its link fails (`-lTauri` is not passed) and cargo treats that as
@@ -3303,3 +3455,336 @@ Three things about this backend are easy to get wrong again:
 - **The verdict words (`match`, `off_target`, `uncertain`) live in Rust, not in the
   panel.** `TonePanel.svelte` styles `detail`; it must not reword it, or the same judgement will be expressed in two
   places that drift.
+
+---
+
+## 10. The standalone tone trainer, and the crate it forced
+
+**Read this before moving anything between `hanzi-core`, `hanzi-voice`, `src-tauri`
+or `apps/tone-trainer`.** M16 added a second app, and the boundary that keeps the
+two sharing code honestly is easy to break in a way that compiles.
+
+### What was shared, and why it was shared rather than copied
+
+The standalone app (`apps/tone-trainer/`) is tone practice only: a minimal pair
+heard, quizzed, and then said with the pitch drawn. It needed four things, and
+three of them already existed:
+
+| Need | Where it lives now | Why not copied |
+| --- | --- | --- |
+| Tone scoring | `crates/hanzi-core/src/tone.rs` | Already a pure crate. Untouched by M16 |
+| Minimal pairs | `hanzi_core::Dataset::tone_sets` | The derivation the Tones screen reads, so the two cannot disagree about what a pair is |
+| Microphone | `crates/hanzi-voice/src/capture.rs` | ~1,000 lines of cpal and Android platform code |
+| System voice | `crates/hanzi-voice/src/speech.rs` | ~1,300 lines of macOS `say`, iOS AVSpeechSynthesizer and Android TextToSpeech |
+
+`hanzi-voice` is the crate M16 created: capture, speech, and the Android plugin
+bridge, lifted out of `src-tauri/src/` **without changing a line of their bodies**.
+The move is deliberately mechanical, because that code is the part of this project
+that is hardest to test — the platform branches have been paid for in real bugs on
+real devices (§9, §6) and a "clean-up while moving" would have thrown that away.
+
+### 10a. The macOS speech backend was rebuilt when the trainer inherited it
+
+**The one place M16 did not move code unchanged**, and it is worth knowing why,
+because the fault it fixed was in the full app too — a learner had reported
+pronunciation that was *crackly and cut off, on macOS only*.
+
+The macOS backend used to stream speech: `say -v <voice> -- <text>` was spawned and
+its process kept, so the next utterance could kill it. That is a race the code
+created, not a fault in the synthesiser. `say` needs about a third of a second
+before it makes any sound, so killing it to start the next utterance tore down a
+CoreAudio unit mid-stream. **Measured with the app's own pattern** — spawn, wait
+0.5 s, SIGKILL — an attempt on a 4.4 s utterance was audible for about 170 ms. The
+click at the cut is the crackle, and it is worst for exactly the learner the drill
+is built for: someone tapping one tone after another.
+
+A second, quieter fault hid behind it. **`say` exits 0 and writes about 11 ms of
+near-silence when it cannot use the voice it was named** — no error, nothing on
+stdout or stderr. So a name `resolve_voice` accepted but the synthesiser would not
+use was indistinguishable from being cut off, and was silent rather than reported.
+(`Ting-Ting`, `Li-mu` and `Yu-shu` do this on macOS 26; only `Tingting`, `Meijia`
+and `Sinji` of the old names still render.)
+
+`crates/hanzi-voice/src/speech.rs` now renders the utterance to a file with
+`say -o`, checks that the file is really speech, and plays it with `afplay`:
+
+- **interruption is safe**, because the process being killed is reading a file;
+- **it is faster**, because `say -o` renders any length in ~0.9 s instead of
+  waiting for playback — ~1.05 s for a short word against ~1.8 s, and a repeat is
+  a cache hit;
+- **a failure is reportable**, because an 11 ms render is now an error message.
+
+The cache is keyed by `(text, voice)`, lives in the system temp directory, and is
+overridable with `HANZI_TUTOR_SPEECH_CACHE` — which exists because a **sandboxed
+build harness can deny a child process a directory the parent can write**, so the
+render tests need somewhere a child may write.
+
+Six tests pin it: the AIFF header reader against hand-built fixtures (including the
+odd-length pad byte), the 11 ms floor, the cache key's separation of text and
+voice, a real render of 马 measured as speech, a repeat served from the cache, and
+one `#[ignore]`d test that **plays all four tones out loud** for when the path is
+changed by hand:
+
+```bash
+cargo test -p hanzi-voice -- --ignored --nocapture speaks_a_character_out_loud
+```
+
+### 10b. Recognition became a crate, and the trainer got it
+
+Pitch cannot tell 四 (`sì`) from 是 (`shì`) — the contour is the same — so the
+trainer could measure *how* a syllable was said and never *which* one. A learner
+asking for the word drill found that out. The fix was to share the recogniser
+rather than let the trainer stay blind:
+
+- **`crates/hanzi-hearing/`** holds `asr.rs` — lifted out of `src-tauri/` with its
+  body unchanged, exactly as `hanzi-voice` was. It had **no `crate::` coupling at
+  all** (the only match was a doc comment naming `AppState`), so the move was a copy
+  and a `Cargo.toml`.
+- **Why it is not in `hanzi-voice`.** They are split by what an app links, not by
+  what it does. Capture and the system voice are small and always useful; this
+  pulls in `sherpa-onnx`. An app that only ever wants the microphone should not
+  link a speech engine to get it. The trainer now links `sherpa-onnx` because it
+  offers recognition, and still does not link `hanzi-say` — so a learner who
+  declines the model downloads nothing.
+- **Both apps share one model, one URL and one pinned digest**, because it is one
+  constant in one crate. That is the property worth protecting here: two copies
+  would be two digests to keep in step, and a digest that drifts is a download
+  that either fails or is not verified.
+- **The trainer's `ScoreResult.heard` is now `Option<Heard>`** rather than the
+  `Option<serde_json::Value>` placeholder it carried while it had no model. The
+  comparison is `hanzi_core::pinyin::heard_against_readings`, the same function the
+  full app uses, with the tone set aside.
+- **The model lives in the app's own data directory** (`AppData` for
+  `com.hanzitutor.tone`), so the two apps' downloads cannot be mistaken for one
+  another. The trainer has no study database, so that directory holds the model and
+  nothing else.
+- **The interface repeats two files, not three.** `ModelPanel.svelte` and
+  `RecognitionPanel.svelte` are new; `transcript.ts` is copied from the full app
+  (the second deliberate copy, after `ToneChart.svelte`), because both apps must
+  show the same transcription rule and a divergence there would be two answers to
+  one question.
+
+**Verified against a real model, not just compiled**: with the main app's installed
+model, the ignored recognition test in `hanzi-hearing` downloaded and verified the
+163 MB archive against its pinned digest, unpacked it, and transcribed a real
+sample as `开饭时间早上九点至下午五点`.
+
+Word drills followed immediately — §10c — and the two are complementary rather than
+dependent: tone scoring for a word needs no model at all, while recognition is what
+tells you *which* word you said.
+
+### 10c. Word drills: one scoring path, and the tones are the spoken ones
+
+The trainer scored one syllable against a tone the learner chose. The word drill
+added the other half, and the design worth knowing is that **there is still only one
+scoring path** — `Trainer::score(recording, text, reading)` serves both:
+
+| | Character drill | Word drill |
+| --- | --- | --- |
+| The tones to score | the one the learner picked | the dictionary's, after sandhi |
+| Where the reading comes from | the learner's choice (`má`) | the dataset's **whole-word** entry (`nǐhǎo`) |
+| Syllables | one | two to four |
+
+**Sandhi is applied, and that is the whole reason this needed `ToneTarget` rather
+than a second implementation.** 你好 is written tone 3 + tone 3 and spoken 2 + 3;
+scoring against the dictionary would mark correct speech wrong. `build_tone_target`
+is the module that owns those rules, and the trainer calls it. The reply carries
+`citation` and `spoken` per syllable so the chart can say *"(dictionary 3)"* beside
+the tone being asked for — the same shape the full app's panel reads.
+
+**The reading is resolved by the caller, not the backend**, and the reason is the
+character drill: its tone was chosen by the learner, so it appears in no dictionary.
+For a word the frontend passes the dataset's whole-word reading, which is what
+resolves a polyphone — 银行 is `yínháng`, and a reading composed from the characters
+would score the wrong tone.
+
+**A reading that will not divide one syllable per character is `tone_scored: false`,
+not zero.** Zero reads as a perfectly flat attempt. This is the honest `false` case
+the field was always documented for, and the interface reads it to decide whether to
+draw a chart at all.
+
+**Word families, not a flat word list.** `word_sets` hangs words on the same derived
+tone sets the rest of the app shows, so the two screens cannot disagree about which
+characters are a contrast: 中/种/重 gives the family of 中国, 中年, 中学. A family is
+keyed by its first tone-set member, holds the HSK words containing it that are two to
+four syllables, and is ranked by its rarest character's rank. **Words outside two to
+four syllables are dropped rather than padded** — a tone cannot be scored past the
+syllable count whose boundaries the analyser can find.
+
+That last rule has a visible consequence worth knowing before "fixing" it: **你好 is
+not in any family**, because 你 and 好 have no minimal pair in the course and so are
+not keys. The sandhi rule still applies to it — the test asserts 你好 directly through
+`score` for exactly that reason, rather than looking it up in `word_sets` and
+getting a confusing failure.
+
+### 10d. Two fixes on one screen: what the search matches, and the tone mark that names a character
+
+Both came from the same screen and both were about what the *presentation* claims.
+
+**The Words search box matched too much.** It filtered the families it held on the
+family key, on any word's characters, on any word's reading and on any word's
+English definition, every one by substring. For a one-letter query every rule
+fired: `z` returned 82 of the 137 families, 心 among them through 心脏病
+(`xīnzàngbìng`) and 优化 through "to optimize". The fix is
+`apps/tone-trainer/src/lib/familySearch.ts`:
+
+- the family's **own syllable** is the primary match. `WordSet` now carries `base`,
+  the tone set's base, so the Words list can be searched on what a family *is* the
+  way the Characters list searches a tone set on `ToneSet::base`; `z` is a seed of
+  `zhong` because it is a seed of the syllable, not because it is inside a word;
+- a word's reading is matched only for a query of **two or more letters** — one
+  letter is a syllable seed, and a family's own syllable is where that belongs;
+- the English definition is not searched at all: the placeholder offers a word, a
+  character and a reading, and a definition matched only by coincidence of
+  translation;
+- matches are ranked (syllable, key character, word characters, word reading), and
+  the backend's usefulness order stands within a rank. `z` now returns the 13
+  z-initial families, with 中 first.
+
+The rule is a pure function in a module of its own and is covered by
+`familySearch.test.ts`. The root `pnpm run test:web` reaches into
+`apps/tone-trainer/src/` to run it — the second app still has no runner of its own,
+and this test needs nothing from that project's `node_modules`.
+
+**The recognised reading now carries its tones, and the character follows them.**
+`cong` alone is ambiguous between 从, 葱 and 匆, and the recognition block showed
+only the plain reading. `HeardSyllable` now carries `reading` — the dictionary's
+reading of the character the model wrote — and `wantedReading`, the target's, and
+`transcriptDisplay` shows **every syllable's model reading with its tone marks
+whenever the transcription is not the text that was asked for**. That makes a
+syllable whose *sound* matched at the wrong tone visible, which is exactly the
+difference the sound comparison cannot see. Where the model's tone differs, its own
+character is shown with the reading; the target's character stands in only where the
+model agreed on sound *and* tone, so a character and the reading under it never
+contradict each other. An identical transcription stays plain. The comparison is
+unchanged — still `base` against `wanted`, both tone-stripped (§4, rule 27); this is
+display only, and the same code is in the full app's panel because the two must not
+show one transcription two ways.
+
+### The one thing that could not be shared, and how it is handled
+
+`platform.rs` named this app's own Kotlin class (`com.hanzitutor.app.PlatformPlugin`)
+as a constant. Two apps have two application ids, so the class genuinely lives at a
+different address in each. The shared bridge now takes it as an argument:
+
+```rust
+pub struct Bridge { pub package: &'static str, pub class: &'static str }
+pub fn init(bridge: Bridge) -> tauri::plugin::TauriPlugin<tauri::Wry>
+```
+
+- `src-tauri/src/platform.rs` passes `com.hanzitutor.app` / `PlatformPlugin` and
+  re-exports `call`, so every `crate::platform::call` in `sync.rs`, `commands.rs`
+  and the shared capture code kept working and needed no edit.
+- `apps/tone-trainer/src-tauri/src/platform.rs` passes `com.hanzitutor.tone`.
+
+**`call` is `#[cfg(target_os = "android")]` only** — on every other platform there
+is nothing on the other side of the bridge — so the re-export in each app's shim is
+gated the same way. An unconditional re-export does not compile off Android.
+
+### Where the seam now is, and what must not cross it
+
+- **`hanzi-core` must not gain a dependency on `hanzi-voice`, `tauri` or `sherpa`.**
+  The engine's no-platform rule is unchanged (§3). The trainer depends on
+  `hanzi-core` for scoring and data, which is the point.
+- **`hanzi-voice` must not gain a dependency on `hanzi-say` or `sherpa-onnx`.**
+  Bundled neural synthesis is the full app's business; a system-voice app should not
+  link a 200 MB native stack. The full app layers `say.rs` on top.
+- **The trainer does not depend on `hanzi-store`, `hanzi-sync` or `hanzi-say`,**
+  and should not start: it has no study database, no account and no bundled
+  synthesis model. It **does** depend on `hanzi-hearing`, which is the optional
+  recognition model — see below.
+- **`hanzi-voice`'s public test surface is its own.** Its `capture.rs` keeps the
+  three pure tests; the hardware test
+  (`records_from_the_real_microphone`) moved to
+  `src-tauri/tests/tone_calibration.rs`, because it drives the *dataset* to pick what
+  to say. It was originally inside `#[cfg(test)] mod tests` in `capture.rs`, where
+  reaching `AppState` was free; across the crate boundary it is not. The recorder is
+  shared, so that one instrument still covers both apps.
+
+### What is deliberately duplicated, and what would fix it
+
+The **interface**, and one file of it specifically:
+
+- `apps/tone-trainer/src/lib/ToneChart.svelte` is lifted from
+  `src/lib/TonePanel.svelte`. The chart, the badge, the sentence and the pitch
+  statistics are the same; the speech-recognition block, the sandhi note and the
+  per-syllable loop are not there, because the trainer has no model and scores one
+  syllable.
+- `apps/tone-trainer/src/lib/types.ts` mirrors the Rust structs for the fields the
+  chart reads. The field names are deliberately identical, so the lift works and so
+  a rename on one side is visibly wrong on the other.
+- `apps/tone-trainer/src/app.css` repeats the design tokens from `src/app.css`,
+  minus the bundled Noto Sans SC `@font-face` — 10 MB of font in an app that is
+  meant to be small.
+
+`packages/tone-ui/` (or a pnpm workspace) is the obvious fix and was not taken: the
+two apps are separate npm projects with separate `node_modules`, the main app's
+interface is not structured for extraction, and rewriting its imports was a worse
+trade than one duplicated component. **If a third app appears, or the chart is
+changed in one place and not the other, do the extraction then.**
+
+### Running and testing it
+
+```bash
+cd apps/tone-trainer
+pnpm dev            # its own window, on dev-server port 1421 — the main app owns 1420
+pnpm dev:signed     # the same, but with a stable signature — needed for the microphone
+pnpm build          # a signed .app in .cargo-target/release/bundle/macos/
+pnpm test:rust      # the shared pipeline, through this app's own commands
+pnpm run check:web  # svelte-check
+
+../../scripts/with-cargo-env.sh cargo check --workspace --all-targets   # both apps
+```
+
+**Use `dev:signed` or `build` if you are going to record.** Plain `pnpm dev` runs
+an ad-hoc-signed binary, and macOS keys microphone permission to the signature, so
+an unsigned build either re-prompts or returns **silence** (§6). The buttons and
+the scoring are unaffected, so use `pnpm dev` for layout work and `dev:signed` when
+the microphone matters.
+
+`scripts/tauri-cli.sh` and `scripts/build-release.sh` both take `TAURI_ROOT`, which
+is how the second app reaches them: the CLI must run *from the app's directory*,
+because that is where it looks for `src-tauri/tauri.conf.json` and where node
+resolves `@tauri-apps/cli`. The trainer's `package.json` sets it. Without it the CLI
+would build the main app — silently, and it looks like success.
+
+**The trainer's `package.json` pins its devDependencies exactly**, to the versions
+the root lockfile already resolves. See §6 for why: the supply-chain
+`minimumReleaseAge` policy checks the trainer's lockfile on its own, and a fresh
+range-based resolve pulls packages too new to pass. Relax a pin only to a version
+already in the root `pnpm-lock.yaml`.
+
+**`apps/tone-trainer/` is in the cargo workspace but not in the root `pnpm test`.**
+Its frontend is a separate npm project with its own `node_modules`, so the root run
+cannot drive it and there is no vitest *in that project*: `cargo test --workspace`
+covers its Rust side, and the root `pnpm run test:web` covers `transcript.ts` (the
+recognition-display rule) and now also its one pure frontend rule,
+`src/lib/familySearch.test.ts` — a test that imports only plain TypeScript needs
+nothing from that project, which is why the root runner can execute it where the
+Svelte code cannot be.
+
+### What M16 did not do
+
+- **Android.** The trainer registers a bridge under `com.hanzitutor.tone` and ships
+  no Kotlin `PlatformPlugin` of its own, so capture and speech answer "the Android
+  platform bridge is not registered yet" rather than failing silently. Copying the
+  full app's `PlatformPlugin.kt` into its Gradle project is the whole job — plus the
+  insets half, which `app.css`'s `--safe-top` is already written to consume and
+  which nothing currently sets.
+- **Word *tone* drills. Done, in §10c.** The trainer scores a character's chosen
+  tone and a whole word's spoken tones through one path, with sandhi and polyphones
+  resolved by `hanzi-core`'s `ToneTarget`. What is *not* there:
+  - **Phrases.** The cap is four syllables, as in the full app, because past it the
+    syllable boundaries cannot be found from energy alone.
+  - **Word families only reach words built on a tone-contrast character.** 你好 is
+    not offered, because neither 你 nor 好 has a minimal pair in the course. Browsing
+    the whole HSK list would need a second screen, and is the obvious next step.
+  - **Recognition on a word** works — the whole transcription is compared per
+    syllable — but the word drill is one target, so a learner saying a *different*
+    word hears it named rather than prompted for the right one.
+- **The tone-pair-only artifact.** The trainer embeds the same 13 MB
+  `hanzi.bin.gz` as the full app, for a few hundred sets. Cheap, licensed, already
+  tested — and a real candidate for slimming if anyone minds the bundle.
+- **Real-device verification on iOS.** Its plists and entitlements are copied from
+  the full app's, which found those the hard way, but the trainer has only been run
+  on macOS.

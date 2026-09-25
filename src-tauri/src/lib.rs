@@ -7,11 +7,8 @@ use std::sync::Arc;
 
 mod commands;
 pub mod licences;
-mod asr;
-mod capture;
-mod say;
 mod platform;
-mod speech;
+mod say;
 mod state;
 mod sync;
 
@@ -20,9 +17,10 @@ pub use commands::{
     StartupView, VocabOutcome, VoiceOption, VoicesView, WordSearchView, TONE_SET_PAGE,
 };
 pub use licences::{AppInfo, LicenceNotice};
-pub use asr::{Asr, AsrStatus, InstallState};
+// Recognition lives in a crate of its own now, shared with the tone trainer.
+pub use hanzi_hearing::{Asr, AsrStatus, InstallState};
 pub use say::{Say, SayStatus};
-pub use capture::{MicrophoneStatus, Recorder, Recording};
+pub use hanzi_voice::{MicrophoneStatus, Recorder, Recording};
 pub use state::{
     AppState, CursorState, Persisted, ProgressState, SettingsState, VocabState, REVIEW_LIMIT,
 };
@@ -107,6 +105,7 @@ pub fn run() {
             commands::lessons,
             commands::character,
             commands::teachable_characters,
+            commands::character_tones,
             commands::search_words,
             commands::search_characters,
             commands::tone_sets,

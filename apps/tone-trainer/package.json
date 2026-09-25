@@ -1,0 +1,28 @@
+{
+  "name": "tone-trainer",
+  "private": true,
+  "version": "0.5.11",
+  "type": "module",
+  "description": "Practise Mandarin tones: hear the minimal pairs, then say them",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "dev": "TAURI_ROOT=\"$PWD\" ../../scripts/with-cargo-env.sh ../../scripts/tauri-cli.sh dev",
+    "dev:signed": "../../scripts/dev-signed.sh --root \"$PWD\" --package tone-trainer --identifier com.hanzitutor.tone",
+    "build": "TAURI_ROOT=\"$PWD\" ../../scripts/build-release.sh",
+    "vite:dev": "vite",
+    "vite:build": "vite build",
+    "check:web": "svelte-check --tsconfig ./tsconfig.json",
+    "test:rust": "cd ../.. && ./scripts/with-cargo-env.sh cargo test -p tone-trainer"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.3.0",
+    "@tauri-apps/cli": "^2.11.4",
+    "svelte": "5.57.0",
+    "svelte-check": "4.7.6",
+    "typescript": "5.9.3",
+    "vite": "8.3.0"
+  }
+}

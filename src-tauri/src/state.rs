@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use hanzi_core::{
-    build_lessons, build_queue, entry_standing, now_iso8601, BoardSize, CursorStore, CursorView,
-    Dataset, Grade, Pace, ProgressStore, ProgressView, ReviewView, SettingsStore, SettingsView,
+    build_lessons, build_queue, entry_standing, now_iso8601, CursorStore, CursorView, Dataset,
+    Grade, ProgressStore, ProgressView, ReviewView, SettingsPatch, SettingsStore, SettingsView,
     ToneVerdict, VocabStore, VocabView,
 };
 use hanzi_core::pinyin::{
@@ -18,13 +18,14 @@ use hanzi_core::tone::analyze;
 use hanzi_store::Db;
 use tauri::{AppHandle, Manager};
 
-use crate::asr::Asr;
-use crate::capture::{Recorder, Recording};
+use hanzi_hearing::Asr;
 use crate::commands::{
     SpeechTarget, ToneResult, ToneSyllableResult, VoiceOption, VoicesView, LESSON_SIZE,
 };
 use crate::say::Say;
-use crate::speech::Speaker;
+// Capture and synthesis are shared with the standalone tone trainer, so they
+// live in `hanzi-voice` now rather than in this binary.
+use hanzi_voice::{Recorder, Recording, Speaker};
 
 /// The compact artifact produced by `hanzi-core`'s `prepare-data` binary.
 ///
@@ -799,7 +800,7 @@ impl AppState {
         if recording.truncated {
             detail.push_str(&format!(
                 " (The recording hit the {}-second limit, so only the start was scored.)",
-                crate::capture::MAX_RECORD_SECS
+                hanzi_voice::MAX_RECORD_SECS
             ));
         }
 
@@ -882,7 +883,7 @@ impl AppState {
         if recording.truncated {
             detail.push_str(&format!(
                 " (The recording hit the {}-second limit, so only the start was judged.)",
-                crate::capture::MAX_RECORD_SECS
+                hanzi_voice::MAX_RECORD_SECS
             ));
         }
 
@@ -907,45 +908,41 @@ impl AppState {
     ///
     /// Written as one call rather than one per control because the settings
     /// screen edits a document: a save per keystroke of a voice name would be
-    /// several writes of the same row, and the whole document is four small
-    /// values. A failure to save is reported the same way the other stores
+    /// several writes of the same row, and the whole document is a handful of
+    /// small values. A failure to save is reported the same way the other stores
     /// report one — the changes stand in memory and the view says they were not
     /// written.
     ///
-    /// A `None` argument means *leave this preference alone* rather than *clear
-    /// it*: the screen sends only what the learner touched, and clearing the
-    /// click-to-draw choice back to the device's default is asked for
+    /// The patch's absent fields mean *leave this preference alone* rather than
+    /// *clear it*: the screen sends only what the learner touched, and clearing
+    /// the click-to-draw choice back to the device's default is asked for
     /// explicitly by [`AppState::clear_click_to_draw`]. `intro_seen` and
-    /// `whats_new_seen` are the two arguments sent on the interface's own behalf
+    /// `whats_new_seen` are the two fields the interface sends on its own behalf
     /// rather than from a control on the settings screen: the startup reading is
-    /// dismissed on the board, and that is the moment both are recorded.
-    pub fn update_settings(
-        &self,
-        click_to_draw: Option<bool>,
-        voice: Option<&str>,
-        pace: Option<Pace>,
-        board_size: Option<BoardSize>,
-        intro_seen: Option<bool>,
-        whats_new_seen: Option<&str>,
-    ) -> SettingsView {
+    /// dismissed on the board, and that is the moment both are recorded. See
+    /// [`hanzi_core::SettingsPatch`] for the spellings of "clear".
+    pub fn update_settings(&self, patch: SettingsPatch) -> SettingsView {
         {
             let mut settings = self.lock_settings();
-            if let Some(value) = click_to_draw {
+            if let Some(value) = patch.click_to_draw {
                 settings.store.set_click_to_draw(Some(value));
             }
-            if let Some(name) = voice {
+            if let Some(name) = patch.voice.as_deref() {
                 settings.store.set_voice(Some(name));
             }
-            if let Some(value) = pace {
+            if let Some(value) = patch.animation_pace {
                 settings.store.set_animation_pace(value);
             }
-            if let Some(value) = board_size {
+            if let Some(value) = patch.board_size {
                 settings.store.set_board_size(value);
             }
-            if let Some(value) = intro_seen {
+            if let Some(value) = patch.tone_colours {
+                settings.store.set_tone_colours(value);
+            }
+            if let Some(value) = patch.intro_seen {
                 settings.store.set_intro_seen(value);
             }
-            if let Some(version) = whats_new_seen {
+            if let Some(version) = patch.whats_new_seen.as_deref() {
                 settings.store.set_whats_new_seen(Some(version));
             }
         }
@@ -1028,7 +1025,10 @@ impl AppState {
     /// looks broken.
     pub fn set_click_to_draw(&self, value: Option<bool>) -> SettingsView {
         match value {
-            Some(value) => self.update_settings(Some(value), None, None, None, None, None),
+            Some(value) => self.update_settings(SettingsPatch {
+                click_to_draw: Some(value),
+                ..SettingsPatch::default()
+            }),
             None => self.clear_click_to_draw(),
         }
     }

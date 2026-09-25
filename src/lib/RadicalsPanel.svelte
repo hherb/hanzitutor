@@ -33,6 +33,8 @@
    */
   import { onMount } from "svelte";
   import type { RadicalGroup } from "./types";
+  import ReadingList from "./ReadingList.svelte";
+  import TonedText from "./TonedText.svelte";
 
   interface Props {
     /** The whole derived list. Injected so the panel owns no IPC of its own. */
@@ -147,9 +149,9 @@
               onclick={() => select(family.radical)}
               title="Show the characters that use this radical"
             >
-              <span class="glyph" lang="zh-Hans">{family.radical}</span>
+              <span class="glyph" lang="zh-Hans"><TonedText text={family.radical} /></span>
               <span class="text">
-                <span class="reading">{family.pinyin.join("  ·  ") || "—"}</span>
+                <span class="reading"><ReadingList readings={family.pinyin} /></span>
                 <span class="meaning">{family.meaning || "no meaning recorded"}</span>
               </span>
               <span class="chip" title="Characters in the course that use it">
@@ -163,9 +165,9 @@
       {#if open}
         <aside class="detail" aria-label="Radical details">
           <div class="head">
-            <span class="big" lang="zh-Hans">{open.radical}</span>
+            <span class="big" lang="zh-Hans"><TonedText text={open.radical} /></span>
             <span class="head-text">
-              <span class="detail-pinyin">{open.pinyin.join("  ·  ") || "—"}</span>
+              <span class="detail-pinyin"><ReadingList readings={open.pinyin} /></span>
               <span class="detail-meaning">{open.meaning || "no meaning recorded"}</span>
             </span>
           </div>
@@ -211,7 +213,7 @@
                     onclick={() => onPractise([ch])}
                     title="Write {ch} on the board"
                   >
-                    {ch}
+                    <TonedText text={ch} />
                   </button>
                 </li>
               {/each}

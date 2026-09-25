@@ -1013,6 +1013,7 @@ const CLICK_TO_DRAW: &str = "click_to_draw";
 const VOICE: &str = "voice";
 const ANIMATION_PACE: &str = "animation_pace";
 const BOARD_SIZE: &str = "board_size";
+const TONE_COLOURS: &str = "tone_colours";
 const INTRO_SEEN: &str = "intro_seen";
 const WHATS_NEW_SEEN: &str = "whats_new_seen";
 
@@ -1070,6 +1071,9 @@ impl SettingsSink for Db {
                 }
             };
         }
+        if let Some(value) = setting_get_bool(&conn, TONE_COLOURS, &path)? {
+            settings.tone_colours = value;
+        }
         if let Some(value) = setting_get_bool(&conn, INTRO_SEEN, &path)? {
             settings.intro_seen = value;
         }
@@ -1117,6 +1121,10 @@ impl SettingsSink for Db {
                 BOARD_SIZE,
                 (settings.board_size != BoardSize::default())
                     .then(|| board_size_key(settings.board_size).to_string()),
+            ),
+            (
+                TONE_COLOURS,
+                settings.tone_colours.then(|| "true".to_string()),
             ),
             (INTRO_SEEN, settings.intro_seen.then(|| "true".to_string())),
             (WHATS_NEW_SEEN, settings.whats_new_seen.clone()),

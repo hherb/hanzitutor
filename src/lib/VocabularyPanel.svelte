@@ -8,6 +8,8 @@
    */
   import type { CharacterHint, EntryProgress, TextLookup, VocabEntry, VocabView } from "./types";
   import Icon from "./Icon.svelte";
+  import TonedPinyin from "./TonedPinyin.svelte";
+  import TonedText from "./TonedText.svelte";
   import * as api from "./api";
   import { tick } from "svelte";
 
@@ -442,7 +444,7 @@
         <ul>
           {#each hints as hint, position (position)}
             <li>
-              <span class="hint-ch" lang="zh-Hans">{hint.ch}</span>
+              <span class="hint-ch" lang="zh-Hans"><TonedText text={hint.ch} /></span>
               <span class="hint-pinyin">{hint.pinyin.join(" / ") || "unknown"}</span>
               <span class="hint-meaning">{hint.meaning || "—"}</span>
             </li>
@@ -537,9 +539,17 @@
     <ul class="entries">
       {#each entriesShown as entry (entry.id)}
         <li>
-          <span class="glyph" lang="zh-Hans">{entry.text}</span>
+          <span class="glyph" lang="zh-Hans"
+            ><TonedText text={entry.text} tones={entry.tones.length > 0 ? entry.tones : null} /></span
+          >
           <span class="reading">
-            <span class="pinyin">{entry.pinyin || "—"}</span>
+            <span class="pinyin"
+              >{#if entry.pinyin}<TonedPinyin
+                  text={entry.pinyin}
+                  syllables={entry.syllables}
+                  tones={entry.tones}
+                />{:else}—{/if}</span
+            >
             <span class="meaning">{entry.meaning || "—"}</span>
             <!-- The group and what is known of the entry sit under the reading
                  rather than beside it. Beside it they were two more fixed

@@ -202,15 +202,45 @@ pub struct VocabEntryView {
     /// that conflates them reports something it invented.
     #[serde(default)]
     pub standing: Option<EntryStanding>,
+    /// One tone per character of the entry's text, tone 1..=5, in order.
+    ///
+    /// The entry's **own reading** read against its own characters — the same
+    /// pairing the word list sends, and for the same reason: the rule that says
+    /// which syllable belongs to which character lives in [`crate::pinyin`], and
+    /// a second copy of it in the interface would be a second source of truth for
+    /// something a learner's own typed pinyin can already settle. 医院 typed as
+    /// `yīyuàn` colours 院 with tone 4, and 爱好 typed as `àihào` colours 好 with
+    /// tone 4 where the character on its own is `hǎo`, tone 3.
+    ///
+    /// **Empty** when the reading will not divide one syllable per character —
+    /// the pinyin box accepts anything — or when it is blank. The interface then
+    /// falls back to each character's own tone, which is right for everything but
+    /// a polyphone, rather than showing a pairing nobody can justify.
+    #[serde(default)]
+    pub tones: Vec<u8>,
+    /// The entry's reading split one syllable per character, for colouring the
+    /// pinyin beside the characters. Empty exactly when [`Self::tones`] is.
+    #[serde(default)]
+    pub syllables: Vec<String>,
 }
 
 impl VocabEntryView {
     /// The entry on its own, with no standing: what [`VocabStore::view`] can
     /// answer on its own.
     fn untagged(entry: Entry) -> Self {
+        let (tones, syllables) = crate::pinyin::aligned_reading(&entry.text, &entry.pinyin)
+            .map(|list| {
+                (
+                    list.iter().map(|syllable| syllable.tone).collect(),
+                    list.into_iter().map(|syllable| syllable.text).collect(),
+                )
+            })
+            .unwrap_or_default();
         Self {
             entry,
             standing: None,
+            tones,
+            syllables,
         }
     }
 }
@@ -800,6 +830,43 @@ mod tests {
         assert_eq!(entry.characters(), vec!['好']);
         assert_eq!(store.groups(), [] as [String; 0]);
         assert_eq!(entry.group, None);
+    }
+
+    #[test]
+    fn an_entry_carries_the_tone_of_each_of_its_characters() {
+        // The view pairs the entry's own reading with its own characters, so a
+        // screen can colour it without a second rule for splitting pinyin.
+        let mut store = VocabStore::in_memory();
+        store.add_entry("学习", "xuéxí", "to study", None).unwrap();
+        store.add_entry("的话", "dehuà", "words", None).unwrap();
+        let view = store.view();
+
+        let learning = &view.entries[0];
+        assert_eq!(learning.tones, vec![2, 2]);
+        assert_eq!(learning.syllables, vec!["xué".to_string(), "xí".to_string()]);
+        // A neutral syllable keeps its place: 的 is tone 5, which is the case a
+        // split driven by tone marks alone would get wrong.
+        let words = &view.entries[1];
+        assert_eq!(words.tones, vec![5, 4]);
+        assert_eq!(words.syllables, vec!["de".to_string(), "huà".to_string()]);
+    }
+
+    #[test]
+    fn an_entry_whose_reading_does_not_fit_its_text_carries_no_tones() {
+        // The pinyin box accepts anything, so the honest answer for a reading
+        // that will not divide one syllable per character is to send nothing and
+        // let the interface fall back to each character's own tone. Pairing it up
+        // anyway would put a tone on the wrong glyph.
+        let mut store = VocabStore::in_memory();
+        store.add_entry("学习", "xué", "to study", None).unwrap();
+        store.add_entry("你好", "", "hello", None).unwrap();
+        store.add_entry("朋友", "péng yǒu yǒu", "friend", None).unwrap();
+        let view = store.view();
+
+        for entry in &view.entries {
+            assert!(entry.tones.is_empty(), "{:?} has no aligned tones", entry.entry.text);
+            assert!(entry.syllables.is_empty());
+        }
     }
 
     #[test]

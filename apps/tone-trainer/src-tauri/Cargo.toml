@@ -1,0 +1,39 @@
+[package]
+name = "tone-trainer"
+description = "Practise Mandarin tones: hear the minimal pairs, then say them"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Three crate types, for the same reason the full app has them and with the same
+# consumers: `staticlib` is what iOS links, `cdylib` is what Android loads, and
+# `rlib` is what the desktop binary links against. See the longer note in
+# `src-tauri/Cargo.toml` for the `cdylib`-on-iOS wrinkle this inherits.
+[lib]
+name = "tone_trainer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+# The tone scorer itself: the dataset that says which characters are minimal
+# pairs, the pinyin rules that read a tone out of a reading, and the pitch
+# analysis that judges what the learner said. None of it is specific to this app.
+hanzi-core = { path = "../../../crates/hanzi-core" }
+# Microphone capture and the system voice, shared with the full app. This is the
+# crate that exists so the standalone trainer did not have to copy two thousand
+# lines of platform code out of `src-tauri`.
+hanzi-voice = { path = "../../../crates/hanzi-voice" }
+# Speech recognition: *what* was said, optional at runtime. This is the half that
+# tells 四 from 是, which score identically on tone — the trainer could measure
+# *how* you said a syllable and never *which* one, and this is what fixes that.
+#
+# Linking this is why the trainer is no longer a build with no native speech
+# dependency: it carries the same `sherpa-onnx` the full app does. What it still
+# does **not** link is `hanzi-say`, the bundled synthesis model, so a learner who
+# never installs the recognition model downloads nothing.
+hanzi-hearing = { path = "../../../crates/hanzi-hearing" }

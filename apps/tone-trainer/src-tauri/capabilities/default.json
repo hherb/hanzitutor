@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default permissions for the main window. Every command this app defines is callable without a permission; this covers the Tauri core itself. There are deliberately no plugin permissions: this app has no dialogs, no filesystem access and no opener.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -98,19 +98,31 @@ const MAX_UTTERANCE: usize = 64;
 
 /// What "the utterance in flight" is on this platform.
 ///
-/// Only the macOS backend holds anything here: it keeps the `say` process so
-/// that killing it stops the speech. iOS holds nothing — its synthesiser is not
-/// `Send` and so cannot live in the shared [`Speaker`]; it lives on the main
-/// thread instead (see [`with_main`]). Android holds nothing either, because its
-/// synthesiser lives on the Kotlin side of the bridge and stopping is a command
-/// to that side (see `crate::platform`).
+/// Only the macOS backend holds anything here, and it holds the **player**, not
+/// the synthesiser — see [`render`] for why speech is rendered to a file before
+/// it is heard. iOS holds nothing: its synthesiser is not `Send` and so cannot
+/// live in the shared [`Speaker`]; it lives on the main thread instead (see
+/// [`with_main`]). Android holds nothing either, because its synthesiser lives on
+/// the Kotlin side of the bridge and stopping is a command to that side (see
+/// [`crate::platform`]).
 #[cfg(target_os = "macos")]
 type Utterance = Child;
+
+/// A rendered utterance shorter than this is not speech.
+///
+/// **`say` does not fail when a voice is not installed** — it exits 0 and writes
+/// about 11 ms of near-silence. So a name this crate resolved but the synthesiser
+/// cannot use produces a silent "success" that the learner experiences as the
+/// sound being cut off, which is exactly the complaint this floor exists to turn
+/// into a message. 50 ms is far below the shortest Mandarin syllable (a tone 4 is
+/// comfortably over 150 ms) and far above the placeholder.
+#[cfg(target_os = "macos")]
+const MIN_RENDER_MS: u64 = 50;
 
 /// Pronunciation, with at most one utterance in flight.
 #[derive(Default)]
 pub struct Speaker {
-    /// The utterance in flight, kept so a new one can cut off the last instead
+    /// What is being played, kept so the next utterance can cut it off instead
     /// of talking over it. macOS only, for the reason [`Utterance`] gives.
     #[cfg(target_os = "macos")]
     current: Mutex<Option<Utterance>>,
@@ -186,8 +198,9 @@ impl Speaker {
 
     /// Start speaking, cutting off any previous utterance.
     ///
-    /// Returns as soon as the synthesiser has been started; it does not wait for
-    /// the audio to finish, so the caller is never blocked by speech.
+    /// Returns once the audio has started — or, on macOS, as soon as the
+    /// utterance has been *rendered* and its player started. It does not wait for
+    /// the sound to finish, so the caller is never blocked by speech.
     pub fn speak(&self, text: &str) -> Result<(), String> {
         let text = text.trim();
         if text.is_empty() {
@@ -200,31 +213,26 @@ impl Speaker {
             ));
         }
 
-        self.stop();
-
         let Some(voice) = self.voice() else {
             return Err(no_voice_message());
         };
 
         #[cfg(target_os = "macos")]
         {
-            let child = Command::new("/usr/bin/say")
-                .arg("-v")
-                .arg(&voice.name)
-                // `--` so that text beginning with a dash is still read as text.
-                .arg("--")
-                .arg(text)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|e| format!("could not start the speech synthesiser: {e}"))?;
-            self.hold(child);
-            Ok(())
+            // Rendered in full before anything is heard, then played. Killing a
+            // `say` process mid-utterance is what produced clipped, crackling
+            // pronunciation: see [`render`]. The player is stopped rather than
+            // the synthesiser, which is a plain file read and can be cut
+            // anywhere without a glitch.
+            let file = render(text, &voice.name)?;
+            self.play(&file)
         }
 
         #[cfg(target_os = "ios")]
         {
+            // Stopping first, and after the voice is known, so a failed lookup
+            // cannot silence what is already being said.
+            self.stop();
             speak_on_main(text, &voice.name)
         }
 
@@ -234,6 +242,7 @@ impl Speaker {
         // the other two backends have.
         #[cfg(target_os = "android")]
         {
+            self.stop();
             crate::platform::call::<serde_json::Value>(
                 "speak",
                 serde_json::json!({ "text": text, "voice": voice.name }),
@@ -267,20 +276,51 @@ impl Speaker {
             // fix, not the speech. `speak_on_main` takes the session again.
             eprintln!("[speech] could not warm the audio route: {problem}");
         }
+
+        // macOS has its own cold start, and it sounds like crackle rather than
+        // like silence: the first `afplay` or two after the machine has been quiet
+        // underrun the output device while CoreAudio sets it up, which is the
+        // "first few tones are rough, then it is clear" report. Warming the device
+        // once here — a player started on a silent file and stopped immediately —
+        // leaves the first real utterance playing into a device that is already
+        // awake. The voice list is resolved on the same pass, so the first
+        // pronunciation does not pay for that either.
+        #[cfg(target_os = "macos")]
+        {
+            let _ = self.voices();
+            match silence() {
+                Ok(file) => {
+                    if let Err(problem) = self.play(&file) {
+                        // Not fatal: this costs the warm-up, not the speech.
+                        eprintln!("[speech] could not warm the audio device: {problem}");
+                    }
+                    self.stop();
+                }
+                Err(problem) => {
+                    eprintln!("[speech] could not prepare the audio warm-up: {problem}");
+                }
+            }
+        }
     }
 
     /// Stop the current utterance, if any.
     ///
-    /// On macOS that means killing the `say` process and reaping it; on iOS,
-    /// asking the synthesiser to stop — it keeps its own queue, and dropping it
-    /// would leave the queue speaking with nothing able to stop it.
+    /// On macOS this stops the *player*, which is a file read that can be
+    /// interrupted anywhere without a glitch — it never touches the synthesiser.
+    /// On iOS it asks the synthesiser to stop, because it keeps its own queue and
+    /// dropping it would leave the queue speaking with nothing able to stop it.
     pub fn stop(&self) {
         #[cfg(target_os = "macos")]
         {
-            let mut slot = self.lock();
-            if let Some(mut child) = slot.take() {
+            // Taken out of the lock before it is reaped: `wait` blocks, and
+            // holding the speaker's lock across it would stall every other call
+            // for as long as the player took to die.
+            let running = self.lock().take();
+            if let Some(mut child) = running {
                 // A child that already finished makes `kill` fail harmlessly;
-                // the `wait` afterwards is what actually reaps it.
+                // the `wait` afterwards is what actually reaps it. SIGTERM, not
+                // the default SIGKILL: the player tears its audio unit down on
+                // the way out, and it exits in about a millisecond.
                 let _ = child.kill();
                 let _ = child.wait();
             }
@@ -299,6 +339,26 @@ impl Speaker {
         }
     }
 
+    /// Cut off the current player and start `file`.
+    ///
+    /// macOS only. The stop happens here rather than in [`Self::speak`] so that
+    /// the rendering — the slow part — happens *before* anything is silenced: a
+    /// learner drilling one syllable after another keeps hearing the previous one
+    /// until the next is ready, instead of getting a gap.
+    #[cfg(target_os = "macos")]
+    fn play(&self, file: &std::path::Path) -> Result<(), String> {
+        self.stop();
+        let child = Command::new("/usr/bin/afplay")
+            .arg(file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("could not start the audio player: {e}"))?;
+        self.hold(child);
+        Ok(())
+    }
+
     #[cfg(target_os = "macos")]
     fn hold(&self, child: Child) {
         *self.lock() = Some(child);
@@ -310,6 +370,362 @@ impl Speaker {
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<Utterance>> {
         self.current.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+// ---------------------------------------------------------------------------
+// macOS: render once, then play the file
+// ---------------------------------------------------------------------------
+//
+// ## Why speech is not streamed straight out of `say`
+//
+// It used to be: `say -v <voice> -- <text>` was spawned and its process kept, so
+// that the next utterance could kill it. That produced pronunciation that was
+// **clipped and crackling on macOS and nowhere else**, and the reason is a race
+// this code created rather than a fault in the synthesiser.
+//
+// `say` needs roughly a third of a second before it starts making sound — the
+// speech daemon has to answer and a CoreAudio unit has to be built. Killing it
+// before that, which is what happens whenever a learner taps a second character
+// while the first is still being set up, tears the audio unit down mid-stream.
+// Measured on this machine with the app's own pattern — spawn, wait 0.5 s, SIGKILL
+// — each attempt was audible for about 170 ms of a 4.4 s utterance. The click at
+// the cut is the crackle. Android and iOS never had this because neither of them
+// is a process being killed: Android's synthesiser runs in Kotlin and is asked to
+// stop, and iOS's is asked to stop in process.
+//
+// **A second, quieter fault made the first one worse.** `say` exits 0 and writes
+// about 11 ms of near-silence when it cannot use the voice it was named — no
+// error, no message, an empty output on both streams. So any name this crate
+// resolved but the synthesiser could not use sounded exactly like being cut off,
+// with nothing to report. [`render`] now measures what came out and refuses to
+// call it speech.
+//
+// ## What replaced it
+//
+// Render the whole utterance to a file with `say -o`, check that the file is
+// really speech, then play it with `afplay`. Three things fall out of that:
+//
+// - **Interruption is safe.** The process being killed is playing a file, not
+//   synthesising; there is no audio unit to leave half-built.
+// - **It is also faster, not slower.** `say -o` renders any length in about
+//   0.9 s because it does not wait for playback, so a render plus a play of a
+//   short word is ~1.05 s against ~1.8 s for `say` streaming it live. A repeat is
+//   a cache hit and costs the play alone.
+// - **A failure can be reported.** An empty render is a sentence for the learner
+//   instead of silence.
+//
+// The cache is per-process and lives in the system temp directory, which is the
+// one place this app is guaranteed to be able to write. That also means it cannot
+// grow without bound across runs: a fresh directory is rendered on each launch,
+// and the previous one is removed by the OS.
+
+/// Whether this process has cleared its cache directory yet.
+#[cfg(target_os = "macos")]
+static CACHE_PREPARED: std::sync::Once = std::sync::Once::new();
+
+/// Render `text` in `voice` and return the file holding it.
+///
+/// Cached by text and voice, because the whole point of this app is saying the
+/// same few characters over and over. `voice` is the synthesiser's own name for
+/// it, not the display name, so two names that resolve to the same voice share an
+/// entry.
+#[cfg(target_os = "macos")]
+fn render(text: &str, voice: &str) -> Result<std::path::PathBuf, String> {
+    let dir = cache_dir()?;
+    CACHE_PREPARED.call_once(|| {
+        // A directory left by a previous run is cleared rather than reused: the
+        // files are keyed by a hash, and the text behind a hash is not knowable
+        // from the file itself. Failing to clear is not fatal — the next render
+        // simply writes over the entry it needs.
+        let _ = std::fs::remove_dir_all(&dir);
+    });
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("could not create the speech cache at {}: {e}", dir.display()))?;
+
+    let file = dir.join(format!("{}.aiff", cache_key(text, voice)));
+    if is_speech(&file) {
+        return Ok(file);
+    }
+
+    let output = Command::new("/usr/bin/say")
+        .arg("-v")
+        .arg(voice)
+        // `--` so that text beginning with a dash is still read as text.
+        .arg("-o")
+        .arg(&file)
+        .arg("--")
+        .arg(text)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("could not start the speech synthesiser: {e}"))?;
+
+    if !output.status.success() {
+        // Both streams, because which one carries the complaint has varied
+        // between macOS releases, and a silent failure here is what this whole
+        // path exists to stop being silent.
+        let complaint = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let said = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = match (complaint.is_empty(), said.is_empty()) {
+            (false, _) => complaint,
+            (true, false) => said,
+            (true, true) => format!("no message, {}", output.status),
+        };
+        return Err(format!(
+            "the speech synthesiser could not speak {text:?} in voice {voice:?}: {detail}"
+        ));
+    }
+
+    if !is_speech(&file) {
+        // The voice named is one the synthesiser will not use — see the module
+        // note above. Say so, because the alternative is a silence the learner
+        // cannot tell from a bug.
+        return Err(format!(
+            "the system voice {voice:?} produced no audio for {text:?}; \
+             choose another voice in Settings, or install the Chinese voice for this system"
+        ));
+    }
+
+    Ok(file)
+}
+
+/// Where rendered utterances live for the life of this process.
+///
+/// The system temp directory, because it is the one place every platform this
+/// app runs on is guaranteed to allow a write — including a sandboxed mobile
+/// bundle and a **sandboxed build harness**, where a child process may be denied
+/// directories the parent can use. `HANZI_TUTOR_SPEECH_CACHE` overrides it, which
+/// is what a restricted environment points at a writable directory.
+#[cfg(target_os = "macos")]
+fn cache_dir() -> Result<std::path::PathBuf, String> {
+    if let Some(dir) = std::env::var_os("HANZI_TUTOR_SPEECH_CACHE") {
+        let dir = std::path::PathBuf::from(dir);
+        if !dir.as_os_str().is_empty() {
+            return Ok(dir);
+        }
+    }
+    Ok(std::env::temp_dir().join("hanzi-speech-cache"))
+}
+
+/// True when `file` holds audio long enough to be a spoken syllable.
+#[cfg(target_os = "macos")]
+fn is_speech(file: &std::path::Path) -> bool {
+    match rendered_ms(file) {
+        Some(ms) => ms >= MIN_RENDER_MS,
+        None => false,
+    }
+}
+
+/// The length of a rendered file in milliseconds, or `None` when it cannot be
+/// read.
+///
+/// The two header fields are the whole of what is needed: every byte of a
+/// 16-bit PCM AIFF is audio, so `(data size / channels / 2) / rate` is exactly
+/// the duration. Deliberately not a call to `afinfo`: this runs on every play,
+/// and a process spawn to answer a question two integers already answer would be
+/// the slowest thing in the path.
+#[cfg(target_os = "macos")]
+fn rendered_ms(file: &std::path::Path) -> Option<u64> {
+    render_header(file).map(|(rate, channels, frames, _bytes_per_sample)| {
+        if rate == 0 || channels == 0 {
+            return 0;
+        }
+        frames as u64 * 1000 / (rate as u64 * channels as u64)
+    })
+}
+
+/// A short, silent PCM file, for waking the output device.
+///
+/// Written by hand rather than rendered: `say -o` would need a voice and would
+/// make this a synthesis problem, and the point is only to give the player
+/// something valid to open. **22,050 Hz mono 16-bit PCM**, which is the format
+/// `say` itself writes (see [`render_header`]), so a warm-up can never fail for a
+/// reason a real utterance would not.
+///
+/// Overwritten on every call rather than cached: it is 1,024 bytes, it is written
+/// once per process, and a file that is always the same cannot be stale.
+#[cfg(target_os = "macos")]
+fn silence() -> Result<std::path::PathBuf, String> {
+    const RATE: u32 = 22_050;
+    /// Long enough for the device to come up, short enough to be inaudible even
+    /// if the stop below were missed — which cannot happen, since it is silence.
+    const FRAMES: u32 = 512;
+
+    let dir = cache_dir()?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("could not create the speech cache at {}: {e}", dir.display()))?;
+    let file = dir.join("silence.aiff");
+    std::fs::write(&file, silent_aiff(RATE, FRAMES))
+        .map_err(|e| format!("could not write the warm-up file: {e}"))?;
+    Ok(file)
+}
+
+/// The bytes of a silent mono 16-bit PCM AIFF holding `frames` samples.
+///
+/// Laid out as `FORM` → `AIFC` → `COMM` → `SSND`, all big-endian, which is what
+/// the [`render_header`] reader expects — so the warm-up file parses like any
+/// other render and could be measured with the same code.
+#[cfg(target_os = "macos")]
+fn silent_aiff(rate: u32, frames: u32) -> Vec<u8> {
+    let payload = frames as usize * 2;
+    let mut out = Vec::with_capacity(payload + 64);
+    out.extend_from_slice(b"FORM");
+    // The FORM length covers everything after this field's 8 bytes: the four
+    // format bytes and both chunks with their headers. The reader ignores it, but
+    // a player may not, so it is written correctly.
+    out.extend_from_slice(&(4u32 + (8 + 18) + (8 + 8 + payload as u32)).to_be_bytes());
+    out.extend_from_slice(b"AIFC");
+
+    out.extend_from_slice(b"COMM");
+    out.extend_from_slice(&18u32.to_be_bytes());
+    out.extend_from_slice(&1u16.to_be_bytes()); // one channel
+    out.extend_from_slice(&frames.to_be_bytes());
+    out.extend_from_slice(&16u16.to_be_bytes()); // bits per sample
+    out.extend_from_slice(&extended_f64(rate as f64));
+
+    out.extend_from_slice(b"SSND");
+    out.extend_from_slice(&(payload as u32 + 8).to_be_bytes());
+    out.extend_from_slice(&[0u8; 8]); // offset and block size
+    out.extend(std::iter::repeat_n(0u8, payload));
+    out
+}
+
+/// A `f64` as the 80-bit extended float AIFF stores sample rates in.
+///
+/// The inverse of what [`extended_u32`] reads. Used only by the warm-up file,
+/// which is why it takes a `f64` rather than an integer: the encoding is about
+/// the format, not about the value being whole.
+#[cfg(target_os = "macos")]
+fn extended_f64(value: f64) -> [u8; 10] {
+    let mut out = [0u8; 10];
+    if value <= 0.0 || !value.is_finite() {
+        return out;
+    }
+    // Normalise into [1, 2) and record the binary exponent, biased by 16,383.
+    let mut exponent = 0i32;
+    let mut mantissa = value;
+    while mantissa >= 2.0 {
+        mantissa /= 2.0;
+        exponent += 1;
+    }
+    while mantissa < 1.0 {
+        mantissa *= 2.0;
+        exponent -= 1;
+    }
+    let biased = (exponent + 16_383) as u16;
+    out[0..2].copy_from_slice(&biased.to_be_bytes());
+    // The explicit integer bit, then 63 fraction bits.
+    let scaled = (mantissa * (1u64 << 63) as f64) as u64;
+    out[2..10].copy_from_slice(&scaled.to_be_bytes());
+    out
+}
+
+/// A hash of `(text, voice)`, as the file name of that utterance's rendering.
+///
+/// FNV-1a, written out rather than taken from a crate: the name only has to be
+/// stable within one process and not collide among the few hundred utterances a
+/// drill produces, and a `u64` of hex is a fine file name. The voice is part of
+/// the key because the same character in two voices is two different recordings.
+#[cfg(target_os = "macos")]
+fn cache_key(text: &str, voice: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in voice.bytes().chain(std::iter::once(0)).chain(text.bytes()) {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// `(sample rate, channels, sample frames, bytes per sample)` from an AIFF file.
+///
+/// Written out rather than shelling out to `afinfo`, which is a process spawn per
+/// play, and rather than adding an audio-file crate for two integers. `say`
+/// writes PCM (AIFF-C with `twos` or `sowt`, or plain AIFF), so the frame count in
+/// the `COMM` chunk is the whole truth about the duration — no decoding, no
+/// estimate. Verified against `afinfo`: 10,332 frames at 22,050 Hz reports
+/// 0.468571 s, which is 10332 / 22050 exactly.
+#[cfg(target_os = "macos")]
+fn render_header(file: &std::path::Path) -> Option<(u32, u16, u32, u16)> {
+    let bytes = std::fs::read(file).ok()?;
+    let tag = |at: usize| bytes.get(at..at + 4);
+
+    // `FORM` then a big-endian length then `AIFF` (or `AIFC`). The length is not
+    // used: a truncated file should be read for whatever chunks it does hold, and
+    // the caller's duration check is what rejects it.
+    if tag(0)? != b"FORM" {
+        return None;
+    }
+    if tag(8)? != b"AIFF" && tag(8)? != b"AIFC" {
+        return None;
+    }
+
+    let mut at = 12usize;
+    while at + 8 <= bytes.len() {
+        let id = tag(at)?;
+        let size = be_u32(&bytes, at + 4)? as usize;
+        let body = at + 8;
+        if id == b"COMM" && body + 18 <= bytes.len() {
+            let channels = be_u16(&bytes, body)?;
+            let frames = be_u32(&bytes, body + 2)?;
+            let bits = be_u16(&bytes, body + 6)?;
+            let rate = extended_u32(&bytes, body + 8)?;
+            if rate == 0 || channels == 0 {
+                return None;
+            }
+            return Some((rate, channels, frames, bits / 8));
+        }
+        // Chunks are padded to an even length, and the pad byte is not counted
+        // in the size.
+        at = body + size + (size & 1);
+    }
+    None
+}
+
+/// One big-endian `u16`, or `None` when the slice runs out.
+#[cfg(target_os = "macos")]
+fn be_u16(bytes: &[u8], at: usize) -> Option<u16> {
+    let raw: [u8; 2] = bytes.get(at..at + 2)?.try_into().ok()?;
+    Some(u16::from_be_bytes(raw))
+}
+
+/// One big-endian `u32`, or `None` when the slice runs out.
+#[cfg(target_os = "macos")]
+fn be_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    let raw: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
+    Some(u32::from_be_bytes(raw))
+}
+
+/// An 80-bit IEEE 754 extended float, as the sample rate in an AIFF `COMM`
+/// chunk, reduced to the integer it holds.
+///
+/// AIFF's sample rate is an extended-precision float and every real one is a
+/// whole number of hertz, so the mantissa's integer part is taken and the
+/// fraction dropped. `None` for the one encoding that cannot be a rate: an
+/// explicit zero, or a value with the integer bit clear.
+#[cfg(target_os = "macos")]
+fn extended_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    let raw = bytes.get(at..at + 10)?;
+    let exponent = u16::from_be_bytes(raw[0..2].try_into().ok()?);
+    let sign = exponent & 0x8000 != 0;
+    if sign {
+        return None;
+    }
+    let exponent = (exponent & 0x7fff) as i32 - 16_383;
+    let mantissa = u64::from_be_bytes(raw[2..10].try_into().ok()?);
+    if mantissa == 0 || exponent < 0 {
+        // Zero, or a rate below 1 Hz — both meaningless for speech. A rate this
+        // small is also a file that is not what it claims, so refusing beats
+        // returning a number that would make the duration nonsense.
+        return None;
+    }
+    // The margin stops a file whose exponent is absurd from being read as a
+    // plausible rate: 63 bits of shift is already more than a u32 can hold.
+    if exponent > 31 {
+        return None;
+    }
+    let value = mantissa >> (63 - exponent);
+    u32::try_from(value).ok()
 }
 
 #[cfg(target_os = "ios")]
@@ -1260,5 +1676,278 @@ Daniel              en_GB    # Hello, my name is Daniel.
             pick_voice(&voices).is_some(),
             "no Chinese voice installed on this machine"
         );
+    }
+
+    // ---- macOS: the rendered-file backend ---------------------------------
+    //
+    // Everything below is macOS-only because everything it tests is. The
+    // regression it exists for — clipped, crackling pronunciation — could not
+    // happen on the other two platforms, which is what pointed at this backend in
+    // the first place.
+
+    /// Build an AIFF header of the shape `say` writes, around `payload` bytes of
+    /// (fake) samples.
+    #[cfg(target_os = "macos")]
+    fn aiff(rate: u32, channels: u16, bits: u16, frames: u32, payload: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"FORM");
+        // The FORM length is deliberately *wrong* here. Nothing in the reader
+        // consults it — a truncated file must still be readable for whatever it
+        // holds — and writing it as a lie is what keeps that true.
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(b"AIFC");
+
+        // A small odd-length chunk before `COMM`, to pin the pad-byte arithmetic:
+        // the size is 1, the body is 1 byte, and the pad makes 2 in the file.
+        out.extend_from_slice(b"FVER");
+        out.extend_from_slice(&1u32.to_be_bytes());
+        out.push(0x00);
+        out.push(0x00); // the pad byte: not counted in the chunk's size
+
+        out.extend_from_slice(b"COMM");
+        out.extend_from_slice(&18u32.to_be_bytes());
+        out.extend_from_slice(&channels.to_be_bytes());
+        out.extend_from_slice(&frames.to_be_bytes());
+        out.extend_from_slice(&bits.to_be_bytes());
+        out.extend_from_slice(&extended(rate));
+
+        out.extend_from_slice(b"SSND");
+        out.extend_from_slice(&(payload as u32 + 8).to_be_bytes());
+        out.extend_from_slice(&[0u8; 8]); // offset and block size
+        out.extend(std::iter::repeat_n(0u8, payload));
+        out
+    }
+
+    /// An 80-bit extended float holding a whole number of hertz.
+    #[cfg(target_os = "macos")]
+    fn extended(value: u32) -> [u8; 10] {
+        let exponent = 16_383 + 31;
+        let mantissa = (value as u64) << 32;
+        let mut out = [0u8; 10];
+        out[0..2].copy_from_slice(&(exponent as u16).to_be_bytes());
+        out[2..10].copy_from_slice(&mantissa.to_be_bytes());
+        out
+    }
+
+    /// Write `bytes` to a scratch file and read it back as a header.
+    #[cfg(target_os = "macos")]
+    fn header_of(bytes: &[u8]) -> Option<(u32, u16, u32, u16)> {
+        let file = std::env::temp_dir().join(format!(
+            "hanzi-speech-header-{:p}.aiff",
+            bytes.as_ptr()
+        ));
+        std::fs::write(&file, bytes).expect("a scratch file in the temp directory");
+        let read = render_header(&file);
+        let _ = std::fs::remove_file(&file);
+        read
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_the_sample_rate_out_of_an_aiff_header() {
+        // 22,050 Hz — what `say` actually writes — and the other two rates a
+        // render can plausibly carry, so a mistake in the extended-float exponent
+        // shows up as a wrong rate rather than as a wrong duration only.
+        for rate in [16_000u32, 22_050, 44_100] {
+            assert_eq!(header_of(&aiff(rate, 1, 16, 100, 200)), Some((rate, 1, 100, 2)));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_the_frame_count_from_the_common_chunk_not_the_payload() {
+        // The count is what the COMM chunk says, so a payload padded to the even
+        // byte does not change the duration, and neither does a short one.
+        assert_eq!(header_of(&aiff(22_050, 1, 16, 10_332, 7)), Some((22_050, 1, 10_332, 2)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn refuses_a_file_that_is_not_aiff() {
+        assert_eq!(header_of(b"RIFF\x00\x00\x00\x00WAVE"), None);
+        assert_eq!(header_of(b"FORM\x00\x00\x00\x00WAVE"), None);
+        assert_eq!(header_of(b""), None);
+        // Truncated before the COMM body: nothing to read, and no panic.
+        assert_eq!(header_of(b"FORM\x00\x00\x00\x04AIFCCOMM\x00\x00\x00\x12"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_eleven_millisecond_render_is_not_speech() {
+        // The floor's whole purpose. `say` exits 0 with about 11 ms of
+        // near-silence when it cannot use the voice it was named, and before this
+        // existed the learner heard that as pronunciation being cut off. Build
+        // exactly that file and check it is refused.
+        let silent = aiff(22_050, 1, 16, 256, 512);
+        let file = std::env::temp_dir().join("hanzi-speech-silent-probe.aiff");
+        std::fs::write(&file, &silent).expect("a scratch file in the temp directory");
+        assert_eq!(rendered_ms(&file), Some(11));
+        assert!(!is_speech(&file), "an 11 ms render must not count as speech");
+        let _ = std::fs::remove_file(&file);
+
+        // And that a real utterance does. 300 ms at 22,050 Hz.
+        let spoken = aiff(22_050, 1, 16, 6_615, 13_230);
+        std::fs::write(&file, &spoken).expect("a scratch file in the temp directory");
+        assert_eq!(rendered_ms(&file), Some(300));
+        assert!(is_speech(&file), "a 300 ms render is speech");
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_cache_key_separates_text_and_voice() {
+        // The same character in two voices is two recordings, and two characters
+        // in one voice are two more. A key that ignored the voice would serve one
+        // voice's audio for another.
+        let a = cache_key("马", "Tingting");
+        assert_eq!(a, cache_key("马", "Tingting"), "the key must be stable");
+        assert_ne!(a, cache_key("马", "Meijia"));
+        assert_ne!(a, cache_key("骂", "Tingting"));
+        // A separator, so ("ab", "c") and ("a", "bc") cannot collide.
+        assert_ne!(cache_key("ab", "c"), cache_key("a", "bc"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_warm_up_file_is_a_valid_silent_render() {
+        // It has to parse like any other render, because the same reader guards
+        // it and a format `afplay` refused would make the warm-up itself the bug.
+        let file = silence().expect("a warm-up file in the cache directory");
+        let (rate, channels, frames, bytes_per_sample) =
+            render_header(&file).expect("the warm-up file should carry an AIFF header");
+        assert_eq!(rate, 22_050, "the rate `say` itself writes");
+        assert_eq!(channels, 1);
+        assert_eq!(bytes_per_sample, 2);
+        assert_eq!(frames, 512);
+        assert_eq!(rendered_ms(&file), Some(23));
+        // Silence is not speech, and that is the point: nothing about the warm-up
+        // should be mistaken for an utterance.
+        assert!(!is_speech(&file));
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_extended_float_round_trips_through_the_reader() {
+        // The warm-up writes the sample rate with `extended_f64` and every render
+        // is read back with `extended_u32`. A disagreement between the two would
+        // be silent, so each rate a render can carry is checked both ways.
+        for rate in [8_000u32, 16_000, 22_050, 44_100, 48_000] {
+            let encoded = extended_f64(rate as f64);
+            assert_eq!(
+                extended_u32(&encoded, 0),
+                Some(rate),
+                "rate {rate} did not survive the round trip"
+            );
+        }
+        // And the degenerate encodings the reader must refuse.
+        assert_eq!(extended_u32(&[0u8; 10], 0), None, "zero");
+        let mut negative = extended_f64(22_050.0);
+        negative[0] |= 0x80; // set the sign bit
+        assert_eq!(extended_u32(&negative, 0), None, "a negative rate");
+    }
+
+    /// The regression test: a real render really is speech.
+    ///
+    /// This is the assertion that would have caught the clipping. It renders
+    /// through the same function the app speaks with, reads the duration back
+    /// with the same reader that guards the play, and pins that a single syllable
+    /// is a plausible length rather than a sliver.
+    ///
+    /// The child process has to be *allowed* to write the cache, which is not the
+    /// same question as whether this process can: a sandboxed test harness can
+    /// write a directory its own children cannot. When that is the case there is
+    /// nothing about the audio to check, so the test says so and stops rather than
+    /// reporting a fault in the app — the same shape as the "no Chinese voice
+    /// installed" arms.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_rendered_character_is_audible_speech() {
+        let speaker = Speaker::default();
+        let Some(voice) = speaker.voice() else {
+            return;
+        };
+
+        let file = match render("马", &voice.name) {
+            Ok(file) => file,
+            Err(problem) if problem.contains("Opening output file failed") => {
+                eprintln!(
+                    "skipping: the speech synthesiser cannot write the cache in this \
+                     environment ({problem}); set HANZI_TUTOR_SPEECH_CACHE to a writable \
+                     directory to run this"
+                );
+                return;
+            }
+            Err(problem) => panic!("rendering 马 with {}: {problem}", voice.name),
+        };
+
+        let ms = rendered_ms(&file).expect("the rendered file should carry an AIFF header");
+        assert!(
+            ms >= MIN_RENDER_MS,
+            "马 rendered to {ms} ms, below the {MIN_RENDER_MS} ms speech floor — \
+             this is the clipped-audio fault the file backend exists to prevent"
+        );
+        // A single syllable is not a fraction of a second at any speaking rate.
+        assert!(ms < 3_000, "马 rendered to an implausible {ms} ms");
+
+        let (rate, channels, frames, _) = render_header(&file).expect("a header");
+        assert!(rate >= 8_000, "a speech rate, not {rate} Hz");
+        assert!(channels >= 1);
+        assert_eq!(frames as u64 * 1000 / rate as u64 / channels as u64, ms);
+    }
+
+    /// A second play of the same character does not re-render.
+    ///
+    /// The cache is what makes a drill feel instant, so it is worth pinning: the
+    /// file's modification time must not move when the same text is rendered
+    /// again in the same voice.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_repeat_is_served_from_the_cache() {
+        let speaker = Speaker::default();
+        let Some(voice) = speaker.voice() else {
+            return;
+        };
+        let first = match render("马", &voice.name) {
+            Ok(file) => file,
+            Err(_) => return, // an environment that cannot write the cache; see above
+        };
+        let stamp = std::fs::metadata(&first).and_then(|m| m.modified()).ok();
+        let second = render("马", &voice.name).expect("a second render");
+        assert_eq!(first, second, "the same text and voice must name one file");
+        let again = std::fs::metadata(&second).and_then(|m| m.modified()).ok();
+        assert_eq!(stamp, again, "the second render rewrote the cached file");
+    }
+
+    /// The whole macOS path, actually spoken: render, then play.
+    ///
+    /// Ignored because it makes an audible sound, which a test run should not do
+    /// unasked. Run it with `--ignored --nocapture` when the pronunciation path is
+    /// changed, and listen: this is the one check that the sound a learner hears
+    /// is the sound intended, and it is what the clipping fault needed.
+    ///
+    /// ```text
+    /// cargo test -p hanzi-voice -- --ignored --nocapture speaks_a_character_out_loud
+    /// ```
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "plays audio out loud"]
+    fn speaks_a_character_out_loud() {
+        let speaker = Speaker::default();
+        let Some(voice) = speaker.voice() else {
+            eprintln!("skipping: no Chinese voice installed");
+            return;
+        };
+        println!("speaking with {}", voice.name);
+
+        for text in ["妈", "麻", "马", "骂"] {
+            speaker.speak(text).unwrap_or_else(|problem| {
+                panic!("speaking {text}: {problem}");
+            });
+            // Long enough to hear one syllable and to prove the next did not cut
+            // it off; the drill's own gap is 900 ms.
+            std::thread::sleep(std::time::Duration::from_millis(1_200));
+        }
+        println!("done — every tone should have been complete, with no clicks");
     }
 }

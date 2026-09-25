@@ -34,6 +34,7 @@
     stop,
   } from "./audio";
   import type { GradedPhrase } from "./types";
+  import TonedText from "./TonedText.svelte";
 
   interface Props {
     /** Read the manifests; injected so the panel is testable without a fetch. */
@@ -230,7 +231,17 @@
             onclick={() => void speak(phrase)}
             aria-label="Play {phrase.text}"
           >
-            <span class="text">{phrase.text}</span>
+            <!--
+              The characters carry their tone colours; the pinyin under them is
+              left as it is. Its tokens are **words**, not syllables — `kàndào` is
+              看 and 到 run together — and the corpus wrote some of them with the
+              tone they are *spoken* with (一只 is `yì zhī` here), so colouring it
+              from the marks would put a different tone on 一 in one row and call
+              the rest of a word neutral. The board and the word lists have the
+              reading split by Rust and colour it there; a phrase has no such split
+              and is not guessed at.
+            -->
+            <span class="text"><TonedText text={phrase.text} /></span>
             {#if phrase.pinyin}
               <span class="pinyin">{phrase.pinyin}</span>
             {/if}

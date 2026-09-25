@@ -1,0 +1,53 @@
+[package]
+name = "hanzi-hearing"
+description = "On-device Mandarin speech recognition, for the Hanzi Tutor apps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Speech recognition: *what* was said, where `hanzi-core`'s `tone` judges *how*.
+#
+# A crate rather than a module in one app because both apps want it, and the
+# expensive part is the native stack rather than the code: an app that has it
+# gains an optional ~163 MB download it must describe, verify and unpack, and
+# copying that twice would mean two digests and two failure modes to keep in step.
+#
+# The split from `hanzi-voice` is deliberate and is about what an app links:
+# capture and the system voice are small and always useful, while this pulls in
+# `sherpa-onnx`. An app that only ever wants the microphone should not link a
+# speech engine to get it.
+[dependencies]
+hanzi-core = { path = "../hanzi-core" }
+serde.workspace = true
+
+# The recogniser. Apache-2.0, and the one the research recommends for Mandarin
+# specifically: Whisper's small models are ~51-67% CER on Chinese against
+# SenseVoice's ~8%.
+#
+# The default `static` feature is deliberate. The shared build would leave
+# `.dylib`s beside the binary with an `@loader_path` rpath, which works under
+# `cargo run` and then fails inside a bundled `.app` — whose executable lives in
+# `Contents/MacOS/` and whose libraries would have to be declared as bundle
+# frameworks. One file is worth the linked size.
+#
+# Its `sherpa-onnx-sys` build script downloads a prebuilt native archive from
+# GitHub during `cargo build` unless `SHERPA_ONNX_LIB_DIR` is set, so it is set:
+# scripts/fetch-sherpa.sh unpacks a digest-pinned copy and
+# scripts/with-cargo-env.sh points the build at it. Do not remove that wiring
+# without reading the header of fetch-sherpa.sh.
+sherpa-onnx = "1.13.8"
+
+# Fetching the model is the one thing in either app that touches the network, and
+# it happens only when the learner asks for it: `ureq` is the client, `sha2`
+# checks what arrived, and `tar`/`bzip2` unpack it. All four are already in the
+# build graph through `sherpa-onnx-sys`'s own build dependencies, so this adds no
+# new upstream project to the licence catalogue.
+ureq = "2"
+# Both `bzip2` 0.4 and 0.5 are already in the build graph either way —
+# `sherpa-onnx-sys` builds with 0.4, and `zip`, which it also builds with, pulls
+# 0.5 — so this choice costs nothing and saves nothing. 0.5 is the one taken
+# because it is pure Rust: asking for 0.4 would link the C `bzip2-sys` into the
+# application for a single decompression.
+tar = "0.4"
+bzip2 = "0.5"
+sha2 = "0.10"

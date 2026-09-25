@@ -13,9 +13,15 @@
 # its own version.
 #
 # Usage: scripts/tauri-cli.sh <tauri arguments>
+#
+# Set `TAURI_ROOT` to run one of the repository's other Tauri apps —
+# `apps/tone-trainer` does this through its own `pnpm dev`. The CLI has to run
+# from the app's own directory, because that is where it looks for
+# `src-tauri/tauri.conf.json` and where node resolves `@tauri-apps/cli` from, so
+# a second app cannot share this script by being pointed at a config file.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${TAURI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT"
 
 # 1. A CLI installed into the project, if one has been (`pnpm run install:cli`).

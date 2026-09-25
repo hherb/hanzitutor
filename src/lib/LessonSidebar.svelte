@@ -23,6 +23,7 @@
     ReviewView,
     VocabEntry,
   } from "./types";
+  import TonedText from "./TonedText.svelte";
 
   interface Props {
     view:
@@ -279,7 +280,7 @@
                   title={cardFor.has(ch)
                     ? `practised ${cardFor.get(ch)?.attempts}×`
                     : "not practised yet"}
-                  lang="zh-Hans">{ch}</button
+                  lang="zh-Hans"><TonedText text={ch} /></button
                 >
               {/each}
             </div>

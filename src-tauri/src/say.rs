@@ -2,11 +2,11 @@
 //!
 //! ## Why this exists when the operating system already speaks Chinese
 //!
-//! [`crate::speech`] drives the platform's own synthesiser, and for most
+//! [`hanzi_voice::speech`] drives the platform's own synthesiser, and for most
 //! learners that is the whole story: macOS ships Tingting, iOS reports sixteen
 //! Chinese voices, and Android has both an on-device and a network voice for
 //! `zh-CN`. What it cannot promise is that any of them is *present*. A Windows
-//! or Linux build has no backend at all ([`crate::speech`] is macOS, iOS and
+//! or Linux build has no backend at all ([`hanzi_voice::speech`] is macOS, iOS and
 //! Android), and a device can have the locale without a voice installed.
 //!
 //! This is the fallback for exactly that case, and it is deliberately the same

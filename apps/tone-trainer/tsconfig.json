@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["svelte", "vite/client"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "allowJs": true,
+    "checkJs": true,
+    "resolveJsonModule": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts"],
+  // `familySearch.test.ts` is run by the **root** project's vitest, which owns
+  // that dependency; this app deliberately installs no test runner of its own.
+  // Excluding it keeps `pnpm run check:web` working from a checkout that installed
+  // only this app, where `vitest` would not resolve.
+  "exclude": ["src/**/*.test.ts"]
+}

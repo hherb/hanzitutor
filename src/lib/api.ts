@@ -84,6 +84,22 @@ export const getCharacter = (ch: string) => invoke<Character>("character", { ch 
  */
 export const teachableCharacters = () => invoke<string[]>("teachable_characters");
 
+/**
+ * Every character that has a tone of its own, as `[character, tone]`.
+ *
+ * The fallback a tone colour reads where there is no reading to colour a
+ * character against: a lesson's list, a radical's family, a search result, a
+ * character's components. The whole table in one call — about 9,000 pairs —
+ * because the alternative is a question per glyph on screens that show hundreds
+ * of them, and the answer never changes while the app is running.
+ *
+ * Fold it into the lookup with `setCharacterTones` from `./tones`, which is what
+ * decides how a tone becomes a colour. Only characters whose own reading carries
+ * a tone are in it; a glyph the dataset cannot read has no tone to show and is
+ * left out rather than given a neutral one.
+ */
+export const characterTones = () => invoke<[string, number][]>("character_tones");
+
 // ---- the word dictionary --------------------------------------------------
 
 /**
@@ -306,12 +322,18 @@ export const settings = () => invoke<SettingsView>("settings");
  * alone", so a voice change does not reset the board size. The value returned is
  * what to render, warning included — the backend has already written it.
  *
+ * The patch travels as **one object**, matching `SettingsPatch` in Rust, rather
+ * than as one command argument per preference. That struct denies fields it does
+ * not know, so a name this build has no preference for is refused rather than
+ * quietly dropped; `settings_the_screen_can_round_trip_through_a_patch` is what
+ * holds the two shapes together.
+ *
  * A voice of `""` goes back to the automatic voice. Going back to the *device's*
- * answer for click-to-draw is `clearClickToDraw` instead, because a missing
- * argument and a `null` one are indistinguishable once they are on the wire.
+ * answer for click-to-draw is `clearClickToDraw` instead, because an absent field
+ * and a `null` one are indistinguishable once they are on the wire.
  */
 export const updateSettings = (patch: SettingsPatch) =>
-  invoke<SettingsView>("update_settings", patch);
+  invoke<SettingsView>("update_settings", { patch });
 
 /**
  * Forget the click-to-draw choice and follow the device again.

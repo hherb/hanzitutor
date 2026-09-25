@@ -321,6 +321,26 @@ export interface Word {
   hsk: number;
   /** Derived frequency: the rarest character's rank. Ordering only. */
   rank: number;
+  /**
+   * The **dictionary** tone of each character of `text`, in order, 1..=5.
+   *
+   * Paired with the characters by Rust from the word's own reading, because
+   * which syllable of `xuéxí` belongs to 学 is a rule that lives in
+   * `hanzi_core::pinyin` and is not reimplemented in the interface. It is the
+   * tone the character is *learnt* with — 你好 is `3 + 3` here, where tone
+   * practice scores the spoken `2 + 3` — because a colour is a memory aid for
+   * the character rather than a judgement of a recording.
+   *
+   * **Empty** when the reading will not divide one syllable per character, and
+   * the interface then falls back to each character's own tone.
+   */
+  tones: number[];
+  /**
+   * The reading split one syllable per character, e.g. `["xué", "xí"]`, for
+   * colouring the pinyin beside the characters. Empty exactly when
+   * {@link tones} is.
+   */
+  syllables: string[];
 }
 
 /** One page of a word search, with the number of matches behind it. */
@@ -399,6 +419,22 @@ export interface VocabEntry {
   attempts: number;
   bestScore: number | null;
   lastPractised: string | null;
+  /**
+   * The tone of each character of `text`, in order, 1..=5.
+   *
+   * Paired by Rust from the entry's **own** reading — the one the learner typed
+   * or the dataset filled in — so a polyphone is right where the reading says so:
+   * 银行 typed as `yínháng` colours 行 with tone 2. Empty when that reading will
+   * not divide one syllable per character, which the pinyin box freely allows,
+   * and the interface then falls back to each character's own tone rather than
+   * pairing up a reading nobody can justify.
+   */
+  tones: number[];
+  /**
+   * The entry's reading split one syllable per character, for colouring the
+   * pinyin. Empty exactly when {@link tones} is.
+   */
+  syllables: string[];
   /**
    * What the **schedule** says about this entry, or `null` when it was not
    * consulted.
@@ -569,6 +605,15 @@ export interface SettingsView {
   animationPace: Pace;
   boardSize: BoardSize;
   /**
+   * Whether characters are shown coloured by the tone they are read with.
+   *
+   * A memory aid rather than a study setting: nothing is graded differently, and
+   * the colours are the whole of what it does. Not nullable — like a pace or a
+   * board size there is no device answer to resolve a missing one from, so
+   * `false` simply means off, which is what a fresh install has.
+   */
+  toneColours: boolean;
+  /**
    * Whether the introduction has been read and dismissed.
    *
    * The one field here the app writes rather than the settings screen: the
@@ -602,13 +647,22 @@ export interface SettingsView {
  *
  * The index signature is what lets this go straight to `invoke`, which takes a
  * plain object; the named fields above are still the whole of what may be sent,
- * because Tauri rejects an argument the command does not declare.
+ * because the Rust `SettingsPatch` this mirrors denies a field it does not
+ * declare. An unknown name is a refusal rather than a silent no-op.
  */
 export interface SettingsPatch {
   clickToDraw?: boolean;
   voice?: string;
   animationPace?: Pace;
   boardSize?: BoardSize;
+  /**
+   * Turn the tone colours on or off.
+   *
+   * A plain flag rather than a tri-state: unlike click-to-draw there is no device
+   * answer to fall back to, so "off" and "not chosen" are the same state and the
+   * absence of a stored row already means off.
+   */
+  toneColours?: boolean;
   /**
    * `true` once the introduction has been dismissed.
    *
@@ -685,6 +739,18 @@ export interface PracticeItem {
   entryId: number | null;
   pinyin: string;
   meaning: string;
+  /**
+   * The tone of each character of `text`, in order, 1..=5, when the item came
+   * from something that had a reading to pair up — a word, a vocabulary entry.
+   *
+   * Absent for a character drilled on its own (the course, a lesson, a radical's
+   * family): there is no word reading to be in context, so each character's own
+   * tone is the right answer and the board's table has it. See
+   * `src/lib/tones.ts`.
+   */
+  tones?: number[];
+  /** The reading split one syllable per character, for colouring the pinyin. */
+  syllables?: string[];
 }
 
 // ---- what the app is, and what it ships under ------------------------------
@@ -859,18 +925,38 @@ export interface ToneResult {
 /**
  * One syllable of a transcription, beside the one the exercise asked for.
  *
- * Both readings are **plain letters with the tone mark removed** (`shi`, not
- * `shì`). That is not a simplification: a recogniser's output implies a tone that
- * the learner may never have produced — the language model repairs a wrong tone
- * toward the likely word — so the dictionary tone of a transcribed character is
- * evidence about the model, not about the voice. The tone comes from the pitch
- * and from nowhere else. Do not put a tone mark on these.
+ * `base` and `wanted` — the two things the comparison is made on — are **plain
+ * letters with the tone mark removed** (`shi`, not `shì`). That is not a
+ * simplification: a recogniser's output implies a tone that the learner may never
+ * have produced — the language model repairs a wrong tone toward the likely word —
+ * so the dictionary tone of a transcribed character is evidence about the model,
+ * not about the voice. The tone comes from the pitch and from nowhere else.
+ *
+ * `reading` is that same dictionary tone kept, and it is display-only: it names
+ * the character the model wrote (`cóng` is 从, not 葱 or 匆) and `transcript.ts`
+ * puts it on screen **only** for a syllable heard differently. A matched syllable
+ * stays plain, because there the model's tone says nothing about the learner.
  */
 export interface HeardSyllable {
-  /** The syllable as heard: `shi`. */
+  /** The syllable as heard, plain: `shi`. */
   base: string;
-  /** The syllable the exercise asked for: `si`. */
+  /**
+   * The syllable as the dictionary reads the character the model wrote, tone mark
+   * included: `shì`; `""` when the dataset cannot read it.
+   */
+  reading: string;
+  /** The syllable the exercise asked for, plain: `si`. */
   wanted: string;
+  /**
+   * The syllable the exercise asked for as the dictionary writes it, tone mark
+   * included: `sì`.
+   *
+   * Paired with `reading`, this is what tells "the right sound at a different
+   * tone" (`cóng` for `zhōng`) from "the right sound and the same tone". The
+   * comparison never reads it; `transcript.ts` uses it to decide whether showing
+   * the model's own character and tone is evidence or noise.
+   */
+  wantedReading: string;
   /** True when they are the same sound once the tone is set aside. */
   matches: boolean;
 }

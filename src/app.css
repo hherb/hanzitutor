@@ -60,7 +60,110 @@
   --hanzi-font: "Noto Sans SC Bundled", "Noto Sans SC", "PingFang SC",
     "Hiragino Sans GB", "Heiti SC", "Noto Sans CJK SC", "Microsoft YaHei",
     sans-serif;
+  /* ---- colouring by tone ------------------------------------------------
+     Two values for each tone, and the pair is the point. The **tint** is the
+     pale colour a learner pictures when they say "first tone is light blue"; on
+     its own it is far too faint to read on white. The **ink** is the same hue
+     deepened until a glyph drawn in it is legible, which is what the character
+     is actually painted with. The tint sits behind it as a chip, so the cue is
+     visible from across the room and the character can still be read.
+
+     The five are told apart by **hue** and not only by lightness, because the
+     whole point is to recognise 妈 from 麻 from 马 from 骂 at a glance: blue,
+     gold, brown, purple, and a grey that reads as "this syllable has no tone of
+     its own" rather than as a sixth colour. Which tone a *character* has is
+     Rust's answer — see `src/lib/tones.ts` for the seam — and what each tone is
+     called is `TONE_NAME` in `src/lib/transcript.ts`. The `data-tone` rules
+     below are where each colour is applied.
+
+     **Every ink was measured against its own tint, and none is below 4.5:1** —
+     the contrast a normal-size glyph needs to be readable at all. The measured
+     ratios are 5.5, 4.8, 5.0, 5.8 and 6.6 for tones 1 to 5. Tone 2 is the tight
+     one: a pastel yellow has almost nowhere to go, and its ink is the darkest
+     gold that still reads as gold rather than as brown. **Lightening an ink, or
+     darkening a tint, without re-measuring is how this palette stops being
+     legible** — which is the one thing a colour chosen to help you remember must
+     not be. */
+  --tone-1-ink: #1c5d99;
+  --tone-1-tint: #d9e9fa;
+  --tone-2-ink: #866300;
+  --tone-2-tint: #fbf1b3;
+  --tone-3-ink: #8f4520;
+  --tone-3-tint: #eed7c1;
+  --tone-4-ink: #6141a8;
+  --tone-4-tint: #e8e0f9;
+  --tone-5-ink: #4b5563;
+  --tone-5-tint: #eceff3;
   color-scheme: light;
+}
+
+/* ---- colouring characters by tone ----------------------------------------
+   Every rule is scoped under `.tone-colours`, a class the app root carries only
+   while the learner has switched the colours on. With it off, the `tone-char`
+   spans are still in the DOM — they are how a run of characters is split, see
+   `TonedText.svelte` — and nothing about them is painted, so the interface looks
+   exactly as it did before the preference existed. */
+.tone-char {
+  border-radius: 0.2em;
+}
+
+.app.tone-colours .tone-char[data-tone="1"] {
+  color: var(--tone-1-ink);
+  background: var(--tone-1-tint);
+}
+.app.tone-colours .tone-char[data-tone="2"] {
+  color: var(--tone-2-ink);
+  background: var(--tone-2-tint);
+}
+.app.tone-colours .tone-char[data-tone="3"] {
+  color: var(--tone-3-ink);
+  background: var(--tone-3-tint);
+}
+.app.tone-colours .tone-char[data-tone="4"] {
+  color: var(--tone-4-ink);
+  background: var(--tone-4-tint);
+}
+.app.tone-colours .tone-char[data-tone="5"] {
+  color: var(--tone-5-ink);
+  background: var(--tone-5-tint);
+}
+
+/* A pinyin syllable is coloured but not chipped: the chip is the memory aid for
+   the glyph, and repeating it under every syllable would be noise around the
+   reading rather than a second cue. The `background` is cleared rather than
+   never set, because these elements also carry `tone-char`. */
+.app.tone-colours .tone-pinyin[data-tone] {
+  background: none;
+}
+
+/* The legend on the settings screen. Painted whether or not the colours are on,
+   because it is what the switch is *offering*: the swatch has to look like the
+   thing it turns on, which is why it reads the same two variables the characters
+   do. */
+.tone-sample {
+  border-radius: 0.2em;
+  padding: 0 0.4em;
+  font-family: var(--hanzi-font);
+}
+.tone-sample[data-tone="1"] {
+  color: var(--tone-1-ink);
+  background: var(--tone-1-tint);
+}
+.tone-sample[data-tone="2"] {
+  color: var(--tone-2-ink);
+  background: var(--tone-2-tint);
+}
+.tone-sample[data-tone="3"] {
+  color: var(--tone-3-ink);
+  background: var(--tone-3-tint);
+}
+.tone-sample[data-tone="4"] {
+  color: var(--tone-4-ink);
+  background: var(--tone-4-tint);
+}
+.tone-sample[data-tone="5"] {
+  color: var(--tone-5-ink);
+  background: var(--tone-5-tint);
 }
 
 * {

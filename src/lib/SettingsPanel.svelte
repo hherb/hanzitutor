@@ -2,10 +2,11 @@
   /**
    * The settings screen.
    *
-   * Four preferences, each one a thing the app would otherwise decide for the
+   * Five preferences, each one a thing the app would otherwise decide for the
    * learner: how a stroke is committed, how fast the stroke order is shown, how
-   * big the board is, and which voice pronounces. Two rules run through the whole
-   * screen and are worth stating once.
+   * big the board is, whether characters are coloured by tone, and which voice
+   * pronounces. Two rules run through the whole screen and are worth stating
+   * once.
    *
    * **A change is written when it is made.** There is no Save button, because
    * there is nothing to lose by writing: a preference is one row in a database
@@ -34,6 +35,26 @@
     VoicesView,
   } from "./types";
   import { onMount } from "svelte";
+  import { TONE_NAME } from "./transcript";
+  import type { Tone } from "./tones.svelte";
+
+  /**
+   * The legend beside the switch: one character for each tone.
+   *
+   * 妈, 麻, 马, 骂 and 吗 — `mā má mǎ mà ma` — which is the set the whole app
+   * reaches for when it wants to show what a tone is (see `TonePairsPanel` and
+   * the introduction's own page). Showing the *character* is deliberate: a chip
+   * behind a Latin syllable would demonstrate the colour and not the thing the
+   * colour is for, and a learner who has met the four mothers once already knows
+   * what they are looking at.
+   */
+  const TONE_LEGEND: { tone: Tone; ch: string; reading: string }[] = [
+    { tone: 1, ch: "妈", reading: "mā" },
+    { tone: 2, ch: "麻", reading: "má" },
+    { tone: 3, ch: "马", reading: "mǎ" },
+    { tone: 4, ch: "骂", reading: "mà" },
+    { tone: 5, ch: "吗", reading: "ma" },
+  ];
 
   interface Props {
     /** The learner's settings, as the backend has them. */
@@ -574,6 +595,53 @@
             </button>
           {/each}
         </div>
+      </div>
+    </div>
+
+    <!-- Colouring by tone ----------------------------------------------- -->
+    <div class="row">
+      <div class="what">
+        <span class="name" id="set-tone-colours">Colour by tone</span>
+        <span class="why">
+          Draw every character in the colour of the tone it is read with — on the
+          board's prompt, in the word list, in your own vocabulary, in the lessons,
+          the radical families and the tone pairs — so 妈, 麻, 马 and 骂 are told
+          apart by colour as well as by the mark. The pinyin is coloured with the
+          characters it reads, syllable by syllable, so the reading and the glyph
+          agree at a glance. The tone shown is the one the character is
+          <em>learnt</em> with, out of a dictionary: 你好 is brown then brown,
+          even where tone practice scores it as it is spoken. Nothing about the
+          grading changes, and a character whose tone is not known is left in the
+          ordinary ink rather than guessed at.
+        </span>
+      </div>
+      <div class="how">
+        <div class="segmented" role="group" aria-labelledby="set-tone-colours">
+          <button class:on={!settings.toneColours} onclick={() => onChange({ toneColours: false })}>
+            Off
+          </button>
+          <button class:on={settings.toneColours} onclick={() => onChange({ toneColours: true })}>
+            On
+          </button>
+        </div>
+        <ul class="tone-legend">
+          {#each TONE_LEGEND as entry (entry.tone)}
+            <li>
+              <span class="tone-sample" data-tone={entry.tone} lang="zh-Hans">{entry.ch}</span>
+              <span class="tone-legend-reading">{entry.reading}</span>
+              <span class="tone-legend-name">{TONE_NAME[entry.tone]}</span>
+            </li>
+          {/each}
+        </ul>
+        <span class="status">
+          {#if settings.toneColours}
+            On. Every character carries the pale colour of its tone, with the same
+            hue deepened for the glyph itself so it stays legible.
+          {:else}
+            Off. Characters are written in the ordinary ink, and the pinyin beside
+            them is unchanged.
+          {/if}
+        </span>
       </div>
     </div>
 
@@ -1120,6 +1188,35 @@
     background: var(--accent);
     color: #fff;
     font-weight: 600;
+  }
+
+  /* The legend beside the tone-colour switch. Its swatches are painted by
+     `app.css` from the same `data-tone` attributes the characters use, and they
+     are painted whether or not the colours are on: this is what the switch is
+     *offering*, so the sample has to look like the thing it turns on. */
+  .tone-legend {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin: 2px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .tone-legend li {
+    display: grid;
+    grid-template-columns: auto 2.4rem 1fr;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .tone-legend .tone-sample {
+    font-size: 0.95rem;
+    line-height: 1.35;
+    text-align: center;
+  }
+  .tone-legend-name {
+    color: var(--muted-strong);
   }
 
   .voicerow {

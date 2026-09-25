@@ -1,6 +1,18 @@
 [workspace]
 resolver = "2"
-members = ["crates/hanzi-core", "crates/hanzi-store", "crates/hanzi-sync", "crates/hanzi-say", "src-tauri"]
+members = [
+    "crates/hanzi-core",
+    "crates/hanzi-store",
+    "crates/hanzi-sync",
+    "crates/hanzi-say",
+    "crates/hanzi-voice",
+    "crates/hanzi-hearing",
+    "src-tauri",
+    # The standalone tone-practice app. It depends on `hanzi-core` for the
+    # scoring and the minimal pairs and on `hanzi-voice` for the microphone and
+    # the system voice; it shares nothing else with the full app.
+    "apps/tone-trainer/src-tauri",
+]
 
 [workspace.package]
 version = "0.5.11"
@@ -24,3 +36,41 @@ opt-level = 1
 
 [profile.dev]
 opt-level = 1
+
+# ---- why a release iOS build asks for line tables ---------------------------
+#
+# Tauri's Apple glue declares its C entry points as `@_cdecl` on **internal**
+# Swift functions (`mobile/ios-api/Sources/Tauri/Tauri.swift`), and the Swift
+# package's *Release* configuration gives those symbols **local** linkage, so the
+# app cannot link against them:
+#
+#     symbol(s) not found for architecture arm64
+#       "_register_plugin", "_run_plugin_command", "_on_webview_created",
+#       "_log_stdout", "_init_plugin_dialog", …
+#
+# The *Debug* configuration exports them, which is the only reason a `--debug`
+# device build works at all. Verified with `nm` on the two archives built for
+# this project: `T _register_plugin` in `Products/Debug-iphoneos/libTauri.a`,
+# `t _register_plugin` in `Products/Release-iphoneos/libTauri.a`. Tauri's `dev`
+# branch still declares them without `public`, so upgrading does not fix it.
+#
+# `swift-rs` decides which Swift configuration to build from the `DEBUG`
+# environment variable cargo hands the *consumer's* build script, and a package
+# profile override is the only way to set it for one crate: the
+# `CARGO_PROFILE_RELEASE_PACKAGE_…` environment form is not supported. So asking
+# for debug info in exactly the crates that build a Swift package makes them
+# build the Debug Swift product, which links.
+#
+# `debug = 1` is line tables only — the cheapest setting that still sets that
+# variable — and it is scoped to the three crates that own a Swift package rather
+# than to the whole graph, so the size it costs is these crates' alone. **A new
+# Tauri plugin that ships Swift glue needs a line here too** (look for an
+# `out/swift-rs` directory under `.cargo-target/<target>/release/build/<plugin>-*`
+# after a release build). Remove all three when Tauri declares those functions
+# `public`.
+[profile.release.package.tauri]
+debug = 1
+[profile.release.package.tauri-plugin-dialog]
+debug = 1
+[profile.release.package.tauri-plugin-opener]
+debug = 1

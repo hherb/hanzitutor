@@ -1707,6 +1707,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hanzi-hearing"
+version = "0.5.11"
+dependencies = [
+ "bzip2 0.5.2",
+ "hanzi-core",
+ "serde",
+ "sha2",
+ "sherpa-onnx",
+ "tar",
+ "ureq",
+]
+
+[[package]]
 name = "hanzi-say"
 version = "0.5.11"
 dependencies = [
@@ -1745,27 +1758,37 @@ dependencies = [
 name = "hanzi-tutor"
 version = "0.5.11"
 dependencies = [
- "bzip2 0.5.2",
- "cpal",
- "dispatch2",
  "hanzi-core",
+ "hanzi-hearing",
  "hanzi-say",
  "hanzi-store",
  "hanzi-sync",
- "objc2",
- "objc2-avf-audio",
- "objc2-foundation",
+ "hanzi-voice",
  "security-framework",
  "serde",
  "serde_json",
  "sha2",
  "sherpa-onnx",
- "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "ureq",
+]
+
+[[package]]
+name = "hanzi-voice"
+version = "0.5.11"
+dependencies = [
+ "cpal",
+ "dispatch2",
+ "hanzi-core",
+ "objc2",
+ "objc2-avf-audio",
+ "objc2-foundation",
+ "serde",
+ "serde_json",
+ "tauri",
 ]
 
 [[package]]
@@ -4695,6 +4718,19 @@ name = "toml_writer"
 version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
+
+[[package]]
+name = "tone-trainer"
+version = "0.5.11"
+dependencies = [
+ "hanzi-core",
+ "hanzi-hearing",
+ "hanzi-voice",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+]
 
 [[package]]
 name = "tower"

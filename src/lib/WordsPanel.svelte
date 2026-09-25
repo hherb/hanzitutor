@@ -9,6 +9,8 @@
    * which is the natural way to browse once a character is known.
    */
   import type { Word, WordSearchView } from "./types";
+  import TonedPinyin from "./TonedPinyin.svelte";
+  import TonedText from "./TonedText.svelte";
 
   interface Props {
     /**
@@ -140,12 +142,18 @@
                 class="piece"
                 onclick={() => (query = ch)}
                 title="Show every word containing {ch}"
-                >{ch}</button
+                ><TonedText text={ch} tones={word.tones.length > 0 ? [word.tones[index] ?? null] : null} /></button
               >
             {/each}
           </span>
           <span class="reading">
-            <span class="pinyin">{word.pinyin || "—"}</span>
+            <span class="pinyin"
+              >{#if word.pinyin}<TonedPinyin
+                  text={word.pinyin}
+                  syllables={word.syllables}
+                  tones={word.tones}
+                />{:else}—{/if}</span
+            >
             <span class="meaning">{word.meaning || "—"}</span>
           </span>
           <span class="chip" title="HSK 3.0 level">HSK {word.hsk}</span>

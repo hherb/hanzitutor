@@ -439,7 +439,25 @@ fn the_search_view_reports_a_page_and_an_honest_total() {
     let view = state.search_words("学", None, 5);
     let json = serde_json::to_value(&view).unwrap();
     expect_keys(&json, &["words", "total"]);
-    expect_keys(&json["words"][0], &["text", "pinyin", "meaning", "hsk", "rank"]);
+    expect_keys(
+        &json["words"][0],
+        &["text", "pinyin", "meaning", "hsk", "rank", "tones", "syllables"],
+    );
+
+    // The tones are paired one per character by the backend, so the interface
+    // never has to split a reading — it has no rule for that and must not grow
+    // one. 学习 is `xuéxí`: two characters, two syllables, two tones.
+    let found = state.search_words("xuexi", None, 10);
+    let word = found
+        .words
+        .iter()
+        .find(|word| word.text == "学习")
+        .expect("the shipped dictionary has 学习");
+    assert_eq!(word.tones, vec![2, 2]);
+    assert_eq!(word.syllables, vec!["xué".to_string(), "xí".to_string()]);
+    let json_word = serde_json::to_value(word).unwrap();
+    assert_eq!(json_word["tones"], serde_json::json!([2, 2]));
+    assert_eq!(json_word["syllables"], serde_json::json!(["xué", "xí"]));
 
     assert_eq!(view.words.len(), 5, "the page is capped");
     assert!(
@@ -631,6 +649,56 @@ fn a_character_the_course_cannot_teach_is_found_and_says_so() {
 }
 
 // ---- tone pairs -------------------------------------------------------------
+
+#[test]
+fn the_character_tone_table_is_the_whole_dataset_and_pairs_up_with_it() {
+    // The fallback a tone colour reads for a character shown on its own. It is
+    // the whole table in one answer because the alternative is a question per
+    // glyph on screens that show hundreds of them.
+    let state = state();
+    let tones = state.dataset.character_tones();
+    assert!(
+        tones.len() > 9_000,
+        "expected most characters to have a tone, got {}",
+        tones.len()
+    );
+
+    // One pair each, as `[character, tone]` on the wire, sorted by codepoint so
+    // the answer is stable and the interface can fold it into a map.
+    let json = serde_json::to_value(&tones[..3]).unwrap();
+    assert_eq!(json[0].as_array().map(Vec::len), Some(2));
+    assert!(json[0][0].is_string() && json[0][1].is_number());
+    assert!(
+        tones.windows(2).all(|pair| pair[0].0 < pair[1].0),
+        "the table is in codepoint order"
+    );
+
+    // Every entry agrees with the character's own entry, and every tone is one a
+    // colour understands: 1..=5, with 5 the neutral tone rather than a fifth
+    // pitch. A character the dataset cannot read has no tone and is left out
+    // rather than given one.
+    for (ch, tone) in &tones {
+        assert!((1..=5).contains(tone), "{ch} has the impossible tone {tone}");
+        assert_eq!(state.dataset.default_tone(*ch), Some(*tone));
+    }
+    let unreadable = state
+        .dataset
+        .chars()
+        .iter()
+        .find(|c| c.pinyin.is_empty())
+        .map(|c| c.ch);
+    if let Some(ch) = unreadable {
+        assert!(state.dataset.default_tone(ch).is_none());
+        assert!(!tones.iter().any(|(known, _)| *known == ch));
+    }
+
+    // 的 is the neutral tone and 学 the second; both are in the shipped artifact,
+    // and the table has to say what the character page says.
+    let lookup = |ch: char| tones.iter().find(|(known, _)| *known == ch).map(|(_, tone)| *tone);
+    assert_eq!(lookup('的'), Some(5));
+    assert_eq!(lookup('学'), Some(2));
+    assert_eq!(lookup('好'), Some(3));
+}
 
 #[test]
 fn a_tone_set_serialises_with_the_fields_the_screen_reads() {
@@ -1136,11 +1204,18 @@ fn vocabulary_entries_serialise_with_camel_case_fields() {
             "bestScore",
             "lastPractised",
             "standing",
+            "tones",
+            "syllables",
         ],
     );
     assert_eq!(json["entries"][0]["text"], serde_json::json!("学习"));
     assert_eq!(json["entries"][0]["attempts"], serde_json::json!(1));
     assert_eq!(json["entries"][0]["bestScore"], serde_json::json!(87.0));
+    // The reading the learner's entry carries, read against its own characters:
+    // the tone colour needs one entry per character, and the pairing rule is
+    // Rust's — see `WordSummary`.
+    assert_eq!(json["entries"][0]["tones"], serde_json::json!([2, 2]));
+    assert_eq!(json["entries"][0]["syllables"], serde_json::json!(["xué", "xí"]));
     // A timestamp is an ISO-8601 UTC string, which sorts chronologically as
     // plain text — the review scheduling will rely on that.
     let added = json["entries"][0]["addedAt"].as_str().unwrap();
@@ -1687,6 +1762,7 @@ fn settings_serialise_with_camel_case_fields() {
     assert!(store.set_voice(Some("Meijia")));
     assert!(store.set_animation_pace(hanzi_core::Pace::Slow));
     assert!(store.set_board_size(hanzi_core::BoardSize::Compact));
+    assert!(store.set_tone_colours(true));
     assert!(store.set_intro_seen(true));
     assert!(store.set_whats_new_seen(Some("0.5.6")));
     let json = serde_json::to_value(store.view()).unwrap();
@@ -1697,6 +1773,7 @@ fn settings_serialise_with_camel_case_fields() {
             "voice",
             "animationPace",
             "boardSize",
+            "toneColours",
             "introSeen",
             "whatsNewSeen",
             "warning",
@@ -1704,6 +1781,7 @@ fn settings_serialise_with_camel_case_fields() {
     );
     assert_eq!(json["clickToDraw"], serde_json::json!(true));
     assert_eq!(json["voice"], serde_json::json!("Meijia"));
+    assert_eq!(json["toneColours"], serde_json::json!(true));
     assert_eq!(json["introSeen"], serde_json::json!(true));
     assert_eq!(json["whatsNewSeen"], serde_json::json!("0.5.6"));
     assert_eq!(json["warning"], serde_json::Value::Null);
@@ -1718,29 +1796,16 @@ fn settings_serialise_with_camel_case_fields() {
 
 #[test]
 fn settings_the_screen_can_round_trip_through_a_patch() {
-    // The screen sends only what changed, deserialised into the command's own
-    // arguments. Parsing here is what proves the names on the wire are the names
-    // the screen uses — `animationPace`, not `animation_pace`.
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Patch {
-        #[serde(default)]
-        click_to_draw: Option<bool>,
-        #[serde(default)]
-        voice: Option<String>,
-        #[serde(default)]
-        animation_pace: Option<hanzi_core::Pace>,
-        #[serde(default)]
-        board_size: Option<hanzi_core::BoardSize>,
-        #[serde(default)]
-        intro_seen: Option<bool>,
-        #[serde(default)]
-        whats_new_seen: Option<String>,
-    }
-
-    let patch: Patch = serde_json::from_value(serde_json::json!({
+    // The screen sends only what changed, into the very struct the command
+    // deserialises — so this is not a copy of the shape that could drift from it
+    // but the shape itself. Parsing here is what proves the names on the wire are
+    // the names the screen uses — `animationPace`, not `animation_pace` — and
+    // `deny_unknown_fields` is what turns a name neither side agrees on into a
+    // refusal rather than a silent no-op.
+    let patch: hanzi_core::SettingsPatch = serde_json::from_value(serde_json::json!({
         "animationPace": "fast",
         "boardSize": "large",
+        "toneColours": true,
         "voice": "Tingting",
         "clickToDraw": false,
         "introSeen": true,
@@ -1751,23 +1816,51 @@ fn settings_the_screen_can_round_trip_through_a_patch() {
     assert_eq!(patch.voice.as_deref(), Some("Tingting"));
     assert_eq!(patch.animation_pace, Some(hanzi_core::Pace::Fast));
     assert_eq!(patch.board_size, Some(hanzi_core::BoardSize::Large));
+    assert_eq!(patch.tone_colours, Some(true));
     assert_eq!(patch.intro_seen, Some(true));
     assert_eq!(patch.whats_new_seen.as_deref(), Some("0.5.6"));
+
+    // The snake_case spelling the *database* uses is not the spelling the wire
+    // uses, and sending it is refused rather than half-read.
+    assert!(
+        serde_json::from_value::<hanzi_core::SettingsPatch>(
+            serde_json::json!({ "animation_pace": "fast" })
+        )
+        .is_err(),
+        "the database's spelling is not the interface's"
+    );
+    // As is a name this build has no preference for at all — the guarantee the
+    // flat arguments used to give, kept by the struct's own attributes.
+    assert!(
+        serde_json::from_value::<hanzi_core::SettingsPatch>(
+            serde_json::json!({ "toneColors": true })
+        )
+        .is_err(),
+        "a rename that reached only one side must fail loudly"
+    );
 
     // A patch that names one preference leaves the rest absent, which is what
     // "leave this one alone" is on the wire. Dismissing the introduction is the
     // one patch that must be able to stand alone like this.
-    let partial: Patch = serde_json::from_value(serde_json::json!({ "voice": "Meijia" })).unwrap();
+    let partial: hanzi_core::SettingsPatch =
+        serde_json::from_value(serde_json::json!({ "voice": "Meijia" })).unwrap();
     assert_eq!(partial.voice.as_deref(), Some("Meijia"));
     assert!(partial.click_to_draw.is_none());
     assert!(partial.animation_pace.is_none());
     assert!(partial.board_size.is_none());
+    assert!(partial.tone_colours.is_none());
     assert!(partial.intro_seen.is_none());
     assert!(partial.whats_new_seen.is_none());
 
-    let intro: Patch = serde_json::from_value(serde_json::json!({ "introSeen": true })).unwrap();
+    let intro: hanzi_core::SettingsPatch =
+        serde_json::from_value(serde_json::json!({ "introSeen": true })).unwrap();
     assert_eq!(intro.intro_seen, Some(true));
     assert!(intro.voice.is_none(), "dismissing the introduction sends nothing else");
+    // And a patch that names nothing is what a screen that touched nothing
+    // sends, which the backend must read as "no change" rather than a write.
+    let untouched: hanzi_core::SettingsPatch =
+        serde_json::from_value(serde_json::json!({})).unwrap();
+    assert!(untouched.is_empty());
 }
 
 #[test]
@@ -1787,6 +1880,9 @@ fn an_unchosen_setting_is_null_rather_than_false() {
     // state for the interface to resolve from the device.
     assert_eq!(json["animationPace"], serde_json::json!("normal"));
     assert_eq!(json["boardSize"], serde_json::json!("normal"));
+    // The tone colours are not nullable either: "off" and "not chosen" are the
+    // same state, so the wire carries the flag the app will actually use.
+    assert_eq!(json["toneColours"], serde_json::json!(false));
     assert_eq!(json["introSeen"], serde_json::json!(false));
     // No release's notes have been read, which is what every installation
     // upgrading from a build without them reports — and the reason this one is
@@ -1801,17 +1897,27 @@ fn an_unchosen_setting_is_null_rather_than_false() {
 
 #[test]
 fn changing_one_preference_leaves_the_others_alone() {
-    // This is the whole reason every argument of `update_settings` is optional:
+    // This is the whole reason every field of `update_settings`'s patch is
+    // optional:
     // the screen sends one control's new value, and a filled-in voice must not
     // be cleared by a pace change on the way past.
     let state = state();
-    state.update_settings(Some(true), Some("Meijia"), None, None, None, None);
-    let view = state.update_settings(None, None, Some(hanzi_core::Pace::Fast), None, None, None);
+    state.update_settings(hanzi_core::SettingsPatch {
+        click_to_draw: Some(true),
+        voice: Some("Meijia".to_string()),
+        tone_colours: Some(true),
+        ..Default::default()
+    });
+    let view = state.update_settings(hanzi_core::SettingsPatch {
+        animation_pace: Some(hanzi_core::Pace::Fast),
+        ..Default::default()
+    });
 
     assert_eq!(view.click_to_draw(), Some(true), "click-to-draw was untouched");
     assert_eq!(view.voice(), Some("Meijia"), "the voice was untouched");
     assert_eq!(view.pace(), hanzi_core::Pace::Fast);
     assert_eq!(view.board_size(), hanzi_core::BoardSize::Normal);
+    assert!(view.tone_colours(), "the tone colours were untouched");
     assert!(!view.intro_seen(), "an untouched introduction stays unread");
     assert_eq!(view.whats_new_seen(), None, "untouched notes stay unread");
 
@@ -1827,14 +1933,15 @@ fn every_preference_survives_a_restart_through_the_state_layer() {
     let dir = data_dir("ipc-settings-all");
     {
         let state = AppState::load(Some(dir.clone())).unwrap();
-        let view = state.update_settings(
-            Some(false),
-            Some("Meijia"),
-            Some(hanzi_core::Pace::Slow),
-            Some(hanzi_core::BoardSize::Large),
-            Some(true),
-            Some("0.5.6"),
-        );
+        let view = state.update_settings(hanzi_core::SettingsPatch {
+            click_to_draw: Some(false),
+            voice: Some("Meijia".to_string()),
+            animation_pace: Some(hanzi_core::Pace::Slow),
+            board_size: Some(hanzi_core::BoardSize::Large),
+            tone_colours: Some(true),
+            intro_seen: Some(true),
+            whats_new_seen: Some("0.5.6".to_string()),
+        });
         assert!(view.warning.is_none(), "{:?}", view.warning);
     }
 
@@ -1844,6 +1951,7 @@ fn every_preference_survives_a_restart_through_the_state_layer() {
     assert_eq!(view.voice(), Some("Meijia"));
     assert_eq!(view.pace(), hanzi_core::Pace::Slow);
     assert_eq!(view.board_size(), hanzi_core::BoardSize::Large);
+    assert!(view.tone_colours(), "the tone colours survive a restart");
     assert!(view.intro_seen(), "a dismissed introduction survives a restart");
     assert_eq!(
         view.whats_new_seen(),
@@ -1860,7 +1968,10 @@ fn the_voice_list_says_which_voice_a_choice_resolved_to() {
     // than failing, and the screen can only say so honestly if `active` reports
     // what is really in use rather than what was stored.
     let state = state();
-    state.update_settings(None, Some("Definitely Not An Installed Voice"), None, None, None, None);
+    state.update_settings(hanzi_core::SettingsPatch {
+        voice: Some("Definitely Not An Installed Voice".to_string()),
+        ..Default::default()
+    });
 
     let voices = state.voices();
     let json = serde_json::to_value(&voices).unwrap();

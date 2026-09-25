@@ -717,6 +717,54 @@ impl Dataset {
         sets
     }
 
+    // ---- tone colours -------------------------------------------------------
+
+    /// The tone a character carries when it is shown on its own.
+    ///
+    /// Its **most common reading's** tone — the first the dataset lists, which is
+    /// the one a voice says for the glyph alone. `None` for a character the
+    /// dataset does not know, and for one whose first reading carries no tone
+    /// this can read (a reading with two marks, say, which is not a syllable).
+    ///
+    /// This is the fallback a tone colour uses where there is no reading to read
+    /// the character against: a lesson's character list, a radical's family, a
+    /// search result. A word has its own reading and is coloured from *that*,
+    /// because a polyphone's tone in a word is not always its tone alone — see
+    /// [`crate::pinyin::aligned_reading`].
+    pub fn default_tone(&self, ch: char) -> Option<u8> {
+        let character = self.get(ch)?;
+        character
+            .pinyin
+            .first()
+            .and_then(|reading| crate::pinyin::tone_from_pinyin(reading))
+    }
+
+    /// Every character that has a tone of its own, as `(character, tone)`.
+    ///
+    /// The whole table in one answer, in codepoint order so it is stable and
+    /// testable. Why a table rather than a tone field on each structure that
+    /// shows a character: the same glyph appears on a dozen screens, and one
+    /// lookup answered once is a smaller thing to keep true than a tone field on
+    /// each of them. It is the **fallback** as well as the answer for a lone
+    /// character — see [`Self::default_tone`] — so a screen with no reading still
+    /// colours what it shows.
+    ///
+    /// Only characters whose own reading carries a tone are in it. A glyph the
+    /// dataset cannot read has no tone to show and is left out rather than given
+    /// a neutral one, which would be an invention.
+    pub fn character_tones(&self) -> Vec<(char, u8)> {
+        let mut out: Vec<(char, u8)> = self
+            .chars()
+            .iter()
+            .filter_map(|character| {
+                self.default_tone(character.ch)
+                    .map(|tone| (character.ch, tone))
+            })
+            .collect();
+        out.sort_by_key(|(ch, _)| *ch as u32);
+        out
+    }
+
     // ---- radicals -----------------------------------------------------------
 
     /// One group per radical: the radical's own meaning, and the course's
@@ -1702,8 +1750,47 @@ mod tests {
     }
 
     #[test]
-    fn tone_sets_are_ranked_by_their_rarest_member() {
-        // `shi` has two common characters; `mao` has one common and one rare. The
+    fn a_character_has_the_tone_of_its_most_common_reading() {
+        // The reading the dataset lists first is the one a voice says for the
+        // glyph alone, so that is the tone a lone character is coloured with.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('好', &["hǎo", "hào"], "good", 1, 50),
+            lexeme('的', &["de"], "possessive", 1, 1),
+            lexeme('行', &["xíng", "háng"], "to walk", 1, 100),
+            // A character with no reading at all has no tone to show.
+            lexeme('〇', &[], "zero", 0, 0),
+        ]);
+        assert_eq!(dataset.default_tone('好'), Some(3));
+        assert_eq!(dataset.default_tone('的'), Some(5), "a neutral reading is neutral");
+        assert_eq!(dataset.default_tone('行'), Some(2));
+        assert_eq!(dataset.default_tone('〇'), None, "no reading, no tone");
+        assert_eq!(dataset.default_tone('未'), None, "an unknown character too");
+    }
+
+    #[test]
+    fn the_character_tone_table_is_the_whole_dataset_in_codepoint_order() {
+        let dataset = Dataset::from_chars(vec![
+            lexeme('一', &["yī"], "one", 1, 2),
+            lexeme('的', &["de"], "possessive", 1, 1),
+            lexeme('好', &["hǎo", "hào"], "good", 1, 50),
+            lexeme('〇', &[], "zero", 0, 0),
+        ]);
+        let tones = dataset.character_tones();
+        assert_eq!(
+            tones,
+            vec![('一', 1), ('好', 3), ('的', 5)],
+            "sorted by codepoint, and a character with no tone left out"
+        );
+
+        // The table is also the fallback per character, which is what lets a
+        // screen with no reading colour a lesson list or a radical's family.
+        for (ch, tone) in &tones {
+            assert_eq!(dataset.default_tone(*ch), Some(*tone));
+        }
+    }
+
+    #[test]
+    fn tone_sets_are_ranked_by_their_rarest_member() {        // `shi` has two common characters; `mao` has one common and one rare. The
         // set a learner is most likely to recognise comes first.
         let dataset = Dataset::from_chars(vec![
             lexeme('是', &["shì"], "to be", 1, 5),

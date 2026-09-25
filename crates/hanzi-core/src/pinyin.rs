@@ -442,6 +442,34 @@ pub fn tone_from_pinyin(reading: &str) -> Option<u8> {
     (list.len() == 1).then(|| list[0].tone)
 }
 
+/// The syllables of `reading`, when they divide into exactly one per character
+/// of `text`.
+///
+/// ## What this is for
+///
+/// A screen that colours characters by tone needs to know **which syllable
+/// belongs to which character**, and that cannot be answered from the reading
+/// alone: `xuéxí` is two syllables and two characters only because the caller
+/// says there are two. So the pairing rule lives here, next to the rule that
+/// finds the syllables in the first place, and a caller that gets `Some` can
+/// read one entry per character out of it.
+///
+/// ## Why `None` rather than a partial answer
+///
+/// The same refusal [`tone_target`] makes, for the same reason: a reading that
+/// does not divide one syllable per character is misaligned, and pairing it up
+/// anyway would attach a tone to the wrong glyph. `None` means "this reading
+/// cannot be read against this text", and the caller is expected to fall back to
+/// each character's own reading rather than to guess.
+///
+/// An apostrophe, space or hyphen is a hard boundary, so a caller composing
+/// readings out of characters (`yī'tiān` for 一天) still gets the alignment it
+/// asked for — see [`syllables`].
+pub fn aligned_reading(text: &str, reading: &str) -> Option<Vec<Syllable>> {
+    let list = syllables(reading)?;
+    (!list.is_empty() && list.len() == text.chars().count()).then_some(list)
+}
+
 /// The tones as they are actually spoken, given the dictionary's own.
 ///
 /// Three rules, which are the ones that matter for vocabulary:
@@ -621,10 +649,33 @@ pub fn base(reading: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeardSyllable {
-    /// The syllable as heard, plain: `shi`. No tone mark — see [`base`].
+    /// The syllable as heard, plain: `shi`. No tone mark — see [`base`]. This is
+    /// the comparison against [`Self::wanted`], and it is what must keep having
+    /// no tone in it.
     pub base: String,
+    /// The syllable **as the dictionary reads the character the model wrote**,
+    /// tone mark included: `shì`; empty when the dataset has no reading for it.
+    ///
+    /// This is a fact about the model's *spelling*, not about the learner's voice:
+    /// a recogniser's character carries a dictionary tone the learner may never
+    /// have produced, because the language model repairs a wrong tone toward the
+    /// likely word (research §6.1). It is shown for one reason — a tone mark is
+    /// what makes `cóng` identify 从 rather than leave `cong` ambiguous between
+    /// 从, 葱 and 匆 — and the interface shows it **only on a syllable the model
+    /// heard differently**, never on one that matched. The tone that was said is
+    /// scored from the pitch in [`crate::tone`], and this is not it.
+    pub reading: String,
     /// The syllable the exercise asked for, the same way: `si`.
     pub wanted: String,
+    /// The syllable the exercise asked for **as the dictionary writes it**, tone
+    /// mark included: `sì`.
+    ///
+    /// Paired with [`Self::reading`], this is what lets the interface tell "heard
+    /// the right sound at a different tone" (`cóng` written where `zhōng` was
+    /// asked for) from "heard the right sound and the same tone". The comparison
+    /// itself is on [`Self::base`] and [`Self::wanted`] alone; this pair is
+    /// display-only.
+    pub wanted_reading: String,
     /// True when they are the same sound once the tone is set aside.
     pub matches: bool,
 }
@@ -711,19 +762,27 @@ pub fn heard_against_readings(
     let list = syllables(reading).unwrap_or_default();
     let aligned = !characters.is_empty() && list.len() == characters.len();
 
-    let heard_syllables: Vec<String> = if aligned {
-        list.iter().map(|s| base(&s.text)).collect()
+    // Two parallel views of the model's reading, both empty when the halves
+    // cannot be paired: the syllables as written (tone marks in, for display) and
+    // the same syllables reduced (tone marks out, for the comparison).
+    let heard_readings: Vec<String> = if aligned {
+        list.iter().map(|s| s.text.clone()).collect()
     } else {
         Vec::new()
     };
-    let wanted: Vec<String> = wanted.iter().map(|reading| base(reading)).collect();
+    let heard_syllables: Vec<String> = heard_readings.iter().map(|reading| base(reading)).collect();
+    let wanted_readings: Vec<String> = wanted.to_vec();
+    let wanted: Vec<String> = wanted_readings.iter().map(|reading| base(reading)).collect();
 
     let syllables: Vec<HeardSyllable> = heard_syllables
         .iter()
         .zip(wanted.iter())
-        .map(|(base, wanted)| HeardSyllable {
+        .enumerate()
+        .map(|(index, (base, wanted))| HeardSyllable {
             base: base.clone(),
+            reading: heard_readings.get(index).cloned().unwrap_or_default(),
             wanted: wanted.clone(),
+            wanted_reading: wanted_readings.get(index).cloned().unwrap_or_default(),
             matches: base == wanted,
         })
         .collect();
@@ -731,6 +790,20 @@ pub fn heard_against_readings(
     let same_count = aligned && heard_syllables.len() == wanted.len();
     let base_text = heard_syllables.join(" ");
     let wanted_text = wanted.join(" ");
+    // The heard side with a tone mark **only where the sound did not match**: a
+    // matched syllable's dictionary tone is the model's spelling, not the
+    // learner's pitch, and putting a mark on it would read as a tone judgement.
+    let marked_text = syllables
+        .iter()
+        .map(|s| {
+            if s.matches || s.reading.is_empty() {
+                s.base.as_str()
+            } else {
+                s.reading.as_str()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
 
     let detail = if heard.trim().is_empty() {
         if tone_follows {
@@ -784,10 +857,20 @@ pub fn heard_against_readings(
         let wrong: Vec<String> = syllables
             .iter()
             .filter(|s| !s.matches)
-            .map(|s| format!("{} where {} was asked for", s.base, s.wanted))
+            .map(|s| {
+                format!(
+                    "{} where {} was asked for",
+                    if s.reading.is_empty() {
+                        &s.base
+                    } else {
+                        &s.reading
+                    },
+                    s.wanted
+                )
+            })
             .collect();
         format!(
-            "Heard {base_text} ({}) — {}.{}",
+            "Heard {marked_text} ({}) — {}.{}",
             wrong.join(", "),
             if matched == 0 {
                 "none of that is the syllable wanted".to_string()
@@ -912,6 +995,40 @@ mod tests {
         assert_eq!(tone_from_pinyin("xuexi"), None);
         assert_eq!(tone_from_pinyin("nǐ hǎo"), None);
         assert_eq!(tone_from_pinyin(""), None);
+    }
+
+    #[test]
+    fn a_reading_aligns_one_syllable_per_character() {
+        // The pairing a tone colour reads: one syllable per character, in order.
+        let aligned = aligned_reading("学习", "xuéxí").expect("two and two");
+        let readings: Vec<&str> = aligned.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(readings, ["xué", "xí"]);
+        let tones: Vec<u8> = aligned.iter().map(|s| s.tone).collect();
+        assert_eq!(tones, [2, 2]);
+
+        // Neutral syllables are carried, not dropped: 的 is `de`, and 的话 is
+        // `dehuà` — the case a split driven by tone marks alone gets wrong.
+        let aligned = aligned_reading("的话", "dehuà").expect("two and two");
+        assert_eq!(aligned.iter().map(|s| s.tone).collect::<Vec<_>>(), [5, 4]);
+
+        // Apostrophes are boundaries, so a caller composing readings still aligns.
+        let aligned = aligned_reading("一天", "yī'tiān").expect("two and two");
+        assert_eq!(aligned.iter().map(|s| s.tone).collect::<Vec<_>>(), [1, 1]);
+    }
+
+    #[test]
+    fn a_reading_that_does_not_divide_one_per_character_is_refused() {
+        // The refusal that makes colouring safe: a misaligned reading is not
+        // paired up anyway, because that would put a tone on the wrong glyph.
+        assert!(aligned_reading("学习", "xué").is_none(), "one syllable, two characters");
+        assert!(aligned_reading("学习", "xuéxíxí").is_none(), "three for two");
+        assert!(aligned_reading("学习", "").is_none());
+        assert!(aligned_reading("", "xué").is_none());
+        // A character the reading cannot account for — punctuation, or a glyph
+        // with no reading — leaves the two out of step, and that is refused too.
+        assert!(aligned_reading("你好吗", "nǐhǎo").is_none());
+        // A run that is not a syllable at all is refused by `syllables`, not here.
+        assert!(aligned_reading("xy", "xyz").is_none());
     }
 
     #[test]
@@ -1071,7 +1188,60 @@ mod tests {
         assert_eq!(wrong.matched, 0);
         assert_eq!(wrong.syllables[0].base, "shi");
         assert_eq!(wrong.syllables[0].wanted, "si");
-        assert!(wrong.detail.contains("shi where si was asked for"), "{}", wrong.detail);
+        // The reading keeps its tone mark so the character is identifiable; the
+        // *comparison* is still on `base`, which has none.
+        assert_eq!(wrong.syllables[0].reading, "shì");
+        assert_eq!(wrong.syllables[0].wanted_reading, "sì");
+        assert!(wrong.detail.contains("shì where si was asked for"), "{}", wrong.detail);
+    }
+
+    #[test]
+    fn a_syllable_can_match_the_sound_at_a_different_tone() {
+        // `mǎ` asked for, `mā` heard: `matches` is true because the sound is the
+        // same, and both readings keep their marks so the interface can show which
+        // one the model actually produced — the difference the sound comparison
+        // deliberately cannot see.
+        let target = tone_target("马", "mǎ").expect("马 is a target");
+        let heard = heard_against("妈", "mā", &target);
+        assert!(heard.syllables[0].matches, "ma and ma are the same sound");
+        assert_eq!(heard.syllables[0].base, "ma");
+        assert_eq!(heard.syllables[0].wanted, "ma");
+        assert_eq!(heard.syllables[0].reading, "mā");
+        assert_eq!(heard.syllables[0].wanted_reading, "mǎ");
+    }
+
+    #[test]
+    fn a_syllable_heard_differently_keeps_its_dictionary_tone_mark() {
+        // `cong` alone is ambiguous between 从, 葱 and 匆. The tone mark is what
+        // identifies the character the model wrote, which is the one thing a
+        // learner needs in order to act on "it heard a different syllable".
+        let target = tone_target("中", "zhōng").expect("中 is a target");
+        let heard = heard_against("从", "cóng", &target);
+        assert_eq!(heard.matched, 0);
+        assert_eq!(heard.syllables[0].base, "cong");
+        assert_eq!(heard.syllables[0].reading, "cóng");
+        assert!(
+            heard.detail.contains("cóng where zhong was asked for"),
+            "{}",
+            heard.detail
+        );
+    }
+
+    #[test]
+    fn a_syllable_that_matched_is_not_given_a_tone_mark() {
+        // 妈 `mā` where 马 `mǎ` was asked for: the sound `ma` matched, so nothing
+        // is claimed about the tone of the learner's voice. The model's own
+        // reading still carries its tone, and that is exactly what the sentence
+        // must not print on a match.
+        let target = tone_target("马", "mǎ").expect("马 is a target");
+        let heard = heard_against("妈", "mā", &target);
+        assert!(heard.all_matched());
+        assert_eq!(heard.syllables[0].reading, "mā");
+        assert!(
+            heard.detail.contains("Heard ma:"),
+            "the matched syllable is not tone-marked: {}",
+            heard.detail
+        );
     }
 
     #[test]

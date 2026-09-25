@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The scene life cycle, which iOS 26 and later require. Without any manifest
+	  UIKit kills the app on launch with an `EXC_BREAKPOINT` in
+	  `___UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption_block_`,
+	  which on a phone looks like a black flash and a return to the home screen.
+
+	  `UIApplicationSupportsMultipleScenes` is **true on purpose** and is not a
+	  claim that this app wants several windows: it is how `tao`, Tauri's windowing
+	  layer, is told to use the scene life cycle at all. With it false tao creates
+	  the window in `didFinishLaunching`, before any scene exists, and the result
+	  is a black screen rather than a crash.
+
+	  There is deliberately no `UISceneConfigurations`: tao answers UIKit with a
+	  configuration whose delegate it sets itself, and naming one here as well
+	  would be a second source of truth. Both notes are inherited from the full
+	  app, which found this the hard way.
+	-->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+	</dict>
+
+	<!--
+	  This app records from the microphone, and iOS terminates an app that asks
+	  for one without saying why. The string is shown verbatim in the prompt, so
+	  it says what happens: scored on the device, nothing kept or sent.
+	-->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Tone Trainer listens while you hold the button, to check the tone of what you said. The recording is scored on this device and is never saved or sent anywhere.</string>
+</dict>
+</plist>

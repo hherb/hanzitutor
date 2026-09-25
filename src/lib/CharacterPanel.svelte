@@ -17,6 +17,9 @@
    */
   import type { CharacterSearchView, CharacterSummary, ProgressCard, Word, WordSearchView } from "./types";
   import { dueLabel } from "./due";
+  import ReadingList from "./ReadingList.svelte";
+  import TonedPinyin from "./TonedPinyin.svelte";
+  import TonedText from "./TonedText.svelte";
 
   interface Props {
     /**
@@ -246,9 +249,9 @@
               onclick={() => (selected = character.ch)}
               aria-current={character.ch === shown?.ch ? "true" : undefined}
             >
-              <span class="glyph" lang="zh-Hans">{character.ch}</span>
+              <span class="glyph" lang="zh-Hans"><TonedText text={character.ch} /></span>
               <span class="reading">
-                <span class="pinyin">{character.pinyin.join("  ·  ") || "—"}</span>
+                <span class="pinyin"><ReadingList readings={character.pinyin} /></span>
                 <span class="meaning">{character.definition || "—"}</span>
               </span>
               <span class="marks">
@@ -286,9 +289,9 @@
         {@const card = cardFor.get(shown.ch)}
         <aside class="detail" aria-label="Character details">
           <div class="head">
-            <span class="big" lang="zh-Hans">{shown.ch}</span>
+            <span class="big" lang="zh-Hans"><TonedText text={shown.ch} /></span>
             <span class="head-text">
-              <span class="detail-pinyin">{shown.pinyin.join("  ·  ") || "—"}</span>
+              <span class="detail-pinyin"><ReadingList readings={shown.pinyin} /></span>
               <span class="detail-meaning">{shown.definition || "—"}</span>
             </span>
           </div>
@@ -297,7 +300,7 @@
             <li>{strokeLabel(shown)}</li>
             {#if shown.radical && shown.radical !== "\u0000"}
               <li>
-                radical <span lang="zh-Hans">{shown.radical}</span>{#if shown.radicalMeaning}
+                radical <span lang="zh-Hans"><TonedText text={shown.radical} /></span>{#if shown.radicalMeaning}
                   — {shown.radicalMeaning}{/if}
               </li>
             {/if}
@@ -344,7 +347,7 @@
                         disabled={busy}
                         title="Write {part.ch} on the board"
                       >
-                        {part.ch}
+                        <TonedText text={part.ch} />
                       </button>
                     {:else if part.ch}
                       <span
@@ -352,7 +355,7 @@
                         lang="zh-Hans"
                         title="The board has no strokes for this part, so it cannot be written on its own"
                       >
-                        {part.ch}
+                        <TonedText text={part.ch} />
                       </span>
                     {:else}
                       <span class="part unknown" title="Make Me a Hanzi could not name this part"
@@ -400,10 +403,10 @@
           <div class="words-block">
             <p class="words-title">
               {#if words.length === 0}
-                Words using <span lang="zh-Hans">{shown.ch}</span>
+                Words using <span lang="zh-Hans"><TonedText text={shown.ch} /></span>
               {:else}
                 {wordsTotal} {wordsTotal === 1 ? "word" : "words"} using
-                <span lang="zh-Hans">{shown.ch}</span>
+                <span lang="zh-Hans"><TonedText text={shown.ch} /></span>
               {/if}
             </p>
             {#if wordsFailure}
@@ -412,9 +415,17 @@
               <ul class="words">
                 {#each words as word (word.text)}
                   <li>
-                    <span class="word-glyph" lang="zh-Hans">{word.text}</span>
+                    <span class="word-glyph" lang="zh-Hans"
+                      ><TonedText text={word.text} tones={word.tones.length > 0 ? word.tones : null} /></span
+                    >
                     <span class="word-text">
-                      <span class="word-pinyin">{word.pinyin || "—"}</span>
+                      <span class="word-pinyin"
+                        >{#if word.pinyin}<TonedPinyin
+                            text={word.pinyin}
+                            syllables={word.syllables}
+                            tones={word.tones}
+                          />{:else}—{/if}</span
+                      >
                       <span class="word-meaning">{word.meaning || "—"}</span>
                     </span>
                     <button

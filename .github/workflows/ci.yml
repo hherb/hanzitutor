@@ -69,8 +69,9 @@ jobs:
       - name: Test
         run: pnpm test
 
-      # The interface's own suite: the stroke animation's geometry, which the
-      # Rust tests cannot see and the type-checker cannot judge.
+      # The interface's own suite: the stroke animation's geometry, the tone
+      # colouring's rules and markup, the transcript display — things the Rust
+      # tests cannot see and the type-checker cannot judge.
       - name: Test the interface
         run: pnpm run test:web
 

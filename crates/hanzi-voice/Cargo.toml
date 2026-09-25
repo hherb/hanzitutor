@@ -1,0 +1,35 @@
+[package]
+name = "hanzi-voice"
+description = "Microphone capture and system speech synthesis, shared by the Hanzi Tutor apps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The two things every app that scores tone needs and that neither the scoring
+# engine nor the interface can own: a recorder that turns the microphone into
+# samples, and a speaker that pronounces a character with the platform's own
+# voice.
+#
+# It is a crate rather than a module in each app because a second app exists
+# now — `apps/tone-trainer` — and the alternative was two thousand lines of
+# platform code copied into it. Neither half is Tauri-specific in principle, but
+# the Android backends go through a Kotlin plugin, so `tauri` is a real
+# dependency rather than a convenience: see `platform`.
+[dependencies]
+hanzi-core = { path = "../hanzi-core" }
+serde.workspace = true
+serde_json.workspace = true
+cpal = "0.18"
+# The Kotlin plugin on Android is registered through Tauri's plugin API, and
+# `register_android_plugin` is the only way to reach the Java side.
+tauri = { version = "2", features = [] }
+
+# iOS speaks in process through AVSpeechSynthesizer, and the audio session is
+# AVFAudio too; both are `objc2` bindings, which are already in the tree through
+# Tauri. AVFoundation's objects are not `Send`, so speech happens on the main
+# thread and `dispatch2` is how the work gets there.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-avf-audio = "0.3"
+dispatch2 = "0.3"

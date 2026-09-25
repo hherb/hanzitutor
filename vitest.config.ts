@@ -14,12 +14,19 @@ import viteConfig from "./vite.config.ts";
  * The Vite config is merged in so that everything the app builds with applies
  * here too: a future test that imports a `.svelte` file gets the Svelte
  * compiler, and any resolve alias added there reaches these tests as well.
+ *
+ * The tone trainer's own pure rules are included as well, under its `src/`. It is
+ * a second npm project with its own `node_modules`, so vitest must not be run
+ * *from* there without a second install — but a test that imports only plain
+ * TypeScript needs nothing from that project, and the word-search rule is exactly
+ * the kind of thing that should not have to be checked by typing into the running
+ * app.
  */
 export default mergeConfig(
   viteConfig,
   defineConfig({
     test: {
-      include: ["src/**/*.test.ts"],
+      include: ["src/**/*.test.ts", "apps/tone-trainer/src/**/*.test.ts"],
       environment: "node",
     },
   }),

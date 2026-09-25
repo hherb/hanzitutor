@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged over the Info.plist Tauri generates for the macOS bundle. Tauri looks
+  for this file in the same directory as `tauri.conf.json` without being told,
+  so its presence is the whole wiring.
+
+  One key, for one feature: this app exists to listen to a tone, and macOS shows
+  this string verbatim in the permission prompt the first time it does. A missing
+  `NSMicrophoneUsageDescription` does not fail the build — the app is killed at
+  the moment of the request instead, which is why it lives in a file that
+  travels with the bundle rather than in a note somewhere.
+
+  The wording is the promise the app makes: the audio is scored in this process
+  and is never written to disk or sent anywhere.
+-->
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Tone Trainer listens while you hold the button, to check the tone of what you said. The recording is scored on this device and is never saved or sent anywhere.</string>
+</dict>
+</plist>

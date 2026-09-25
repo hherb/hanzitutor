@@ -67,7 +67,8 @@ pub use progress::{
     ReviewView, Scheduler, Sm2, KNOWN_INTERVAL_DAYS,
 };
 pub use settings::{
-    BoardSize, Pace, Settings, SettingsError, SettingsSink, SettingsStore, SettingsView,
+    BoardSize, Pace, Settings, SettingsError, SettingsPatch, SettingsSink, SettingsStore,
+    SettingsView,
 };
 pub use time::{iso8601_from_unix, now_iso8601, parse_iso8601};
 pub use tone::{

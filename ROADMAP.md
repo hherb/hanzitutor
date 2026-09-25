@@ -31,6 +31,8 @@ Play-by-play of what a past session shipped belongs to git history, not here.
 | M12 | Speech recognition: text (optional download) | Recognise *what* was said, which needs a ~155 MB model the user installs from settings | L | **done** |
 | M13 | Cross-device sync | A schedule on one device is one the learner cannot trust | L | **done** |
 | M14 | Graded phrase audio | Pronounce graded phrases in one consistent voice, and speak any phrase on demand | L | **in progress** |
+| M15 | Radical and component teaching | A character stops being a picture and becomes parts | M | **done** |
+| M16 | Standalone tone trainer | Tone practice is the one feature worth opening on its own, and it needs no course | M | **done (desktop + iOS; Android bridge pending)** |
 
 ---
 
@@ -505,7 +507,8 @@ Deliberately not done, and why:
 
 **Status: in progress, iOS and Android.** Both build, run, draw and speak. On Android
 a signed release bundle exists and has been run on a device; what is outstanding
-there is the Play submission itself. On iOS the release build is still outstanding.
+there is the Play submission itself. On iOS a release build links and exports an
+IPA but does not yet run, so a device build is a debug one — see "What is left".
 
 **Why.** A touchscreen with a stylus is the right input device for handwriting
 practice; a trackpad is a compromise. Tauri 2 supports iOS and Android. On this
@@ -580,11 +583,17 @@ is carried when the iPad is not, and practice on it is the point.
 
 **What is left.**
 
-- **iOS release builds.** `ios build` in release fails to link Tauri's Swift glue
-  because the release Swift product keeps those symbols local; debug links. This is a
-  toolchain/Tauri-version question rather than a change here, recorded with the
-  evidence in `HANDOVER.md` §6. Until it is resolved, a device build is a debug build,
-  which is fine for practice and not for distribution.
+- **iOS distribution.** A release *build* now links and exports an IPA: the
+  profile override in the root `Cargo.toml` makes the crates that own a Swift
+  package build the Debug Swift product, which exports the `@_cdecl` entry points
+  that Tauri's Release archive keeps local (HANDOVER §6). But it does not *run*:
+  the release app dies at launch with `EXC_BAD_ACCESS` inside UIKit's scene
+  connection, where the debug build of the same commit runs, so a device build is
+  `--debug` until that is understood (HANDOVER §6 has the crash and the first
+  thing to try). After it runs, the gap is signing: the IPA is development-signed,
+  so TestFlight needs a distribution certificate and profile and an
+  `--export-method` of `release-testing` or `app-store-connect`, plus an App Store
+  Connect record.
 - **The Play submission itself, and it is waiting on the developer account.**
   `app-universal-release.aab` is built and signed, and the same code has been installed
   and used on a device as a release APK. What remains is the paperwork: publishing
@@ -1983,3 +1992,75 @@ To keep the project honest about what it is:
   of graded recordings that ship with the app, plus an optional second model for a phrase
   with no recording. The rule M12 set is unchanged: nothing is fetched unless the learner
   presses something.
+
+---
+
+## M16 — Standalone tone trainer
+
+**Status: done on desktop and iOS. The Android bridge is registered but has no
+Kotlin plugin yet — see below, which is the one thing this milestone has not done.**
+
+Tone practice is a different exercise from learning to write a character, and it was
+locked inside an app about writing them. This milestone puts it in an application of
+its own, at `apps/tone-trainer/`, and does it by *sharing* rather than by copying:
+the scorer, the minimal pairs, the microphone and the system voice are the same code
+the full app uses.
+
+### What shipped
+
+- **The app** — `apps/tone-trainer/`, a Tauri app added to the workspace as its own
+  member. Two screens: **Hear**, a quiz over a minimal pair where the app says one
+  member and the learner picks which reading it was, and **Say**, where the learner
+  picks a tone of a syllable, holds the button, and sees their pitch drawn against
+  the shape that tone asks for. Ten commands, no study database, no course, no
+  settings screen.
+- **The shared crate this milestone created** — `crates/hanzi-voice/`. Microphone
+  capture and system pronunciation moved out of `src-tauri/` wholesale, together
+  with the Android plugin bridge, because the alternative was copying about two
+  thousand lines of platform code into the second app. `src-tauri/src/platform.rs`
+  is now a shim that supplies this app's Android package and class; the bridge in
+  the shared crate takes them as arguments, because the two apps have different
+  application ids.
+- **The licence position is unchanged.** `hanzi-voice` introduces no upstream
+  project that was not already in the build: `cpal` and the `objc2` bindings were
+  in `src-tauri` for exactly these modules and moved with them. The trainer
+  deliberately does **not** depend on `hanzi-say`, so no `sherpa-onnx` enters it.
+- **One interface file was genuinely lifted** — the pitch chart, now
+  `apps/tone-trainer/src/lib/ToneChart.svelte`, taken from this app's
+  `TonePanel.svelte`. What was dropped is everything the board owns: the speech
+  recognition block, the sandhi note, and the one-chart-per-syllable loop.
+- **The dataset is embedded, not re-derived** — the trainer reads the same
+  `crates/hanzi-core/data/hanzi.bin.gz` through the workspace. It is far more than
+  tone pairs need (7,744 characters for a few hundred sets), and the trade is
+  recorded deliberately: it is already built, licensed and tested, and a second
+  data pipeline is a worse cost than 13 MB in a bundle.
+- **Tests** — `apps/tone-trainer/src-tauri/tests/tone_sets.rs` pins the two claims
+  that sharing makes possible: the pairs really are minimal (one syllable, one
+  character per tone, and each reading's own tone agrees with its tone number), and
+  a synthetic tone 2 is judged `Match` while a tone 4 aimed at tone 2 is not. The
+  microphone test is not duplicated — the recorder is shared, so
+  `records_from_the_real_microphone` in this app covers both.
+
+### What is not in this milestone
+
+- **Android.** The trainer registers its bridge under `com.hanzitutor.tone` and has
+  no Kotlin `PlatformPlugin` of its own, so on Android the recorder and the
+  synthesiser report that the bridge is not registered rather than failing
+  silently. The full app's plugin is the file to copy, and the window-inset half of
+  it is what the trainer's `--safe-top` styling is still missing.
+- **A shared Svelte package.** The interface is duplicated by selection, not by
+  design: the two apps are separate npm projects, and the trainer now repeats the
+  set list, the quiz and the tone-name vocabulary. `packages/tone-ui/` is the
+  obvious next step if a third app appears or the two drift.
+- **Slimming the data.** A tone-pair-only artifact would carry the few hundred sets
+  instead of the whole course. Worth doing when someone minds the bundle size.
+- **Drilling beyond one syllable. Done.** One scoring path serves a character's
+  chosen tone and a whole word's spoken tones: the word's reading comes from the
+  dataset's whole-word entry, so a polyphone is right, and `hanzi-core`'s
+  `ToneTarget` applies sandhi — 你好 is scored as 2 + 3, not the dictionary's 3 + 3.
+  Words are offered as **families hung on the tone-contrast characters** (中 gives
+  中国, 中年, 中学), which is what keeps the tone drill and the word list from
+  disagreeing about which characters are a contrast. One chart per syllable, so a
+  word says *which* syllable went wrong. What is still out: phrases past four
+  syllables, and browsing the whole HSK list rather than the families.
+

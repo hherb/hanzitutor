@@ -174,6 +174,19 @@ pub struct Settings {
     /// How large the board is drawn — see [`BoardSize::default`].
     #[serde(default)]
     pub board_size: BoardSize,
+    /// Whether characters are shown coloured by the tone they are read with.
+    ///
+    /// A memory aid rather than a study setting: nothing is graded differently,
+    /// and a learner either finds a colour on every glyph helpful or finds it
+    /// noise. **Off by default**, because it changes how the whole interface
+    /// looks and nobody asked for it on the first run — unlike the pace or the
+    /// board size, there is no sensible answer to guess.
+    ///
+    /// A plain `bool` rather than an `Option`, for the reason [`Pace::default`]
+    /// gives: there is no device signal to resolve an unchosen value from, so a
+    /// missing row already means "off" and storing `false` would add nothing.
+    #[serde(default)]
+    pub tone_colours: bool,
     /// Whether the introduction has been read and dismissed.
     ///
     /// The one field here the *app* writes rather than a control on the settings
@@ -215,6 +228,71 @@ pub struct Settings {
 pub trait SettingsSink: std::fmt::Debug + Send {
     fn load(&self) -> Result<Settings, SettingsError>;
     fn save(&mut self, settings: &Settings) -> Result<(), SettingsError>;
+}
+
+/// One change to the preferences, as a screen sends it.
+///
+/// ## Why a struct rather than one argument per preference
+///
+/// This used to be six arguments on the command and six on the state method, one
+/// per preference, and adding [`Settings::tone_colours`] made eight — past the
+/// point where a signature is readable, and at a ceiling that every future
+/// preference would hit again. A document with a field per preference is what the
+/// thing actually is, and this is that document's `Deserialize`.
+///
+/// ## What the shapes mean on the wire
+///
+/// Every field is `Option` and **absent means leave that preference alone**: the
+/// screen sends only the control the learner touched, so changing the voice must
+/// not reset the board size on the way past. Clearing is spelled per preference,
+/// because `None` is already taken:
+///
+/// * `click_to_draw` cannot be cleared here at all — going back to the device's
+///   own answer is `AppState::clear_click_to_draw`, since "leave it alone" and
+///   "forget my choice" are different instructions.
+/// * `voice` is the **empty string** to go back to the automatic voice. A voice
+///   is never legitimately nameless, so the empty string is free to mean this.
+/// * `animation_pace` and `board_size` are closed sets, so every value a caller
+///   can send is a choice.
+/// * `tone_colours`, `intro_seen` and `whats_new_seen` are plain values: there is
+///   no third state for any of them to be returned to.
+///
+/// ## `deny_unknown_fields`
+///
+/// Deliberately set, and it is what keeps the guarantee the flat arguments used
+/// to have: a preference this build does not know is **rejected** rather than
+/// silently ignored, so a screen and a binary that disagree about the names are
+/// told so instead of appearing to save something that goes nowhere. It is
+/// checked against the interface's own `SettingsPatch` by a test.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+pub struct SettingsPatch {
+    /// Choose how a stroke is drawn. `None` leaves the choice as it is.
+    pub click_to_draw: Option<bool>,
+    /// Choose the pronunciation voice by name; `""` goes back to the automatic
+    /// choice. `None` leaves the choice as it is.
+    pub voice: Option<String>,
+    /// Choose how fast the stroke-order animation runs.
+    pub animation_pace: Option<Pace>,
+    /// Choose how large the board is drawn.
+    pub board_size: Option<BoardSize>,
+    /// Turn colouring by tone on or off.
+    pub tone_colours: Option<bool>,
+    /// Record that the introduction has been dismissed.
+    pub intro_seen: Option<bool>,
+    /// Record whose "what's new" pages have been read.
+    pub whats_new_seen: Option<String>,
+}
+
+impl SettingsPatch {
+    /// True when the patch asks for nothing at all.
+    ///
+    /// A screen that sends an empty patch is answered without a write, which is
+    /// what keeps the "no Save button" rule from turning into a save per frame: an
+    /// untouched control is not a change.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// The persisted document: a version, and the settings.
@@ -274,6 +352,11 @@ impl SettingsView {
     /// How large the board should be drawn.
     pub fn board_size(&self) -> BoardSize {
         self.settings.board_size
+    }
+
+    /// Whether characters should be coloured by the tone they are read with.
+    pub fn tone_colours(&self) -> bool {
+        self.settings.tone_colours
     }
 
     /// Whether the introduction has been read and dismissed.
@@ -393,6 +476,16 @@ impl SettingsStore {
             return false;
         }
         self.settings.board_size = value;
+        self.dirty = true;
+        true
+    }
+
+    /// Turn colouring by tone on or off.
+    pub fn set_tone_colours(&mut self, value: bool) -> bool {
+        if self.settings.tone_colours == value {
+            return false;
+        }
+        self.settings.tone_colours = value;
         self.dirty = true;
         true
     }
@@ -517,6 +610,66 @@ mod tests {
     }
 
     #[test]
+    fn a_patch_carries_only_what_was_touched() {
+        // The wire shape the settings screen sends, and the whole reason every
+        // field is optional: absent means "leave this preference alone", so a
+        // voice change cannot reset the board size on the way past.
+        let patch: SettingsPatch = serde_json::from_str(r#"{"voice":"Meijia"}"#).unwrap();
+        assert_eq!(patch.voice.as_deref(), Some("Meijia"));
+        assert_eq!(patch.click_to_draw, None);
+        assert_eq!(patch.animation_pace, None);
+        assert_eq!(patch.board_size, None);
+        assert_eq!(patch.tone_colours, None);
+        assert_eq!(patch.intro_seen, None);
+        assert_eq!(patch.whats_new_seen, None);
+        assert!(!patch.is_empty());
+
+        let nothing: SettingsPatch = serde_json::from_str("{}").unwrap();
+        assert!(nothing.is_empty(), "no control touched is not a change");
+
+        // An empty voice is how the automatic choice is asked for, and it is a
+        // real instruction rather than an absence.
+        let automatic: SettingsPatch = serde_json::from_str(r#"{"voice":""}"#).unwrap();
+        assert_eq!(automatic.voice.as_deref(), Some(""));
+        assert!(!automatic.is_empty());
+    }
+
+    #[test]
+    fn a_patch_names_a_preference_this_build_does_not_know() {
+        // `deny_unknown_fields` is deliberate: a screen and a binary that
+        // disagree about a preference's name are told so, rather than appearing
+        // to save something that goes nowhere.
+        let error = serde_json::from_str::<SettingsPatch>(r#"{"toneColors":true}"#).unwrap_err();
+        assert!(
+            error.to_string().contains("toneColors"),
+            "the unknown name has to be in the message: {error}"
+        );
+
+        // Every field the interface has is one this build accepts, spelled the
+        // way the interface spells it. A rename that reached only one side would
+        // otherwise be silent.
+        let all: SettingsPatch = serde_json::from_str(
+            r#"{"clickToDraw":true,"voice":"Tingting","animationPace":"fast",
+                "boardSize":"large","toneColours":true,"introSeen":true,
+                "whatsNewSeen":"0.5.6"}"#,
+        )
+        .unwrap();
+        assert_eq!(all.click_to_draw, Some(true));
+        assert_eq!(all.voice.as_deref(), Some("Tingting"));
+        assert_eq!(all.animation_pace, Some(Pace::Fast));
+        assert_eq!(all.board_size, Some(BoardSize::Large));
+        assert_eq!(all.tone_colours, Some(true));
+        assert_eq!(all.intro_seen, Some(true));
+        assert_eq!(all.whats_new_seen.as_deref(), Some("0.5.6"));
+
+        // And it serialises back under the same names, which is what lets the
+        // interface's own type be checked against this one.
+        let json = serde_json::to_value(&all).unwrap();
+        assert_eq!(json["toneColours"], serde_json::json!(true));
+        assert_eq!(json["animationPace"], serde_json::json!("fast"));
+    }
+
+    #[test]
     fn a_fresh_install_has_chosen_nothing() {
         let path = temp_path("fresh");
         let store = SettingsStore::open(&path).unwrap();
@@ -570,6 +723,7 @@ mod tests {
         assert_eq!(store.settings().voice, None);
         assert!(!store.settings().intro_seen);
         assert_eq!(store.settings().whats_new_seen, None);
+        assert!(!store.settings().tone_colours, "colour is off until asked for");
 
         // And the same on a fresh document that carries none of the new keys.
         let path = temp_path("missing-new-keys");
@@ -580,6 +734,32 @@ mod tests {
         assert_eq!(store.view().voice(), None);
         assert!(!store.view().intro_seen());
         assert_eq!(store.view().whats_new_seen(), None);
+        assert!(!store.view().tone_colours());
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn colouring_by_tone_is_off_until_it_is_asked_for() {
+        // The one preference that changes how the whole interface looks. Nothing
+        // chosen means nothing stored, so a learner who never touches it leaves no
+        // row behind — the same rule the pace and the board size follow.
+        let path = temp_path("tone-colours");
+        let mut store = SettingsStore::open(&path).unwrap();
+        assert!(!store.view().tone_colours());
+        assert!(!store.set_tone_colours(false), "already the default");
+        store.save().unwrap();
+        assert!(!path.exists(), "nothing chosen is not a document");
+
+        assert!(store.set_tone_colours(true));
+        assert!(!store.set_tone_colours(true), "already on");
+        store.save().unwrap();
+
+        let reopened = SettingsStore::open(&path).unwrap();
+        assert!(reopened.view().tone_colours());
+        let text = fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["toneColours"], serde_json::json!(true));
+
         fs::remove_file(&path).ok();
     }
 
@@ -669,12 +849,14 @@ mod tests {
             assert!(store.set_voice(Some("Meijia")));
             assert!(store.set_animation_pace(Pace::Slow));
             assert!(store.set_board_size(BoardSize::Large));
+            assert!(store.set_tone_colours(true));
             store.save().unwrap();
         }
         let reopened = SettingsStore::open(&path).unwrap();
         assert_eq!(reopened.view().voice(), Some("Meijia"));
         assert_eq!(reopened.view().pace(), Pace::Slow);
         assert_eq!(reopened.view().board_size(), BoardSize::Large);
+        assert!(reopened.view().tone_colours());
 
         // The enum names are the ones the interface and the database key rows
         // use, so they are asserted rather than left to the derive.
@@ -683,6 +865,7 @@ mod tests {
         assert_eq!(parsed["animationPace"], serde_json::json!("slow"));
         assert_eq!(parsed["boardSize"], serde_json::json!("large"));
         assert_eq!(parsed["voice"], serde_json::json!("Meijia"));
+        assert_eq!(parsed["toneColours"], serde_json::json!(true));
 
         fs::remove_file(&path).ok();
     }

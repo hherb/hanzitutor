@@ -12,6 +12,7 @@
   import LessonSidebar from "./lib/LessonSidebar.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
+  import ReadingList from "./lib/ReadingList.svelte";
   import PhrasesPanel from "./lib/PhrasesPanel.svelte";
   import RadicalsPanel from "./lib/RadicalsPanel.svelte";
   import SettingsPanel from "./lib/SettingsPanel.svelte";
@@ -19,8 +20,11 @@
   import StartupWizard from "./lib/StartupWizard.svelte";
   import TonePanel from "./lib/TonePanel.svelte";
   import TonePairsPanel from "./lib/TonePairsPanel.svelte";
+  import TonedPinyin from "./lib/TonedPinyin.svelte";
+  import TonedText from "./lib/TonedText.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import WordsPanel from "./lib/WordsPanel.svelte";
+  import { setCharacterTones } from "./lib/tones.svelte";
   import { INTRO_PAGES, notesFor } from "./lib/startupPages";
   import type { Page } from "./lib/startupPages";
   import { dueLabel } from "./lib/due";
@@ -120,6 +124,7 @@
     voice: null,
     animationPace: "normal",
     boardSize: "normal",
+    toneColours: false,
     introSeen: false,
     whatsNewSeen: null,
     warning: null,
@@ -679,6 +684,26 @@
       : [],
   );
   /**
+   * The tone of each character the board is showing, aligned to
+   * [`entryCharacters`] rather than to the item's text.
+   *
+   * That alignment is the whole point: a sentence's punctuation is skipped by the
+   * board, and a tone array that did not skip with it would put every colour one
+   * place off from the glyph it belongs to. Empty when the item has no tones —
+   * every character drilled on its own — which is what lets `TonedText` answer
+   * from each character's own tone rather than from a reading there is none of.
+   */
+  const entryTones = $derived.by(() => {
+    const tones = currentItem?.tones ?? [];
+    if (tones.length === 0) return [];
+    const out: (number | null)[] = [];
+    [...(currentItem?.text ?? "")].forEach((ch, index) => {
+      if (drawable.size > 0 && !drawable.has(ch)) return;
+      out.push(tones[index] ?? null);
+    });
+    return out;
+  });
+  /**
    * The character the board is asking for. Everything downstream — loading,
    * grading, the ghost and the hint — keys off this, so all four sources share
    * one practice path.
@@ -967,6 +992,23 @@
       })
       .catch((cause) => {
         void api.log(`could not list the drawable characters: ${cause}`);
+      });
+
+    // The tone each character carries on its own, which is what a tone colour
+    // reads where a screen has no reading to colour against — a lesson list, a
+    // radical's family, a search result. Sent once and held in the module beside
+    // the colour rules, rather than threaded through every panel: the same glyph
+    // is drawn on a dozen screens and the answer cannot change while the app
+    // runs. A failure is not worth a message — the colours simply do not appear,
+    // which is what they look like switched off.
+    void api
+      .characterTones()
+      .then((pairs) => {
+        setCharacterTones(pairs);
+        void api.log(`character tones: ${pairs.length}`);
+      })
+      .catch((cause) => {
+        void api.log(`could not read the character tones: ${cause}`);
       });
 
     // Resolving the voice runs the system voice list, which takes about a
@@ -2183,6 +2225,8 @@
         entryId: entry.id,
         pinyin: entry.pinyin,
         meaning: entry.meaning,
+        tones: entry.tones,
+        syllables: entry.syllables,
       })),
       "vocabulary",
     );
@@ -2229,6 +2273,8 @@
             entryId: entry.id,
             pinyin: entry.pinyin,
             meaning: entry.meaning,
+            tones: entry.tones,
+            syllables: entry.syllables,
           }
         : { text: item.text, entryId: null, pinyin: "", meaning: "" };
     });
@@ -2250,6 +2296,8 @@
         entryId: null,
         pinyin: word.pinyin,
         meaning: word.meaning,
+        tones: word.tones,
+        syllables: word.syllables,
       })),
       "words",
     );
@@ -2364,6 +2412,9 @@
         entryId: null,
         pinyin: member.reading,
         meaning: member.definition,
+        // A tone set is one character per tone and the tone is the whole point of
+        // it, so the reading is not in question and neither is the colour.
+        tones: [member.tone],
       })),
       "tones",
     );
@@ -2605,7 +2656,13 @@
   </button>
 {/snippet}
 
-<div class="app">
+<!--
+  `tone-colours` is the one switch the tone palette hangs off: every colour rule in
+  `app.css` is scoped under it, so with it off the `tone-char` spans that split a
+  run of characters paint nothing and the interface is exactly what it was before
+  the preference existed. See `TonedText.svelte`.
+-->
+<div class="app" class:tone-colours={settings.toneColours}>
   <!--
     The sidebar is a column on a wide screen and a sheet over the board on a
     phone; the scrim is what closes it, and both only exist below the phone
@@ -2815,14 +2872,35 @@
               ?
             {:else if entryCharacters.length > 1}
               {#each entryCharacters as ch, i (i)}
-                <span class="glyph-char" class:current={i === charCursor}>{ch}</span>
+                <span class="glyph-char" class:current={i === charCursor}
+                  ><TonedText text={ch} tones={entryTones.length > 0 ? [entryTones[i] ?? null] : null} /></span
+                >
               {/each}
             {:else}
-              {entryCharacters[charCursor] ?? "?"}
+              <TonedText
+                text={entryCharacters[charCursor] ?? "?"}
+                tones={entryTones.length > 0 ? [entryTones[charCursor] ?? null] : null}
+              />
             {/if}
           </div>
           <div class="detail">
-            <p class="pinyin">{currentItem.pinyin || character.pinyin.join("  ·  ") || "—"}</p>
+            <!-- The reading the word is shown with, split into syllables by Rust,
+                 so the pinyin carries the tone of the character under it. Where
+                 there is no word reading the character's own readings are listed
+                 and each is one syllable, which is its own answer. -->
+            {#if currentItem.pinyin}
+              <p class="pinyin">
+                <TonedPinyin
+                  text={currentItem.pinyin}
+                  syllables={currentItem.syllables ?? null}
+                  tones={currentItem.tones ?? null}
+                />
+              </p>
+            {:else if character.pinyin.length > 0}
+              <p class="pinyin"><ReadingList readings={character.pinyin} /></p>
+            {:else}
+              <p class="pinyin">—</p>
+            {/if}
             <p class="meaning">{currentItem.meaning || character.definition || "—"}</p>
             <div class="details" id="character-details">
               <ul class="facts">
@@ -2847,23 +2925,29 @@
                 {/if}
               </ul>
               {#if answerVisible}
-                <p class="etymology" lang="zh-Hans">{currentItem.text}</p>
+                <p class="etymology" lang="zh-Hans"><TonedText text={currentItem.text} tones={currentItem.tones ?? null} /></p>
               {/if}
             </div>
             {@render detailFold()}
           </div>
         {:else}
           <div class="glyph" lang="zh-Hans" class:masked={!answerVisible}>
-            {answerVisible ? character.ch : "?"}
+            {#if answerVisible}<TonedText text={character.ch} />{:else}?{/if}
           </div>
           <div class="detail">
-            <p class="pinyin">{character.pinyin.join("  ·  ") || "—"}</p>
+            {#if character.pinyin.length > 0}
+              <p class="pinyin"><ReadingList readings={character.pinyin} /></p>
+            {:else}
+              <p class="pinyin">—</p>
+            {/if}
             <p class="meaning">{character.definition || "—"}</p>
             <div class="details" id="character-details">
               <ul class="facts">
                 <li>{strokeTotal} {strokeTotal === 1 ? "stroke" : "strokes"}</li>
                 {#if character.radical && character.radical !== "\u0000"}
-                  <li>radical <span lang="zh-Hans">{character.radical}</span></li>
+                  <li>
+                    radical <span lang="zh-Hans"><TonedText text={character.radical} /></span>
+                  </li>
                 {/if}
                 {#if character.hsk > 0}<li>HSK {character.hsk}</li>{/if}
                 {#if character.rank > 0}<li>frequency #{character.rank}</li>{/if}
@@ -2938,7 +3022,9 @@
                   {#if slot.strokes.length > 0}
                     <CharacterThumb strokes={slot.strokes} report={slot.report} />
                   {:else if answerVisible}
-                    <span class="slot-glyph" lang="zh-Hans">{ch}</span>
+                    <span class="slot-glyph" lang="zh-Hans"
+                      ><TonedText text={ch} tones={entryTones.length > 0 ? [entryTones[i] ?? null] : null} /></span
+                    >
                   {/if}
                   {#if slot.report}
                     <span class="slot-score">{Math.round(slot.report.overall)}</span>

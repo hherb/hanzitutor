@@ -29,9 +29,20 @@
 # cleans up the .app it wrapped.
 #
 # Usage: scripts/build-release.sh [extra tauri build arguments]
+#
+# Set `TAURI_ROOT` to bundle one of the repository's other Tauri apps —
+# `apps/tone-trainer` does this through its own `pnpm build`. The CLI has to run
+# from that app's directory, because that is where it finds
+# `src-tauri/tauri.conf.json` and where node resolves `@tauri-apps/cli`. The two
+# defaults below are the ones read further down, and both are overridden the same
+# way.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Where this repository is — the shared scripts, and the cargo target directory.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The app to bundle. The repository root for the main app; `apps/tone-trainer`
+# passes its own directory, because the Tauri CLI has to run from there.
+ROOT="${TAURI_ROOT:-$REPO}"
 
 if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
   DETECTED="$(security find-identity -v -p codesigning 2>/dev/null \
@@ -54,14 +65,21 @@ fi
 # cargo needs this project's own CARGO_HOME, and the npm CLI cannot parse its
 # own arguments on a host that runs Node inside another application. A function
 # rather than a variable, so a path with a space survives.
+#
+# Run **from the app's directory**, which is what `TAURI_ROOT` is for: the CLI
+# looks for `src-tauri/tauri.conf.json` relative to the working directory, so
+# without the `cd` a request for the tone trainer's bundle silently bundles the
+# main app instead.
 tauri() {
-  "$ROOT/scripts/with-cargo-env.sh" "$ROOT/scripts/tauri-cli.sh" "$@"
+  (cd "$ROOT" && "$REPO/scripts/with-cargo-env.sh" "$REPO/scripts/tauri-cli.sh" "$@")
 }
 
 # The bundle directory follows CARGO_TARGET_DIR, which this project points at
-# .cargo-target/ but a plain checkout leaves at src-tauri/target/.
+# `.cargo-target/`, and `TAURI_ROOT` decides which app's bundle is being looked
+# for: the app's own directory, or the repository root for the main app.
+APP_DIR="${APP_ROOT:-$ROOT}"
 BUNDLE=""
-for dir in "$ROOT/.cargo-target/release/bundle" "$ROOT/src-tauri/target/release/bundle"; do
+for dir in "$REPO/.cargo-target/release/bundle" "$APP_DIR/src-tauri/target/release/bundle"; do
   if [ -d "$dir" ]; then
     BUNDLE="$dir"
     break
@@ -78,7 +96,7 @@ if tauri build "$@"; then
   # invalidates the signature Tauri put on it.
   if [ -n "$BUNDLE" ]; then
     for image in "$BUNDLE"/dmg/*.dmg; do
-      [ -f "$image" ] && "$ROOT/scripts/hide-dmg-volume-icon.sh" "$image"
+      [ -f "$image" ] && "$REPO/scripts/hide-dmg-volume-icon.sh" "$image"
     done
   fi
 

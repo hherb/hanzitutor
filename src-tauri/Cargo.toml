@@ -53,57 +53,31 @@ hanzi-core = { path = "../crates/hanzi-core" }
 hanzi-store = { path = "../crates/hanzi-store" }
 # Cross-device sync: the shard format, the merge, the fold and the Dropbox client.
 hanzi-sync = { path = "../crates/hanzi-sync" }
+# Microphone capture and system speech synthesis. Shared with the standalone
+# tone trainer (`apps/tone-trainer`), which needs exactly these two things and
+# nothing else from this binary.
+hanzi-voice = { path = "../crates/hanzi-voice" }
+# Speech recognition: *what* was said, as opposed to the tone it was said with.
+# Shared with the standalone tone trainer, which offers the same optional model.
+hanzi-hearing = { path = "../crates/hanzi-hearing" }
 # Speech synthesis, for a phrase with no bundled recording (see `say.rs`). It
 # shares `sherpa-onnx` with the recognition stack, so the voice that made the
 # bundled clips is the voice the app speaks with, and no new native dependency
 # enters the build.
 hanzi-say = { path = "../crates/hanzi-say" }
-cpal = "0.18"
 
-# Speech recognition (ROADMAP.md M12). `sherpa-onnx` is the toolkit's own crate,
-# Apache-2.0, and the one the research recommends for Mandarin specifically:
-# Whisper's small models are ~51-67% CER on Chinese against SenseVoice's ~8%.
+
+# Fetching the synthesis model, and the toolkit that runs it — see `say.rs`.
+# These three stayed here while recognition's copy of them moved to
+# `hanzi-hearing`, because this app is the one that fetches *two* models.
 #
-# The default `static` feature is deliberate. The shared build would leave
-# `.dylib`s beside the binary with an `@loader_path` rpath, which works under
-# `cargo run` and then fails inside a bundled `.app` — whose executable lives in
-# `Contents/MacOS/` and whose libraries would have to be declared as bundle
-# frameworks. One file is worth the linked size.
-#
-# Its `sherpa-onnx-sys` build script downloads a prebuilt native archive from
-# GitHub during `cargo build` unless `SHERPA_ONNX_LIB_DIR` is set, so it is set:
-# scripts/fetch-sherpa.sh unpacks a digest-pinned copy and
-# scripts/with-cargo-env.sh points the build at it. Do not remove that wiring
-# without reading the header of fetch-sherpa.sh.
+# `sherpa-onnx`'s `sherpa-onnx-sys` build script downloads a prebuilt native
+# archive from GitHub during `cargo build` unless `SHERPA_ONNX_LIB_DIR` is set, so
+# it is set: scripts/fetch-sherpa.sh unpacks a digest-pinned copy and
+# scripts/with-cargo-env.sh points the build at it.
 sherpa-onnx = "1.13.8"
-# Fetching that model is the one thing in this app that touches the network, and
-# it happens only when the learner asks for it from the settings screen: `ureq`
-# is the client, `sha2` checks what arrived, and `tar`/`bzip2` unpack it. All
-# four are already in the build graph through `sherpa-onnx-sys`'s own build
-# dependencies, so this adds no new upstream project to the licence catalogue.
 ureq = "2"
-# Both `bzip2` 0.4 and 0.5 are already in the build graph either way —
-# `sherpa-onnx-sys` builds with 0.4, and `zip`, which it also builds with, pulls
-# 0.5 — so this choice costs nothing and saves nothing. 0.5 is the one taken
-# because it is pure Rust: asking for 0.4 would link the C `bzip2-sys` into the
-# application for a single decompression.
-tar = "0.4"
-bzip2 = "0.5"
 sha2 = "0.10"
-
-# Pronunciation on iOS goes through AVSpeechSynthesizer, in-process: there is no
-# `say` binary there, and the app sandbox would refuse to spawn one anyway.
-# `objc2` is already in the dependency tree through Tauri; this is the framework
-# bindings for the one framework this project needs itself. `AVSpeechSynthesizer`
-# lives in AVFAudio, which is the `objc2-avf-audio` crate rather than
-# `objc2-av-foundation` (that one depends on this).
-[target.'cfg(target_os = "ios")'.dependencies]
-objc2 = "0.6"
-objc2-foundation = "0.3"
-objc2-avf-audio = "0.3"
-# AVFoundation's objects are not `Send`, so speaking happens on the main thread
-# and this is how the work gets there.
-dispatch2 = "0.3"
 
 # The refresh token has to outlive the process, and it is the whole of the account
 # access this app has, so it goes in the platform's own secret store rather than in

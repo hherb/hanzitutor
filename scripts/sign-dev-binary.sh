@@ -10,13 +10,25 @@
 # "this certificate signed a binary with this identifier", which survives the
 # rebuild, so the prompt happens once and then stops.
 #
+# **The microphone has the same problem, and the same fix.** `TCC` grants
+# microphone access to a program by the same designated requirement, so an
+# ad-hoc-signed binary is a stranger on every rebuild: macOS shows the permission
+# dialog again, and a build that is never granted one records **silence** rather
+# than failing — which reads as "the app does not hear me at all". Signing makes
+# the grant stick to the identifier instead of to one build.
+#
+# That is why `apps/tone-trainer` signs its dev binary too, through the two
+# environment variables below. Two apps, two identities, one script.
+#
 # It is deliberately *not* a substitute for the release signature: no hardened
 # runtime, no timestamp, no notarisation. The dev binary is a local build for
 # this machine, and the only thing being asked of it is a stable identity.
 #
 # Usage:
-#   scripts/sign-dev-binary.sh                 # sign the debug binary
+#   scripts/sign-dev-binary.sh                 # sign the main app's debug binary
 #   APPLE_SIGNING_IDENTITY="Developer ID Application: …" scripts/sign-dev-binary.sh
+#   HANZI_DEV_BINARY=…/tone-trainer HANZI_DEV_IDENTIFIER=com.hanzitutor.tone \
+#     scripts/sign-dev-binary.sh               # sign the tone trainer's
 #
 set -euo pipefail
 
@@ -26,11 +38,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${HANZI_DEV_BINARY:-$ROOT/.cargo-target/debug/hanzi-tutor}"
 # The same identifier the bundle uses, so the keychain sees one program across a
 # dev run and an installed build rather than two.
-IDENTIFIER="com.hanzitutor.app"
+IDENTIFIER="${HANZI_DEV_IDENTIFIER:-com.hanzitutor.app}"
 
 if [ ! -f "$BIN" ]; then
   echo "error: no dev binary at $BIN" >&2
-  echo "Build it first: ./scripts/with-cargo-env.sh cargo build -p hanzi-tutor --no-default-features" >&2
+  echo "Build it first, e.g. ./scripts/with-cargo-env.sh cargo build -p hanzi-tutor --no-default-features" >&2
+  echo "(or set HANZI_DEV_BINARY to the binary you mean)" >&2
   exit 1
 fi
 

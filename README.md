@@ -45,14 +45,16 @@ progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
 measure**, the **durable study store**, **tone practice**, **speech
 recognition** and optional **cross-device sync** through your own Dropbox — for
 characters *and words*, on desktop and on both mobile systems — are all implemented
-and tested; **618 automated tests** pass, and 4 more are
-ignored unless a microphone or the speech model is present. A
+and tested; **650 automated tests** pass, and 5 more are
+ignored unless a microphone, the speech model or a loudspeaker is available. A
 signed Android
 release bundle is built and runs on a physical phone, and the recognition model
 has been installed and used on both a physical iPhone and a physical Android
 phone; what is left for the Play Store is publishing the privacy policy and
-filling in the Console listing, not code. What is not built yet is listed under
-[Next steps](#next-steps).
+filling in the Console listing, not code. A second, smaller app ships from this
+repository too — **Tone Trainer**, tone practice on its own, sharing the scorer,
+the minimal pairs and the microphone code with this one. What is not built yet is
+listed under [Next steps](#next-steps).
 
 ## What it does
 
@@ -84,6 +86,16 @@ filling in the Console listing, not code. What is not built yet is listed under
   3, 1 against 4). *Hear* plays a set in tone order; *Quiz* says one at random and
   asks which reading it was; *Practise* sends the set to the board in tone order,
   where the microphone and the contour chart already are.
+- **The same thing on its own, as a second app.** `apps/tone-trainer/` is tone
+  practice and nothing else: pick a syllable, hear every tone of it, quiz which one
+  you heard, then hold the button and see your pitch against the shape each tone
+  asks for. It drills **whole words** too — one chart per syllable, with the tones
+  they are actually *spoken* with, so 你好 is scored as 2 + 3 and not the
+  dictionary's 3 + 3 — and it offers the same optional recognition model, so it can
+  tell 四 from 是 as well as judging their pitch. It shares the scorer, the minimal
+  pairs, the microphone and the recogniser with this app, and shares no interface
+  with it — so a learner who wants to drill tone does not have to install a
+  character course to do it. `cd apps/tone-trainer && pnpm dev` runs it.
 - **An introduction read once, and what changed after an update.** A first launch
   gets four short pages: what the app is, what Trace and Recall are for, the four
   measures an attempt is graded on, and where the course, the word list and the
@@ -184,14 +196,29 @@ filling in the Console listing, not code. What is not built yet is listed under
   comes back with its drawing and its grade, to look at again or improve, and an
   unwritten one is ready to write. The word is recorded once every character has
   been written, not necessarily in order.
-- **Settings you actually own.** A fourth screen holds the four things the app
+- **Settings you actually own.** A fourth screen holds the five things the app
   would otherwise decide for you: whether a stroke is committed by clicking or by
   dragging, how fast the stroke-order animation runs, how much of the window the
-  board takes, and which installed voice pronounces. Each change is written as
+  board takes, whether characters are coloured by tone, and which installed voice
+  pronounces. Each change is written as
   you make it — there is no Save button — and a change that could not be written
   says so instead of pretending. The first and the last can be left **Automatic**,
   which is what a fresh install has and what lets a trackpad get click-to-draw
   while a stylus gets dragging without anybody deciding.
+- **Colour by tone, if a colour helps you remember.** A switch on the settings
+  screen draws every character in the colour of the tone it is read with — first
+  tone light blue, second light yellow, third brown, fourth light purple, and the
+  neutral tone grey — everywhere characters appear: the board's prompt, the word
+  list, your own vocabulary, the lessons, the radical families and the tone pairs.
+  The pinyin is coloured with them, syllable by syllable, so the reading and the
+  glyph agree at a glance. Each character is painted in a deepened version of its
+  tone's colour on the pale one, because a pastel that is lovely as a tint is
+  unreadable as text. The tone shown is the one the character is *learnt* with,
+  out of a dictionary — 你好 is 3 + 3 even where tone practice scores the spoken
+  2 + 3 — and a polyphone is coloured from the reading of the word it is in, so
+  好 shows brown on its own and purple inside 爱好. Nothing about the grading
+  changes, the palette is off until you ask for it, and a character whose tone is
+  not known is left in the ordinary ink rather than guessed at.
 - **About and licences.** The fifth screen in the sidebar names the app's own
   licence and shows the full text of the third-party licences that travel with it:
   the embedded datasets, the interface font, and the third-party code compiled or
@@ -215,6 +242,29 @@ pnpm install
 pnpm run fetch-sherpa       # unpacks the pinned speech library (see below)
 pnpm run dev                # launches the app
 ```
+
+The standalone tone trainer is its own npm project, so it installs and runs
+separately:
+
+```bash
+cd apps/tone-trainer
+pnpm install
+pnpm dev                    # a second window, on its own dev-server port
+```
+
+It links the same speech engine this app does — for the same *optional* recognition
+model, which it offers on the same terms (downloaded only if you press the button).
+It does **not** link the bundled synthesis model, so a learner who declines
+recognition downloads nothing, and `fetch-sherpa` is still needed to *build* it.
+
+**Two things about that second project are not obvious.** Its `package.json` pins
+its devDependencies exactly, to the versions this project's lockfile already
+resolves — the supply-chain `minimumReleaseAge` policy checks the trainer's
+lockfile on its own, and a range-based resolve pulls packages too new to pass it.
+And `pnpm dev` runs an **ad-hoc-signed** binary, which is fine for layout work but
+is a different program to macOS on every rebuild, so microphone permission does not
+stick: use `pnpm dev:signed` when you mean to record, or `pnpm build` for a signed
+`.app`. `HANDOVER.md` §6 has the measurements behind both.
 
 Everything the *course* needs is committed: the ~13 MB dataset artifact, the
 interface font and every licence notice, so nothing about the app's own content is
@@ -387,7 +437,7 @@ then stop second-guessing you. `settings` holds only what you have chosen, and a
 preference set back to its default loses its row again — writing "normal" beside a
 missing row would add nothing the absence does not already say.
 
-The Settings screen writes four of them, and it is worth being precise about which
+The Settings screen writes five of them, and it is worth being precise about which
 can be *un*-chosen, because that is what decides the shape of the row:
 
 - **How a stroke is drawn** (`click_to_draw`) is `true`, `false`, or **no row** —
@@ -401,6 +451,13 @@ can be *un*-chosen, because that is what decides the shape of the row:
   (`board_size`) have no device signal to read, so they are always a value:
   `slow`/`normal`/`fast` and `compact`/`normal`/`large`. No row means the default,
   which is `normal` for both.
+- **Colouring by tone** (`tone_colours`) is `true` or no row, and the row is
+  written only when it is turned **on**: there is no device answer to resolve an
+  unchosen one from, so "off" and "nobody has chosen" are the same state and
+  storing `false` would add nothing an absent row does not already say. The
+  colours themselves — which hue is which tone — live in `src/app.css` beside the
+  rest of the interface's palette, and the rule that decides *which* tone a
+  character has lives in Rust; see `src/lib/tones.ts` for the seam between them.
 
 Two more rows are written by the app rather than chosen on that screen, and they
 are what decide the first thing you see. **The introduction has been read**
@@ -832,11 +889,24 @@ things are deliberate rather than incidental:
   pointing it at the answer would bias decoding *toward the target* — the right
   tool for transcribing rare vocabulary and precisely the wrong one for assessment.
   Nothing in this app sets one.
-- **No tone marks on a transcript.** The comparison is between readings with the
-  tone stripped (`shi` against `si`), never between characters. Comparing
-  characters would call a homophone a mistake, and comparing *tones* out of a
-  transcript would be reporting a dictionary's tone rather than the learner's —
-  the tone comes from the pitch contour and from nowhere else.
+- **No tone marks in the *comparison*, and tones on the transcript only when the
+  transcription differs.** The comparison is between readings with the tone
+  stripped (`shi` against `si`), never between characters: comparing characters
+  would call a homophone a mistake, and comparing *tones* out of a transcript would
+  be reporting a dictionary's tone rather than the learner's. When the recogniser
+  writes something other than what was asked for, though, the block shows its own
+  reading with tone marks — `cóng` is 从, where a bare `cong` is equally 葱 and 匆 —
+  and where the model's tone differs from the one asked for, its character is shown
+  with it rather than the target's, so the pair never contradicts itself. An
+  identical transcription stays plain. The tone you actually said comes from the
+  pitch contour and from nowhere else.
+- **A homophone the model preferred is shown as the character you were asked for**,
+  not the one it wrote. 是 and 事 are the same sound, so a model that writes 事 where
+  是 was asked for has misread nothing — it is a language model preferring the
+  commoner character, which is what a language model does. Where the sounds matched
+  the panel shows the target character and says why; where they did not (四 heard for
+  是) the model's character stands, because there it is real evidence. The rule is one
+  small tested function, `src/lib/transcript.ts`.
 
 ### What it does not do
 
@@ -938,15 +1008,49 @@ pure and is tested against a temporary directory with no account and no network;
 transport is a three-method trait underneath it. What travels is the attempt log, and
 `hanzi.db` itself never does — see ROADMAP M13.
 
-The speech path sits alongside: `capture.rs` opens the microphone for the length of
-one held button, `hanzi-core`'s `tone.rs` measures the pitch of what it caught, and
-`asr.rs` runs the optional recognition model. Two things in this app can open a
-socket, and neither does until the learner has opted in. `asr.rs` fetches the model,
-and only if the button on the settings screen is pressed. `sync.rs` reaches the
-learner's own Dropbox, and only once an account has been connected there — after
-which it syncs at launch and on return as well as on demand, which is why it asks
-whether there is a network at all before it tries. Nothing else here contacts
-anything.
+The speech path sits alongside: `hanzi-voice`'s `capture` opens the microphone for
+the length of one held button, `hanzi-core`'s `tone.rs` measures the pitch of what
+it caught, and `asr.rs` runs the optional recognition model. Two things in this app
+can open a socket, and neither does until the learner has opted in. `asr.rs`
+fetches the model, and only if the button on the settings screen is pressed.
+`sync.rs` reaches the learner's own Dropbox, and only once an account has been
+connected there — after which it syncs at launch and on return as well as on
+demand, which is why it asks whether there is a network at all before it tries.
+Nothing else here contacts anything.
+
+`hanzi-voice` is the crate the second app made necessary. Capture and system
+pronunciation are needed by **Tone Trainer** (`apps/tone-trainer/`) exactly as they
+are needed here, and the alternative was two thousand lines of platform code copied
+into it — so those two modules live there now, together with the Android plugin
+bridge they both call. The bridge is parameterised by application id, because the
+two apps have different ones and each ships its own Kotlin `PlatformPlugin`. The
+crate deliberately does *not* depend on `sherpa-onnx`: an app that only wants the
+microphone should not link a speech engine to get it.
+
+`hanzi-hearing` is the same move made for recognition. *What* was said cannot be
+measured from the pitch — 四 `sì` and 是 `shì` have the same contour — so both apps
+offer the optional model, and both need the same download, the same pinned digest
+and the same comparison. Keeping that in one crate is what stops the two digests
+drifting apart. It is separate from `hanzi-voice` because of what it costs to
+*link*: the trainer wants the microphone unconditionally and the model only if the
+learner asks, so the native speech engine arrives with the crate that uses it.
+
+### Two apps, one scorer
+
+`apps/tone-trainer/` is a standalone app for tone practice and nothing else: the
+characters that differ only in tone, heard, quizzed, and then said with the pitch
+drawn against the shape each tone asks for. It shares
+
+- the tone scorer (`hanzi-core::tone`),
+- the minimal pairs (`hanzi_core::Dataset::tone_sets`),
+- the microphone and the system voice (`hanzi-voice`),
+- the optional recognition model, and the rule for reading what it heard
+  (`hanzi-hearing`),
+
+and shares no interface with this app. That last point is a real limit rather than a
+preference: this app's tone panel draws a score for a character on the handwriting
+board, so the trainer has its own screen over the same data. `HANDOVER.md` records
+exactly which files were lifted and what a shared package would take.
 
 ### Coordinate systems
 
@@ -999,17 +1103,43 @@ crates/hanzi-sync/          cross-device sync: the shard format, the merge and t
   tests/convergence.rs      two devices that practised apart must agree
   tests/two_devices.rs      two real databases, one folder
   tests/dropbox.rs          the client, against an in-memory Dropbox
+crates/hanzi-voice/         microphone capture and system pronunciation, shared
+                            with the standalone tone trainer
+  src/capture.rs            capture: `cpal`, or `AudioRecord` on Android
+  src/speech.rs             pronunciation via the system synthesiser, and the
+                            voice list the settings screen offers
+  src/platform.rs           the Android bridge: the Kotlin plugin, registered and
+                            called through Tauri's mobile-plugin machinery. The
+                            package and class are arguments, because each app
+                            ships its own plugin under its own application id
+crates/hanzi-hearing/       speech recognition: *what* was said, where `tone` judges
+                            *how*. Shared with the standalone tone trainer
+  src/asr.rs                the model's spec and pinned digest, the verified
+                            download and unpack, and the recogniser itself
+apps/tone-trainer/          the standalone tone-practice app (Tauri, desktop +
+                            mobile). Depends on hanzi-core, hanzi-voice and
+                            hanzi-hearing, and shares no interface with this app
+  src-tauri/src/lib.rs      the practice state and the commands the screen calls
+  src/App.svelte            the two exercises: Hear (a quiz over a minimal pair,
+                            showing the readings on purpose) and Say (pick a tone or
+                            a whole word, hold the button, see the pitch against the
+                            shape — one chart per syllable for a word)
+  src/lib/ToneChart.svelte  the pitch chart, lifted from this app's TonePanel
+  src/lib/ModelPanel.svelte the optional recognition model: describe, install, remove
+  src/lib/RecognitionPanel.svelte  what the recogniser heard, read against the drill
+  src/lib/transcript.ts     the homophone display rule, copied from this app's
+  src-tauri/tests/tone_sets.rs  the pairs really are minimal, a synthetic tone is
+                            judged as that tone, sandhi is applied to a word, a
+                            polyphone takes the dictionary's reading, and no model
+                            means no recognition
 src-tauri/                  Tauri shell
   src/commands.rs           the IPC surface
   src/sync.rs               cross-device sync: the Keychain, the account, and the
                             seven commands the app calls, including the one that
                             runs by itself at launch
   src/state.rs              embedded dataset, speech warm-up, the stores
-  src/platform.rs           the Android bridge: the Kotlin plugin, registered and
-                            called through Tauri's mobile-plugin machinery
-  src/speech.rs             pronunciation via the system synthesiser, and the
-                            voice list the settings screen offers
-  src/capture.rs            microphone capture: `cpal`, or `AudioRecord` on Android
+  src/platform.rs           this app's address for the shared bridge: the package
+                            and class its own Kotlin plugin lives at
   src/licences.rs           the notices that ship
   tauri.js                  a shim, because Gradle runs `node tauri …` and pnpm
                             does not put a package by that name where it looks
@@ -1040,7 +1170,7 @@ store/                      the Play listing: copy, answers, icon, artwork
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 618 tests, 4 more ignored
+pnpm test             # the whole Rust suite: 650 tests, 5 more ignored
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run test:web     # the interface's own suite, under vitest
 pnpm run selfcheck    # engine behaviour over the whole real dataset
@@ -1057,13 +1187,30 @@ in a Node environment with no browser. It holds what neither the Rust tests nor 
 type-checker can see — today, the stroke animation's geometry in
 `src/lib/render.test.ts`, against a fake `Path2D` and a recording canvas context.
 
+The standalone tone trainer is a separate app with its own commands, so it is run
+from its own directory. `pnpm test` at the root does **not** include it, and that is
+deliberate rather than an omission: it would need a second node_modules and a second
+vite config to be driven from here:
+
+```bash
+cd apps/tone-trainer
+pnpm test:rust        # the pairs are minimal, and a synthetic tone is judged as that tone
+pnpm run check:web    # svelte-check over its own components
+pnpm dev              # run it: a second window, on its own dev-server port
+```
+
 Four tests are `#[ignore]`d because they need something a test run cannot arrange
-— a microphone, or a 163 MB download. They are the ones worth running by hand
-after touching that area:
+— a microphone, a 163 MB download, or permission to make a sound. They are the
+ones worth running by hand after touching that area:
 
 ```bash
 # The microphone, for real. Say a syllable while it runs.
-cargo test -p hanzi-tutor --lib -- --ignored --nocapture records_from_the_real_microphone
+cargo test -p hanzi-tutor --test tone_calibration -- --ignored --nocapture records_from_the_real_microphone
+
+# Pronunciation, out loud: renders and plays all four tones of 马. Listen to it —
+# this is how the clipped, crackling macOS speech was found (HANDOVER §10a).
+HANZI_TUTOR_SPEECH_CACHE=/tmp/speech-cache \
+  cargo test -p hanzi-voice -- --ignored --nocapture speaks_a_character_out_loud
 
 # Recognition and resampling, against the model's own Chinese test recording.
 HANZI_ASR_MODEL_DIR=/path/to/sherpa-onnx-sense-voice-…-int8-2024-07-17 \
@@ -1170,19 +1317,42 @@ by hand, because a release build's webview is not debuggable (HANDOVER §6).
 ./scripts/fetch-sherpa.sh --ios       # required once: stages the engine for Xcode
 
 export APPLE_DEVELOPMENT_TEAM="<your Apple team ID>"   # HANDOVER.md records this project's
+
+# A release build (what a distribution would use), and a debug one, which is
+# what to reach for while working on the interface:
+./scripts/with-cargo-env.sh ./scripts/tauri-cli.sh ios build --target aarch64 --ci
 ./scripts/with-cargo-env.sh ./scripts/tauri-cli.sh ios build --debug --target aarch64 --ci
 ```
 
-That exports an IPA to `src-tauri/gen/apple/build/arm64/`. Unzip it and install
+Either exports an IPA to `src-tauri/gen/apple/build/arm64/`. Unzip it and install
 `Payload/Hanzi Tutor.app` with `xcrun devicectl device install app --device <udid>`,
 then launch it with `xcrun devicectl device process launch --device <udid>
 com.hanzitutor.app`. The phone must be unlocked for that launch, which is the one
-step here that needs a person. Four things about this build are not obvious:
+step here that needs a person. Six things about this build are not obvious:
 
-- **It must be `--debug`.** A release iOS build fails at the app link with
-  `symbol(s) not found for architecture arm64` for Tauri's own Swift entry points,
-  which are local rather than exported in a release archive of `libTauri.a`. That
-  wants a toolchain fix, not a change here.
+- **A release build links only because of a workaround in `Cargo.toml`.** Tauri's
+  Apple glue declares its C entry points as `@_cdecl` on *internal* Swift
+  functions, and the Swift package's Release configuration gives those symbols
+  local linkage, so the app link fails with `symbol(s) not found for architecture
+  arm64` for `_register_plugin`, `_run_plugin_command`, `_on_webview_created`,
+  `_log_stdout` and `_init_plugin_dialog`. The `[profile.release.package.…]`
+  `debug = 1` entries make the three crates that own a Swift package build the
+  *Debug* Swift product, which exports them. The evidence and the reasoning are
+  in the comment there and in HANDOVER §6; **delete the entries when Tauri
+  declares those functions `public`**.
+- **A release build links, installs and then dies at launch — so a device build
+  is `--debug`.** The release binary crashes on start with `EXC_BAD_ACCESS` in
+  `objc_retain`, called from `-[UIApplication _connectUISceneFromFBSScene:…]`; no
+  frame of this app's own code is on the stack, which points at the scene
+  configuration Tauri hands UIKit (`tao`'s
+  `application:configurationForConnectingSceneSession:options:`). The debug build
+  runs, and the two differ in nothing but optimisation, so this is an upstream
+  lifetime bug in the iOS scene path rather than anything here. See HANDOVER §6.
+- **It is development-signed**, so it installs on a registered device and cannot
+  be uploaded anywhere. `src-tauri/gen/apple/ExportOptions.plist` says
+  `method = debugging`; the CLI can export for the App Store directly with
+  `--export-method app-store-connect` (or `release-testing`), but that needs a
+  distribution certificate and profile, which this project does not have yet.
 - **Clear the archive between builds.** A second one fails with `failed to rename
   app …: Directory not empty`; `rm -rf src-tauri/gen/apple/build` first.
 - **The team ID belongs in the environment**, as above, not in a committed file.
@@ -1191,6 +1361,11 @@ step here that needs a person. Four things about this build are not obvious:
   identity is not in `tauri.conf.json`.
 - **It needs a wider sandbox than the rest of the project**, because it writes to
   `~/Library/Developer` and runs `swift build`, which applies a sandbox of its own.
+
+To work in Xcode rather than from the terminal, `ios build --open` opens
+`src-tauri/gen/apple/hanzi-tutor.xcodeproj` with the CLI having prepared it —
+opening the project cold does not build, because its "Build Rust Code" phase asks
+the parent CLI for its options and panics without one.
 
 Do not drive `xcodebuild` at the project directly: its "Build Rust Code" phase
 asks the parent CLI for its options over a WebSocket and panics without one.

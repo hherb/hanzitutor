@@ -1,0 +1,66 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Tone Trainer",
+  "version": "0.5.11",
+  "identifier": "com.hanzitutor.tone",
+  "build": {
+    "beforeDevCommand": "pnpm run vite:dev",
+    "devUrl": "http://localhost:1421",
+    "beforeBuildCommand": "pnpm run vite:build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Tone Trainer",
+        "width": 900,
+        "height": 720,
+        "minWidth": 420,
+        "minHeight": 560
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "img-src": "'self' data: blob:",
+        "media-src": "'self' data: blob:"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": [
+      "../../../src-tauri/icons/32x32.png",
+      "../../../src-tauri/icons/128x128.png",
+      "../../../src-tauri/icons/128x128@2x.png",
+      "../../../src-tauri/icons/icon.icns",
+      "../../../src-tauri/icons/icon.ico"
+    ],
+    "category": "Education",
+    "shortDescription": "Practise Mandarin tones on their own",
+    "longDescription": "A small app for practising Mandarin tones and nothing else. It shows the characters that differ only in tone — 妈 mā, 麻 má, 马 mǎ, 骂 mà — plays them with the system's own Chinese voice, quizzes you on which one you heard, and then listens while you say each one and draws your pitch against the shape the tone asks for. The judgement is made from the pitch of your own voice on this device: no speech model, no download and no network. It shares its tone scorer, its minimal pairs and its microphone code with Hanzi Tutor, and is deliberately narrower than it.",
+    "copyright": "Copyright © Horst Herb and contributors",
+    "resources": {
+      "../../../LICENSE": "licences/AGPL-3.0.txt",
+      "../../../LICENSES.md": "licences/PROVENANCE.md"
+    },
+    "android": {
+      "minSdkVersion": 26
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": "Entitlements.plist",
+      "dmg": {
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 }
+      }
+    },
+    "iOS": {
+      "minimumSystemVersion": "15.0"
+    }
+  }
+}

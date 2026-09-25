@@ -495,7 +495,7 @@ fn a_chosen_setting_survives_a_restart() {
 
 #[test]
 fn every_preference_round_trips_through_the_database() {
-    // The settings screen writes all four, so all four have to survive a
+    // The settings screen writes all five, so all five have to survive a
     // restart — and the pace and the board size are stored as *names*, which is
     // what the screen reads back. A mismatch there would show the learner their
     // choice had been reset every time the app started.
@@ -507,6 +507,7 @@ fn every_preference_round_trips_through_the_database() {
         assert!(store.set_voice(Some("Meijia")));
         assert!(store.set_animation_pace(Pace::Fast));
         assert!(store.set_board_size(BoardSize::Compact));
+        assert!(store.set_tone_colours(true));
         store.save().unwrap();
     }
 
@@ -516,6 +517,7 @@ fn every_preference_round_trips_through_the_database() {
     assert_eq!(store.view().voice(), Some("Meijia"));
     assert_eq!(store.view().pace(), Pace::Fast);
     assert_eq!(store.view().board_size(), BoardSize::Compact);
+    assert!(store.view().tone_colours());
 
     // One row each, and clearing one clears only its own row.
     let count = |db: &Db| -> i64 {
@@ -524,24 +526,34 @@ fn every_preference_round_trips_through_the_database() {
             .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
             .unwrap()
     };
-    assert_eq!(count(&db), 4);
+    assert_eq!(count(&db), 5);
 
     let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
     assert!(store.set_voice(None));
     store.save().unwrap();
-    assert_eq!(count(&db), 3);
+    assert_eq!(count(&db), 4);
     let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
     assert_eq!(store.view().voice(), None);
     assert_eq!(store.view().pace(), Pace::Fast, "only the voice was cleared");
+    assert!(store.view().tone_colours(), "and only the voice was cleared");
 
     // Picking the default is not a row: "normal" is what a missing row already
     // means, so storing it would leave a database full of decisions nobody took.
     let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
     assert!(store.set_animation_pace(Pace::Normal));
     store.save().unwrap();
-    assert_eq!(count(&db), 2);
+    assert_eq!(count(&db), 3);
     let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
     assert_eq!(store.view().pace(), Pace::Normal);
+
+    // Turning the tone colours back off clears its row too: `false` is the
+    // absence, exactly as an unchosen click-to-draw is.
+    let mut store = SettingsStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(store.set_tone_colours(false));
+    store.save().unwrap();
+    assert_eq!(count(&db), 2);
+    let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert!(!store.view().tone_colours());
 
     finish(&dir);
 }

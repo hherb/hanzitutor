@@ -1,0 +1,72 @@
+/**
+ * The design tokens and page frame.
+ *
+ * Lifted from the full app's `src/app.css` so the two look like one family. What
+ * is deliberately *not* lifted is the bundled Noto Sans SC `@font-face`: that
+ * file is 10 MB of the full app's bundle, and this app is meant to be small. It
+ * falls back to whatever CJK face the machine has, which is why `--hanzi-font`
+ * still lists them in order. If the two apps are ever shipped as one download,
+ * the font belongs in a shared package with the rest.
+ */
+
+:root {
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --line: #e3e8ef;
+  --hover: #f1f5f9;
+  --muted: #64748b;
+  --muted-strong: #334155;
+  --accent: #2563eb;
+  --accent-ink: #1d4ed8;
+  --accent-soft: #eff6ff;
+  /* Red is carried by exactly two controls, and both are told apart by weight
+     rather than hue: the microphone is a *solid* disc because it is the thing
+     being done, and a wrong answer is a soft edge because it is the thing being
+     risked. Nothing else in the interface is red. */
+  --danger: #dc2626;
+  --danger-ink: #b91c1c;
+  --danger-soft: #fef2f2;
+  --danger-hover: #fee2e2;
+  /* What keeps content clear of the status bar and the home indicator. `env()`
+     is iOS's answer and the larger of the two is right on both systems; the
+     `--inset-*` variables are left at 0 here because this app registers no
+     Kotlin insets plugin, so on Android this is `env()` alone — which reports
+     the display cutout rather than the system bars. Documented in HANDOVER.md
+     as part of what the Android bridge still has to bring. */
+  --safe-top: max(env(safe-area-inset-top, 0px), var(--inset-top, 0px));
+  --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--inset-bottom, 0px));
+  --hanzi-font: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Heiti SC",
+    "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--muted-strong);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui,
+    sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  /* This is an application window, not a scrollable document. */
+  overscroll-behavior: none;
+}
+
+button {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
