@@ -2769,6 +2769,20 @@ part's `drawable` flag is checked against the character's own stroke geometry.
   — `codesign --verify`, `pkgutil --check-signature`, `spctl` — because none
   of them are signature or entitlement problems; they are App Store Connect's
   own ingestion rules, which only run once a build actually reaches Apple.
+- **A third rejection followed the same upload, from the same class of
+  cause**: `com.apple.quarantine` on
+  `Hanzi Tutor.app/Contents/embedded.provisionprofile` (error 91109, "isn't
+  permitted in macOS apps distributed on TestFlight or the App Store").
+  `xattr -l` on the source profile showed why: a file downloaded through a
+  browser carries `com.apple.quarantine` plus a handful of Spotlight/Finder
+  attributes, one of which (`kMDItemWhereFroms`) literally contains the
+  download URL with the team ID and provisioning profile ID in it — and `cp`
+  propagates extended attributes by default on macOS, so the copy inside the
+  bundle inherited all of it. `build-appstore.sh` now runs `xattr -c` on
+  that one file right after embedding it — not `xattr -cr` on the whole
+  bundle, which would also strip `com.apple.provenance`, a harmless tag
+  macOS's own tools leave on every other file in the bundle regardless of
+  origin and that nothing here needs to touch.
 - **The ink measure is proven, but half of it cannot fire yet.** The canvas paints
   every stroke at one fixed width, so nothing a learner does on a trackpad can put
   down *less* ink than `INK_WIDTH` and the `faint` verdict is unreachable in daily

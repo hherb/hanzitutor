@@ -162,6 +162,18 @@ echo "built app: $APP"
 # already covers, the same reason iOS's `embedded.mobileprovision` has to be
 # in place before Xcode's own signing step rather than after.
 cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+# A profile downloaded through a browser carries com.apple.quarantine and a
+# handful of Spotlight/Finder attributes (kMDItemWhereFroms literally
+# includes the download URL, team ID and profile ID) — `cp` propagates
+# extended attributes by default on macOS, so they land on the copy inside
+# the bundle too. App Store validation rejects `com.apple.quarantine`
+# specifically ("isn't permitted in macOS apps distributed on TestFlight or
+# the App Store", error 91109); the rest have no business shipping either.
+# `-c` clears every extended attribute from this one file — not `-cr` on the
+# whole bundle, since that would also touch the harmless `com.apple.provenance`
+# tag macOS's own tools leave on everything else, which nothing here needs to
+# touch.
+xattr -c "$APP/Contents/embedded.provisionprofile"
 
 # Apple's App Store validation rejects a package containing any file that
 # is not world-readable ("only readable by the root user", error 90255),
