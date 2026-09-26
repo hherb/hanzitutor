@@ -103,13 +103,13 @@ against the artifact rather than being a promise.
 
 | Question | Answer |
 | --- | --- |
-| Does your app collect or share any of the required user data types? | **Yes — one type, and only if the learner switches syncing on.** Their study data (practice history, vocabulary, place in the course) leaves the device when *they* connect their own Dropbox account. Nothing is ever sent to the developer, and nothing leaves the device until that happens |
+| Does your app collect or share any of the required user data types? | **Yes, and only if the learner switches syncing on.** Their study data (practice history, vocabulary, place in the course) leaves the device when *they* connect their own Dropbox account. Nothing is ever sent to the developer, and nothing leaves the device until that happens |
 | Is any collected data transmitted off the device? | Yes, in that one case, over HTTPS to the learner's own Dropbox account. On a fresh install with syncing unconnected: nothing at all |
 | Does your app use the microphone? | **Yes**, for tone practice, processed on the device only |
 | Is audio recorded by the app sent off the device or stored? | **No** |
-| Do you provide a way for users to delete their data? | Yes — uninstalling removes everything; the app also lets the user clear or export it |
+| Do you provide a way for users to delete their data? | Yes, and it is worth being exact about which copy. **On the device:** uninstalling removes everything — Android controls that — and individual vocabulary entries and groups can be deleted inside the app. **In a connected Dropbox:** disconnecting revokes the app's access, and the folder is the learner's own to delete. The developer holds nothing to delete |
 | Is data encrypted in transit? | **Yes**, for the one case where data is transmitted: syncing goes to Dropbox over HTTPS. The speech model is a plain file download with nothing attached to it |
-| If declaring the type, which one? | *App activity → Other user-generated content*. Purpose **App functionality**, declared **optional** (not required), and **not shared with the developer** |
+| If declaring the types, which ones? | **App activity** — *Other user-generated content* (the words, readings and meanings the learner typed, and their group names) and *Other actions* (which characters they practised, their scores and when each is next due, and their place in the course and in their own drills). **Device or other IDs** — *Other device or other IDs*: the random identifier this app generates for itself, which names that device's folder in the learner's own Dropbox. It is not a hardware, advertising or account identifier, and nothing links it to a person. All of them are **optional** — they move only while syncing is on — declared for **App functionality**, and **not shared with the developer** |
 
 <!--
   RESOLVED — and the one answer in this file that is a person's call, not a
@@ -143,6 +143,30 @@ against the artifact rather than being a promise.
   ask Play support: what a reviewer can check is the artifact — an `INTERNET`
   permission and a documented sync — and a declaration they read as inaccurate is
   a policy problem rather than a wording one.
+
+  **Which data types, and why those.** Read off what the sync actually serialises
+  rather than from the feature list — `SyncedEntry`, `SyncedGroup`,
+  `SyncedCursor`, `SyncedVocabCursor` and the attempt rows, all in
+  `crates/hanzi-store/src/lib.rs` and `crates/hanzi-sync/src/document.rs`. What
+  travels is the learner's own words, readings and meanings with their group names
+  (user-generated content), which characters they practised with scores and due
+  dates and where they are in the course and their drills (app activity), and the
+  random *device identifier* the app generates for itself in
+  `crates/hanzi-store/src/schema.rs` — a `Uuid::new_v4()` in the store's `meta`
+  table, which names that device's folder in the learner's Dropbox and stamps each
+  write so two devices can settle a tie. That last one is why *Device or other IDs*
+  is declared: it leaves the device, and Play's test for this category is
+  transmission, not whether an identifier is hardware-derived or useful for
+  tracking. Nothing else is in those structures — no name, no email, no account, no
+  location, no device or OS description, no audio.
+
+  **The deletion answer is deliberately narrow.** There is no "erase everything"
+  button in the app to point at: the command surface in `src-tauri/src/commands.rs`
+  has per-entry and per-group removal (`vocab_remove`, `vocab_remove_group`),
+  exports (`vocab_export`, `export_practice_log`) and the model removals
+  (`asr_remove`, `say_remove`) — and nothing that clears the study store. So the
+  answer says where deletion does happen: uninstalling, which Android owns, and the
+  learner's own Dropbox folder. Do not claim an in-app wipe without adding one.
 -->
 
 Play asks separately whether the app requests **microphone** access as a
