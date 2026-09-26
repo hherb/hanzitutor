@@ -2134,16 +2134,34 @@ back.
   dies earlier still, at `rustBuildArm64Release`, because it has none of the
   linker and `SHERPA_ONNX_*` environment the CLI sets — node exits 134 there and
   the real task is never reached.
-- **The base module has to stay under 200 MB of compressed download.** The AAB is
-  947 MiB, but that is the wrong number to worry about: it carries the native
-  library once per ABI *and* 562.8 MB of native debug symbols, in eight files, that
-  Play keeps for symbolication and never delivers to a device. What a device
-  downloads is one ABI's libraries — 146 MB of them on arm64, 133 MB on 32-bit ARM,
-  152.5 MB on x86, which is the largest of the four — and the one-ABI arm64 APK
-  measured 148.7 MiB in total, of which 146 MB is native libraries stored
-  uncompressed so Android can map them. Every ABI stays inside the limit, x86 with
-  the least room, so a future addition to the bundled dataset is the thing to weigh
-  against it before it becomes a rejection at upload.
+- **The base module has to stay under 200 MB of compressed download, and the
+  bundle's own size says nothing about it.** The AAB is 947 MiB: it carries the
+  native library once per ABI *and* 562.8 MB of native debug symbols, in eight
+  files, that Play keeps for symbolication and never delivers to a device. What a
+  device actually downloads — measured with `bundletool get-size total` over the
+  APKs generated from the bundle rather than estimated — is **126.5 MB on arm64,
+  125.0 MB on 32-bit ARM, 128.6 MB on x86 and 128.3 MB on x86-64**, and **126.6 MB
+  for the phone it was checked on**. That leaves about a third of the limit, x86
+  with the least room, so a future addition to the bundled dataset is the thing to
+  weigh against it before it becomes a rejection at upload. The first figure
+  recorded here was 148.7 MiB, taken from the one-ABI APK on disk: that is its
+  *stored* size, and Play compresses the uncompressed native libraries for
+  delivery, which is why it read about 20 MB high.
+- **`bundletool` is already on the machine, and two unobvious things are needed to
+  run it.** The Play Console runs it at upload, and the same reading is available
+  here because the Android Gradle Plugin depends on
+  `com.android.tools.build:bundletool`, which a build leaves in the Gradle cache —
+  so the check needs no download, which matters in a repository that pins every
+  fetch. It needs (1) a classpath of everything else in that cache, because the
+  cached artifact is the *library* and not the `-all` fat jar, and (2) `--aapt2`
+  pointed at the SDK's, or it dies constructing its Dagger graph with an error that
+  names aapt2 only deep in a stack frame. `get-size` also measures **APKs, not a
+  bundle**, so `build-apks` has to run first — a few minutes and a few hundred MB
+  of scratch. All of it is `scripts/check-android-release.sh`: signature, manifest
+  as Play reads it, per-ABI and per-device downloads, and the digest. `--install`
+  then puts the splits Play would serve onto a connected phone, which is a stronger
+  statement than any number — on 2026-09-26 the bundle's own splits installed over
+  the previous build and ran with the learner's data intact.
 - **The version code comes from the app version.** `tauri.properties` derives `3000`
   from `0.3.0`, and Play requires it to increase with every upload, so a second upload
   means bumping the version in `Cargo.toml` and `tauri.conf.json` first.

@@ -27,7 +27,8 @@
     "selfcheck": "./scripts/with-cargo-env.sh cargo run --release -p hanzi-core --example selfcheck",
     "analyse-attempts": "./scripts/with-cargo-env.sh cargo run --release -p hanzi-store --example analyse-attempts",
     "check:rust": "./scripts/with-cargo-env.sh cargo clippy --workspace --all-targets -- -D warnings",
-    "check:web": "svelte-check --tsconfig ./tsconfig.json"
+    "check:web": "svelte-check --tsconfig ./tsconfig.json",
+    "check-android-release": "./scripts/check-android-release.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

@@ -253,13 +253,21 @@ symbolicating crashes and never sends to a device. **What a device downloads is 
 much smaller number**, below.
 
 **Size against Play's limit.** A module's compressed download must not exceed
-**200 MB**. A device fetches only its own ABI's libraries, and those are the bulk
-of it: 146 MB for arm64, 133 MB for 32-bit ARM, 152.5 MB for x86 and 151 MB for
-x86-64, all stored uncompressed so Android can map them rather than unpack them.
-The one-ABI arm64 APK built from this same code measured 148.7 MiB (156,070,700
-bytes) in total, so every ABI stays inside the limit — x86 is the one with the
-least room. Read the figure the Console reports at upload rather than this one;
-`store/README.md` has the checks to run first.
+**200 MB**. Measured with Play's own tooling — `bundletool get-size total` over the
+APKs generated from this bundle — a device downloads:
+
+| device | download |
+| --- | --- |
+| the phone this was checked on (arm64-v8a, API 36, 520 dpi) | 126.59 MB |
+| arm64-v8a | 126.54–126.56 MB |
+| armeabi-v7a | 124.98–125.00 MB |
+| x86 | 128.63–128.65 MB |
+| x86_64 | 128.29–128.31 MB |
+
+So about a third of the limit is left, x86 having the least room. That is nothing
+like the bundle's own 947 MiB, because Play delivers neither the other three ABIs
+nor the native debug symbols. `scripts/check-android-release.sh` prints these
+figures for any bundle, and the Console reports its own at upload.
 
 ## Submitting it
 
@@ -279,6 +287,12 @@ read from the Console's own Production access page, not from this file. See
 
 Then, in this order — the Console's own, because its Data safety form builds on the
 answers given before it:
+
+**First, re-read the artifact rather than this file:** `pnpm run check-android-release`
+reports the signature and its fingerprint, the manifest as Play reads it, the
+download size per ABI and for a connected phone, and the digest. `--install` also
+puts the splits generated from the bundle onto that phone, which is the check that
+says the bundle is the thing a phone will actually run.
 
 1. **Create the app** in the Console, named `Hanzi Tutor`. Paste the short and full
    descriptions from this file, and the release notes when a track release asks

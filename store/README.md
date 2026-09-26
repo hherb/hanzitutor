@@ -67,17 +67,39 @@ bundle, which is the honest outcome for a clone that has no key.
 
 ## Checking a release before uploading
 
-```bash
-# Signed, and by the key you expect
-apksigner verify --print-certs .../app-universal-release.apk
+`scripts/check-android-release.sh` does the bundle-level checks in one go — the
+signature and its fingerprint, the manifest as Play reads it, the download size
+against Play's 200 MB limit, and the digest to record — and `--install` puts the
+splits generated from the bundle onto a connected phone:
 
-# No network permission in the release (the app's whole claim)
+```bash
+scripts/check-android-release.sh            # signature, manifest, sizes, digest
+scripts/check-android-release.sh --install  # …and install those splits on the phone
+```
+
+Installing the generated splits is the check worth having: it is the same code
+path a phone takes from the store, it keeps the learner's data because the package
+and the signing key are unchanged, and it proves the bundle is not merely
+well-formed.
+
+The same ground by hand:
+
+```bash
+# Signed, and by the key you expect. An .aab is a JAR, so it is jarsigner, not
+# apksigner (that one is for APKs); the self-signed and no-timestamp warnings are
+# what an upload key looks like.
+jarsigner -verify .../app-universal-release.aab
+
+# The permissions the listing claims, read from the artifact because the listing
+# can go stale and this cannot: RECORD_AUDIO, INTERNET, USE_BIOMETRIC,
+# USE_FINGERPRINT and AndroidX's own. INTERNET is deliberate — it serves the two
+# optional model downloads and the Dropbox sync.
 aapt2 dump permissions .../app-universal-release.apk
 
-# Side-load and use it: the debug build's webview is debuggable and the
-# release build's is not, so check the release by hand, not over DevTools.
-adb uninstall com.hanzitutor.app
-adb install .../app-universal-release.apk
+# Install the release and use it by hand. The debug build's webview is debuggable
+# and the release build's is not, so the release cannot be checked over DevTools.
+# `-r` updates in place; `adb uninstall` would take the learner's data with it.
+adb install -r .../app-universal-release.apk
 ```
 
 ## Artwork
