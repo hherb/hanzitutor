@@ -1,7 +1,8 @@
 # Store assets and the release build
 
-What is in here is for the Google Play listing; `listing.md` has the copy and
-the Console answers, and the images are the ones it refers to.
+What is in here is for the store listings: `listing.md` has the Google Play copy
+and Console answers, `app-store-listing.md` the App Store Connect copy, and
+the images are the ones they refer to.
 
 ## Building a signed release
 
