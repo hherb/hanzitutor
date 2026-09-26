@@ -2827,6 +2827,47 @@ part's `drawable` flag is checked against the character's own stroke geometry.
   back-to-back re-taps to hit `hold_session_then_release`'s timer path, and
   `XcodeListNavigatorIssues` reporting zero remarks afterward — all four
   original warnings gone, not just the two easy ones.
+- **"Invalid large app icon... can't be transparent or contain an alpha
+  channel" (90717), on the first iOS App Store Connect delivery
+  (2026-09-26).** `src-tauri/icons/icon.png` — the one master `tauri icon`
+  generates every platform's icon from — has rounded corners baked in as
+  transparency, which is *correct* for macOS: Big Sur-style Dock icons are
+  expected to already contain their own squircle-plus-shadow in the alpha
+  channel, since macOS does not re-mask app icons the way iOS does.
+  iOS is the opposite: the OS applies its own corner mask, so the source
+  must be a flat, fully opaque square, and Apple's automated check
+  specifically flags the 1024×1024 `ios-marketing` icon (the one compiled
+  into `Assets.car`, not any of the loose device-facing PNGs). One master
+  feeding both conventions is why this broke — the same file cannot be
+  simultaneously "transparent outside the squircle" (right for macOS) and
+  "opaque everywhere" (right for iOS).
+  Fixed without forking the master: `tauri icon src-tauri/icons/icon.png
+  -o src-tauri/icons --ios-color "#B23B27"` (a red sampled from the icon's
+  own gradient) makes Tauri itself flatten every iOS output onto a
+  matching background rather than the `--ios-color` default of white —
+  but that alone was not enough, because Tauri's PNG writer still emits an
+  *format-level* alpha channel even after flattening, just uniformly
+  opaque (`hasAlpha: yes` in `sips` even though nothing is actually
+  transparent). Apple's check rejects the channel's mere presence, not
+  only real transparency, so every `src-tauri/icons/ios/AppIcon-*.png` also
+  gets `magick "$f" -alpha off "PNG24:$f"` afterward, and the fixed set is
+  copied over `src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/`
+  (the two are not symlinked; `tauri icon` and `xcodegen` both write their
+  own copies, so a fix to one without the other silently does nothing).
+  Verified inside the actual built IPA, not just the source PNGs: `assetutil
+  -I Assets.car` on the compiled asset catalog reports `"Idiom":
+  "marketing", "PixelWidth/Height": 1024, "Opaque": true` for the exact
+  rendition Apple's validator inspects. `icon.icns` (macOS) was
+  deliberately left with its real alpha — confirmed by extracting it with
+  `iconutil -c iconset` and sampling a corner pixel, still `srgba(0,0,0,0)`
+  after the regeneration — since flattening that one would have fixed
+  nothing (macOS was never the platform this error was about) while
+  making the Dock icon render as a hard-edged square instead of Big Sur's
+  expected squircle.
+  **Watch for this again if `icon.png` is ever replaced**: the replacement
+  needs the same rounded-corner-with-alpha shape, and the regeneration
+  command needs the same `--ios-color` plus the manual `-alpha off` pass —
+  neither is Tauri's default behaviour.
 - **The ink measure is proven, but half of it cannot fire yet.** The canvas paints
   every stroke at one fixed width, so nothing a learner does on a trackpad can put
   down *less* ink than `INK_WIDTH` and the `faint` verdict is unreachable in daily
