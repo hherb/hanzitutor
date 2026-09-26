@@ -2097,16 +2097,53 @@ back.
   it — so the file was corrected to match. Two model downloads (`asr.rs`, `say.rs`) and
   Dropbox sync are the whole network surface; `grep -rln "ureq\|reqwest" src-tauri/src`
   is the check.
-- **The Play submission waits on the developer account, not on the app.** The plan is
-  a **business (organization) account**, which is exempt from Google's
-  12-testers-for-14-days closed-test rule — personal accounts created on or after
-  13 November 2023 are subject to it, which would put a 4–6 week closed test in front
-  of any production release. Google has not yet accepted the organization's
-  **D-U-N-S number**; that is with an accountant. Nothing can be uploaded until it
-  clears, so do not start the listing as if a track existed. The app side is ready and
-  checkable now: target SDK 36, `versionCode` 5011, exactly the four declared
-  permissions plus AndroidX's own (see `store/listing.md`), icon 512×512, feature
-  graphic 1024×500 and three 1080×1920 screenshots.
+- **The Play submission waits on the developer account, not on the app.** The
+  organization account's **D-U-N-S number** has still not been accepted and that is
+  at least two weeks out, so the first release goes under the existing **personal**
+  account (Developer ID `8700454726233630990`). Whether that account is inside
+  Google's 12-testers-for-14-days closed-test rule — which applies to personal
+  accounts created on or after 13 November 2023 — is answered by the Console's own
+  Production access page, not from here. The app side is ready and checkable now:
+  target SDK 36, `versionCode` 5011, exactly the four declared permissions plus
+  AndroidX's own (see `store/listing.md`), icon 512×512 and feature graphic
+  1024×500. The three 1080×1920 screenshots predate the tone colouring and want
+  replacing, and the signed bundle and its digest are recorded in `store/listing.md`.
+- **The release bundle carries all four ABIs; `--target aarch64` is what narrows
+  it, and that is a choice rather than a limit.** `tauri android build --target`
+  takes a list and builds **all four** ABIs (`aarch64`, `armv7`, `i686`, `x86_64`)
+  when it is omitted, which is what decides whether the listing reaches 32-bit
+  phones and x86 Chromebooks as well as 64-bit ones. `store/README.md` keeps
+  `--target aarch64` for the one-phone build and drops it for the release. Checked
+  on the artifact rather than assumed: `aapt2 dump badging` on the release APK
+  lists four `native-code` entries, and `unzip -l …aab | grep '\.so$'` names four
+  ABI directories.
+- **A four-ABI bundle needs 8 GB of Gradle heap to sign, and the failure it gives
+  underneath does not mention memory.** At the template's 2 GB,
+  `:app:signUniversalReleaseBundle` fails with
+  `java.lang.IllegalArgumentException: Self-suppression not permitted` from
+  `FinalizeBundleTask$BundleToolRunnable` — which reads like a corrupt bundle or a
+  bad key, and is neither. What made it diagnosable: the daemon log
+  (`.gradle-home/daemon/<version>/daemon-*.out.log`) records **no**
+  `OutOfMemoryError`, the same command signs a 250 MB one-ABI bundle happily, and
+  `jarsigner` signs the very same 1.1 GB intermediate bundle by hand without
+  complaint — so the bundle was fine and the signing *step* was what ran out of
+  room. `gradle.properties` now says `-Xmx8g` with the reasoning beside it. Two
+  things that do not work for diagnosis, tried here: `--stacktrace` cannot be
+  forwarded through the Tauri CLI (`tauri android build --aab -- --stacktrace`
+  passes the flag to **cargo**, which rejects it), and running `gradlew` directly
+  dies earlier still, at `rustBuildArm64Release`, because it has none of the
+  linker and `SHERPA_ONNX_*` environment the CLI sets — node exits 134 there and
+  the real task is never reached.
+- **The base module has to stay under 200 MB of compressed download.** The AAB is
+  947 MiB, but that is the wrong number to worry about: it carries the native
+  library once per ABI *and* 562.8 MB of native debug symbols, in eight files, that
+  Play keeps for symbolication and never delivers to a device. What a device
+  downloads is one ABI's libraries — 146 MB of them on arm64, 133 MB on 32-bit ARM,
+  152.5 MB on x86, which is the largest of the four — and the one-ABI arm64 APK
+  measured 148.7 MiB in total, of which 146 MB is native libraries stored
+  uncompressed so Android can map them. Every ABI stays inside the limit, x86 with
+  the least room, so a future addition to the bundled dataset is the thing to weigh
+  against it before it becomes a rejection at upload.
 - **The version code comes from the app version.** `tauri.properties` derives `3000`
   from `0.3.0`, and Play requires it to increase with every upload, so a second upload
   means bumping the version in `Cargo.toml` and `tauri.conf.json` first.

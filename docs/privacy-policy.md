@@ -111,9 +111,10 @@ The app collects no information from anyone, including children.
 ## Third parties
 
 Nothing is sent to the developer, to an advertiser, to an analytics service or to
-anybody the developer has chosen. The only two services the app can talk to are
-ones **you** pick: the publisher of the optional speech model, and, if you switch
-it on, your own Dropbox account. Everything else is bundled — the character
+anybody the developer has chosen. The only services the app can talk to are ones
+**you** pick: the publishers of the two optional speech models named above — the
+recognition model and the synthesis model — and, if you switch it on, your own
+Dropbox account. Everything else is bundled — the character
 dataset, stroke data, word list, interface font and licence notices all ship with
 the app.
 
@@ -137,12 +138,12 @@ Questions about this policy can be sent to **support@hherb.com**.
   reads, and the project's rule is that the listing, the README and `LICENSES.md`
   name every way the app can reach the network.
 
-  What still blocks submission is **not** this file: it is the Play developer
-  account. The plan is a **business (organization) account**, which is exempt from
-  the 12-testers-for-14-days closed-test rule that applies to personal accounts
-  created on or after 13 November 2023; Google has not yet accepted the
-  organization's D-U-N-S number and that is with an accountant. Until it clears
-  there is nothing to upload to, so the listing waits.
+  What blocks submission is **not** this file: it is the Play developer account.
+  The organization account's **D-U-N-S number** has still not been accepted, so the
+  first release goes out under the existing **personal** account (Developer ID
+  8700454726233630990). Check the Console's Production access page for whether that
+  account falls inside the 12-testers-for-14-days closed-test rule, which applies to
+  personal accounts created on or after 13 November 2023.
 
   Check the claims above still hold before republishing:
     * `grep -rln "ureq\|reqwest" src-tauri/src` finds **two** modules that make

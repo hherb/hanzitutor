@@ -27,6 +27,30 @@ reading literally: a signed release is `app-universal-release.apk` and an
 unsigned one is `app-universal-release-unsigned.apk`, and the difference is not
 visible any other way until Play rejects the upload.
 
+`--target` is what decides which ABIs the artifact carries. The flag takes a list,
+and the CLI builds **all four** (`aarch64`, `armv7`, `i686`, `x86_64`) when it is
+omitted — which is what decides whether the listing also reaches 32-bit phones and
+x86 Chromebooks. **The command above is the one-phone build**: `--target aarch64`
+keeps it quick for installing by hand on a modern phone. The release build for
+Play omits it, so the bundle carries every ABI. It costs bundle size rather than
+download size, because Play splits by ABI and a device still fetches only its own
+libraries — 947 MiB of bundle becomes about 149 MiB on an arm64 phone.
+
+Two things about that bigger bundle, both learned the hard way:
+
+- **It needs the Gradle heap raised to 8 GB** for the signing step, which
+  `src-tauri/gen/android/gradle.properties` now does. Under the template's 2 GB the
+  task dies with `Self-suppression not permitted`, which is an out-of-memory that
+  does not say so. HANDOVER §6 has the diagnosis.
+- **The all-ABI APK from the same run is about 614 MB** and is for testing on a
+  device, not for sending to anyone. The AAB is what Play takes; for a hand-install
+  build use `--target aarch64`.
+
+Whatever the ABIs, the base module must stay under Play's 200 MB limit on the
+compressed download. A device takes only its own ABI's libraries, so that figure
+was 148.7 MiB here (146 MB of it native libraries stored uncompressed, which is
+why it is worth reading the number the Console reports rather than this one).
+
 ## The signing key
 
 - Keystore: `~/.android/hanzitutor-upload.jks` (outside the repository, on

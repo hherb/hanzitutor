@@ -43,6 +43,12 @@ WHAT IT DOES
   reading.
 • Spaced repetition: the characters you find hard come back when you need
   them, and the ones you know stop wasting your time.
+• Colour by tone. Every character is drawn in the colour of the tone it is read
+  with — on the practice board, in the word list, in your own vocabulary, in the
+  lessons and in the tone pairs — and the pinyin is coloured with it, syllable by
+  syllable, so 妈, 麻, 马 and 骂 are told apart at a glance. The tone is the one
+  the character is learnt with, out of a dictionary, and a character whose tone
+  is not known keeps the ordinary ink rather than being guessed at.
 • Tone practice. Hold the button, say the character out loud, and the app
   scores your tone — no model to download and nothing sent anywhere.
 • Hear any character or word spoken by the system's own voice.
@@ -142,7 +148,7 @@ Families).
 | --- | --- | --- |
 | App icon (512 × 512 PNG) | `src-tauri/icons/icon.png` | ready (512×512) |
 | Feature graphic (1024 × 500) | `store/feature-graphic-1024x500.png` | ready |
-| Phone screenshots (min 2) | `store/phone-screenshots/*.png` | 2 ready, 1080×1920 |
+| Phone screenshots (min 2) | `store/phone-screenshots/*.png` | 3 ready, 1080×1920 — but all three predate the tone colouring and the current board controls, so replace them first |
 | Tablet screenshots | — | not required to publish |
 
 Regenerate the artwork after a UI change with:
@@ -152,14 +158,80 @@ python3 scripts/make-store-assets.py feature-graphic store/feature-graphic-1024x
 python3 scripts/make-store-assets.py screenshot raw.png store/phone-screenshots/03-name.png
 ```
 
+## Release notes (max 500 characters)
+
+The Console asks for these on each track release. This is 428 characters.
+
+```
+First release.
+
+Every stroke is graded — shape, placement, ink and order — with the reasons, not
+just a score. 7,744 characters in 775 lessons, the HSK 3.0 word list, your own
+vocabulary, spaced repetition, stroke-order animation and tone practice.
+
+New: colour by tone. Every character is drawn in the colour of its tone, and its
+pinyin with it, syllable by syllable.
+
+Entirely offline. No account, no ads, no in-app purchases.
+```
+
+## The build for this upload
+
+Built from the tree at version `0.5.11`, for every ABI the app can run on:
+
+```bash
+./scripts/with-build-caches.sh ./scripts/with-cargo-env.sh \
+  ./scripts/tauri-cli.sh android build --apk --aab
+```
+
+| | |
+| --- | --- |
+| Bundle | `src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab` |
+| Size | 993,207,126 bytes (947 MiB) |
+| SHA-256 | `93715ef33407e94cbfc98f08e51a450062aef31662ebc404b3ae2f9c3990690d` |
+| `versionCode` / `versionName` | `5011` / `0.5.11` |
+| `minSdk` / `targetSdk` | 26 / 36 |
+| ABIs | `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64` |
+| Permissions | `INTERNET`, `RECORD_AUDIO`, `USE_BIOMETRIC`, `USE_FINGERPRINT`, `com.hanzitutor.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` |
+
+The permissions and the ABI list were read off the artifact built in the same run
+(`aapt2 dump permissions`, `aapt2 dump badging`), not copied from this file. The
+permissions are the five the Data safety answers above rest on.
+
+Omitting `--target` is what makes this a four-ABI bundle, and a four-ABI bundle is
+what needs the Gradle heap raised to 8 GB in
+`src-tauri/gen/android/gradle.properties` — signing it under the template's 2 GB
+fails in a way that never mentions memory. HANDOVER has the diagnosis.
+
+The bundle is big because it carries the native library once per ABI plus the
+native debug symbols — 562.8 MB of the total, in eight files — that Play keeps for
+symbolicating crashes and never sends to a device. **What a device downloads is a
+much smaller number**, below.
+
+**Size against Play's limit.** A module's compressed download must not exceed
+**200 MB**. A device fetches only its own ABI's libraries, and those are the bulk
+of it: 146 MB for arm64, 133 MB for 32-bit ARM, 152.5 MB for x86 and 151 MB for
+x86-64, all stored uncompressed so Android can map them rather than unpack them.
+The one-ABI arm64 APK built from this same code measured 148.7 MiB (156,070,700
+bytes) in total, so every ABI stays inside the limit — x86 is the one with the
+least room. Read the figure the Console reports at upload rather than this one;
+`store/README.md` has the checks to run first.
+
 ## Before submitting
 
-**The current blocker is the developer account, not the app.** The plan is a
-business (organization) Play account, which is exempt from Google's
-12-testers-for-14-days closed-test rule (that rule applies to personal accounts
-created on or after 13 November 2023); Google has not yet accepted the
-organization's D-U-N-S number, and that is with an accountant. Nothing here can be
-uploaded until it clears. See `docs/privacy-policy.md` for the same note.
+**The app is ready; the developer account is the gate.** The plan had been a
+business (organization) account, which is exempt from Google's
+12-testers-for-14-days closed-test rule, but Google has not yet accepted the
+organization's **D-U-N-S number** and that is at least two weeks away. The
+decision is to publish under the existing **personal** account (Developer ID
+`8700454726233630990`) in the meantime.
+
+One thing to confirm in the Console before assuming a straight run to production:
+**personal accounts created on or after 13 November 2023 must run a closed test
+with 12 testers for 14 continuous days before production access is granted.** An
+account created before that date is exempt. Which side this account falls on is
+read from the Console's own Production access page, not from this file. See
+`docs/privacy-policy.md` for the same note.
 
 `docs/privacy-policy.md` is published at **https://hherb.com/hanzi-tutor/privacy**,
 and the listing points there. Keep the file and the page in step.
