@@ -146,15 +146,20 @@ Questions about this policy can be sent to **support@hherb.com**.
   personal accounts created on or after 13 November 2023.
 
   Check the claims above still hold before republishing:
-    * `grep -rln "ureq\|reqwest" src-tauri/src` finds **two** modules that make
-      requests — `asr.rs` (the recognition model) and `say.rs` (the synthesis
-      model) — each gated behind its own install, which runs only when the settings
-      button is pressed. A third module needs another paragraph above.
-    * `src-tauri/gen/android/app/src/main/AndroidManifest.xml` declares
-      `INTERNET` for that download and nothing else uses it, so the Play Console's
-      Data safety answers stay "no data collected" — a plain file download with no
-      identifier attached is not collection, but say so explicitly in the
-      declaration rather than leaving it implicit.
+    * `grep -rln "ureq\|reqwest" src-tauri/src crates/*/src` finds exactly **three**
+      modules that make requests — `src-tauri/src/say.rs` (the synthesis model),
+      `crates/hanzi-hearing/src/asr.rs` (the recognition model) and
+      `crates/hanzi-sync/src/http.rs` (the Dropbox sync) — and each runs only when
+      the learner starts it. A fourth module needs another paragraph above. Note
+      the paths: searching `src-tauri/src` alone finds **one** of the three, which
+      is how this note came to under-report its own app.
+    * `src-tauri/gen/android/app/src/main/AndroidManifest.xml` declares `INTERNET`,
+      and it serves the two model downloads and the sync. What that means for the
+      Console is settled in `store/listing.md`, not here: Play counts data
+      transmitted off the device as collection, so the Data safety form declares it
+      — optional, for app functionality, encrypted in transit — rather than
+      answering "no data collected". Keep the two in step; the declaration and this
+      policy have to read as the same app.
     * The microphone is opened in `src-tauri/src/capture.rs` only between
       `Recorder::start` and `Recorder::stop`, and no recording is written to disk
       or sent anywhere.

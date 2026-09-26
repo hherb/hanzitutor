@@ -59,16 +59,18 @@ Everything the course teaches is in the app: the character set, the stroke data,
 the word list and the font. There is nothing to download on first run and no
 account to create. No analytics, advertising or crash reporting is built in.
 
-Nothing at all is sent anywhere unless you choose it. There are two things you
-can choose, and both are off by default. One is an optional on-device speech
-model, about 163 MB, that recognises *which* syllables you said rather than only
-how your tone sounded — fetched from the settings screen, only if you press the
-button there, after being told the address, the size and the licence. Decline it
-and nothing changes; tone practice, pronunciation and the whole course work with
-no model and no network. The other is syncing between your own devices, which
-sends your practice history, vocabulary list and place in the course to a Dropbox
-account **you** connect, so that your phone and your laptop agree. Connect
-nothing and it stays on this device.
+Nothing at all is sent anywhere unless you choose it. There are three things you
+can choose, all of them off by default, and each one is started from the settings
+screen after it tells you the address, the size and the licence. The first is an
+optional on-device speech model, about 163 MB, that recognises *which* syllables
+you said rather than only how your tone sounded. Decline it and nothing changes:
+tone practice, pronunciation and the whole course work with no model and no
+network. The second speaks a phrase the app has no recording of, about 61 MB of
+synthesis files; decline it and only the phrases that have no bundled recording
+are lost. The third is syncing between your own devices, which sends your
+practice history, vocabulary list and place in the course to a Dropbox account
+**you** connect, so that your phone and your laptop agree. Connect nothing and it
+stays on this device.
 
 Your practice history and vocabulary list are stored on your device, in the
 app's own private storage, and never leave it. You can export them to a file
@@ -229,8 +231,8 @@ Built from the tree at version `0.5.11`, for every ABI the app can run on:
 | | |
 | --- | --- |
 | Bundle | `src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab` |
-| Size | 993,207,126 bytes (947 MiB) |
-| SHA-256 | `93715ef33407e94cbfc98f08e51a450062aef31662ebc404b3ae2f9c3990690d` |
+| Size | 993,211,420 bytes (947 MiB) |
+| SHA-256 | `426fe1affa05063f174392020c49ab4388517cd7698a3a82af485dd3e226df57` |
 | `versionCode` / `versionName` | `5011` / `0.5.11` |
 | `minSdk` / `targetSdk` | 26 / 36 |
 | ABIs | `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64` |

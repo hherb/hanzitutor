@@ -7,21 +7,35 @@ their notices to be included with any redistribution. This file records what
 came from where, and what has to travel with it.
 
 Everything described in "What is bundled" is **already inside the built app**.
-There is no first-run data step for the reader and no network access while the
-app runs: the dataset is compiled into the executable and the notices are
-compiled in beside it, with plain-text copies in the bundle's
-`Resources/licences/`. This document is the human-readable record of that
-arrangement.
+There is no first-run data step for the reader: the dataset is compiled into the
+executable and the notices are compiled in beside it, with plain-text copies in
+the bundle's `Resources/licences/`. Nothing in that table needs the network to be
+read, and this document is the human-readable record of that arrangement.
 
-There is exactly **one** exception, and it is not in that table. Recognising what
-a learner *said* — as opposed to how they said it — needs a speech model, and no
-worthwhile Chinese model is small enough to bundle. So that model is an optional
-download the learner starts from the settings screen. This app does not
-redistribute its weights and does not fetch them on anyone's behalf; it shows the
-address, the size and the licence, and downloads only when the button is pressed.
-See "The speech model is downloaded, not shipped" below. The README's promise is
-restated the same way: the app downloads nothing *unless you ask it to*, and
-everything the bundled course teaches still needs nothing.
+Nothing *needs* the network, but three things can **use** it, and not one of them
+happens unless the learner asks for it by name. The check is the project's own —
+`grep -rln "ureq\|reqwest" src-tauri/src crates/*/src` — which finds exactly these
+three modules:
+
+| Feature | Module | What it sends |
+| --- | --- | --- |
+| Recognising *which* syllable was said. Optional: a button in the settings screen | `crates/hanzi-hearing/src/asr.rs` | nothing. A 163 MB model is fetched, checked against a published digest, and run on the device |
+| Speaking a phrase the app has no recording of. Optional, the same way | `src-tauri/src/say.rs` | nothing. About 61 MB of synthesis files are fetched and checked the same way |
+| Syncing between the learner's own devices. Off until they connect **their own** Dropbox account | `crates/hanzi-sync/src/http.rs` | the study data they chose to sync, to that account and nowhere else, over HTTPS |
+
+The two models are downloads the learner starts from the settings screen. This app
+does not redistribute their weights and does not fetch them on anyone's behalf; it
+shows the address, the size and the licence, and downloads only when the button is
+pressed. See "The speech model is downloaded, not shipped" below. The README's
+promise is restated the same way: the app downloads nothing *unless you ask it
+to*, and everything the bundled course teaches still needs nothing.
+
+`docs/privacy-policy.md` is the public statement of these same three paths, and
+the Play listing's Data safety answers are built from it. If a fourth is ever
+added, all of them have to change together: the project's rule is that the
+listing, the README and this file name every way the app can reach the network,
+and this paragraph is what going stale looks like — it said "exactly one
+exception" while there were three, and never mentioned syncing at all.
 
 Some of the entries below are **code rather than data**: SQLite and its `rusqlite`
 bindings, `cpal`, and the speech-recognition stack. Each is recorded here rather
