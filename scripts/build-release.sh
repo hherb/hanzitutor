@@ -87,6 +87,19 @@ for dir in "$REPO/.cargo-target/release/bundle" "$APP_DIR/src-tauri/target/relea
 done
 
 if tauri build "$@"; then
+  # A file that is not world-readable on this machine — a local umask quirk,
+  # not something git tracks, since git only ever stores the executable bit —
+  # gets bundled exactly as restricted as it was found. Harmless for a build
+  # that only ever runs here, and a real "cannot verify the signature" fault
+  # for anyone else who receives the bundle, `scripts/build-appstore.sh` hit
+  # this from a licence text file at mode 600. `chmod` does not touch file
+  # content, so it cannot invalidate the signature Tauri just applied above.
+  if [ -n "$BUNDLE" ]; then
+    for app in "$BUNDLE"/macos/*.app; do
+      [ -d "$app" ] && chmod -R a+rX "$app"
+    done
+  fi
+
   # Tauri's disk-image script copies the app icon to `.VolumeIcon.icns` on the
   # volume but never marks that file invisible, so the mounted image shows a
   # large dimmed duplicate of the app icon as a stray file. Everything else in

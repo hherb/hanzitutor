@@ -163,6 +163,18 @@ echo "built app: $APP"
 # in place before Xcode's own signing step rather than after.
 cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
 
+# Apple's App Store validation rejects a package containing any file that
+# is not world-readable ("only readable by the root user", error 90255),
+# and it is not this script's business which of the bundle's sources happen
+# to be mode 600 on somebody's disk — a bundled licence text file has been
+# caught that way here before, from a local umask quirk with nothing to do
+# with git (git only ever stores the executable bit, so a fresh clone would
+# not reproduce it — this machine's working tree can still differ). `+rX`
+# rather than `+rwx`: read for everyone, execute only for whatever already
+# had it (directories, the main binary), so an ordinary resource file is not
+# made executable as a side effect.
+chmod -R a+rX "$APP"
+
 COMBINED_ENTITLEMENTS="$(mktemp -t hanzi-tutor-appstore-entitlements).plist"
 trap 'rm -f "$COMBINED_ENTITLEMENTS"' EXIT
 cp "$ROOT/src-tauri/Entitlements.plist" "$COMBINED_ENTITLEMENTS"

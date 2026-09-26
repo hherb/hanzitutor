@@ -2734,6 +2734,41 @@ part's `drawable` flag is checked against the character's own stroke geometry.
   which it does. **Not done here**: actually uploading through Transporter or
   clicking Submit for Review in App Store Connect — the script gets a valid,
   signed `.pkg` onto disk and stops there, deliberately.
+- **The first real upload attempt bounced on two things a local build cannot
+  see for itself (2026-09-26).** App Store Connect's own validator, not
+  anything `codesign`/`pkgutil`/`spctl` checks locally:
+  - **"Invalid bundle... supports arm64 but not Intel-based Mac computers"**
+    (90869). Apple's rule: ship a universal binary, or declare
+    `minimumSystemVersion` 12.0 or later if arm64-only. Cross-compiling the
+    native dependency chain (`sherpa-onnx-sys`, ONNX Runtime) for
+    `x86_64-apple-darwin` too, to ship universal, is a much bigger and
+    riskier undertaking than dropping Big Sur — `tauri.conf.json`'s
+    `bundle.macOS.minimumSystemVersion` moved from `11.0` to `12.0`, which
+    changes nothing about which APIs the app actually uses, only what it
+    declares.
+  - **"The installer package includes files that are only readable by the
+    root user"** (90255) — actually mode `600`, owner-only, on five of the
+    19 files in `licences/` (`CC-CEDICT.txt`, `HARUKICODER-hsk30-graded-
+    readers.txt`, `MIT-MeloTTS.txt`, `NO7Z-hsk-sentences-audio.txt`, and one
+    more), faithfully carried through into the bundle by `tauri-bundler`
+    with nothing to normalise it. `git ls-files -s` shows every one of them
+    stored as `100644` — git only ever tracks the executable bit, not the
+    rest of the mode, so this was a **local working-tree quirk on this one
+    machine**, invisible to `git status`, and would not have reproduced on a
+    fresh clone. Fixed at the source (`chmod 644`, nothing to commit for
+    that part — there is nothing in git to change) and, so a similarly
+    mis-permissioned file doesn't produce the same rejection again from a
+    different cause, both `build-appstore.sh` and `build-release.sh` now run
+    `chmod -R a+rX` on the built `.app` before packaging. `chmod` does not
+    touch file content, so it cannot invalidate a signature already
+    applied — verified by re-running `codesign --verify --deep --strict`
+    immediately after, on this exact bundle, before trusting that into the
+    script.
+
+  Neither of these showed up in any local check this project already runs
+  — `codesign --verify`, `pkgutil --check-signature`, `spctl` — because none
+  of them are signature or entitlement problems; they are App Store Connect's
+  own ingestion rules, which only run once a build actually reaches Apple.
 - **The ink measure is proven, but half of it cannot fire yet.** The canvas paints
   every stroke at one fixed width, so nothing a learner does on a trackpad can put
   down *less* ink than `INK_WIDTH` and the `faint` verdict is unreachable in daily
