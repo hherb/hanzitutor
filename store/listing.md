@@ -255,8 +255,8 @@ Built from the tree at version `0.5.11`, for every ABI the app can run on:
 | | |
 | --- | --- |
 | Bundle | `src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab` |
-| Size | 993,211,420 bytes (947 MiB) |
-| SHA-256 | `426fe1affa05063f174392020c49ab4388517cd7698a3a82af485dd3e226df57` |
+| Size | 993,212,862 bytes (947 MiB) |
+| SHA-256 | `71d6aed0febd29298e9c53f8ceafb4e32d64faac535c46dc351b228901e272ef` |
 | `versionCode` / `versionName` | `5011` / `0.5.11` |
 | `minSdk` / `targetSdk` | 26 / 36 |
 | ABIs | `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64` |
@@ -285,7 +285,7 @@ APKs generated from this bundle — a device downloads:
 | the phone this was checked on (arm64-v8a, API 36, 520 dpi) | 126.59 MB |
 | arm64-v8a | 126.54–126.56 MB |
 | armeabi-v7a | 124.98–125.00 MB |
-| x86 | 128.63–128.65 MB |
+| x86 | 128.63–128.66 MB |
 | x86_64 | 128.29–128.31 MB |
 
 So about a third of the limit is left, x86 having the least room. That is nothing

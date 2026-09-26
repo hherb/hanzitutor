@@ -1962,7 +1962,16 @@ back.
   the progress, and the emulator dies with `A snapshot operation … is pending and
   timeout has expired`, which reads like a stale snapshot rather than a permissions
   problem. Run these with `danger-full-access`, and do not pipe a long build to
-  `tail` while diagnosing.
+  `tail` while diagnosing. The emulator has no in-workspace workaround, and it is
+  worth knowing where the attempt stops rather than repeating it: cloning the AVD
+  into the tree and pointing `ANDROID_AVD_HOME` at the clone does get the kernel
+  booting, but the emulator then dies with
+  `FATAL | Failed to create jwk directory /Users/<you>/Library/Caches/TemporaryItems/avd/running/<pid>/jwks/<uuid>`
+  — it uses Cocoa's temp directory rather than `TMPDIR`, so redirecting `TMPDIR`
+  into the workspace changes nothing. `danger-full-access` is the answer, and a
+  fresh install on the emulator is worth it: it is the closest thing here to the
+  pre-launch report Play runs, and it is how the intro sheet's one absolute privacy
+  claim was caught.
 - **`minSdk` is 26 because of AAudio, and it has to be set in two places that
   agree.** `cpal` pins the `ndk` crate to its `api-level-26` feature, so the library
   needs `libaaudio.so`, which does not exist before Android 8. At `minSdk = 24` the

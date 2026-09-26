@@ -65,7 +65,9 @@ export const INTRO_PAGES: Page[] = [
       "was wrong and not only that it was.",
     note:
       "Everything happens on this machine. Nothing you write leaves it, and " +
-      "nothing is downloaded unless you ask for it.",
+      "nothing is downloaded, unless you ask for it — syncing to your own " +
+      "devices, which stays off until you connect one, is the only thing that " +
+      "ever sends anything you have written.",
   },
   {
     title: "Two ways to practise",
