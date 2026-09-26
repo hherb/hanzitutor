@@ -101,31 +101,55 @@ against the artifact rather than being a promise.
 
 | Question | Answer |
 | --- | --- |
-| Does your app collect or share any of the required user data types? | **Nothing is collected by the developer**, and nothing is sent to us or to any service we choose. If the learner connects their own Dropbox account, syncing sends their study data to *that* account — see the note below |
-| Is any collected data transmitted off the device? | Only by that sync, to the learner's own Dropbox account, and only once they have connected one. Otherwise: nothing |
+| Does your app collect or share any of the required user data types? | **Yes — one type, and only if the learner switches syncing on.** Their study data (practice history, vocabulary, place in the course) leaves the device when *they* connect their own Dropbox account. Nothing is ever sent to the developer, and nothing leaves the device until that happens |
+| Is any collected data transmitted off the device? | Yes, in that one case, over HTTPS to the learner's own Dropbox account. On a fresh install with syncing unconnected: nothing at all |
 | Does your app use the microphone? | **Yes**, for tone practice, processed on the device only |
 | Is audio recorded by the app sent off the device or stored? | **No** |
 | Do you provide a way for users to delete their data? | Yes — uninstalling removes everything; the app also lets the user clear or export it |
 | Is data encrypted in transit? | **Yes**, for the one case where data is transmitted: syncing goes to Dropbox over HTTPS. The speech model is a plain file download with nothing attached to it |
+| If declaring the type, which one? | *App activity → Other user-generated content*. Purpose **App functionality**, declared **optional** (not required), and **not shared with the developer** |
 
 <!--
-  RECONFIRM THE TWO ANSWERS ABOVE BEFORE SUBMITTING. Play treats "transmitted off
-  the device" as collection, and syncing does transmit — to a cloud account the
-  learner owns and connects themselves, which is not the same thing as sending
-  data to the developer or to a service the developer picked. How the Console wants
-  a user-owned cloud account declared is the thing to check, and it should be
-  answered from the artifact rather than from this table. What is certain and
-  checkable: nothing is transmitted at all until the learner connects an account,
-  and nothing is ever sent to the developer.
+  RESOLVED — and the one answer in this file that is a person's call, not a
+  measurement.
+
+  Play's "collected" is not the everyday word. Its form asks whether data is
+  **transmitted off the device at all**, to the developer or to anyone else,
+  including through a library the app carries; see "Provide information for Google
+  Play's Data safety section",
+  support.google.com/googleplay/android-developer/answer/10787469. On that
+  definition the Dropbox sync *is* collection, so the "nothing is collected"
+  answer that used to be in the first row was wrong in the Console's terms even
+  though it is true in the developer's: nothing is sent to us, and the learner's
+  own cloud account is not a service we chose for them.
+
+  The answers above are therefore the conservative, defensible set: declare the
+  study data as collected, optional, for app functionality, encrypted in transit,
+  with the developer receiving nothing. Two consequences to accept knowingly:
+
+    * The listing then shows "Data may be collected" instead of "No data
+      collected". That is a worse badge for an app whose whole claim is privacy,
+      and it is still the honest one.
+    * The privacy policy's "Nothing is collected by us" has to be read as *by the
+      developer* — which is what it says — alongside this form rather than instead
+      of it. If that ever reads as a contradiction, the policy's wording is what
+      should change, not the form.
+
+  The alternative is to answer "no data collected" on the grounds that a
+  user-owned cloud account is not the developer. That is a public declaration
+  about the app, so it is not this file's call to make. If it is worth certainty,
+  ask Play support: what a reviewer can check is the artifact — an `INTERNET`
+  permission and a documented sync — and a declaration they read as inaccurate is
+  a policy problem rather than a wording one.
 -->
 
 Play asks separately whether the app requests **microphone** access as a
 sensitive permission, and requires a privacy policy for it. The policy at
-`docs/privacy-policy.md` covers exactly that, and must be published at a public
-URL before the listing is submitted.
+`docs/privacy-policy.md` covers exactly that, and is published at a public URL —
+see the checklist at the end of this file.
 
 Play also lists the permissions the artifact declares, and a signed Android build
-declares four: `RECORD_AUDIO`, `INTERNET`, **`USE_BIOMETRIC`** and
+declares four of its own: `RECORD_AUDIO`, `INTERNET`, **`USE_BIOMETRIC`** and
 **`USE_FINGERPRINT`**. The two biometric ones arrive with the AndroidX library that
 shows the prompt, not from code written here; both are *normal* permissions that
 Android grants at install with no dialog of their own, and neither gives the app
@@ -141,6 +165,24 @@ profanity, no gambling, no user-generated content sharing, no location, no
 personal information. It should come out as **Everyone / 3+**, and the app is
 not designed for children specifically (it is not enrolled in Designed for
 Families).
+
+## The Console's other questions
+
+Play's **App content** checklist asks these, in this order, before the Data safety
+form. Every answer here is checkable against the artifact rather than a promise.
+
+| Console question | Answer |
+| --- | --- |
+| Privacy policy URL | `https://hherb.com/hanzi-tutor/privacy` — live, and the same text as `docs/privacy-policy.md` |
+| Does your app contain ads? | **No.** There is no ad SDK of any kind: the Android build's dependencies are AndroidX (webkit, appcompat, activity-ktx, biometric, lifecycle-process) and Material and nothing else, there is no advertising identifier, and no analytics or crash-reporting SDK is present either |
+| Is all functionality available without special access? | **Yes** — nothing is behind a sign-in of ours, and there are no credentials to give a reviewer. The course, the board, grading, tone practice and pronunciation all work with no account. The one thing a reviewer cannot exercise is syncing, which needs *their own* Dropbox account; it is off by default and the app is complete without it |
+| Target audience and content | **13+ / adults.** Not designed for children, not enrolled in Designed for Families, no child-directed content |
+| Content rating questionnaire | IARC, every answer "no" → **Everyone / 3+** |
+| Is your app a government app? | No |
+| Does it offer financial features? | No |
+| Is it a health app? | No |
+| Is it a news app? | No |
+| Does it need a data-deletion URL? | No. The app has no accounts and no server of the developer's, so there is no data held by us to delete; the Data safety row above says what deleting looks like |
 
 ## Required assets, and where they are
 
@@ -217,7 +259,7 @@ bytes) in total, so every ABI stays inside the limit — x86 is the one with the
 least room. Read the figure the Console reports at upload rather than this one;
 `store/README.md` has the checks to run first.
 
-## Before submitting
+## Submitting it
 
 **The app is ready; the developer account is the gate.** The plan had been a
 business (organization) account, which is exempt from Google's
@@ -233,22 +275,32 @@ account created before that date is exempt. Which side this account falls on is
 read from the Console's own Production access page, not from this file. See
 `docs/privacy-policy.md` for the same note.
 
-`docs/privacy-policy.md` is published at **https://hherb.com/hanzi-tutor/privacy**,
-and the listing points there. Keep the file and the page in step.
+Then, in this order — the Console's own, because its Data safety form builds on the
+answers given before it:
 
-1. Upload `app-universal-release.aab` — **not** the APK; Play only accepts
-   bundles for new apps.
-2. Enrol in Play App Signing. The key in `~/.android/hanzitutor-upload.jks` is
-   then the *upload* key; Google holds the app signing key, and a lost upload
-   key can be reset from the Play Console.
-3. Check the version code. Play needs it to increase with every upload, and it
-   is derived from the app version (`0.2.0` → `2000`) in `tauri.properties`.
-   Bump the version in `Cargo.toml` / `tauri.conf.json` before a second upload.
-4. Complete the Data safety and content rating questionnaires using the answers
-   above. The permission list Play shows is read from the artifact, so check it
-   there rather than here: `aapt2 dump permissions` on the `.aab` or the APK should
-   list four `uses-permission` lines — `RECORD_AUDIO`, `INTERNET`, `USE_BIOMETRIC`
-   and `USE_FINGERPRINT` — and one more the app declares for itself,
+1. **Create the app** in the Console, named `Hanzi Tutor`. Paste the short and full
+   descriptions from this file, and the release notes when a track release asks
+   for them.
+2. **App content**, in the Console's order: privacy policy URL, the ads
+   declaration, app access, target audience and content — then the Data safety
+   form and the content-rating questionnaire, whose answers are the two sections
+   above.
+3. **Upload `app-universal-release.aab`** — **not** the APK; Play accepts only a
+   bundle for a new app. Enrol in **Play App Signing** at the same time: the key
+   in `~/.android/hanzitutor-upload.jks` becomes the *upload* key, Google holds
+   the app signing key, and a lost upload key can be reset from the Console.
+4. **Check the permission list the Console shows against the artifact.** It is read
+   from the bundle rather than from this file, and it should name four
+   `uses-permission` lines — `RECORD_AUDIO`, `INTERNET`, `USE_BIOMETRIC` and
+   `USE_FINGERPRINT` — plus
    `com.hanzitutor.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, which AndroidX
    adds to guard a broadcast receiver.
-5. Test on a device from the internal testing track before promoting.
+5. **Check the version code before every later upload.** Play requires it to
+   increase, and `tauri.properties` derives it from the app version (`0.5.11` →
+   `5011`). Bump the version in `Cargo.toml`, `package.json` and
+   `tauri.conf.json` together — a test fails if any two disagree — and look at
+   `NOTES` in `src/lib/startupPages.ts` in the same breath.
+6. **Test from the internal testing track** before promoting. A closed-test tester
+   installs the app **from Play**, through the opt-in link the Console gives them:
+   they need no APK, and no separate build is involved, so the same bundle that
+   goes to production is the one they test.
