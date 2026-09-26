@@ -1022,7 +1022,7 @@ after each item) both do this now. The shape is the rule, not either file.
 Run before every commit:
 
 ```bash
-pnpm test           # 650 tests: engine + data-pipeline units, the SQLite store,
+pnpm test           # 645 tests: engine + data-pipeline units, the SQLite store,
                     # sync convergence, IPC contract, speech, notices, data-dir flag
 pnpm run test:web   # 69 tests: the interface's stroke geometry, the tone tables,
                     # and the markup the toned components render, under vitest

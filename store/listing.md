@@ -226,6 +226,20 @@ python3 scripts/make-store-assets.py feature-graphic store/feature-graphic-1024x
 python3 scripts/make-store-assets.py screenshot raw.png store/phone-screenshots/03-name.png
 ```
 
+Which shots, if a list helps — Play wants at least two, and four is a good number:
+
+1. **The board** on a character, trace mode, with the tone colour showing in the
+   prompt chip and in its pinyin — 我 in third-tone orange is the one this was
+   checked with.
+2. **A graded attempt** — the score, the "Not yet legible"/"Stroke order off"
+   tags, the four measures and the stroke-order boxes.
+3. **My list** with tone-coloured entries, which shows the colouring doing real
+   work: 大地 both purple, 有用 orange then purple.
+4. **Settings → Colour by tone**, with the five-swatch legend.
+
+Capture on the phone, then pad each to 9:16 with the command above — a raw
+screenshot is 1216×2688 and Play wants 1080×1920.
+
 ## Release notes (max 500 characters)
 
 The Console asks for these on each track release. This is 428 characters.

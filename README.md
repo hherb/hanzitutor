@@ -45,13 +45,14 @@ progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
 measure**, the **durable study store**, **tone practice**, **speech
 recognition** and optional **cross-device sync** through your own Dropbox — for
 characters *and words*, on desktop and on both mobile systems — are all implemented
-and tested; **650 automated tests** pass, and 5 more are
-ignored unless a microphone, the speech model or a loudspeaker is available. A
+and tested; **645 automated tests** pass, and 4 more are
+ignored unless a microphone or the speech-recognition model is available. A
 signed Android
 release bundle is built and runs on a physical phone, and the recognition model
 has been installed and used on both a physical iPhone and a physical Android
-phone; what is left for the Play Store is publishing the privacy policy and
-filling in the Console listing, not code. A second, smaller app ships from this
+phone; what is left for the Play Store is the Console submission itself — the
+signed bundle, the listing copy and the published privacy policy are all in place
+(see `store/listing.md`) — not code. A second, smaller app ships from this
 repository too — **Tone Trainer**, tone practice on its own, sharing the scorer,
 the minimal pairs and the microphone code with this one. What is not built yet is
 listed under [Next steps](#next-steps).
@@ -1178,7 +1179,7 @@ store/                      the Play listing: copy, answers, icon, artwork
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 650 tests, 5 more ignored
+pnpm test             # the whole Rust suite: 645 tests, 4 more ignored
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run test:web     # the interface's own suite, under vitest
 pnpm run selfcheck    # engine behaviour over the whole real dataset
