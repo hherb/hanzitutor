@@ -2117,6 +2117,23 @@ back.
   on the artifact rather than assumed: `aapt2 dump badging` on the release APK
   lists four `native-code` entries, and `unzip -l …aab | grep '\.so$'` names four
   ABI directories.
+- **Three of those four ABIs have never been run, and this machine cannot run
+  them.** The only system image installed is `android-36.1`
+  `google_apis_playstore` `arm64-v8a`, and the physical phone reports
+  `supportedAbis: ['arm64-v8a']`, so armv7, x86 and x86_64 have no runtime
+  evidence behind them. What they do have: they compile, the pinned
+  `sherpa-onnx`/`onnxruntime` archive carries all four, and
+  `scripts/check-android-release.sh` now resolves every `DT_NEEDED` in each ABI's
+  directory against the libraries beside it plus Android's own — which catches the
+  failure that matters for an ABI nobody can launch (a library missing from that
+  ABI, or one linking against something the bundle does not ship) without claiming
+  the runtime has been seen. Closing it properly means an x86_64 system image,
+  about a 1.5 GB download, and the emulator. One trap while writing that check: the
+  SDK's `ndk/<version>` is a **symlink** on this machine (to Homebrew's ndk), and
+  `find "$sdk/ndk" -name llvm-readelf` returns nothing for it — find does not
+  descend into a symlinked directory without `-L`, and says nothing about it — so
+  globbing `"$ndk_root"/toolchains/llvm/prebuilt/*/bin/llvm-readelf` is what
+  actually finds the tool.
 - **A four-ABI bundle needs 8 GB of Gradle heap to sign, and the failure it gives
   underneath does not mention memory.** At the template's 2 GB,
   `:app:signUniversalReleaseBundle` fails with

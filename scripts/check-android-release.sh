@@ -4,10 +4,10 @@
 #
 # Everything here is checked against the artifact rather than against the notes in
 # `store/listing.md`, because the notes can be stale and the artifact cannot: the
-# digest, the signature, the manifest Play will read, and the download size Play
-# will enforce. What it does not do is decide whether the *answers* in the Console
-# are right — that is `store/listing.md` and `docs/privacy-policy.md`, and no
-# script can read a policy.
+# digest, the signature, the manifest Play will read, the native libraries of every
+# ABI, and the download size Play will enforce. What it does not do is decide
+# whether the *answers* in the Console are right — that is `store/listing.md` and
+# `docs/privacy-policy.md`, and no script can read a policy.
 #
 # Usage:
 #
@@ -114,13 +114,64 @@ printf '%s\n' "$manifest" \
 printf '%s\n' "$manifest" | grep -E "uses-sdk|uses-permission" | sed 's/^ */  /'
 echo
 
-# ---- 3. What a device will actually download --------------------------------
+# ---- 3. Is every ABI's native code complete? --------------------------------
+# Play serves four ABIs and this machine can run one of them — a phone, or the
+# arm64 emulator image the SDK ships. A library missing from one ABI, or linking
+# against something that ABI's directory does not carry, is a crash for the
+# devices on it, and nothing else in this script would notice: the bundle is
+# well-formed and the sizes are fine. So the check is static, which is exactly
+# what the loader does — every `DT_NEEDED` has to be either another library in the
+# same directory or one Android itself provides.
+echo "== native libraries per ABI =="
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+# The NDK, and its `llvm-readelf`. Note the shape of this: the SDK's `ndk/<version>`
+# is a *symlink* here (to Homebrew's ndk), and a plain `find "$sdk/ndk" -name
+# llvm-readelf` therefore returns nothing at all — find does not descend into a
+# symlinked directory without `-L`, and it reports no error either, so the check
+# below silently skips. Globbing the path is both shorter and correct.
+ndk_root="${ANDROID_NDK_HOME:-}"
+if [ -z "$ndk_root" ]; then
+  ndk_root="$(ls -d "${ANDROID_HOME:-$HOME/Library/Android/sdk}/ndk/"* 2>/dev/null | sort -V | tail -1)"
+fi
+readelf="$(ls "$ndk_root"/toolchains/llvm/prebuilt/*/bin/llvm-readelf 2>/dev/null | head -1)"
+if [ -x "${readelf:-}" ]; then
+  # What the platform provides. Anything else has to travel in the bundle.
+  system_libs="libc.so libm.so libdl.so liblog.so libandroid.so libz.so libOpenSLES.so libaaudio.so libstdc++.so libjnigraphics.so libEGL.so libGLESv2.so libvulkan.so ld-android.so"
+  native_ok=1
+  for abi in $(unzip -l "$bundle" | grep -oE "base/lib/[a-z0-9_-]+/" | sort -u | cut -d/ -f3); do
+    dir="$scratch/$abi"
+    unzip -o -q "$bundle" "base/lib/$abi/*" -d "$dir"
+    libs="$(ls "$dir/base/lib/$abi")"
+    bad=""
+    for so in $libs; do
+      for need in $("$readelf" -d "$dir/base/lib/$abi/$so" 2>/dev/null \
+        | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p'); do
+        if ! printf '%s\n' "$libs" | grep -qx "$need" \
+          && ! printf '%s\n' $system_libs | grep -qx "$need"; then
+          bad="$bad ${so}→${need}"
+        fi
+      done
+    done
+    if [ -n "$bad" ]; then
+      echo "  $abi: UNRESOLVED:$bad" >&2
+      native_ok=0
+    else
+      echo "  $abi: $(printf '%s\n' "$libs" | wc -l | tr -d ' ') libraries, all dependencies resolve"
+    fi
+  done
+  [ "$native_ok" = 1 ] || { echo "error: a native dependency does not resolve" >&2; exit 1; }
+else
+  echo "  skipped: no llvm-readelf under the NDK"
+fi
+echo
+
+# ---- 4. What a device will actually download --------------------------------
 # This is the number Play enforces, and it is nothing like the bundle's own size:
 # the bundle carries every ABI and the native debug symbols, and Play delivers
 # neither to a device.
 echo "== download size (Play's limit: ${limit_mb} MB per module) =="
-scratch="$(mktemp -d)"
-trap 'rm -rf "$scratch"' EXIT
 
 apks_args=(--bundle="$bundle" --output="$scratch/app.apks" --aapt2="$aapt2")
 key_properties="$repo/src-tauri/gen/android/key.properties"
@@ -181,16 +232,12 @@ if [ "$install_to_device" = 1 ]; then
   bundletool install-apks --apks="$scratch/app.apks" --adb="$adb" 2>&1 | tail -2 | sed 's/^/    /'
   echo "    launch it with: $adb shell am start -n com.hanzitutor.app/.MainActivity"
 elif [ "$have_device" = 1 ]; then
-  # Kept rather than deleted with the scratch directory, so the splits can be
-  # installed without paying for the APK set a second time. --install does both.
-  keep="$repo/.cargo-target/android-release-check.apks"
-  mkdir -p "$(dirname "$keep")" && cp "$scratch/app.apks" "$keep" 2>/dev/null || true
   echo
   echo "  re-run with --install to put these splits on the connected device"
 fi
 echo
 
-# ---- 4. The digest, for store/listing.md -----------------------------------
+# ---- 5. The digest, for store/listing.md -----------------------------------
 echo "== digest =="
 echo "  $(shasum -a 256 "$bundle" | cut -d' ' -f1)  ($(wc -c < "$bundle" | tr -d ' ') bytes)"
 echo
