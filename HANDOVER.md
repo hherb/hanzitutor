@@ -2783,6 +2783,50 @@ part's `drawable` flag is checked against the character's own stroke geometry.
   bundle, which would also strip `com.apple.provenance`, a harmless tag
   macOS's own tools leave on every other file in the bundle regardless of
   origin and that nothing here needs to touch.
+- **Xcode's Issue Navigator flagged four things after that (2026-09-26), all
+  fixed and re-verified by an actual simulator run, not just a build.** Two
+  were one-line project settings (covered elsewhere: the empty
+  `NSFaceIDUsageDescription` string, and `options.xcodeVersion` in
+  `project.yml` stopping the stale-`LastUpgradeVersion` nag). The other two
+  were both about `crates/hanzi-voice/src/speech.rs` blocking a thread it
+  shouldn't have:
+  - **"This method can lead to UI unresponsiveness if called on the main
+    thread"**, on `AVAudioSession`'s `setActive:error:` inside
+    `engage_session`. Apple's own `AVAudioSession_iOS.mm` log line names the
+    fix: the async `activateWithOptions:completionHandler:`, bound in
+    `objc2-avf-audio` 0.3.2 as `activateWithOptions_completionHandler`
+    (needs `block2` — added as an iOS-only dependency in
+    `hanzi-voice/Cargo.toml`, since only this one call uses it). This call
+    was already fire-and-forget in spirit — nothing downstream of
+    `engage_session` ever needed the *result* of activation, only logged a
+    failure — so making it actually async cost nothing: `engage_session`
+    dropped its `Result` return entirely and logs from inside the
+    completion handler instead. No async `deactivate` exists in this crate
+    version, so `release_session` still calls `setActive_error(false)`
+    synchronously; nothing flagged that one.
+  - **"Thread running at User-interactive quality-of-service class waiting
+    on a lower QoS thread running at Default quality-of-service class"** —
+    a real priority inversion, not a false positive, and not the same call
+    site as the one above. `hold_session_then_release`'s timer thread
+    (`std::thread::spawn`, which gets `QOS_CLASS_DEFAULT` with nothing to
+    raise it) called the blocking `with_main` to release the session, then
+    immediately exited — so the block was buying synchronisation nobody
+    consumed. Added `spawn_on_main`, a fire-and-forget sibling of iOS's
+    `with_main` that dispatches to `DispatchQueue::main()` and returns
+    without a channel or a `recv()` to park on, and pointed
+    `hold_session_then_release` at it instead. `with_main` itself is
+    unchanged and still correct for every caller that actually needs the
+    result (`speak_on_main`, `stop_on_main`, `audio_ready`).
+
+  Verified past what a build alone shows: `cargo check`/`clippy -D
+  warnings`/`test` clean for both `aarch64-apple-ios` and the macOS host,
+  then a live run — `tauri ios build --open` in the background (serves the
+  WebSocket the "Build Rust Code" phase needs; see the `ios build --open`
+  note above) with `BuildProject` and `RunProject` on an iPhone 17
+  simulator, the pronunciation button tapped repeatedly including
+  back-to-back re-taps to hit `hold_session_then_release`'s timer path, and
+  `XcodeListNavigatorIssues` reporting zero remarks afterward — all four
+  original warnings gone, not just the two easy ones.
 - **The ink measure is proven, but half of it cannot fire yet.** The canvas paints
   every stroke at one fixed width, so nothing a learner does on a trackpad can put
   down *less* ink than `INK_WIDTH` and the `faint` verdict is unreachable in daily

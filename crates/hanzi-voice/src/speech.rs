@@ -45,7 +45,11 @@ use std::cell::RefCell;
 // real run loop services — see the iOS `with_main`. macOS uses a dedicated
 // worker thread instead and needs neither of these.
 #[cfg(target_os = "ios")]
+use block2::RcBlock;
+#[cfg(target_os = "ios")]
 use dispatch2::DispatchQueue;
+#[cfg(target_os = "ios")]
+use objc2::runtime::Bool;
 #[cfg(target_os = "ios")]
 use objc2::MainThreadMarker;
 #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -58,14 +62,16 @@ use objc2::{define_class, msg_send, AnyThread};
 // no Ring/Silent switch and nothing to duck — so only iOS imports it.
 #[cfg(target_os = "ios")]
 use objc2_avf_audio::{
-    AVAudioSession, AVAudioSessionCategoryOptions, AVAudioSessionCategoryPlayback,
-    AVAudioSessionModeSpokenAudio, AVAudioSessionSetActiveOptions,
+    AVAudioSession, AVAudioSessionActivationOptions, AVAudioSessionCategoryOptions,
+    AVAudioSessionCategoryPlayback, AVAudioSessionModeSpokenAudio, AVAudioSessionSetActiveOptions,
 };
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 use objc2_avf_audio::{
     AVSpeechBoundary, AVSpeechSynthesisVoice, AVSpeechSynthesizer, AVSpeechSynthesizerDelegate,
     AVSpeechUtterance,
 };
+#[cfg(target_os = "ios")]
+use objc2_foundation::NSError;
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 
@@ -250,12 +256,11 @@ impl Speaker {
     /// Called from the voice warm-up thread rather than from startup, so none of
     /// it is on the path that shows the first screen.
     pub fn prime(&self) {
+        // Not fatal and not worth a dialog: a cold route costs the crackle
+        // fix, not the speech. `speak_on_main` takes the session again.
+        // `engage_session` already logs its own failures asynchronously.
         #[cfg(target_os = "ios")]
-        if let Err(problem) = audio_ready() {
-            // Not fatal and not worth a dialog: a cold route costs the crackle
-            // fix, not the speech. `speak_on_main` takes the session again.
-            eprintln!("[speech] could not warm the audio route: {problem}");
-        }
+        audio_ready();
 
         // macOS has no audio session to take, but it shares iOS's other cold
         // start: constructing `AVSpeechSynthesizer` for the first time costs
@@ -426,6 +431,23 @@ pub(crate) fn with_main<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'st
         .expect("the main thread dropped the speech work without running it")
 }
 
+/// Run `work` on the main thread without waiting for it, on iOS.
+///
+/// [`hold_session_then_release`] is the one caller: its timer thread has
+/// nothing to do with the result and is about to exit either way, so blocking
+/// it on [`with_main`]'s round trip bought nothing but a parked thread —
+/// which is exactly what Xcode's Thread Performance Checker flagged as a
+/// priority inversion, since a timer thread here can run at a QoS the main
+/// run loop does not immediately match. Not waiting removes the wait, not
+/// just the warning.
+#[cfg(target_os = "ios")]
+fn spawn_on_main(work: impl FnOnce() + Send + 'static) {
+    if MainThreadMarker::new().is_some() {
+        return work();
+    }
+    DispatchQueue::main().exec_async(work);
+}
+
 /// Run `work` on a single dedicated thread and wait for its result, on macOS.
 ///
 /// `AVSpeechSynthesizer` and its delegate are not `Send`, and `SPEECH` is a
@@ -486,12 +508,11 @@ fn speak_on_main(text: &str, name: &str) -> Result<(), String> {
         // switch and nothing to duck, so there is nothing to take here.
         #[cfg(target_os = "ios")]
         {
-            if let Err(problem) = engage_session() {
-                // Worth saying, not worth refusing to speak over: this costs
-                // volume, not words. Speech still happens, it may just be muted
-                // by the Ring/Silent switch the way it was before this call.
-                eprintln!("[speech] could not take the audio session: {problem}");
-            }
+            // Logs its own failure asynchronously; see `engage_session`. Worth
+            // saying, not worth refusing to speak over: this costs volume, not
+            // words. Speech still happens, it may just be muted by the
+            // Ring/Silent switch the way it was before this call.
+            engage_session();
             // This utterance owns the session now, so any hold timer still
             // counting down from the last one must not hand it back mid-word.
             take_session();
@@ -587,21 +608,48 @@ fn stop_on_main() {
 /// The mode is the one Apple documents for text-to-speech prompts, so routing
 /// behaves on CarPlay and similar outputs as a spoken prompt rather than as
 /// music.
+///
+/// Activation itself is asynchronous (`activateWithOptions:completionHandler:`),
+/// not `setActive:error:` — Apple's own documentation calls activation "a
+/// relatively time consuming operation", and Xcode's Thread Performance
+/// Checker flags the synchronous call as a hang risk exactly where
+/// `with_main` runs this, on the real main thread. Fire-and-forget is the
+/// right shape for what this already was: nothing here ever waited for the
+/// *result* of activation, only logged it, and [`speak_on_main`] proceeds to
+/// speak either way — a session that failed to activate costs volume, not
+/// words, which is the whole reason logging rather than refusing was already
+/// the contract before this was async.
 #[cfg(target_os = "ios")]
-fn engage_session() -> Result<(), String> {
+fn engage_session() {
     // SAFETY: on the main thread (see `with_main`).
     unsafe {
         let session = AVAudioSession::sharedInstance();
-        session
-            .setCategory_mode_options_error(
-                AVAudioSessionCategoryPlayback.expect("declared by AVFAudio"),
-                AVAudioSessionModeSpokenAudio.expect("declared by AVFAudio"),
-                AVAudioSessionCategoryOptions::DuckOthers,
-            )
-            .map_err(|error| error.localizedDescription().to_string())?;
-        session
-            .setActive_error(true)
-            .map_err(|error| error.localizedDescription().to_string())
+        if let Err(error) = session.setCategory_mode_options_error(
+            AVAudioSessionCategoryPlayback.expect("declared by AVFAudio"),
+            AVAudioSessionModeSpokenAudio.expect("declared by AVFAudio"),
+            AVAudioSessionCategoryOptions::DuckOthers,
+        ) {
+            eprintln!(
+                "[speech] could not configure the audio session: {}",
+                error.localizedDescription()
+            );
+            return;
+        }
+        let handler = RcBlock::new(move |active: Bool, error: *mut NSError| {
+            if !active.as_bool() {
+                let message = if error.is_null() {
+                    "no reason given".to_string()
+                } else {
+                    // SAFETY: AVFoundation hands the handler a non-null NSError
+                    // whenever `active` is false, and the surrounding `unsafe`
+                    // block on `engage_session`'s body already covers this
+                    // closure lexically.
+                    (&*error).localizedDescription().to_string()
+                };
+                eprintln!("[speech] could not take the audio session: {message}");
+            }
+        });
+        session.activateWithOptions_completionHandler(AVAudioSessionActivationOptions::None, &handler);
     }
 }
 
@@ -658,7 +706,7 @@ fn hold_session_then_release() {
     let generation = SESSION_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(SESSION_HOLD_MS));
-        with_main(move || {
+        spawn_on_main(move || {
             if SESSION_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == generation {
                 release_session();
             }
@@ -686,17 +734,16 @@ fn hold_session_then_release() {
 /// indefinitely would fix that too, at the price of keeping the learner's music
 /// down the whole time they are practising.
 #[cfg(target_os = "ios")]
-fn audio_ready() -> Result<(), String> {
+fn audio_ready() {
     with_main(|| {
         // Building the synthesiser is the part that only has to happen once.
         SPEECH.with(|slot| {
             let mut slot = slot.borrow_mut();
             let _ = slot.get_or_insert_with(Speech::new);
         });
-        engage_session()?;
+        engage_session();
         take_session();
         hold_session_then_release();
-        Ok(())
     })
 }
 

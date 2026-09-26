@@ -1780,6 +1780,7 @@ dependencies = [
 name = "hanzi-voice"
 version = "0.5.11"
 dependencies = [
+ "block2",
  "cpal",
  "dispatch2",
  "hanzi-core",

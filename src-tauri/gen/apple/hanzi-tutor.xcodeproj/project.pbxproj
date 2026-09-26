@@ -194,14 +194,14 @@
 			);
 			sourceTree = "<group>";
 		};
-		"TEMP_0D71C834-99EF-4593-8904-65379D2AE29E" /* x86_64 */ = {
+		"TEMP_8BD5D85C-C4BC-4DE8-9190-36BCBF4AA163" /* x86_64 */ = {
 			isa = PBXGroup;
 			children = (
 			);
 			path = x86_64;
 			sourceTree = "<group>";
 		};
-		"TEMP_71D7294F-9BDF-4624-98F0-9E1A22009CA0" /* arm64 */ = {
+		"TEMP_FBC33077-BE56-49B4-B26A-AE7DFBC89345" /* arm64 */ = {
 			isa = PBXGroup;
 			children = (
 			);
@@ -239,7 +239,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1430;
+				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					A5B34DE4A61B272D270C7E94 = {
 						DevelopmentTeam = X5DWXB4283;
