@@ -131,8 +131,10 @@ Deliberately left out, and why:
 - **FSRS** — it wants a review history far longer than one learner produces quickly.
   SM-2 is behind a trait precisely so this can be revisited with data.
 - **Export/import of the schedule** — the schedule is derived from practice, so
-  rebuilding it is cheap and a merge format would be guesswork. The files are plain
-  JSON if a backup is wanted.
+  rebuilding it is cheap and a merge format would be guesswork. A restored backup
+  proves the point rather than contradicting it: it stores no cards at all and
+  rebuilds every one of them from the log inside it — see "A backup of the list
+  and the log". The files are plain JSON if a backup is wanted.
 - **Per-character notes or a browsable history screen** — the board shows attempts,
   best score and the next review, and the sidebar shows what is due. A history browser
   is now a screen over data that already exists: the log is recorded, exported and
@@ -774,6 +776,30 @@ Already shipped, listed only so they are not re-added as open work:
   row's buttons.
 - **Import / export the vocabulary list** — M1: JSON export and import (lossless; merge
   or replace) plus CSV export. CSV *import* is deliberately out, because it is lossy.
+- **A backup of the list and the log — built.** The settings screen's *Back up…*
+  writes one JSON document holding both halves of what a learner has made — the
+  vocabulary document verbatim under `vocabulary`, and every attempt with its
+  measures under `attempts` — and *Restore…* reads it back. It exists because the
+  two exports beside it are both single-purpose and both called "export": the
+  list's JSON carries no practice, and the log's JSON Lines carries no list and
+  had no import at all — so a learner could not tell which file held their own
+  vocabulary, and there was no way to bring the practice back. `hanzi_store::backup`
+  owns the document and
+  its `format` marker (`hanzi-tutor-backup`), so a wrong file is refused by name —
+  picking the vocabulary export gets a message that says so and names the screen
+  whose import wants it, rather than importing an empty list. **Nothing about the
+  schedule or the preferences is in the file**, and that is the design: the cards
+  are derived, so `hanzi_sync::recompute` folds them back out of the imported log,
+  using this device's own baseline where it has one (`hanzi_sync::local_baselines`)
+  and the whole log as the story where it does not. **The list and the log do not
+  share a merge rule**, because they are not the same kind of thing: *Restore* adds
+  to the list, *Replace list* swaps it, and the attempt log is only ever added to
+  — an attempt already recorded is something that happened, and a backup that
+  predates it is no reason to forget it. `merge_attempts` is the one door for an
+  attempt that did not happen on this device, now carrying optional measures, so a
+  sync (score and time only) and a restore (measures too) settle identity by the
+  same `(device_id, seq)` rule. The log-only JSON Lines and CSV exports stay, for a
+  spreadsheet rather than for keeping.
 - **A settings screen** — `src/lib/SettingsPanel.svelte` edits the four preferences
   (click-to-draw, the stroke-order animation's pace, the board size, the pronunciation
   voice), and it is the surface M12 and M14 use for their optional models. What the
@@ -943,8 +969,11 @@ Recorded honestly, because they bound how much the current scores mean:
   corrupting it — costs the schedule, the list and the cursor at once, where three files
   used to fail independently. The isolation that replaces it is at the *import* rather
   than at steady state, and the app refuses to write rather than starting empty, so the
-  failure is loud; but there is no backup, no export of the schedule, and no "open the
-  folder" affordance. A corrupt database is a support question with no good answer yet.
+  failure is loud. A backup of the list and the log now answers the loss of everything
+  except the course position, and even the schedule comes back — restoring into a fresh
+  database rebuilds every card from the log inside it. What is still missing is an
+  export of the course position and an "open the folder" affordance. A corrupt database
+  is otherwise a support question with no good answer yet.
 - **Rust crate licences are not individually catalogued.** The notice catalogue covers
   the bundled *data*, the interface font and SQLite; the several hundred Rust crates in
   the dependency graph — Tauri's own, and the `objc2` bindings for AVFAudio — are

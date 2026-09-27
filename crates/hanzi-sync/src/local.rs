@@ -389,10 +389,8 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
     // the fold asks of it. Read after the pull so that a peer's baseline arriving in
     // this pass is used in this pass rather than the next one.
     let mut baselines = read_baselines(store)?;
-    if let Some(text) = db.meta_value(BASELINE_KEY).map_err(SyncError::Io)? {
-        if let Ok(own) = serde_json::from_str::<Baseline>(&text) {
-            baselines.push(own);
-        }
+    if let Some(own) = own_baseline(db)? {
+        baselines.push(own);
     }
     let (recomputed, left_alone) = recompute(db, &Baselines::resolve(baselines))?;
     Ok(Summary {
@@ -403,6 +401,30 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
         vocab_changed,
         cursor_moved,
     })
+}
+
+/// This device's own baseline, if it has one.
+///
+/// Read from `meta` rather than from a store, because it is this device's own
+/// record of history that predates the log — see the module note. A baseline that
+/// cannot be parsed is treated as absent, which is the safe direction: a missing
+/// baseline leaves a card alone rather than inventing one.
+fn own_baseline(db: &Db) -> Result<Option<Baseline>, SyncError> {
+    match db.meta_value(BASELINE_KEY).map_err(SyncError::Io)? {
+        Some(text) => Ok(serde_json::from_str::<Baseline>(&text).ok()),
+        None => Ok(None),
+    }
+}
+
+/// This device's own baseline, resolved, with no remote to ask.
+///
+/// A **restore** needs this and nothing else. Restoring a backup file has no
+/// store to read peers' baselines from, but the fold still has to know how to
+/// treat a card this device migrated from the old JSON files, and that is exactly
+/// what its own baseline records. With no baseline — the ordinary case — the log
+/// is the whole story and every card folds from the beginning.
+pub fn local_baselines(db: &Db) -> Result<Baselines, SyncError> {
+    Ok(Baselines::resolve(own_baseline(db)?.into_iter().collect()))
 }
 
 /// How far this device has published its own log.
@@ -443,6 +465,10 @@ impl From<MergedAttempt> for IncomingAttempt {
             at: attempt.at,
             score: attempt.score,
             rating: attempt.rating,
+            // A shard carries the score and the time and nothing else, so there
+            // are no measures to hand over. A backup is the other source of
+            // incoming attempts and does carry them — see `hanzi_store::backup`.
+            measures: None,
         }
     }
 }

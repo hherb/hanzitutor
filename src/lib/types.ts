@@ -497,6 +497,20 @@ export interface VocabOutcome {
   message: string;
 }
 
+/**
+ * What restoring a backup did.
+ *
+ * The same shape as {@link VocabOutcome} — the list it left behind and the
+ * sentence to show — because a restore changes the list and the caller has to
+ * repaint it. The practice schedule and the review queue changed too, and are
+ * re-read rather than returned: they are large, and every screen that shows them
+ * already knows how to ask.
+ */
+export interface BackupOutcome {
+  view: VocabView;
+  message: string;
+}
+
 // ---- practice progress and review -----------------------------------------
 
 /**

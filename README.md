@@ -45,7 +45,7 @@ progress with spaced repetition, the HSK 3.0 **word list**, the **raster ink
 measure**, the **durable study store**, **tone practice**, **speech
 recognition** and optional **cross-device sync** through your own Dropbox — for
 characters *and words*, on desktop and on both mobile systems — are all implemented
-and tested; **645 automated tests** pass, and 4 more are
+and tested; **651 automated tests** pass, and 4 more are
 ignored unless a microphone or the speech-recognition model is available. A
 signed Android
 release bundle is built and runs on a physical phone, and the recognition model
@@ -186,6 +186,15 @@ listed under [Next steps](#next-steps).
   the course live in one SQLite database, and every attempt ever made is kept in
   an unbounded log rather than a twenty-entry history — which is what the grading
   tolerances will be tuned against, once there are real attempts to look at.
+- **Your whole record, in one file you keep.** The settings screen writes a single
+  backup holding both halves of what you have made — the vocabulary you added
+  yourself, and every attempt you have recorded with the measures it was graded
+  from — and reads it back here or on a new device. Restoring rebuilds the review
+  schedule from the log inside it, so due dates come back with it. The list is
+  added to by default, or swapped for the one in the file if you ask; the practice
+  log is only ever added to, because an attempt is something that happened. The
+  log's own JSON Lines and CSV exports are still there, for a spreadsheet rather
+  than for keeping.
 - **Sentences, one character at a time.** Any multi-character text written into
   the list — a word, a phrase, a sentence — is practised character by character,
   with anything the board cannot draw (punctuation, an unknown glyph) skipped
@@ -1166,7 +1175,7 @@ src/lib/                    Svelte components
   VocabularyPanel.svelte    the vocabulary list: add, group, export, import
   LessonSidebar.svelte      course, list, word, character and screen navigation
   due.ts                    how a due date is said out loud, for both screens
-  SettingsPanel.svelte      the four preferences, written as they are changed
+  SettingsPanel.svelte      the preferences, the model downloads, sync, and the backup
   StartupWizard.svelte      the pages read once at the start, either kind
   startupPages.ts           what those pages say; the release notes live here
   LicencesPanel.svelte      About: the app's identity and every notice, in full
@@ -1179,7 +1188,7 @@ store/                      the Play listing: copy, answers, icon, artwork
 ## Testing
 
 ```bash
-pnpm test             # the whole Rust suite: 645 tests, 4 more ignored
+pnpm test             # the whole Rust suite: 651 tests, 4 more ignored
 pnpm run test:core    # just the engine, store and data-pipeline unit tests
 pnpm run test:web     # the interface's own suite, under vitest
 pnpm run selfcheck    # engine behaviour over the whole real dataset

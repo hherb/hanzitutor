@@ -22,7 +22,8 @@ pub use hanzi_hearing::{Asr, AsrStatus, InstallState};
 pub use say::{Say, SayStatus};
 pub use hanzi_voice::{MicrophoneStatus, Recorder, Recording};
 pub use state::{
-    AppState, CursorState, Persisted, ProgressState, SettingsState, VocabState, REVIEW_LIMIT,
+    AppState, BackupOutcome, CursorState, Persisted, ProgressState, SettingsState, VocabState,
+    REVIEW_LIMIT,
 };
 pub use sync::{AutoSync, SyncService, SyncSummaryView, SyncView};
 
@@ -151,6 +152,8 @@ pub fn run() {
             commands::progress,
             commands::record_progress,
             commands::export_practice_log,
+            commands::backup_export,
+            commands::backup_import,
             commands::review_queue,
             commands::course_cursor,
             commands::set_course_cursor,

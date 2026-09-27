@@ -993,7 +993,8 @@ after each item) both do this now. The shape is the rule, not either file.
     copies fail against the old `csv_field`.
 
 36. **A file path never crosses the IPC boundary as a value the frontend chose.**
-    `vocab_export`, `vocab_import` and `export_practice_log` take no `path`: each
+    `vocab_export`, `vocab_import`, `export_practice_log`, `backup_export` and
+    `backup_import` take no `path`: each
     opens its own dialog with `tauri-plugin-dialog` and does the I/O with the
     path the learner picked. They used to take `path: String` and hand it to
     `std::fs`, which made every one of them a "write anywhere the process can
@@ -1013,16 +1014,50 @@ after each item) both do this now. The shape is the rule, not either file.
       dialog", which is not an error, and the interface returns quietly. A
       cancelled export must never read as a failed one.
     - **`no_file_command_takes_a_path_from_the_webview` reads the source** to
-      check the three signatures, because a signature is invisible to a
+      check the file commands' signatures, because a signature is invisible to a
       behavioural test: a future command could reintroduce `path` and every other
       test would still pass. It fails against the old signatures.
+
+37. **A backup restores the list and the log, and derives the schedule; the two
+    halves do not share a merge rule.** `hanzi_store::backup` writes one JSON
+    document with the vocabulary document verbatim under `vocabulary` and every
+    attempt with its measures under `attempts`, under a `format` marker
+    (`hanzi-tutor-backup`) that is checked **before** the rest of the document is
+    parsed. That order is the point: the vocabulary list has an export of its own
+    two screens away, so the likely wrong file is named as a vocabulary export
+    (with the screen whose import wants it) instead of failing as a missing field.
+    Three consequences worth not undoing:
+
+    - **No cards and no preferences are in the file.** The schedule is derived, so
+      storing it would be a second copy that can disagree with the log it came
+      from. `AppState::import_backup` merges the log, then folds every card out of
+      it with `hanzi_sync::recompute`, using this device's own baseline where it
+      has one (`hanzi_sync::local_baselines`) and the whole log where it does not.
+      The in-memory `ProgressStore` is reloaded immediately afterwards, for the
+      reason `hanzi_sync::local`'s module note gives: its next save would otherwise
+      write the pre-restore cards back over the rebuilt ones.
+    - **The list is replaced or merged; the log is only ever merged.** *Replace
+      list* is what its name says, and the log is never cut down, because an
+      attempt is something that happened and a file that predates it is no reason
+      to forget it. `merge_attempts` is the single door for an attempt this device
+      did not make — a sync shard (score and time only, `measures: None`) and a
+      restore (measures included) both settle identity on `(device_id, seq)`.
+    - **The import writes the log before it imports the list, and rebuilds the
+      schedule before it tags it.** An entry's standing is read from the cards, so
+      importing the list first would tag the restored list against the
+      pre-restore schedule. The vocabulary list is deliberately **not** reloaded
+      after the restore, unlike after a sync: the in-memory document *is* the one
+      being changed, and reloading would discard an import whose save failed.
+      `a_backup_carries_the_list_and_the_log_and_restores_both` and
+      `replacing_from_a_backup_replaces_the_list_and_never_the_log` in
+      `tests/ipc_contract.rs` pin all three.
 
 ## 5. The verification loop
 
 Run before every commit:
 
 ```bash
-pnpm test           # 645 tests: engine + data-pipeline units, the SQLite store,
+pnpm test           # 651 tests: engine + data-pipeline units, the SQLite store,
                     # sync convergence, IPC contract, speech, notices, data-dir flag
 pnpm run test:web   # 69 tests: the interface's stroke geometry, the tone tables,
                     # and the markup the toned components render, under vitest
@@ -1164,7 +1199,8 @@ which is the half a test can hold.
 
 The file dialogs' failure mode is a hang rather than a blank window, and it is one
 signature change away, so it is worth re-checking by hand. `vocab_export`,
-`vocab_import` and `export_practice_log` are **`async` commands on purpose**: Tauri
+`vocab_import`, `export_practice_log`, `backup_export` and `backup_import` are
+**`async` commands on purpose**: Tauri
 then runs them off the main thread, which is what lets `blocking_save_file` /
 `blocking_pick_file` block — the plugin marshals the dialog onto the main thread
 itself. Made into plain `fn`s they deadlock the app the first time one is called,
@@ -3017,8 +3053,9 @@ part's `drawable` flag is checked against the character's own stroke geometry.
 - **The attempt log is built, and what is short is the data.** M10 shipped the
   unbounded log (`attempt`, with `Db::attempts` and `Db::attempt_count` to read it) and
   the schedule shows the newest 20 attempts per character. Schema 5 then added what an
-  attempt was graded from, `export_practice_log` (the settings screen's two buttons, or
-  the command) writes the log out as JSON Lines or CSV, and `hanzi_store::analyse` —
+  attempt was graded from, `export_practice_log` (the settings screen's two log
+  buttons, or the command) writes the log out as JSON Lines or CSV, and
+  `hanzi_store::analyse` —
   printed by `pnpm run analyse-attempts` — reports the distributions, the mass near each
   bar, and which measures are pinned or fail to separate passes from failures. It
   reports rather than concludes, because it cannot know whether an attempt was right, so

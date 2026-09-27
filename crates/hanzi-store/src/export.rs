@@ -12,7 +12,7 @@
 
 use hanzi_core::vocab::csv_field;
 use hanzi_core::AttemptMeasures;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::LoggedAttempt;
 
@@ -21,24 +21,43 @@ use crate::LoggedAttempt;
 /// A deliberate copy of the storage row rather than `Serialize` on
 /// [`LoggedAttempt`] itself: this is a format other programs read, so it should
 /// change when someone decides it should rather than whenever the table does.
-#[derive(Serialize)]
+///
+/// It is owned, and reads as well as writes, because it is also the attempt's
+/// shape inside the combined backup (see [`crate::backup`]) — which has to be
+/// able to read back exactly what the JSON Lines export writes. Two types for
+/// one format would be two chances for them to disagree.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ExportedAttempt<'a> {
-    ch: &'a str,
-    at: &'a str,
-    score: f32,
+pub struct ExportedAttempt {
+    pub ch: String,
+    pub at: String,
+    pub score: f32,
     /// `again`, `hard`, `good` or `easy`.
-    rating: &'a str,
+    pub rating: String,
     /// Which device made it, and its number in that device's own log. Carried
     /// because the log read here is the union of every device's, so an attempt
     /// has to keep saying where it came from.
-    device_id: &'a str,
-    seq: i64,
+    pub device_id: String,
+    pub seq: i64,
     /// Absent when nothing measured this attempt: it predates schema 5, or it
     /// arrived from a peer, whose shard carries the score and the time only.
     /// Absent rather than zero, because a measured zero is a verdict.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    measures: Option<AttemptMeasures>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measures: Option<AttemptMeasures>,
+}
+
+impl From<&LoggedAttempt> for ExportedAttempt {
+    fn from(attempt: &LoggedAttempt) -> Self {
+        Self {
+            ch: attempt.ch.clone(),
+            at: attempt.at.clone(),
+            score: attempt.score,
+            rating: attempt.rating.clone(),
+            device_id: attempt.device_id.clone(),
+            seq: attempt.seq,
+            measures: attempt.measures,
+        }
+    }
 }
 
 /// The attempts as JSON Lines: one object per line, in the order given.
@@ -49,16 +68,7 @@ struct ExportedAttempt<'a> {
 pub fn attempts_to_jsonl(attempts: &[LoggedAttempt]) -> Result<String, serde_json::Error> {
     let mut out = String::new();
     for attempt in attempts {
-        let row = ExportedAttempt {
-            ch: &attempt.ch,
-            at: &attempt.at,
-            score: attempt.score,
-            rating: &attempt.rating,
-            device_id: &attempt.device_id,
-            seq: attempt.seq,
-            measures: attempt.measures,
-        };
-        out.push_str(&serde_json::to_string(&row)?);
+        out.push_str(&serde_json::to_string(&ExportedAttempt::from(attempt))?);
         out.push('\n');
     }
     Ok(out)
@@ -71,9 +81,10 @@ const CSV_HEADER: &str = "ch,at,score,rating,device_id,seq,shape,position,ink,\
 /// The attempts as CSV: a header row, then one row per attempt.
 ///
 /// Lossy on purpose, and by the same rule as the vocabulary list's CSV export:
-/// there is no matching import, because JSON Lines is the format that round
-/// trips. A missing measure is an empty field, which is how a spreadsheet spells
-/// "not measured".
+/// there is no matching import. The format that round-trips is the combined
+/// backup ([`crate::backup`]), not either of these single-purpose exports. A
+/// missing measure is an empty field, which is how a spreadsheet spells "not
+/// measured".
 pub fn attempts_to_csv(attempts: &[LoggedAttempt]) -> String {
     let mut out = String::from(CSV_HEADER);
     out.push('\n');

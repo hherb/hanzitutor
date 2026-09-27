@@ -19,7 +19,7 @@ use hanzi_hearing::AsrStatus;
 use crate::say::SayStatus;
 use hanzi_voice::MicrophoneStatus;
 use crate::licences::{AppInfo, LicenceNotice};
-use crate::state::{AppState, ProgressState, VocabState};
+use crate::state::{AppState, BackupOutcome, ProgressState, VocabState};
 use crate::sync::{AutoSync, SyncService, SyncView};
 
 /// How many characters make up one lesson.
@@ -1231,6 +1231,17 @@ pub async fn vocab_import(
     let json = std::fs::read_to_string(&path)
         .map_err(|e| format!("could not read {}: {e}", path.display()))?;
 
+    // The other half of the wrong-file guard: a backup holds a list *and* a log,
+    // and this import takes a list on its own. Saying which screen wants the file
+    // beats a parser complaint about a missing field.
+    if hanzi_store::backup::is_a_backup(&json) {
+        return Err(
+            "that is a backup of your list and your log together, which this screen \
+             cannot read. Use Restore on the settings screen for it."
+                .to_string(),
+        );
+    }
+
     let mut vocab = state.lock_vocab();
     let summary = vocab
         .store
@@ -1328,6 +1339,67 @@ pub async fn export_practice_log(
         return Ok(None);
     };
     state.export_practice_log(&path, &format).map(Some)
+}
+
+/// Write everything the learner has made — their list and their log — to one file.
+///
+/// One button and one file, because the question this answers is "what do I keep
+/// so I do not lose my work", and a learner should not have to know that their
+/// vocabulary and their practice live in two stores. The log-only exports beside
+/// it stay, but they are for a spreadsheet rather than for keeping.
+///
+/// The dialog is here for the same reason as everywhere else: no path over IPC.
+/// `None` means the learner chose no file.
+#[tauri::command]
+pub async fn backup_export(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let title = "Back up your vocabulary and your practice log";
+    let file_name = "hanzi-tutor-backup.json";
+    let Some(path) = ask_where_to_save(&app, title, file_name, ("Backup", &["json"]))? else {
+        return Ok(None);
+    };
+    state.export_backup(&path).map(Some)
+}
+
+/// Read a backup back in, adding it to this device.
+///
+/// `merge` false replaces the **list** rather than adding to it; either way the
+/// attempt log is only ever added to, because an attempt already recorded here is
+/// a real thing that happened and a file that predates it is no reason to forget
+/// it. The interface says so beside the button rather than leaving the asymmetry
+/// to be discovered.
+///
+/// `None` when the dialog was closed. As with the exports, the dialog is here so
+/// that no path arrives over IPC — see [`ask_where_to_save`].
+#[tauri::command]
+pub async fn backup_import(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    merge: bool,
+) -> Result<Option<BackupOutcome>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    // Blocking on an `async` command, and so off the main thread — see
+    // [`ask_where_to_save`], whose reasoning applies here unchanged.
+    let chosen = app
+        .dialog()
+        .file()
+        .set_title(if merge {
+            "Add a backup to this device"
+        } else {
+            "Replace your vocabulary list from a backup"
+        })
+        .add_filter("Backup", &["json"])
+        .blocking_pick_file();
+    let Some(chosen) = chosen else {
+        return Ok(None);
+    };
+    let path = chosen
+        .simplified()
+        .into_path()
+        .map_err(|e| format!("that file cannot be read: {e}"))?;
+    state.import_backup(&path, merge).map(Some)
 }
 
 /// What is due for review now, most overdue first, from the course and the

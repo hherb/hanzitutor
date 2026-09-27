@@ -15,7 +15,9 @@ use hanzi_core::pinyin::{
     heard_against_readings, syllables, tone_target as build_tone_target, Heard, ToneTarget,
 };
 use hanzi_core::tone::analyze;
+use hanzi_store::backup::Backup;
 use hanzi_store::Db;
+use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use hanzi_hearing::Asr;
@@ -397,6 +399,67 @@ impl Persisted<SettingsStore> {
 pub struct Prepared {
     dataset: Dataset,
     course: HashSet<char>,
+}
+
+/// What restoring a backup did, for the sentence the interface shows.
+///
+/// The list comes back with it, as [`crate::commands::vocab_import`] returns its
+/// own view, because the import is what changed it and a round trip to re-read
+/// it could only disagree with what was just written.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupOutcome {
+    pub view: VocabView,
+    pub message: String,
+}
+
+/// A sentence for the learner out of what a restore did.
+///
+/// Every number here is one they can check against the file, and the two that
+/// need explaining are said rather than left out: an attempt the log already held
+/// is *not* counted again (that is the identity rule, not a failure), and a
+/// schedule left alone is one whose history predates the log on this device.
+fn describe_restore(
+    backup: &Backup,
+    summary: &hanzi_core::vocab::ImportSummary,
+    attempts_added: usize,
+    recomputed: usize,
+    left_alone: usize,
+) -> String {
+    let mut parts = Vec::new();
+
+    if summary.replaced {
+        parts.push(format!("replaced your list with {} entries", summary.added));
+    } else {
+        parts.push(format!("added {} entries to your list", summary.added));
+    }
+    if summary.skipped_duplicates > 0 {
+        parts.push(format!("left {} already there", summary.skipped_duplicates));
+    }
+    if summary.groups_added > 0 {
+        parts.push(format!("{} new groups", summary.groups_added));
+    }
+
+    if attempts_added > 0 {
+        parts.push(format!("recovered {attempts_added} attempts"));
+    } else if backup.attempt_count() > 0 {
+        parts.push("every attempt in it was already in your log".to_string());
+    }
+    if recomputed > 0 {
+        parts.push(format!("rebuilt {recomputed} schedules"));
+    }
+    if left_alone > 0 {
+        parts.push(format!(
+            "left {left_alone} schedule{} alone, as their history predates the log",
+            if left_alone == 1 { "" } else { "s" }
+        ));
+    }
+
+    format!(
+        "Restored the backup written {}: {}.",
+        backup.exported_at(),
+        parts.join(", ")
+    )
 }
 
 /// State held for the lifetime of the app and shared by all commands.
@@ -1207,6 +1270,116 @@ impl AppState {
             attempts.len(),
             path.display()
         ))
+    }
+
+    /// Write **both** documents — the list and the log — to one file.
+    ///
+    /// This is the file that round-trips, and the answer to "does the export
+    /// include my own vocabulary?" being *no* for the log export: it does here,
+    /// by construction. See [`hanzi_store::backup`] for what is in it and why the
+    /// schedule and the preferences are not.
+    ///
+    /// Here rather than in the command for the same reason as
+    /// [`Self::export_practice_log`]: what leaves the app is worth a test that
+    /// needs no window.
+    pub fn export_backup(&self, path: &std::path::Path) -> Result<String, String> {
+        let db = self
+            .db
+            .as_ref()
+            .ok_or("there is nowhere to keep study data, so there is nothing to back up")?;
+        let attempts = db.attempts(None)?;
+        let (vocabulary_json, entries) = {
+            let vocab = self.lock_vocab();
+            (
+                vocab.store.export_json().map_err(|e| e.to_string())?,
+                vocab.store.entries().len(),
+            )
+        };
+
+        let backup = Backup::build(&now_iso8601(), &vocabulary_json, &attempts)
+            .map_err(|e| e.to_string())?;
+        let measured = backup.measured_count();
+        let text = backup.to_json().map_err(|e| e.to_string())?;
+        std::fs::write(path, text)
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+
+        Ok(format!(
+            "Backed up {entries} vocabulary {} and {} attempts ({measured} with \
+             grading measures) to {}",
+            if entries == 1 { "entry" } else { "entries" },
+            attempts.len(),
+            path.display()
+        ))
+    }
+
+    /// Read a backup back in, into this device's list and log.
+    ///
+    /// `merge` false replaces the **vocabulary list**; the log is always merged,
+    /// because an attempt is named by `(device_id, seq)` and removing one the
+    /// backup does not mention would be deleting history this device recorded and
+    /// the backup simply predates. That asymmetry is stated in the interface and
+    /// in [`Backup::incoming_attempts`]'s rule: nothing about a restore can
+    /// destroy practice that is already here.
+    ///
+    /// Order matters twice. The log is merged **before** the list is imported and
+    /// the schedule is rebuilt **before** the list is tagged, because an entry's
+    /// standing is read from the schedule's cards — import the list first and it
+    /// would be tagged against the pre-restore schedule.
+    pub fn import_backup(
+        &self,
+        path: &std::path::Path,
+        merge: bool,
+    ) -> Result<BackupOutcome, String> {
+        let db = self
+            .db
+            .as_ref()
+            .ok_or("there is nowhere to keep study data, so there is nothing to restore into")?;
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        let backup = Backup::parse(&text).map_err(|e| e.to_string())?;
+
+        // The log, through the same door a sync uses, so the identity rule that
+        // stops an attempt being counted twice is the same rule here.
+        let incoming = backup.incoming_attempts();
+        let attempts_added = db.merge_attempts(&incoming)?;
+
+        // The schedule is derived, so it is rebuilt rather than restored. A card
+        // this device migrated from the old JSON files is folded from its own
+        // baseline; with none, the log is the whole story.
+        let baselines = hanzi_sync::local_baselines(db).map_err(|e| e.to_string())?;
+        let (recomputed, left_alone) =
+            hanzi_sync::recompute(db, &baselines).map_err(|e| e.to_string())?;
+
+        // `recompute` wrote the `progress_card` rows underneath the open store, so
+        // the in-memory schedule is stale — and its next save would write the stale
+        // cards back. The vocabulary list is deliberately *not* reloaded: the
+        // document in memory is the one the import below is about to change, and
+        // reloading it would discard an import that could not be saved.
+        self.lock_progress().reload(db);
+        self.lock_cursor().reload(db);
+
+        let vocabulary_json = backup.vocabulary_json().map_err(|e| e.to_string())?;
+        let (summary, save_warning) = {
+            let mut vocab = self.lock_vocab();
+            let summary = vocab
+                .store
+                .import_json(&vocabulary_json, merge)
+                .map_err(|e| e.to_string())?;
+            let warning = vocab.save();
+            (summary, warning)
+        };
+
+        let mut view = self.lock_vocab().view();
+        if let Some(warning) = save_warning {
+            view.warning = Some(warning);
+        }
+        // After the schedule reload above, so the tags describe the restored log.
+        let view = self.tag_vocab(view);
+
+        Ok(BackupOutcome {
+            view,
+            message: describe_restore(&backup, &summary, attempts_added, recomputed, left_alone),
+        })
     }
 
     /// Where the learner got to in one of their own groups, as a local entry id.

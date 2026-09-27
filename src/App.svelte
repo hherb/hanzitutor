@@ -506,6 +506,9 @@
   /** The result of the last practice-log export, shown on the settings screen. */
   let logMessage = $state<string | null>(null);
   let logBusy = $state(false);
+  /** The result of the last backup or restore, shown on the settings screen. */
+  let backupMessage = $state<string | null>(null);
+  let backupBusy = $state(false);
 
   // ---- the word dictionary -------------------------------------------------
   /** The HSK level the words screen is filtered to, or null for all of them. */
@@ -2121,6 +2124,67 @@
     }
   }
 
+  // ---- the whole of it: the list and the log together ----------------------
+
+  /**
+   * Write the vocabulary list *and* the practice log to one file the learner chooses.
+   *
+   * This is the export to keep, and it exists because the two single-purpose
+   * exports are easy to mistake for it: the list's own export carries no practice,
+   * and the log's carries no list. One file that says what it is on the tin is the
+   * answer to "which of these do I restore from?".
+   */
+  async function exportBackup() {
+    try {
+      // Backend-owned dialog, as for the other two exports.
+      backupBusy = true;
+      const message = await api.backupExport();
+      if (message === null) return;
+      backupMessage = message;
+      void api.log(message);
+    } catch (cause) {
+      error = `Backup failed: ${cause}`;
+    } finally {
+      backupBusy = false;
+    }
+  }
+
+  /**
+   * Read a backup back in, adding it to this device.
+   *
+   * `replace` is the destructive half — it replaces the *list* — so it is asked
+   * about before the file dialog rather than after: a confirmation that arrived
+   * once a file was already chosen would make changing your mind cost a second
+   * trip through the picker. The attempts are only ever added to either way.
+   *
+   * The backend re-reads its own stores before returning; what is stale by then is
+   * this side's schedule and review queue, which the restore rebuilt underneath
+   * them, so both are re-read here.
+   */
+  async function importBackup(replace: boolean) {
+    if (replace) {
+      const agreed = await confirmDialog(
+        "Replace your vocabulary list with the one in the backup? Entries that are not in it will be removed from this device. Your practice log is not affected: attempts are only ever added, never removed.",
+        { title: "Replace your list", kind: "warning" },
+      );
+      if (!agreed) return;
+    }
+    try {
+      backupBusy = true;
+      const outcome = await api.backupImport(!replace);
+      if (outcome === null) return;
+      applyVocab(outcome.view);
+      backupMessage = outcome.message;
+      void api.log(`backup restore: ${outcome.message}`);
+      refreshProgress();
+      refreshReview();
+    } catch (cause) {
+      error = `Restore failed: ${cause}`;
+    } finally {
+      backupBusy = false;
+    }
+  }
+
   // ---- practising the list ------------------------------------------------
 
   /**
@@ -2840,6 +2904,10 @@
         onExportLog={(format) => void exportPracticeLog(format)}
         {logMessage}
         {logBusy}
+        onBackup={() => void exportBackup()}
+        onRestore={(replace) => void importBackup(replace)}
+        {backupMessage}
+        {backupBusy}
         onShowIntro={replayIntro}
         onShowNotes={replayNotes}
         notesAvailable={appVersion !== null && notesFor(appVersion) !== null}

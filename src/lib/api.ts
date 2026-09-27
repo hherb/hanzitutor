@@ -6,6 +6,7 @@ import type {
   AttemptMeasures,
   AutoSync,
   AsrStatus,
+  BackupOutcome,
   Character,
   CharacterSearchView,
   CursorView,
@@ -281,6 +282,28 @@ export const setVocabCursor = (group: string, entryId: number | null) =>
  */
 export const exportPracticeLog = (format: "jsonl" | "csv") =>
   invoke<string | null>("export_practice_log", { format });
+
+/**
+ * Write *everything* — the vocabulary list and the whole practice log — to one
+ * file the learner chooses.
+ *
+ * This is the file that round-trips, and the one to keep. The two single-purpose
+ * exports above are for a list on its own and for a spreadsheet; neither is a
+ * backup. The save dialog is the backend's, so no path is passed in. Resolves
+ * `null` when the dialog was closed without choosing.
+ */
+export const backupExport = () => invoke<string | null>("backup_export");
+
+/**
+ * Read a backup back in: the list and the log together.
+ *
+ * `merge` false replaces the **vocabulary list** rather than adding to it; the
+ * attempt log is only ever added to, because an attempt already recorded is
+ * something that happened. The open dialog is the backend's, for the same reason
+ * as [`backupExport`]. Resolves `null` when the dialog was closed.
+ */
+export const backupImport = (merge: boolean) =>
+  invoke<BackupOutcome | null>("backup_import", { merge });
 
 // ---- practice progress and review -----------------------------------------
 

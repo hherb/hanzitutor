@@ -46,7 +46,7 @@ pub use document::{
 };
 pub use dropbox::DropboxStore;
 pub use http::{Http, UreqHttp};
-pub use local::{full_log, own_log, publish, pull, recompute, sync, Summary};
+pub use local::{full_log, local_baselines, own_log, publish, pull, recompute, sync, Summary};
 pub use oauth::{authorize_url, exchange_code, refresh, revoke, Pkce, Tokens, SCOPES};
 pub use reach::{Reach, TcpReach};
 pub use shard::{

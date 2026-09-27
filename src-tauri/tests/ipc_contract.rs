@@ -3024,9 +3024,15 @@ fn no_file_command_takes_a_path_from_the_webview() {
         signatures.len()
     );
 
-    // The three that write or read a file. Each must name the dialog rather than
+    // The five that write or read a file. Each must name the dialog rather than
     // a parameter, and must take no `path`-shaped argument.
-    for name in ["vocab_export", "vocab_import", "export_practice_log"] {
+    for name in [
+        "vocab_export",
+        "vocab_import",
+        "export_practice_log",
+        "backup_export",
+        "backup_import",
+    ] {
         let signature = signatures
             .iter()
             .find(|s| s.contains(&format!("fn {name}(")))
@@ -3115,6 +3121,175 @@ fn the_practice_log_exports_every_attempt_with_its_measures() {
         .is_err());
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_backup_carries_the_list_and_the_log_and_restores_both() {
+    // The whole point of the combined file: one export that holds the learner's
+    // *own* vocabulary as well as their practice, and one import that brings it
+    // back on a device that has never seen either.
+    let measures = AttemptMeasures {
+        shape: 0.82,
+        position: 0.71,
+        ink: 0.33,
+        ink_coverage: 0.95,
+        order: 1.0,
+        legible: false,
+        order_correct: true,
+    };
+
+    let source_dir = data_dir("backup-source");
+    let source = AppState::load(Some(source_dir.clone())).unwrap();
+    {
+        let mut vocab = source.lock_vocab();
+        vocab
+            .store
+            .add_entry("学生", "xuésheng", "student", Some("SiLu"))
+            .unwrap();
+        vocab
+            .store
+            .add_entry("姐姐", "jiějie", "older sister", None)
+            .unwrap();
+        assert!(vocab.save().is_none(), "saving the list should succeed");
+    }
+    {
+        let mut progress = source.lock_progress();
+        progress
+            .store
+            .record_measured('好', 63.0, Some(measures))
+            .unwrap();
+        progress
+            .store
+            .record_at('学', 88.0, "2026-09-22T10:00:00Z")
+            .unwrap();
+        assert!(progress.save().is_none(), "saving the log should succeed");
+    }
+
+    let file = source_dir.join("backup.json");
+    let message = source.export_backup(&file).expect("backing up should work");
+    assert!(message.contains("2 vocabulary entries"), "{message}");
+    assert!(message.contains("2 attempts"), "{message}");
+    assert!(message.contains("1 with grading measures"), "{message}");
+
+    // A second device, with nothing on it. This is the device a backup is for.
+    let target_dir = data_dir("backup-target");
+    let target = AppState::load(Some(target_dir.clone())).unwrap();
+    assert_eq!(target.lock_vocab().store.entries().len(), 0);
+
+    let outcome = target
+        .import_backup(&file, true)
+        .expect("restoring should work");
+    assert_eq!(outcome.view.entries.len(), 2, "{}", outcome.message);
+    assert_eq!(outcome.view.groups, vec!["SiLu".to_string()]);
+    assert!(
+        outcome.view.entries.iter().any(|entry| entry.entry.text == "学生"),
+        "the learner's own vocabulary came back"
+    );
+    assert!(outcome.message.contains("recovered 2 attempts"), "{}", outcome.message);
+
+    // The log came back with its measures — the reason it is worth exporting —
+    // and the unmeasured attempt is still unmeasured rather than zeroed.
+    let db = target.db.as_ref().unwrap();
+    let attempts = db.attempts(None).unwrap();
+    assert_eq!(attempts.len(), 2);
+    let measured = attempts
+        .iter()
+        .find(|attempt| attempt.ch == "好")
+        .expect("the measured attempt is in the log");
+    assert_eq!(measured.measures.unwrap().ink_coverage, 0.95);
+    let bare = attempts
+        .iter()
+        .find(|attempt| attempt.ch == "学")
+        .unwrap();
+    assert!(bare.measures.is_none(), "an unmeasured attempt stays unmeasured");
+
+    // The schedule is derived, so it was not in the file and had to be rebuilt
+    // from the log: both characters have a card on a device that never wrote them.
+    {
+        let progress = target.lock_progress();
+        assert!(progress.store.card('好').is_some(), "the schedule was rebuilt");
+        assert!(progress.store.card('学').is_some());
+    }
+
+    // Restoring the same file again adds nothing and counts nothing twice: an
+    // attempt is named by (device, seq), and the pair already names it.
+    let again = target.import_backup(&file, true).unwrap();
+    assert_eq!(again.view.entries.len(), 2, "no duplicate entries");
+    assert!(again.message.contains("left 2 already there"), "{}", again.message);
+    assert!(
+        again.message.contains("every attempt in it was already in your log"),
+        "{}",
+        again.message
+    );
+    assert_eq!(db.attempts(None).unwrap().len(), 2, "no duplicate attempts");
+
+    std::fs::remove_dir_all(&source_dir).ok();
+    std::fs::remove_dir_all(&target_dir).ok();
+}
+
+#[test]
+fn replacing_from_a_backup_replaces_the_list_and_never_the_log() {
+    // The two halves do not have the same rule, and that is deliberate: a list
+    // can be replaced, but an attempt is something that happened. A backup from
+    // before it is no reason to forget it.
+    let source_dir = data_dir("backup-replace-source");
+    let source = AppState::load(Some(source_dir.clone())).unwrap();
+    {
+        let mut vocab = source.lock_vocab();
+        vocab.store.add_entry("老师", "", "", None).unwrap();
+        assert!(vocab.save().is_none());
+    }
+    let file = source_dir.join("backup.json");
+    source.export_backup(&file).unwrap();
+
+    let target_dir = data_dir("backup-replace-target");
+    let target = AppState::load(Some(target_dir.clone())).unwrap();
+    {
+        let mut vocab = target.lock_vocab();
+        vocab.store.add_entry("朋友", "", "", None).unwrap();
+        assert!(vocab.save().is_none());
+    }
+    {
+        // Practice that the backup knows nothing about, because it happened here.
+        let mut progress = target.lock_progress();
+        progress
+            .store
+            .record_at('好', 70.0, "2026-09-25T10:00:00Z")
+            .unwrap();
+        assert!(progress.save().is_none());
+    }
+
+    let outcome = target.import_backup(&file, false).unwrap();
+    let texts: Vec<&str> = outcome
+        .view
+        .entries
+        .iter()
+        .map(|entry| entry.entry.text.as_str())
+        .collect();
+    assert_eq!(texts, vec!["老师"], "the list was replaced, not merged");
+    assert!(outcome.message.contains("replaced your list"), "{}", outcome.message);
+
+    // The local attempt is still here, and is still scheduled.
+    let attempts = target.db.as_ref().unwrap().attempts(None).unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0].ch, "好");
+    assert!(target.lock_progress().store.card('好').is_some());
+
+    // Picking the wrong file is named as what it is: the vocabulary list has an
+    // export of its own, and its own import, two screens away.
+    let list_file = target_dir.join("vocabulary.json");
+    {
+        let mut vocab = target.lock_vocab();
+        std::fs::write(&list_file, vocab.store.export_json().unwrap()).unwrap();
+        assert!(vocab.save().is_none());
+    }
+    let error = target
+        .import_backup(&list_file, true)
+        .expect_err("a list export is not a backup");
+    assert!(error.contains("vocabulary-list export"), "{error}");
+
+    std::fs::remove_dir_all(&source_dir).ok();
+    std::fs::remove_dir_all(&target_dir).ok();
 }
 
 #[test]

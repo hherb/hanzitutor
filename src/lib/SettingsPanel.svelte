@@ -106,6 +106,27 @@
     /** True while an export is being written. */
     logBusy: boolean;
     /**
+     * Called to write **everything** — the vocabulary list and the practice log —
+     * to one file the learner chooses.
+     *
+     * Distinct from [`onExportLog`], which writes the log alone: this is the file
+     * that round-trips, and the whole reason it exists is that a learner could not
+     * tell which of the two single-purpose exports held their own list.
+     */
+    onBackup: () => void;
+    /**
+     * Called to read a backup back in.
+     *
+     * `replace` true replaces the vocabulary list rather than adding to it; the
+     * practice log is only ever added to, because an attempt already recorded is
+     * something that happened rather than a setting.
+     */
+    onRestore: (replace: boolean) => void;
+    /** What the last backup or restore did, or `null` if none has run. */
+    backupMessage: string | null;
+    /** True while a backup or restore is running. */
+    backupBusy: boolean;
+    /**
      * Called to show the introduction again.
      *
      * The introduction is shown once on a first run and then only on request.
@@ -143,6 +164,10 @@
     onExportLog,
     logMessage,
     logBusy,
+    onBackup,
+    onRestore,
+    backupMessage,
+    backupBusy,
     onShowIntro,
     onShowNotes,
     notesAvailable,
@@ -1014,16 +1039,52 @@
       </div>
     </div>
 
-    <!-- Your practice log ----------------------------------------------- -->
+    <!-- Everything you have made, in one file ----------------------------- -->
     <div class="row">
       <div class="what">
-        <span class="name" id="set-log">Your practice log</span>
+        <span class="name" id="set-backup">Back up your list and your log</span>
         <span class="why">
-          Every attempt you have made: what you wrote, the score it was graded,
-          and the measures behind that score. It is your own record of your own
-          handwriting, so this is where it leaves the app — as a file you choose,
-          written on this machine. Nothing is uploaded, and nothing here depends
-          on an account.
+          One file holding everything you have made: the vocabulary you added
+          yourself — every entry, its reading, its meaning and its group — and
+          every attempt you have made, with the measures it was graded from. This
+          is the file to keep and the one to bring to a new device. It is written
+          where you choose, on this machine; nothing is uploaded, and no account
+          is involved. Restoring rebuilds the practice schedule from the log
+          inside it, so due dates come back too.
+        </span>
+      </div>
+      <div class="how">
+        <div class="segmented" role="group" aria-labelledby="set-backup">
+          <button disabled={backupBusy} onclick={onBackup}>Back up…</button>
+          <button disabled={backupBusy} onclick={() => onRestore(false)}>Restore…</button>
+          <button disabled={backupBusy} onclick={() => onRestore(true)}>Replace list…</button>
+        </div>
+        <span class="status">
+          {#if backupBusy}
+            Working…
+          {:else if backupMessage}
+            {backupMessage}
+          {:else}
+            <strong>Restore</strong> adds to what is here and takes nothing away.
+            <strong>Replace list</strong> swaps your list for the one in the file;
+            your practice log is added to either way, never cut down, because an
+            attempt is something that happened.
+          {/if}
+        </span>
+      </div>
+    </div>
+
+    <!-- The practice log on its own, for a spreadsheet --------------------- -->
+    <div class="row">
+      <div class="what">
+        <span class="name" id="set-log">Your practice log on its own</span>
+        <span class="why">
+          Just the attempts, for a spreadsheet or a statistics package: what you
+          wrote, the score it was graded, and the measures behind that score. It
+          leaves your vocabulary list out, and it is not what
+          <strong>Restore</strong> reads — the backup above is the file that
+          round-trips. There is no import here for the same reason: JSON Lines is
+          for reading, and a backup is for keeping.
         </span>
       </div>
       <div class="how">
@@ -1041,7 +1102,7 @@
           {:else if logMessage}
             {logMessage}
           {:else}
-            JSON Lines keeps everything and can be read back; CSV opens in a
+            JSON Lines keeps every field, measures and all; CSV opens in a
             spreadsheet, where the measures are one column each.
           {/if}
         </span>
@@ -1081,8 +1142,10 @@
 
   <p class="footnote">
     Your study data — the vocabulary list, the practice schedule and your place
-    in the course — is not affected by anything on this screen. It lives in one
-    database, and where that is is in <em>About and licences</em>.
+    in the course — lives in one database on this device. Restoring a backup and
+    syncing are the two things here that change it; the exports only read it, and
+    the preferences change how the app behaves. Where the database is is in
+    <em>About and licences</em>.
   </p>
 </section>
 

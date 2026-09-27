@@ -27,6 +27,7 @@
 //! crate knows is how to read and write the documents the engine hands it.
 
 pub mod analyse;
+pub mod backup;
 pub mod export;
 mod migrate;
 mod schema;
@@ -279,6 +280,12 @@ impl Db {
     /// attempt, so a sync that runs twice must neither duplicate it nor rewrite it.
     /// Deciding whether two copies *agree* is the caller's job, because it is the
     /// caller that has both texts to compare; this can only say "already have it".
+    ///
+    /// This is the one way in for an attempt that did not happen on this device,
+    /// whether it arrived over sync or inside a restored backup. Both go through
+    /// [`IncomingAttempt`], whose `measures` a shard leaves empty and a backup
+    /// fills in; the identity rule is the same either way, which is the point of
+    /// having one door.
     pub fn merge_attempts(&self, incoming: &[IncomingAttempt]) -> Result<usize, String> {
         if incoming.is_empty() {
             return Ok(0);
@@ -288,10 +295,13 @@ impl Db {
         let tx = conn.transaction().map_err(|e| at(&path, e))?;
         let mut added = 0usize;
         for attempt in incoming {
+            let m = attempt.measures;
             added += tx
                 .execute(
-                    "INSERT INTO attempt (device_id, seq, ch, at, score, rating)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    "INSERT INTO attempt (device_id, seq, ch, at, score, rating,
+                                          shape, position, ink, ink_coverage,
+                                          order_score, legible, order_correct)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                      ON CONFLICT(device_id, seq) DO NOTHING",
                     params![
                         attempt.device_id,
@@ -300,6 +310,13 @@ impl Db {
                         attempt.at,
                         attempt.score,
                         attempt.rating.name(),
+                        m.map(|m| m.shape),
+                        m.map(|m| m.position),
+                        m.map(|m| m.ink),
+                        m.map(|m| m.ink_coverage),
+                        m.map(|m| m.order),
+                        m.map(|m| m.legible),
+                        m.map(|m| m.order_correct),
                     ],
                 )
                 .map_err(|e| at(&path, e))?;
@@ -461,6 +478,13 @@ pub struct IncomingAttempt {
     pub at: String,
     pub score: f32,
     pub rating: Rating,
+    /// The grading measures behind `score`, when the source has them.
+    ///
+    /// A sync shard carries the score and the time and nothing else, so the sync
+    /// path sends `None`; a backup carries them, which is the reason the log is
+    /// worth exporting at all — see [`crate::export`]. `None` is not a measured
+    /// zero, and the column stays `NULL`.
+    pub measures: Option<AttemptMeasures>,
 }
 
 /// A database error, with the file it came from: "it could not be read" is not
