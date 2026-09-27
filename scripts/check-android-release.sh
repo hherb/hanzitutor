@@ -225,12 +225,24 @@ fi
 # Installing the splits Play would serve is a stronger statement than any size:
 # it is the same code path a phone takes from the store, and it keeps the
 # learner's data, because the package and the upload key are unchanged.
+#
+# The one exception is the 0.5.11 rename to `com.hherb.hanzitutor`: a device still
+# carrying the old `com.hanzitutor.app` install is a *different* app to Android, so
+# this one lands beside it rather than over it, and the old install's data stays
+# behind under the old name until that is uninstalled. Nothing had been published
+# when the rename happened, so no learner was affected by it.
 if [ "$install_to_device" = 1 ]; then
   [ "$have_device" = 1 ] || { echo "error: --install but no device attached" >&2; exit 1; }
   echo
   echo "  installing the generated splits on the connected device…"
   bundletool install-apks --apks="$scratch/app.apks" --adb="$adb" 2>&1 | tail -2 | sed 's/^/    /'
-  echo "    launch it with: $adb shell am start -n com.hanzitutor.app/.MainActivity"
+  # The component name is applicationId/namespace.Activity, and those two differ
+  # on purpose here: Play fixes the package name, so `applicationId` is
+  # `com.hherb.hanzitutor` while the Kotlin namespace stayed
+  # `com.hanzitutor.app`. See the comment on `applicationId` in
+  # `app/build.gradle.kts`; `am start` with the short `.MainActivity` form does
+  # not resolve, because it expands against the applicationId.
+  echo "    launch it with: $adb shell am start -n com.hherb.hanzitutor/com.hanzitutor.app.MainActivity"
 elif [ "$have_device" = 1 ]; then
   echo
   echo "  re-run with --install to put these splits on the connected device"

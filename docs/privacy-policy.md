@@ -166,7 +166,7 @@ Questions about this policy can be sent to **support@hherb.com**.
     * `aapt2 dump permissions` on a signed Android artifact lists exactly four
       `uses-permission` lines — `RECORD_AUDIO`, `INTERNET`, `USE_BIOMETRIC` and
       `USE_FINGERPRINT` — plus one the app declares for itself,
-      `com.hanzitutor.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, which AndroidX
+      `com.hherb.hanzitutor.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, which AndroidX
       adds and which guards a broadcast receiver rather than collecting anything.
       The microphone and the two model downloads are the first three; the biometric pair
       arrives with `androidx.biometric` through manifest merging, so it reappears

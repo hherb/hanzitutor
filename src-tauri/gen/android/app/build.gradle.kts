@@ -44,7 +44,24 @@ android {
     namespace = "com.hanzitutor.app"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        applicationId = "com.hanzitutor.app"
+        // The published identity, and deliberately **not** the same string as the
+        // namespace above. Play fixes an app's package name when the Console
+        // creates it and never lets it change, so this one line is what the
+        // listing is called: `com.hherb.hanzitutor`, because the domain is the
+        // project's (hherb.com publishes the privacy policy) and Google
+        // recommends a domain-based name. The namespace stays
+        // `com.hanzitutor.app` so the Kotlin packages, the generated Tauri
+        // sources, and `tauri.conf.json`'s `identifier` — which also names the
+        // macOS data directory, the iOS bundle id and the dev signing identity —
+        // are all left alone: renaming those would orphan a learner's desktop
+        // database and invalidate the iOS provisioning profile for no gain.
+        // AGP allows the two to differ. What follows `applicationId` is the
+        // device's data directory, the FileProvider authority, AndroidX's
+        // `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, and the component name a
+        // release is launched with — `am start -n
+        // com.hherb.hanzitutor/com.hanzitutor.app.MainActivity`, the class still
+        // resolving through the namespace.
+        applicationId = "com.hherb.hanzitutor"
         // 26, not the template's 24: tone practice captures through `cpal`,
         // whose Android backend drives AAudio, and cpal pins the `ndk` crate to
         // its `api-level-26` feature. AAudio's `libaaudio.so` does not exist

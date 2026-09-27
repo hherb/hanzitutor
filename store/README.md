@@ -136,5 +136,5 @@ the launcher restarts, so a same-version reinstall shows the previous artwork on
 the home screen while the APK already contains the new one. Restarting the
 launcher drops that cache for good — `adb shell am force-stop <launcher>`, then
 home — and the two can be told apart instead of guessed at by pulling the
-installed APK (`adb shell pm path com.hanzitutor.app`, then `adb pull`, then
+installed APK (`adb shell pm path com.hherb.hanzitutor`, then `adb pull`, then
 `aapt2 dump badging`), which is what showed the artwork had been right all along.

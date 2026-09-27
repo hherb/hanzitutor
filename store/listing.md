@@ -269,12 +269,13 @@ Built from the tree at version `0.5.11`, for every ABI the app can run on:
 | | |
 | --- | --- |
 | Bundle | `src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab` |
-| Size | 993,212,862 bytes (947 MiB) |
-| SHA-256 | `71d6aed0febd29298e9c53f8ceafb4e32d64faac535c46dc351b228901e272ef` |
+| Package name | `com.hherb.hanzitutor` — what Play calls the app. Fixed when the Console created it, and the one field that can never be changed afterwards, which is why it is the `applicationId` in `app/build.gradle.kts` and deliberately not the namespace or the iOS/macOS `identifier` |
+| Size | 993,212,884 bytes (947 MiB) |
+| SHA-256 | `e73d2cb600dfd1f936f371dd5fe24bc36d3ae784c1b7c4589fa57d358639b1d8` |
 | `versionCode` / `versionName` | `5011` / `0.5.11` |
 | `minSdk` / `targetSdk` | 26 / 36 |
 | ABIs | `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64` |
-| Permissions | `INTERNET`, `RECORD_AUDIO`, `USE_BIOMETRIC`, `USE_FINGERPRINT`, `com.hanzitutor.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` |
+| Permissions | `INTERNET`, `RECORD_AUDIO`, `USE_BIOMETRIC`, `USE_FINGERPRINT`, `com.hherb.hanzitutor.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` |
 
 The permissions and the ABI list were read off the artifact built in the same run
 (`aapt2 dump permissions`, `aapt2 dump badging`), not copied from this file. The
@@ -347,7 +348,7 @@ says the bundle is the thing a phone will actually run.
    from the bundle rather than from this file, and it should name four
    `uses-permission` lines — `RECORD_AUDIO`, `INTERNET`, `USE_BIOMETRIC` and
    `USE_FINGERPRINT` — plus
-   `com.hanzitutor.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, which AndroidX
+   `com.hherb.hanzitutor.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, which AndroidX
    adds to guard a broadcast receiver.
 5. **Check the version code before every later upload.** Play requires it to
    increase, and `tauri.properties` derives it from the app version (`0.5.11` →
