@@ -216,8 +216,8 @@ form. Every answer here is checkable against the artifact rather than a promise.
 | --- | --- | --- |
 | App icon (512 × 512 PNG) | `src-tauri/icons/icon.png` | ready (512×512) |
 | Feature graphic (1024 × 500) | `store/feature-graphic-1024x500.png` | ready |
-| Phone screenshots (min 2) | `store/phone-screenshots/*.png` | 3 ready, 1080×1920 — but all three predate the tone colouring and the current board controls, so replace them first |
-| Tablet screenshots | — | not required to publish |
+| Phone screenshots (min 2) | live in the Console | 8 uploaded, and those are the ones on the listing. **The three `store/phone-screenshots/*.png` in the tree are superseded** — they predate the tone colouring and the current board controls, so do not re-upload them |
+| Tablet screenshots | live in the Console | 8 uploaded, and deliberately not versioned here, so the Console holds the only copy |
 
 Regenerate the artwork after a UI change with:
 
