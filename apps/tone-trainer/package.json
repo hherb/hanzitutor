@@ -1,7 +1,7 @@
 {
   "name": "tone-trainer",
   "private": true,
-  "version": "0.5.11",
+  "version": "0.6.0",
   "type": "module",
   "description": "Practise Mandarin tones: hear the minimal pairs, then say them",
   "license": "AGPL-3.0-only",

@@ -1697,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-core"
-version = "0.5.11"
+version = "0.6.0"
 dependencies = [
  "csv",
  "flate2",
@@ -1708,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-hearing"
-version = "0.5.11"
+version = "0.6.0"
 dependencies = [
  "bzip2 0.5.2",
  "hanzi-core",
@@ -1721,7 +1721,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-say"
-version = "0.5.11"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1730,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-store"
-version = "0.5.11"
+version = "0.6.0"
 dependencies = [
  "hanzi-core",
  "rusqlite",
@@ -1741,7 +1741,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-sync"
-version = "0.5.11"
+version = "0.6.0"
 dependencies = [
  "base64 0.21.7",
  "hanzi-core",
@@ -1756,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-tutor"
-version = "0.5.11"
+version = "0.6.0"
 dependencies = [
  "hanzi-core",
  "hanzi-hearing",
@@ -1778,7 +1778,7 @@ dependencies = [
 
 [[package]]
 name = "hanzi-voice"
-version = "0.5.11"
+version = "0.6.0"
 dependencies = [
  "block2",
  "cpal",
@@ -4722,7 +4722,7 @@ checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tone-trainer"
-version = "0.5.11"
+version = "0.6.0"
 dependencies = [
  "hanzi-core",
  "hanzi-hearing",

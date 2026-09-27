@@ -186,6 +186,47 @@ export const INTRO_PAGES: Page[] = [
  * short list, and one honest page beats three padded ones.
  */
 export const NOTES: Record<string, Page[]> = {
+  "0.6.0": [
+    {
+      title: "What's new in 0.6.0",
+      lead:
+        "Your vocabulary list and your practice log can now be written to one " +
+        "file and read back — on this device, or on a new one. Nothing about how " +
+        "your writing is graded has changed.",
+      points: [
+        {
+          name: "Back up",
+          what:
+            "Settings ▸ Back up your list and your log writes a single file " +
+            "holding both: every entry you added, with its reading, meaning and " +
+            "group, and every attempt you have made, with the measures it was " +
+            "graded from. Keep it somewhere safe.",
+        },
+        {
+          name: "Restore",
+          what:
+            "The same row reads it back. Restore adds to what is on this device " +
+            "and takes nothing away; Replace list swaps your vocabulary for the " +
+            "one in the file. Either way your practice log is only ever added " +
+            "to, and the review schedule is rebuilt from it — so due dates come " +
+            "back with it.",
+        },
+        {
+          name: "The log's own export says what it is",
+          what:
+            "The JSON Lines and CSV exports are still there under Your practice " +
+            "log on its own, and now say plainly that they leave your vocabulary " +
+            "out and are not what Restore reads. They are for a spreadsheet; the " +
+            "backup is the file to keep.",
+        },
+      ],
+      note:
+        "Whether your own vocabulary was in the old log export was a fair " +
+        "question with an unhelpful answer — it was not — and there was no way " +
+        "to read a practice log back at all. Both halves are fixed here, and the " +
+        "file that does it is the backup.",
+    },
+  ],
   "0.5.10": [
     {
       title: "What's new in 0.5.10",

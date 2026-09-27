@@ -1325,7 +1325,7 @@ your Apple Distribution certificate) and saved as
 `src-tauri/gen/apple/Signing.xcconfig`, since it is tied to your account.
 
 The result lands beside the direct-distribution one, in
-`.cargo-target/release/bundle/appstore/Hanzi Tutor_0.5.11.pkg`. The script
+`.cargo-target/release/bundle/appstore/Hanzi Tutor_0.6.0.pkg`. The script
 verifies its own signature (`codesign --verify --deep --strict`,
 `pkgutil --check-signature`) before it finishes; `spctl` reporting the result
 "rejected" if you check it yourself afterwards is expected, not a fault — Mac

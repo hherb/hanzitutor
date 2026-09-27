@@ -72,8 +72,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.5.11
-        CFBundleVersion: "0.5.11"
+        CFBundleShortVersionString: 0.6.0
+        CFBundleVersion: "0.6.0"
         ITSAppUsesNonExemptEncryption: false
         NSFaceIDUsageDescription: "Hanzi Tutor can use Face ID to protect your Dropbox sign-in, if you turn that on in Settings."
         NSMicrophoneUsageDescription: "Hanzi Tutor listens while you hold the button, to check the tone of what you said. The recording is scored on this device and is never saved or sent anywhere."
