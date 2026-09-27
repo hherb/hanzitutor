@@ -1972,6 +1972,41 @@ back.
   fresh install on the emulator is worth it: it is the closest thing here to the
   pre-launch report Play runs, and it is how the intro sheet's one absolute privacy
   claim was caught.
+- **The emulator's microphone only works when the emulator is launched from a host
+  macOS will grant it to, and the harness that launched it here is not one of those.**
+  `hw.audioInput=true` in `config.ini` and the Extended Controls microphone setting are
+  both necessary and neither is sufficient. The guest side was healthy the whole time —
+  the manifest permission read `granted=true`, `appops` answered
+  `RECORD_AUDIO: allow; duration=+2s552ms`, and the app recorded for as long as the
+  button was held — and every sample that arrived was zero. From the same process tree,
+  `ffmpeg -f avfoundation -i ":1" -t 2` returns **peak 0 of 32767 across ~87,000
+  samples, on both input devices**, while `coreaudiod` logs
+  `BuiltInMicrophoneDevice … startStream: running state: 1` beside it. **That pair is
+  the signature to look for**: a real microphone never returns exactly zero, because
+  even a silent room has a noise floor, so exact zeros mean the buffer is being blanked
+  rather than the room being quiet. `tccd` names the cause —
+  `service: kTCCServiceMicrophone requires entitlement
+  com.apple.security.device.audio-input but it is missing for
+  responsible={identifier=ai.deepseek.dsh.desktop}`, then `Policy disallows prompt …
+  access to kTCCServiceMicrophone denied` — and
+  `codesign -d --entitlements - "/Applications/DSH Desktop.app"` confirms the
+  entitlement is absent from a binary signed `flags=0x10000(runtime)`. **Restarting the
+  harness does not help, and is not worth trying**: the entitlement is part of the code
+  signature, so the same binary is refused on every launch, and there is no prompt to
+  answer in System Settings because the policy forbids asking for one. Launch the
+  emulator from **Terminal.app** instead, which is not hardened and is therefore
+  grantable — the privacy log then records
+  `new entry: kTCCServiceMicrophone com.apple.Terminal full` — or from **Android
+  Studio**, which is hardened *and* carries the entitlement:
+  `"$ANDROID_HOME/emulator/emulator" -avd HanziTutor_Tablet_API36 -port 5554`
+  (`HanziTutor_Tablet_API36` is the 10-inch tablet AVD, the SDK's own `medium_tablet`
+  profile at 2560×1600 and 320 dpi, which is 1280×800 CSS px and so lays the interface
+  out exactly as the 1180×840 desktop window does; it was written by hand the way
+  `HanziTutor_API36` was). The durable fix is to add
+  `com.apple.security.device.audio-input` to the harness's hardened-runtime
+  entitlements: its `NSMicrophoneUsageDescription` is inert without it, and until it is
+  added **no process the harness spawns can capture audio at all**, not only the
+  emulator.
 - **`minSdk` is 26 because of AAudio, and it has to be set in two places that
   agree.** `cpal` pins the `ndk` crate to its `api-level-26` feature, so the library
   needs `libaaudio.so`, which does not exist before Android 8. At `minSdk = 24` the
@@ -2278,6 +2313,20 @@ back.
   per-platform for that reason — `cpal` elsewhere, Kotlin's `AudioRecord` on Android —
   and §9 has the AAudio log, the five-source probe and the three details of the Kotlin
   backend that are easy to get wrong.
+- **A silent recording still comes back as a word, so the transcription is not evidence
+  that the microphone works.** With the emulator's input provably zero-filled — see the
+  microphone bullet under `### Android` — holding the button and saying nothing produced
+  `RECOGNISED 我 wǒ` with "heard a different syllable", while the tone panel beside it,
+  from the same recording, correctly said "I could not hear enough voice to judge".
+  `Recording` carries `samples`, `sample_rate`, `device` and `truncated` and **no energy
+  or peak field**, and `AppState::score_speech` hands the samples to the model
+  unguarded, so the recognition half answers a confident wrong syllable exactly where
+  the tone half answers nothing. **When the question is whether the microphone heard
+  anything, read the tone panel and not the transcription** — the two disagree on
+  silence and the tone half is the one telling the truth. The tone path already runs a
+  voicing test, so the guard the recognition path wants is a small one; without it a
+  learner whose microphone is muted, or whose permission was revoked after the first
+  grant, is told they pronounced the word wrongly.
 
 
 ## 6a. Resuming inside a user vocabulary list
