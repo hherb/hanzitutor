@@ -190,10 +190,21 @@ export const NOTES: Record<string, Page[]> = {
     {
       title: "What's new in 0.6.0",
       lead:
-        "Your vocabulary list and your practice log can now be written to one " +
-        "file and read back — on this device, or on a new one. Nothing about how " +
-        "your writing is graded has changed.",
+        "Characters can be coloured by the tone they are read with, and your " +
+        "vocabulary list and your practice log can now be written to one file and " +
+        "read back — on this device, or on a new one. Nothing about how your " +
+        "writing is graded has changed.",
       points: [
+        {
+          name: "Colour by tone",
+          what:
+            "A switch in Settings draws every character in the colour of the tone " +
+            "it is read with — first tone light blue, second light yellow, third " +
+            "brown, fourth light purple, neutral grey — everywhere characters " +
+            "appear, with the pinyin coloured syllable by syllable. It is off " +
+            "until you ask for it, and the tone is the one the character is " +
+            "learnt with: 好 is brown on its own and purple inside 爱好.",
+        },
         {
           name: "Back up",
           what:
