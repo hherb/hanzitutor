@@ -218,6 +218,17 @@ agree jinmeiyō is 863 (KANJIDIC2 splits it `9` = 651 + `10` = 212). **So: take 
 and the geometry/decomposition/radical linkage from `dictionaryJa.txt`, but take the *current* grade
 assignment from KANJIDIC2's `grade` field**, or the app will teach 2016's curriculum.
 
+> **Correction, from building it.** "The 20-character difference is exactly the prefecture-name
+> kanji" is true of the **1–6 total** and false of the per-grade columns, which are what a course
+> reads. All 20 additions are grade 4 in KANJIDIC2, so on their own they predict +20/+0/+0 rather
+> than the +2/+8/+10 measured — the missing half is **39 further characters the two sources place in
+> different grades** (夫 央, 21 from 4→5, 胃 腸, 富 徳 群 賀, nine from 5→6, 城). The addition gives
+> grade 4 +20 and the reassignments give it −18. `nihongo_core::kanji` carries the account and
+> `tests/kanji_artifact.rs` pins both effects separately, so neither can be re-derived alone.
+> The `set` field is also a **list** rather than a string — 一 is `["g1", "radical"]` — so a count of
+> it has to be a count of members, and AnimCJK's `g7` is KANJIDIC2's **grade 8**, not its grade 8
+> set; see `HANDOVER_NIHONGO.md` invariant 18.
+
 ### 4.3 The kana file has two defects that must be handled
 
 `graphicsJaKana.txt` — **202,547 bytes, 177 entries** (86 hiragana + 91 katakana),

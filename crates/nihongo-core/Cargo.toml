@@ -15,8 +15,8 @@ serde.workspace = true
 postcard.workspace = true
 flate2.workspace = true
 
-# Only the `prepare-data` binary reads the upstream AnimCJK files, so the app
-# does not carry a JSON-lines reader it never uses.
+# Only the `prepare-kana` and `prepare-kanji` binaries read the upstream files, so
+# the app does not carry a JSON reader it never uses.
 serde_json = { workspace = true, optional = true }
 
 [features]
@@ -25,4 +25,12 @@ prepare = ["dep:serde_json"]
 [[bin]]
 name = "prepare-kana"
 path = "src/bin/prepare_kana.rs"
+required-features = ["prepare"]
+
+# The kanji artifact is far larger than the kana one — a few megabytes against
+# 71 KB — so it is generated and committed, not read at run time from anything
+# upstream. See ROADMAP_NIHONGO.md N6 and `kanji.rs`.
+[[bin]]
+name = "prepare-kanji"
+path = "src/bin/prepare_kanji.rs"
 required-features = ["prepare"]

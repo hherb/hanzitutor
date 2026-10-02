@@ -474,6 +474,141 @@ read for a number — how many strokes a kana has — and a stroke count is a fa
 about the language, not a copy of the work. The pipeline only needs it at build
 time, and it is fetched into `data/raw/kvgJa/`, which is not committed.
 
+## The Japanese kanji data — committed, and not yet in any bundle
+
+`crates/nihongo-core/data/kanji.bin.gz` is the jōyō set: **2,136 characters** with
+their outlines, centre-lines, readings, English glosses, grades, radicals and IDS
+decompositions, about 3 MB. It is committed for the same reason the kana artifact
+is — a clone builds without the network — and recorded here for the same reason:
+**the repository distributes it**, even though no application bundle contains it
+yet. `apps/nihongo-tutor` embeds only the kana artifact at this commit. The kanji
+notices belong in that app's own `licences/` directory and its `licences.rs`
+catalogue on the commit that embeds this file (`ROADMAP_NIHONGO.md` N8), because
+the shared `licences/` directory is catalogued by the *Chinese* app, which
+contains none of this data — the same reason the kana notices are app-local.
+
+Four sources, and what each contributes is separated deliberately:
+
+| Source | What is taken | Licence |
+| --- | --- | --- |
+| [AnimCJK](https://github.com/parsimonhi/animCJK) `graphicsJa.txt` | Every stroke's outline **and** its centre-line. **Redistributed**, compacted into the artifact | **Arphic Public License** |
+| [AnimCJK](https://github.com/parsimonhi/animCJK) `dictionaryJa.txt` | The grade sets, the radical the character is written with and its note, and the IDS decomposition. **Redistributed**, compacted into the artifact | LGPL-3.0-or-later |
+| [KANJIDIC2](https://www.edrdg.org/wiki/index.php/KANJIDIC_Project) via [`scriptin/jmdict-simplified`](https://github.com/scriptin/jmdict-simplified) | Readings with their okurigana, English glosses, the frequency rank, and the **current** kyōiku grade. **Redistributed**, compacted into the artifact | **CC BY-SA 4.0** (EDRDG) |
+| [KanjiVG](https://github.com/KanjiVG/kanjivg) `kanji/*.svg` | Only the **stroke count**, read at build time as an independent check. Not redistributed | CC BY-SA 3.0 |
+
+### The Arphic question, which for kanji has an answer
+
+The kana section above records an ambiguity: AnimCJK's `COPYING.txt` assigns
+*"text files prefixed by `graphics`"* to the Arphic Public License and *"SVG files
+… representing kana or strokes"* to LGPL-3.0-or-later, and the kana `graphics`
+file falls between the two clauses. **For kanji it does not.** The same statement
+reads, verbatim:
+
+> You can redistribute and/or modify text files prefixed by "graphics" and SVG
+> files of AnimCJK project representing a character under the terms of the Arphic
+> Public License … You can redistribute and/or modify all other files (including
+> SVG files of AnimCJK project representing kana or strokes) under the terms of
+> the GNU Lesser General Public License …
+
+`graphicsJa.txt` is a `graphics*` file, and its content is characters rather than
+kana, so both limbs of the first sentence cover it. The kanji geometry is
+**Arphic, unambiguously** — and that is the licence this repository already ships
+and has already adjudicated for Make Me a Hanzi (`licences/Arphic-Public-License.txt`,
+and `HANDOVER.md`'s record of the position). AnimCJK's own derivation list names
+Make Me a Hanzi and the two Arphic fonts, which is consistent: the kanji geometry
+is traced from Arphic-derived material in the first place, which is *why* the
+LGPL clause exists for the kana alone.
+
+The copyright holders are the AnimCJK project (FM&SH); upstream's statement is
+[`licenses/COPYING.txt`](https://github.com/parsimonhi/animCJK/blob/master/licenses/COPYING.txt).
+
+### `dictionaryJa.txt` — LGPL-3.0-or-later, and the fields this project declines
+
+AnimCJK grants everything that is not a `graphics*` file or a character SVG under
+LGPL-3.0-or-later, and `dictionaryJa.txt` is such a file. AnimCJK also states that
+its `dictionary` files derive in part from the **Unihan** database (Unicode License
+v3), which is why the fields this project reads from it are the ones AnimCJK
+itself classifies — the grade set, the radical and its note, the IDS
+decomposition — and not Unihan text.
+
+The file carries `on`, `kun` and `definition` fields as well, and
+`prepare-kanji` **does not read them**. That is a provenance decision, not an
+oversight: readings and glosses in this artifact come from EDRDG, which is the
+attributed authority for them, so a second-hand copy would misrecord where the
+text a learner reads came from — and it would redistribute unspecified text under
+AnimCJK's LGPL rather than under the licence that governs it.
+
+**What this project changed**, as LGPL-3.0 §2 and CC BY-SA both require be stated:
+the outlines and centre-lines are unmodified, and unlike the kana no stroke is
+merged — AnimCJK splits a kana stroke that crosses itself and does not do that to a
+kanji (measured over all 2,136, and over the 91 whose KANJIDIC2 entry lists more
+than one stroke count, which is the only place a split could hide). What *is*
+changed: the set is narrowed from AnimCJK's 7,007 characters to the 2,136 jōyō;
+each centre-line is converted from Make Me a Hanzi's font space into the display
+space the grader works in, exactly as the kana centre-lines are; and the data is
+re-encoded from JSON lines into the compact artifact.
+
+### KANJIDIC2 — CC BY-SA 4.0, with the update obligation designed
+
+KANJIDIC2 is the work of the **Electronic Dictionary Research and Development
+Group** (EDRDG), and this project takes it in the JSON form published by
+`scriptin/jmdict-simplified` rather than the XML, so that the build needs no new
+XML parser. The reformatting is a derivative under the same licence.
+
+* **No copyright is claimed over it.** The glosses, readings, grades, frequency
+  ranks and stroke counts that reach a learner's screen are EDRDG's work.
+  KANJIDIC2's SKIP codes are Jack Halpern's, and EDRDG asks that they be credited
+  to him and to <https://www.kanji.org/>; this artifact does not carry them,
+  because `prepare-kanji` reads no query codes, but anything that later does must
+  credit him.
+* **Share-alike, discharged in this file and in the app.** The artifact is a
+  derivative of CC BY-SA 4.0 material and stays under it. A future Japanese app
+  must show the attribution on its **About and licences** screen — a start-up
+  mention is explicitly not enough — which is the screen
+  `apps/nihongo-tutor/src-tauri/src/licences.rs` already builds.
+* **The snapshot is pinned and recorded.** `scripts/fetch-data.sh` pins the
+  `scriptin/jmdict-simplified` release tag rather than following `latest`, and
+  `prepare-kanji` copies that document's own `version` and `dictDate` into the
+  artifact. `crates/nihongo-core/tests/kanji_artifact.rs` then pins both, so the
+  snapshot a release shipped is readable from the test rather than from memory.
+
+**The refresh procedure**, which is the obligation EDRDG's licence actually
+imposes — its terms say that failing to keep the data updated "is a violation of
+the licence to use the data", so a pinned artifact with no path forward is the
+trap here rather than a safe default:
+
+1. Set `JMDICT_SIMPLIFIED` in `scripts/fetch-data.sh` to the new release tag.
+2. Remove the cached document and re-run the fetch, which also re-fetches the
+   KanjiVG cross-check for whatever the new snapshot calls jōyō:
+
+   ```bash
+   rm -f data/raw/kanjidic2-all.json data/raw/kanjidic2-all-*.json.tgz
+   ./scripts/fetch-data.sh
+   pnpm run prepare-kanji
+   ```
+
+3. Read what moved. `prepare-kanji` prints every number the artifact test pins —
+   the grade totals, the count of characters the two grade sources disagree
+   about, and the KanjiVG agreement — and it *fails* rather than warns if a stroke
+   count no longer checks out. `git diff --stat crates/nihongo-core/data/kanji.bin.gz`
+   says whether the artifact changed at all.
+4. Update the pinned version and date in
+   `tests/kanji_artifact.rs` and commit them **with** the artifact, so the two can
+   never disagree in the history.
+
+A snapshot that moves a character between grades, or that adds one to jōyō, is a
+decision rather than a rebuild: `prepare-kanji` refuses to write an artifact whose
+jōyō set is not 2,136 characters, and says so.
+
+### KanjiVG earns no entry here either
+
+For the same reason as the kana: no KanjiVG file, and no adaptation of one, is
+redistributed. Only a stroke count is read, at build time, as the independent
+check on the number the grading engine depends on, and `data/raw/kvgJa/` is not
+committed. One character's count differs from KanjiVG's (衷: 10 against 9) and
+that exception is written into `prepare-kanji` with both numbers, so the check is
+two-sided rather than a silent pass.
+
 ## Before you distribute
 
 1. **Nothing has to be gathered by hand.** The notices are in `licences/`, are

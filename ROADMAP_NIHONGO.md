@@ -39,7 +39,7 @@ references for no gain.
 | **N3** | *(shipped)* per-learner confusability | Done, and it was as cheap as predicted: the drill weighs the 13 pairs by what this learner gets wrong and remembers it in the app's own file. See the milestone for the rule, and for what is deliberately not there. |
 | **N1** | Audio | Early, because audio is the one thing both halves need: a kana wants a sound and so does every kanji word. The system voices already work, so the desktop is wiring. |
 | **N2** | A review queue | Early, for the same reason — kanji study without spaced repetition is not study. The store is this app's own (invariant 15); the scheduler's code is shared. |
-| **N6** | **The kanji data layer** | **The long pole, and the real work.** Everything after it depends on it; see the measurement above for why it is not the Chinese data. |
+| **N6** | **The kanji data layer** | **Shipped.** The artifact is committed and verified; see the milestone for the three things the measurement corrected. Vocabulary moved to N7, where it belongs. |
 | **N7** | Kanji through vocabulary | Reading, furigana, okurigana. This is where a Japanese tutor becomes one, and where the "near identical with the hanzi" instinct has to be resisted most: the *characters* overlap, the *readings and meanings do not*. |
 | **N8** | The kanji course and screens | After the data. Mostly reuse of `RadicalsPanel` and the decomposition machinery. |
 | **N9** | Distribution | Notices into the bundle, a listing, and the mobile shells. |
@@ -133,6 +133,15 @@ KANJIDIC2 is higher. Verified agreeing examples: 愛 13, 学 8, 国 8, 鳥 11, �
 韓 18. `prepare-kanji` should refuse to write an artifact whose counts it could not
 check, exactly as `prepare-kana` does, and the nine are the list to decide about
 rather than to paper over.
+
+> **Correction, from building it.** The 2,127 and the nine are both artefacts of
+> reading KANJIDIC2's `strokeCounts` as a single value: it is a **list**, 91 jōyō
+> have two entries, and in exactly those nine the *first* is not the count the
+> character is taught with — so comparing against "the" count invented them. Against
+> the taught count all nine agree and **one** real disagreement is left, 衷 (10
+> against KanjiVG's 9), which `prepare-kanji` records with both numbers. The route
+> is right and the number was wrong; the Shipped section below has the measurement,
+> and `HANDOVER_NIHONGO.md` invariant 19 is the rule.
 
 **The Chinese dataset is not an input to the kanji course.** It is not a data
 source, not a cross-check, and not a fallback — an earlier draft proposed using it
@@ -421,7 +430,8 @@ equivalent in this repository, and where both exist the shape agrees about nine
 times in ten — but the kanji course is not built on it. Geometry from AnimCJK's
 `graphicsJa.txt`, and the stroke-count and stroke-order check against **KanjiVG**,
 the same Japanese source the kana pipeline uses — measured at **99.6% agreement
-with KANJIDIC2 across the 2,136 jōyō**, with nine named exceptions. `prepare-kanji`
+with KANJIDIC2 across the 2,136 jōyō**, with nine named exceptions *(in fact one:
+see the correction above and the Shipped section)*. `prepare-kanji`
 refuses to write an artifact whose counts it could not check. §"The mechanics transfer; the data does not" above has the
 reasoning.
 
@@ -438,6 +448,57 @@ reasoning.
 
 **Deliberately not done.** The 3,783 `g9` hyōgai characters, and the jinmeiyō
 `g8` set, until the course needs them.
+
+### Shipped
+
+`crates/nihongo-core/data/kanji.bin.gz` — **2,136 jōyō, 22,367 strokes, 3,074 KB**
+committed, built by `prepare-kanji`, byte-identical on a rebuild, and held by 21
+tests in `crates/nihongo-core/tests/kanji_artifact.rs` that run without any
+upstream download. The pipeline refuses to write an artifact whose jōyō set is not
+2,136 characters, whose geometry disagrees with KANJIDIC2's stroke count, or whose
+count it could not check against KanjiVG — `--allow-unchecked` has to be passed
+deliberately.
+
+**Three things the measurement corrected, and all three were in this file.**
+
+* **The "nine named exceptions" were a measurement artefact, and there is one real
+  disagreement.** The nine (謎 賭 葛 餌 遜 僅 遡 餅 牙) are exactly the characters
+  where KANJIDIC2 lists **more than one** stroke count and the *first* is not the
+  taught one — 91 jōyō do that. Compared against the taught count, all nine agree
+  and only 衷 differs (10 by the geometry and KANJIDIC2, 9 paths in KanjiVG).
+  `prepare-kanji` records that one with both numbers, so a change either way fails
+  the build. The lesson is the file's own: a multi-valued field has no "first".
+* **The grade reconciliation is not the 20 prefecture kanji.** Those 20 are all
+  grade 4 in KANJIDIC2 and `g7` in AnimCJK, which reconciles the jōyō *total* but
+  not the per-grade counts: the +2/+8/+10 come from **39 further characters the two
+  sources place in different grades** (夫 央, 21 from 4→5, 胃 腸, 富 徳 群 賀, nine
+  from 5→6, 城). Both effects are pinned separately in the artifact test, so the
+  next reader cannot re-derive the misleading half.
+* **No stroke merging is needed for kanji.** AnimCJK splits a *kana* stroke that
+  crosses itself; it does not do that to a kanji, and that is measured two ways
+  over all 2,136 — the geometry's array length is always one of KANJIDIC2's counts,
+  and for the 91 where a split could hide, AnimCJK's own SVG element ids show no
+  split segment. `svgsJa/` is therefore not fetched at all, and the taught stroke
+  count is simply the geometry's.
+
+**Also decided rather than assumed.** `dictionaryJa.txt` carries `on`, `kun` and
+`definition` fields; the pipeline **does not read them**, because EDRDG is the
+attributed authority for readings and glosses and a second-hand copy would
+misrecord where the text comes from — and would redistribute unspecified text
+under AnimCJK's LGPL. **JMdict is deferred to N7**, where vocabulary is the
+milestone: nothing in this artifact's acceptance criteria needs a word list, and
+`scriptin/kanji-frequency` is deferred with it, because its per-corpus CSVs need a
+merge rule that belongs to the level ladder N7 has to choose and document anyway.
+KANJIDIC2's own `freq` (2,037 of the 2,136 are ranked) is what the artifact
+carries.
+
+The licence position is recorded in `LICENSES.md`'s "The Japanese kanji data",
+including the answer the kana file could not give: AnimCJK's `COPYING.txt` puts
+`graphics*` files **and character SVGs** under the Arphic Public License and only
+kana/stroke SVGs under the LGPL, so the kanji geometry is unambiguously Arphic.
+The EDRDG update obligation is designed there too — the snapshot is pinned, the
+artifact records the version and date it was built from, the test pins both, and
+the four-step refresh procedure is written down.
 
 ---
 

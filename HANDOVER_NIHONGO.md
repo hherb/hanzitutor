@@ -37,13 +37,17 @@ pnpm --dir apps/nihongo-tutor run dev      # dev server on :1422, and the window
 ```
 
 There is no data step. `crates/nihongo-core/data/kana.bin.gz` is committed
-(70,917 bytes, 177 kana) precisely so that it does not need one — see invariant 1.
+(70,917 bytes, 177 kana) precisely so that it does not need one — see invariant 1
+— and so is `crates/nihongo-core/data/kanji.bin.gz` (3,073,516 bytes, 2,136 jōyō
+kanji), which is the same decision made again for a much larger file (invariant
+16).
 
-If you *do* need to regenerate it, that is the one path that fetches:
+If you *do* need to regenerate them, that is the one path that fetches:
 
 ```bash
-./scripts/fetch-data.sh        # also fetches the Chinese data; both are skipped if present
+./scripts/fetch-data.sh        # also fetches the Chinese data; all are skipped if present
 pnpm run prepare-kana
+pnpm run prepare-kanji
 ```
 
 `fetch-data.sh` pulls three things for the Japanese part, into `data/raw/`
@@ -51,6 +55,16 @@ pnpm run prepare-kana
 177 KanjiVG SVGs under `kvgJa/`. The last is **not** an input to the artifact —
 it is the oracle the stroke counts are checked against, and without it
 `prepare-kana` refuses to run. See §4.3.
+
+For the kanji it pulls four more. `graphicsJa.txt` (7,007 characters of geometry)
+and `dictionaryJa.txt` (the grade sets, radicals and IDS decompositions) come from
+AnimCJK; `kanjidic2-all.json` — EDRDG's readings, glosses, grades and frequency,
+pinned to one `scriptin/jmdict-simplified` release and unpacked from its `.tgz` —
+is the authority for the curriculum; and the same `kvgJa/` directory is extended
+to all 2,136 jōyō characters as the oracle. It does **not** fetch `svgsJa/`:
+AnimCJK splits a kana stroke that crosses itself but not a kanji one, so the kanji
+pipeline has no element ids to regroup anything, and that is measured rather than
+assumed (invariant 17).
 
 ### The root `Cargo.toml` is the only place the workspace is declared
 
@@ -63,7 +77,7 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **134
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **164
 tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
 
 | | |
@@ -73,14 +87,25 @@ tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
 | Course | 18 hiragana lessons, 20 katakana, 38 in all |
 | Yōon | 33 digraphs per script, 11 bases × 3 |
 | Confusions | 13 pairs, each with the one feature that tells them apart |
-| Tests | nihongo-core 84, nihongo-tutor 50, frontend 11 of the 80 |
-| Artifact | 70,917 bytes, gzip + magic + postcard |
+| Kanji | 2,136 jōyō — 1,026 kyōiku (grades 1–6) and 1,110 in the remainder (grade 8) |
+| Kanji grades | 80/160/200/202/193/191 by grade, KANJIDIC2's **current** assignment |
+| Kanji strokes | 22,367, average 10.47; 一 is 1 and 鬱 is 29 |
+| Kanji readings | 2,854 on, 3,904 kun — 2,551 of them carrying okurigana and 364 affixes |
+| Kanji structure | 198 of the 214 radicals in use, 2,134 IDS decompositions, 2,037 frequency ranks |
+| Kanji oracle | 2,135 of 2,136 agree with KanjiVG; 衷 is the one written exception (invariant 19) |
+| Tests | nihongo-core 114, nihongo-tutor 50, frontend 11 of the 80 |
+| Artifact | kana 70,917 bytes and kanji 3,073,516, both gzip + magic + postcard |
 | Learner data | one file, `confusions.json`, in the app's own data directory |
 | Version | both crates 0.1.0, and the app's to match |
 
 The app runs and has been looked at, all of it: the course, the board, stroke-order
 animation, handwriting grading, the discrimination drill, the typing box, the
 katakana tab and the Licences panel have each been seen working on a display.
+
+**The kanji half is data only so far.** The artifact is committed, tested and
+documented, and nothing in the app reads it yet: no course, no screen, no command.
+That is `ROADMAP_NIHONGO.md` N7 and N8, and N6's own record is the milestone's
+"Shipped" section — including the three things its measurement corrected.
 
 **The drill is the one part that learns anything about its learner** (roadmap N3).
 It used to draw a kana from a pool and throw the answer away; it now draws a *pair*,
@@ -125,18 +150,26 @@ reuse — see `ROADMAP_NIHONGO.md` N2.
 ## 3. Where the code lives
 
 ```
-crates/nihongo-core/              the kana data layer. No UI, no Tauri.
+crates/nihongo-core/              the data layer. No UI, no Tauri.
   src/kana.rs            (499)    Script, Kana, KanaDataset, the artifact format,
                                   segment_to_stroke and merge_strokes — the repair
+  src/kanji.rs           (464)    Kanji, KanjiDataset, KanjiSource, parse_radical,
+                                  and the modules' account of the grade
+                                  reconciliation — the kanji half, N6
   src/readings.rs        (386)    Hepburn and Kunrei-shiki, and the enumeration
                                   hiragana_with_readings the input table is built from
   src/curriculum.rs      (606)    the gojūon rows, lessons, yōon, and the confusions
   src/input.rs           (523)    romaji → kana, and the one-kana and whole-word checks
   src/drill.rs           (377)    the pair weights, the tally, and the draw — N3
-  src/lib.rs              (56)    re-exports, including hanzi-core's grade
+  src/lib.rs              (67)    re-exports, including hanzi-core's grade
   src/bin/prepare_kana.rs(246)    AnimCJK + KanjiVG → the artifact
+  src/bin/prepare_kanji.rs(646)   AnimCJK + KANJIDIC2 + KanjiVG → the artifact,
+                                  including the one written oracle exception
   data/kana.bin.gz                COMMITTED, 70,917 bytes
-  tests/kana_artifact.rs (261)    12 tests over the committed artifact
+  data/kanji.bin.gz               COMMITTED, 3,073,516 bytes
+  tests/kana_artifact.rs (261)    12 tests over the committed kana artifact
+  tests/kanji_artifact.rs(513)    21 tests over the committed kanji artifact,
+                                  including the whole grade reconciliation
 
 apps/nihongo-tutor/               the app
   src-tauri/src/lib.rs   (836)    AppState and the eleven commands, all thin
@@ -416,6 +449,102 @@ Two practical consequences:
 
 ---
 
+### 16. **The kanji artifact is committed too, and at 3 MB that is a decision.**
+
+`crates/nihongo-core/data/kanji.bin.gz` is in the repository — 2,136 jōyō kanji,
+**3,073,516 bytes**, against the kana artifact's 70,917. Same reasoning as
+invariant 1, and it needs saying separately because the size makes the opposite
+instinct reasonable: the Chinese artifact is generated and gitignored
+(`HANDOVER.md` invariant 7), and this one is fifty times the kana's. It is
+committed because a clone must build without the network *and* because it cannot
+be regenerated cheaply — it takes three upstreams, one of which is a pinned EDRDG
+snapshot.
+
+`prepare-kanji` refuses to write an artifact when the jōyō set is not exactly
+2,136 characters, when a character's geometry count is not one KANJIDIC2 lists,
+when KanjiVG disagrees and the character is not in the written exception table,
+when a jōyō character has no geometry or no oracle, or when any character would
+be written without usable geometry. `--allow-unchecked` is the only way past a
+missing oracle and must be passed deliberately — an artifact built with it rests
+on this code's own reading of the geometry and should not be committed.
+
+Nothing in the app reads this artifact yet, so there is no `build.rs` check for it
+the way `apps/nihongo-tutor/src-tauri/build.rs` checks the kana one. **N8 adds the
+`include_bytes!` and must add that check with it**, for the reason invariant 1
+gives.
+
+### 17. **A kanji's taught stroke count is the geometry's, and no merge is needed — measured, not assumed.**
+
+The kana repair in §4.2 is kana-specific, and the reason is upstream's: AnimCJK
+splits a stroke that crosses itself *for the animation*, which kana do (あ's loop)
+and kanji, in this dataset, do not. So `merge_strokes` is not used on kanji, the
+SVG element ids are not read, and `svgsJa/` is not fetched at all.
+
+Two measurements over all 2,136 back that, and they are the ones to re-run rather
+than trust if this is ever doubted:
+
+* the geometry's array length is one of KANJIDIC2's `strokeCounts` for **every**
+  character — the pipeline fails if that stops being true;
+* for the **91** characters whose KANJIDC2 entry lists more than one count — the
+  only place a split could hide behind a legitimate alternative — AnimCJK's own
+  SVG element ids show one segment per stroke. Checked by fetching
+  `svgsJa/<decimal code point>.svg` for those 91.
+
+**And the count in the artifact is the geometry's**, not a chosen member of
+KANJIDIC2's list, because the geometry is what the grader has reference strokes
+for. For the ten characters where those differ, the alternative is the smaller or
+larger historical count and is not the one a learner is taught.
+
+### 18. **KANJIDIC2's grade is the authority, and its grade 8 is AnimCJK's `g7` — not its `g8`.**
+
+The numbering trap first, because it is the thing that breaks silently: AnimCJK's
+`g1`–`g6` are KANJIDIC2's grades 1–6, **AnimCJK's `g7` is KANJIDIC2's grade 8**
+(the jōyō remainder), and AnimCJK's `g8`/`g9` are KANJIDIC2's 9/10 — jinmeiyō and
+hyōgai, which this artifact does not carry. Reading the two numberings as one is
+wrong for all 1,110 characters in the remainder.
+
+The two sources also disagree about **59** characters, and the reconciliation is
+two effects rather than one:
+
+* the **20 prefecture kanji** added to kyōiku in 2017, every one of them grade 4 in
+  KANJIDIC2 and `g7` in AnimCJK — this reconciles the jōyō total, and on its own
+  it predicts the wrong per-grade counts;
+* **39 characters the two sources place in different grades** — 夫 (3→4), 央 (4→3),
+  21 from 4→5, 胃 腸 (4→6), 富 徳 群 賀 (5→4), nine from 5→6, 城 (6→4) — and *this*
+  is what turns AnimCJK's 200/185/181 into KANJIDIC2's 202/193/191.
+
+Both are pinned separately in `tests/kanji_artifact.rs`, so a reader cannot
+re-derive only the misleading half the way this document's earlier draft did.
+
+Two related source shapes, both of which cost time: KANJIDIC2's `strokeCounts` is
+a **list** (91 jōyō have two entries) and `dictionaryJa.txt`'s `set` is a list too
+(一 is `["g1", "radical"]`). A first element is not "the" value and the field is
+not a string — the "nine KanjiVG exceptions" in `ROADMAP_NIHONGO.md`'s earlier
+draft came from exactly that mistake (invariant 19).
+
+Readings and glosses come from KANJIDIC2 and **never** from `dictionaryJa.txt`,
+which carries `on`, `kun` and `definition` fields of its own. That is a provenance
+decision: EDRDG is the attributed authority for them, and the annotated source is
+the one the licence notice names. Do not start reading those fields for
+convenience.
+
+### 19. **An oracle disagreement is written down with both numbers, never silently passed.**
+
+`衷` is the one character KanjiVG counts differently: 10 strokes by the geometry
+and by KANJIDIC2, 9 paths in KanjiVG. `prepare-kanji`'s `KANJIVG_DISAGREES`
+carries `(character, taught, KanjiVG says)` and checks **both** halves, so a
+change to the geometry, to KanjiVG, or to the table fails the build. The taught
+count stays the geometry's, for invariant 17's reason.
+
+The same rule for the kana is §4.3's: `prepare-kana` refuses to write an artifact
+it could not check. Neither pipeline is allowed to warn and continue.
+
+**The nine exceptions `ROADMAP_NIHONGO.md` used to name were not real** — 謎 賭 葛
+餌 遜 僅 遡 餅 牙 are the characters where KANJIDIC2 lists two stroke counts and
+the first is not the taught one, so comparing against "the" count invented nine
+disagreements and hid the one that exists. `kanji.rs`'s module docs carry the
+account and the artifact test pins all ten characters.
+
 ## 5. The verification loop
 
 Four layers, cheapest first. All of them are worth running before a commit that
@@ -443,12 +572,13 @@ no test runner, deliberately — the same arrangement the tone trainer uses. A t
 added under `apps/nihongo-tutor/src/**` and not named `*.test.ts` will silently
 never run.
 
-### Regenerating the artifact
+### Regenerating the artifacts
 
 ```bash
 ./scripts/fetch-data.sh
 pnpm run prepare-kana
-git diff --stat crates/nihongo-core/data/kana.bin.gz
+pnpm run prepare-kanji
+git diff --stat crates/nihongo-core/data/kana.bin.gz crates/nihongo-core/data/kanji.bin.gz
 ```
 
 `prepare-kana` prints what it did, and the numbers are the check: **177 kana, 86
@@ -456,9 +586,21 @@ hiragana, 91 katakana, 516 strokes, 25 split characters, 27 segments folded back
 177 checked against KanjiVG**. If `checked against KanjiVG` is not 177, the run
 failed rather than warned — unless `--allow-unchecked` was passed.
 
-A regenerated artifact should be **byte-identical** to the committed one. If it
-is not, something upstream moved, and the artifact test will say which stroke
-count changed.
+`prepare-kanji` prints its own, and they are the numbers
+`tests/kanji_artifact.rs` pins: **KANJIDIC2 3.6.2 (2026-09-28), 7,007 graphics
+rows, 2,136 kanji (1,026 kyōiku, 1,110 remainder), 22,367 strokes, grades
+g1:80 g2:160 g3:200 g4:202 g5:193 g6:191 g8:1110, dictionaryJa 2,077 agree and 59
+differ (20 added in 2017, 39 reassigned), 2,136 checked against KanjiVG with 衷
+as the one written disagreement, artifact 3,074 KB from 6,334 KB**. Moving any of
+those numbers is a decision to take and record, not a rebuild: a different
+KANJIDIC2 snapshot, a different jōyō set, or a new oracle disagreement all mean
+the tests need updating in the same commit.
+
+Both artifacts should be **byte-identical** to the committed ones. If one is not,
+something upstream moved, and the artifact test will say what changed.
+
+`fetch-data.sh` fetches the kanji oracle with `xargs -P 4` and every download
+carries `--retry 4`, which is not decoration — see trap 11.
 
 ### Seeing the interface
 
@@ -683,6 +825,36 @@ suite reads as `exit=0`. That nearly recorded a broken layer as green here. Eith
 unpiped command: the same run as a file showed `exit=0` honestly and 762 passing,
 which is what the tailed form could not distinguish.
 
+### 11. `curl: (56)` is a reset, not a missing file — and parallel output hides which URL you asked for
+
+The kanji oracle is 2,136 files, so `fetch-data.sh` runs them through
+`xargs -P 4`. At `-P 8`, `raw.githubusercontent.com` reset the connections instead
+of answering, and curl reported the pair confusingly:
+
+```
+curl: (56) The requested URL returned error: 404
+```
+
+Error 56 is `CURLE_RECV_ERROR` — a *transfer* failure — and the 404 text came from
+`--fail` reacting to a response that arrived before the reset. Eight processes
+writing their own stderr interleaved the messages into noise, and the files were
+there all along: fetching any single one by hand answered 200. Every download now
+carries `--retry 4 --retry-delay 1 --retry-connrefused`, and at `-P 4` all 2,136
+arrive with zero warnings. `--retry-all-errors` is deliberately **not** used — a
+genuine 404 has to stay a 404, because a missing oracle file is something
+`prepare-kanji` diagnoses properly by name.
+
+The lesson is the file's own, one trap earlier: **fetch one of them by hand before
+believing a bulk failure.**
+
+**And check the variable in the URL.** The first run of that loop used
+`$ANIMCJK` where it meant `$KANJIVG` — AnimCJK has no `kanji/` directory, its
+kanji SVGs live in `svgsJa/` — so all 2,136 requests were genuine 404s for files
+that do not exist, from a URL that looked entirely plausible in the interleaved
+warning text. One hand-fetch of one character showed it immediately. When a bulk
+fetch fails *completely*, suspect the URL you built before the upstream you
+blame.
+
 ---
 
 ## 7. Open decisions
@@ -832,13 +1004,17 @@ first KANJIDIC2 data.
 
 ## 9. What is deliberately not built
 
-* **Kanji, in any form.** No data layer, no course, no screen. The feasibility
-  work is in `docs/research/JAPANESE_TUTOR_FEASIBILITY.md` and the plan is
-  `ROADMAP_NIHONGO.md` N6 onwards. The short of it: KANJIDIC2 and JMdict are
-  clean (CC BY-SA 4.0 via EDRDG, the same licence the repository already ships
-  for CC-CEDICT), AnimCJK's `dictionaryJa.txt` supplies the kyōiku grades and
-  214 radicals under LGPL, and the KanjiVG-as-oracle trick does not transfer —
-  kanji need `dictionaryJa.txt`'s own grade sets.
+* **Kanji beyond the data layer.** The data layer is built and committed (N6,
+  `kanji.bin.gz`, 2,136 jōyō, 21 tests over the artifact), but **nothing reads it
+  yet**: no course, no screen, no command, no vocabulary. That is N7 (vocabulary,
+  a chosen and documented level ladder, furigana, okurigana — and JMdict, which
+  N6 deliberately did not take) and N8 (the course and the panels). The
+  feasibility work is in `docs/research/JAPANESE_TUTOR_FEASIBILITY.md`.
+  **Two corrections to what this bullet used to say**: the KanjiVG-as-oracle trick
+  *does* transfer for stroke counts — 2,135 of 2,136 agree and 衷 is the written
+  exception (invariant 19) — and "kanji need `dictionaryJa.txt`'s own grade sets"
+  is the trap rather than the answer, since those are the pre-2017 grades and
+  KANJIDIC2's are the authority (invariant 18).
 * **Audio.** §7.
 * **Spaced repetition.** §7.
 * **A per-learner confusability *matrix*.** The drill does now learn which of the

@@ -1,14 +1,15 @@
-//! Offline data for learning Japanese kana, and the grading that goes with it.
+//! Offline data for learning Japanese, and the grading that goes with it.
 //!
 //! This crate is the Japanese counterpart to `hanzi-core`, and it is deliberately
 //! thin: the geometry engine — resampling, the Hungarian stroke pairing, the
 //! order analysis, the ink measures, the scheduling — is language-neutral and
 //! lives in `hanzi-core`, so a kana is graded by exactly the code that grades a
-//! Chinese character.
+//! Chinese character, and so is a kanji.
 //!
-//! What is here is the kana data layer: how to load the shipped artifact, what a
-//! kana is, and the one piece of upstream repair the source data needs (see
-//! [`kana`]).
+//! What is here is the data layer: how to load the shipped artifacts, what a
+//! kana is, what a kanji is, and the one piece of upstream repair the kana
+//! source needs (see [`kana`], and [`kanji`] for why the kanji source needs
+//! none).
 //!
 //! ```no_run
 //! use nihongo_core::{KanaDataset, Script};
@@ -37,6 +38,7 @@ pub mod curriculum;
 pub mod drill;
 pub mod input;
 pub mod kana;
+pub mod kanji;
 pub mod readings;
 
 pub use curriculum::{
@@ -53,6 +55,10 @@ pub use hanzi_core::{
 pub use kana::{
     merge_strokes, segment_to_stroke, Artifact, Kana, KanaDataset, MergeError, Script,
     ARTIFACT_MAGIC,
+};
+pub use kanji::{
+    parse_radical, Kanji, KanjiArtifact, KanjiDataset, KanjiSource, JOYO_COUNT, JOYO_GRADES,
+    KANJI_ARTIFACT_MAGIC,
 };
 pub use input::{
     continuations, matches_reading, matches_word, normalise_to_hiragana, to_kana, to_kana_in,

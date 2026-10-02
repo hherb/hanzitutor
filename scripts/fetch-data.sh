@@ -20,6 +20,11 @@
 #   hanziDB.csv                   MIT, derived from Jun Da's frequency list
 #   hsk-words.json                HSK 2.0/3.0 vocabulary, MIT compilation whose
 #                                 definitions come from CC-CEDICT (CC BY-SA 4.0)
+#   graphicsJa.txt, dictionaryJa.txt, kanjidic2-all.json
+#                                 the Japanese kanji material: geometry, the
+#                                 grade sets and decompositions, and EDRDG's
+#                                 readings and glosses. See the two sections
+#                                 below for what each file is and is not for.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,6 +40,17 @@ GOOGLEFONTS="https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc"
 ANIMCJK="https://raw.githubusercontent.com/parsimonhi/animCJK/master"
 KANJIVG="https://raw.githubusercontent.com/KanjiVG/kanjivg/master"
 
+# How every download here retries. `raw.githubusercontent.com` resets the
+# connection (`curl: (56)`) rather than answering when it is asked for hundreds of
+# files at once — which is exactly what the kanji cross-check does — and a retry
+# is the whole difference between "the file is not there" and "the fetch was
+# unlucky". Deliberately *not* `--retry-all-errors`: a genuine 404 should stay a
+# 404, because a missing file is something the caller diagnoses properly.
+#
+# Written into both functions rather than shared through a variable, because
+# `fetch_quiet` is exported to a subshell for the per-character fetches and an
+# exported function does not carry a variable with it.
+
 # fetch <url> <destination> [optional]
 fetch() {
   local url="$1" dest="$2" optional="${3:-}"
@@ -43,7 +59,7 @@ fetch() {
     return 0
   fi
   echo "  get   $(basename "$dest")"
-  if curl --fail --location --silent --show-error "$url" --output "$dest.partial"; then
+  if curl --fail --location --silent --show-error --retry 4 --retry-delay 1 --retry-connrefused "$url" --output "$dest.partial"; then
     mv "$dest.partial" "$dest"
     echo "        -> $(du -h "$dest" | cut -f1)"
   else
@@ -105,10 +121,17 @@ fetch "$GOOGLEFONTS/NotoSansSC%5Bwght%5D.ttf" "$FONTS/NotoSansSC-VF.ttf"
 # The AnimCJK kana set is the hiragana block U+3041..U+3096, the katakana block
 # U+30A1..U+30FA, and the prolonged sound mark U+30FC — 177 characters, which is
 # what AnimCJK publishes and what the artifact asserts.
-kana_quiet() {
+
+# fetch_quiet <url> <destination>
+#
+# One file per URL, for the per-character material below: skipped when it is
+# already there, and a failure is a warning rather than a stop, because a missing
+# SVG is something `prepare-kana`/`prepare-kanji` diagnose properly — it knows
+# which characters it needs and which it could not check.
+fetch_quiet() {
   local url="$1" dest="$2"
   [ -s "$dest" ] && return 0
-  if curl --fail --location --silent --show-error "$url" --output "$dest.partial"; then
+  if curl --fail --location --silent --show-error --retry 4 --retry-delay 1 --retry-connrefused "$url" --output "$dest.partial"; then
     mv "$dest.partial" "$dest"
   else
     rm -f "$dest.partial"
@@ -133,12 +156,90 @@ kana_codepoints() {
 fetched_kana=0
 for cp in $(kana_codepoints); do
   before=$(ls "$KANA_SVG" 2>/dev/null | wc -l | tr -d ' ')
-  kana_quiet "$ANIMCJK/svgsJaKana/$cp.svg" "$KANA_SVG/$cp.svg"
+  fetch_quiet "$ANIMCJK/svgsJaKana/$cp.svg" "$KANA_SVG/$cp.svg"
   after=$(ls "$KANA_SVG" 2>/dev/null | wc -l | tr -d ' ')
   [ "$before" != "$after" ] && fetched_kana=$((fetched_kana + 1))
-  kana_quiet "$KANJIVG/kanji/$(printf '%05x' "$cp").svg" "$KVG_SVG/$(printf '%05x' "$cp").svg"
+  fetch_quiet "$KANJIVG/kanji/$(printf '%05x' "$cp").svg" "$KVG_SVG/$(printf '%05x' "$cp").svg"
 done
 echo "  kana SVGs        $(ls "$KANA_SVG" | wc -l | tr -d ' ') in $KANA_SVG ($fetched_kana fetched)"
+echo "  KanjiVG SVGs     $(ls "$KVG_SVG" | wc -l | tr -d ' ') in $KVG_SVG (the cross-check, not shipped)"
+
+# ---------------------------------------------------------------------------
+# Japanese kanji, for `pnpm run prepare-kanji`.
+#
+# Four sources, and what each one is and is not for:
+#
+#   graphicsJa.txt      geometry: the SVG outline of every stroke AND its
+#                       centre-line, for all 7,007 characters AnimCJK publishes,
+#                       in Make Me a Hanzi's own font space. Arphic PL — the same
+#                       licence, and the same already-recorded position, as the
+#                       Chinese geometry.
+#   dictionaryJa.txt    the kyōiku grade sets, the 214 Kangxi radicals and the IDS
+#                       decompositions. LGPL-3.0-or-later. It *also* carries
+#                       `on`, `kun` and `definition` fields; `prepare-kanji` does
+#                       not read them, and says why: readings and glosses come
+#                       from EDRDG, which is the attributed authority for them.
+#   kanjidic2-all.json  EDRDG's KANJIDIC2, republished as one JSON document by
+#                       `scriptin/jmdict-simplified` (CC BY-SA 4.0). The
+#                       authority for the *current* kyōiku grade, the readings
+#                       with their okurigana, the stroke counts, the frequency
+#                       rank and the English glosses.
+#   kvgJa/*.svg         KanjiVG (CC BY-SA 3.0). NOT bundled and NOT an input: the
+#                       independent second opinion a kanji stroke count is
+#                       checked against, exactly as for the kana.
+#
+# The KANJIDIC2 snapshot is **pinned**, not `latest`. The artifact it produces is
+# committed, so a rebuild has to be reproducible, and moving to a newer EDRDG
+# snapshot should be a deliberate act with its own commit — that commit is the
+# refresh procedure, and LICENSES.md's EDRDG section is where it is written down.
+JMDICT_SIMPLIFIED="3.6.2+20260928191014"
+KD2_TGZ="$RAW/kanjidic2-all-$JMDICT_SIMPLIFIED.json.tgz"
+KD2_JSON="$RAW/kanjidic2-all.json"
+
+echo "fetching the kanji material into $RAW"
+fetch "$ANIMCJK/graphicsJa.txt"   "$RAW/graphicsJa.txt"
+fetch "$ANIMCJK/dictionaryJa.txt" "$RAW/dictionaryJa.txt"
+# The release URL carries the tag percent-encoded (`+` -> `%2B`); the asset name
+# does not. The tarball holds one document whose own file name has no build
+# timestamp in it — the dictionary version and the date it was built from are
+# *inside* the document, which is where `prepare-kanji` reads them from so that
+# the artifact records what it was built from.
+fetch "https://github.com/scriptin/jmdict-simplified/releases/download/${JMDICT_SIMPLIFIED//+/%2B}/kanjidic2-all-$JMDICT_SIMPLIFIED.json.tgz" "$KD2_TGZ"
+if [ ! -s "$KD2_JSON" ]; then
+  echo "  unpack kanjidic2-all.json"
+  tar -xzf "$KD2_TGZ" -C "$RAW"
+  mv "$RAW/kanjidic2-all-${JMDICT_SIMPLIFIED%%+*}.json" "$KD2_JSON"
+fi
+
+# The cross-check, for exactly the characters the artifact will carry: the jōyō
+# set, which is KANJIDIC2's grades 1-6 (kyōiku) plus grade 8 (the rest of jōyō).
+# Reading the list out of KANJIDIC2 rather than hard-coding 2,136 code points
+# keeps the two in step: a newer snapshot that moves a character between grades
+# cannot silently leave the oracle one character short.
+echo "fetching the KanjiVG cross-check for the jōyō set into $KVG_SVG"
+joyo_codepoints() {
+  python3 - "$KD2_JSON" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    document = json.load(handle)
+for entry in document["characters"]:
+    grade = (entry.get("misc") or {}).get("grade")
+    if grade is not None and 1 <= grade <= 8:
+        print("%05x" % ord(entry["literal"]))
+PY
+}
+
+JOYO=$(joyo_codepoints)
+echo "  jōyō characters  $(printf '%s\n' "$JOYO" | wc -l | tr -d ' ') to check"
+
+# Parallel, because this is 2,136 files where the kana set was 177 and each one
+# is a couple of kilobytes. Every fetch writes its own destination and skips what
+# is already there, so the concurrency needs no coordination — but the function,
+# and the two directory variables it reads, have to be exported for the `bash -c`
+# that runs it to see them.
+export KANJIVG KVG_SVG
+export -f fetch_quiet
+printf '%s\n' "$JOYO" | xargs -P 4 -n 1 bash -c 'fetch_quiet "$KANJIVG/kanji/$0.svg" "$KVG_SVG/$0.svg"'
 echo "  KanjiVG SVGs     $(ls "$KVG_SVG" | wc -l | tr -d ' ') in $KVG_SVG (the cross-check, not shipped)"
 
 echo "done"

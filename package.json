@@ -22,6 +22,7 @@
     "check-audio:dist": "python3 scripts/check-audio.py --dist",
     "prepare-data": "./scripts/with-cargo-env.sh cargo run --release -p hanzi-core --features prepare --bin prepare-data",
     "prepare-kana": "./scripts/with-cargo-env.sh cargo run --release -p nihongo-core --features nihongo-core/prepare --bin prepare-kana",
+    "prepare-kanji": "./scripts/with-cargo-env.sh cargo run --release -p nihongo-core --features nihongo-core/prepare --bin prepare-kanji",
     "test": "./scripts/with-cargo-env.sh cargo test --workspace --features hanzi-core/prepare",
     "test:core": "./scripts/with-cargo-env.sh cargo test -p hanzi-core --features prepare",
     "test:kana": "./scripts/with-cargo-env.sh cargo test -p nihongo-core --features nihongo-core/prepare",
