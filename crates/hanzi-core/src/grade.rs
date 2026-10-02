@@ -97,8 +97,17 @@ pub const HEADLINE_ORDER: f32 = 0.25;
 pub const HEADLINE_INK: f32 = 0.25;
 
 /// Tunables for a grading run.
+///
+/// `default` on the struct, not on one field: a caller may send only the fields
+/// it genuinely means to change, and serde fills the rest from [`Default`]. That
+/// is what an interface wants here — the defaults are the ones the tolerance
+/// study was fitted against, so overriding them piecemeal is the last thing it
+/// should do — and without it a payload of `{"inkWidth": 12}` is rejected with
+/// "missing field `resampleK`" before any grading happens. That is exactly how
+/// Kana Tutor shipped a Grade button that could not grade anything: it sends the
+/// pen width and nothing else. Sending every field is still fine.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct GradeOptions {
     /// Points each polyline is resampled to before comparison.
     pub resample_k: usize,
@@ -117,15 +126,7 @@ pub struct GradeOptions {
     /// default and the width a correct trace is measured against. A device that
     /// reports real pen width (a stylus, or a velocity-thickened brush) sets this
     /// per attempt and a stroke put down with too little ink is then caught.
-    ///
-    /// Defaulted on deserialisation: an older frontend that does not send the
-    /// field gets the canvas default rather than a hard failure.
-    #[serde(default = "default_ink_width")]
     pub ink_width: f32,
-}
-
-fn default_ink_width() -> f32 {
-    INK_WIDTH
 }
 
 impl Default for GradeOptions {
@@ -972,6 +973,33 @@ mod tests {
                 Point::new(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
             })
             .collect()
+    }
+
+    // ---- the options an interface posts ------------------------------------
+
+    /// The payload Kana Tutor sends: the pen width, and nothing else.
+    ///
+    /// It sent exactly this and the command rejected it — "missing field
+    /// `resampleK`" — so its Grade button never graded a single attempt. A
+    /// partial options object has to deserialise, with everything it leaves out
+    /// coming from `Default`.
+    #[test]
+    fn options_deserialise_from_the_fields_an_interface_sends() {
+        let posted = serde_json::json!({ "inkWidth": INK_WIDTH / 3.0 });
+        let options: GradeOptions =
+            serde_json::from_value(posted).expect("a partial options object deserialises");
+        assert_eq!(options.ink_width, INK_WIDTH / 3.0);
+        assert_eq!(options.resample_k, GradeOptions::default().resample_k);
+        assert_eq!(
+            options.min_stroke_len,
+            GradeOptions::default().min_stroke_len
+        );
+        assert_eq!(options.global_fit, GradeOptions::default().global_fit);
+
+        // And the degenerate case: no options at all.
+        let none: GradeOptions = serde_json::from_value(serde_json::json!({})).expect("{}");
+        assert_eq!(none.ink_width, INK_WIDTH);
+        assert_eq!(none.resample_k, GradeOptions::default().resample_k);
     }
 
     // ---- assignment solver -------------------------------------------------

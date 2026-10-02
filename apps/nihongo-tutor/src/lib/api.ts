@@ -52,9 +52,12 @@ export function kana(ch: string): Promise<Kana> {
 /**
  * Grade a handwritten attempt.
  *
- * `options` is left to the Rust default: the defaults are the ones the whole
- * tolerance study was fitted against, so the interface has no business
- * overriding them piecemeal.
+ * Only the pen width is sent; the other three tunables are left to the Rust
+ * default, because those defaults are the ones the whole tolerance study was
+ * fitted against and the interface has no business overriding them piecemeal.
+ * `GradeOptions` therefore deserialises a partial object — an interface that
+ * sends some fields and not others must not be rejected for the ones it left
+ * out.
  */
 export function gradeAttempt(ch: string, strokes: Point[][]): Promise<GradeReport> {
   return invoke<GradeReport>("grade_attempt", {

@@ -145,18 +145,51 @@ fn a_grade_report_crosses_with_the_four_headline_scores() {
 
 #[test]
 fn grading_reads_the_attempt_the_interface_sends() {
-    // The interface posts `{ ch, strokes, options? }`, where a stroke is a list
-    // of {x, y}. This is that round trip: build the JSON, read it back, grade.
+    // The interface posts `{ ch, strokes, options }` — a stroke is a list of
+    // {x, y}, and `options` is `{ inkWidth }` and nothing else, deliberately:
+    // the other three tunables stay at the values the tolerance study was fitted
+    // against (see `src/lib/api.ts`). This is that round trip, options included,
+    // because reading the options back through serde is what catches a field the
+    // interface sends that Rust cannot fill in. Without it this app shipped a
+    // Grade button whose every attempt came back "missing field `resampleK`" —
+    // the options were never deserialised in a test, so nothing failed here.
     let payload = json!({
         "ch": "ー",
-        "strokes": [[{"x": 120.0, "y": 500.0}, {"x": 900.0, "y": 505.0}]]
+        "strokes": [[{"x": 120.0, "y": 500.0}, {"x": 900.0, "y": 505.0}]],
+        "options": {"inkWidth": 36.0}
     });
     let ch: char = payload["ch"].as_str().expect("a string").chars().next().expect("one char");
     let strokes: Vec<Vec<Point>> = serde_json::from_value(payload["strokes"].clone())
         .expect("the strokes deserialise");
+    let options: GradeOptions = serde_json::from_value(payload["options"].clone())
+        .expect("the options the interface posts deserialise");
+    assert_eq!(options.ink_width, 36.0);
+    assert_eq!(options.resample_k, GradeOptions::default().resample_k);
 
-    let report = state().grade(ch, &strokes, &GradeOptions::default()).expect("grades");
+    let report = state().grade(ch, &strokes, &options).expect("grades");
     assert!(report.legible, "a level stroke across the middle is ー: {:.0}", report.overall);
+}
+
+#[test]
+fn the_options_the_interface_posts_survive_a_round_trip() {
+    // Every field the interface *could* send, sent. A field renamed on one side
+    // and not the other is then a failure here rather than a rejected command.
+    let all = GradeOptions {
+        resample_k: 16,
+        min_stroke_len: 12.0,
+        global_fit: true,
+        ink_width: 36.0,
+    };
+    let posted = serde_json::to_value(&all).expect("serialises");
+    assert_eq!(
+        keys(&posted),
+        vec!["globalFit", "inkWidth", "minStrokeLen", "resampleK"]
+    );
+    let read_back: GradeOptions = serde_json::from_value(posted).expect("deserialises");
+    assert_eq!(read_back.resample_k, all.resample_k);
+    assert_eq!(read_back.min_stroke_len, all.min_stroke_len);
+    assert_eq!(read_back.global_fit, all.global_fit);
+    assert_eq!(read_back.ink_width, all.ink_width);
 }
 
 #[test]

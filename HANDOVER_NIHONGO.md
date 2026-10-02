@@ -63,7 +63,7 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **109
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **110
 tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
 
 | | |
@@ -73,16 +73,32 @@ tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
 | Course | 18 hiragana lessons, 20 katakana, 38 in all |
 | Yōon | 33 digraphs per script, 11 bases × 3 |
 | Confusions | 13 pairs, each with the one feature that tells them apart |
-| Tests | nihongo-core 75, nihongo-tutor 34, frontend 11 of the 80 |
+| Tests | nihongo-core 75, nihongo-tutor 35, frontend 11 of the 80 |
 | Artifact | 70,917 bytes, gzip + magic + postcard |
 | Version | both crates 0.1.0, and the app's to match |
 
-The app runs and has been looked at. The course, the board, stroke-order
-animation, handwriting grading, the discrimination drill and the typing box all
-render; a hand-drawn あ renders in ink on the board. **Not yet seen working: the
-grading verdict, the Licences panel, and the katakana tab.** Those are `cargo`
-tested and typechecked but nobody has watched them; §5 says how to check each in
-a couple of minutes.
+The app runs and has been looked at, all of it: the course, the board, stroke-order
+animation, handwriting grading, the discrimination drill, the typing box, the
+katakana tab and the Licences panel have each been seen working on a display.
+
+**Three of those were watched for the first time in the session that wrote this
+paragraph, and two of them were broken.** The test suite was green for both, which
+is the point of watching:
+
+* **The Grade button could not grade anything.** The interface posts
+  `{ inkWidth }` and nothing else — deliberately, because the other three tunables
+  are the values the tolerance study was fitted against — and `GradeOptions` had
+  only `ink_width` defaulted on deserialisation, so *every* attempt came back
+  `invalid args 'options' for command 'grade_attempt': missing field 'resampleK'`.
+  The verdict panel, the four scores and the stroke colours had therefore never
+  been on screen. Fixed in `grade.rs` with a struct-level `#[serde(default)]`, and
+  `ipc_contract.rs` now deserialises the options the way the command does, which
+  is the half of the contract it was not checking. Invariant 14.
+* **The board threw `effect_update_depth_exceeded` on mount and the window came up
+  blank** — about half the cold starts, and every later reload looked fine, so it
+  read as a flaky webview rather than a bug in the board. The reset effect wrote
+  `strokes`/`ghostCount`/`sweep` and then called `paint()`, which reads them, so
+  the effect depended on what it wrote. Trap 9.
 
 ### What is genuinely reusable, and was reused
 
@@ -116,18 +132,19 @@ crates/nihongo-core/              the kana data layer. No UI, no Tauri.
 apps/nihongo-tutor/               the app
   src-tauri/src/lib.rs   (573)    AppState and the ten commands, all thin
   src-tauri/src/licences.rs(150)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (179)  10 tests locking the JSON the webview reads
+  src-tauri/tests/ipc_contract.rs (212)  11 tests locking the JSON the webview
+                                  reads *and the options it posts* (invariant 14)
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
   src/App.svelte         (312)    the three views, the course, the board wiring
-  src/lib/KanaCanvas.svelte(233)  pointer capture and the animation frame
+  src/lib/KanaCanvas.svelte(243)  pointer capture and the animation frame
   src/lib/ConfusionDrill.svelte(209)  the discrimination drill
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
   src/lib/board.ts        (97)    the board's arithmetic, as pure functions
   src/lib/board.test.ts   (99)    run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
   src/lib/types.ts       (180)    the IPC shapes, and `Character = Kana`
-  src/lib/api.ts          (93)    one wrapper per command
+  src/lib/api.ts          (96)    one wrapper per command
 ```
 
 `src-tauri/gen/schemas/` is committed, as it is for the other two apps.
@@ -338,6 +355,26 @@ drops anything without geometry, so the course cannot offer a kana the board
 cannot grade. This is the Japanese form of the Chinese invariants about not
 dead-ending a practice session.
 
+### 14. **An interface may post only the `GradeOptions` fields it means to change.**
+
+`GradeOptions` lives in `hanzi-core` and is shared, and its `#[serde(default)]` is
+on the **struct**, not on one field: a caller that posts `{ inkWidth }` gets the
+other three tunables from `Default` rather than
+`missing field 'resampleK'`. That is the shape the interfaces want — the defaults
+are the ones the tolerance study was fitted against, so an interface should not
+have to restate them to avoid being rejected — but it has a consequence worth
+knowing: **a field renamed on one side is silently replaced by its default here
+rather than failing.** So the options the interface actually posts are pinned by a
+test that deserialises them the way the command does
+(`ipc_contract.rs::grading_reads_the_attempt_the_interface_sends`), not just by a
+test that grades with `GradeOptions::default()` and never touches serde.
+
+This is the request half of `HANDOVER.md` invariant 2 — that the IPC contract is
+camelCase on both sides — and the half this app got wrong: 110 tests, clippy and
+`svelte-check` all passed while the Grade button could not grade a single attempt,
+because nothing deserialised the options the frontend sends. When a command takes
+a struct, test the *payload*, not the struct.
+
 ---
 
 ## 5. The verification loop
@@ -411,6 +448,52 @@ omits the shadow. Read the result; do not assume.
 To see a view that needs a click, change the initial value of `view` in
 `App.svelte` and **restart the app** — see trap 3, HMR preserves state.
 
+### Driving the interface, since it cannot be clicked from here
+
+System Events is blocked (trap 6), so nothing outside the app can click it, draw
+on it or read its DOM. Two things work, and between them they are enough to check
+any screen:
+
+* **A temporary script in `index.html`** — it is served by Vite for both the dev
+  server and the webview, it can click anything, and editing it makes Vite
+  **reload the page**, which re-runs the script against a fresh app. A `MODE`
+  constant plus a few lines that click a tab by its label and then report
+  `document.querySelector(...).innerText` back over the dev server is the whole
+  harness. Delete it before committing; it is a diagnostic, not a feature.
+* **Synthetic pointer events on the board**, which is how the verdict was finally
+  seen. `kana.medians` are in display space, `pointerToDisplay` maps the canvas's
+  client rectangle into that same box, so a driver can interpolate along each
+  centre-line and dispatch `pointerdown`/`pointermove`/`pointerup` — an attempt
+  that should score ~99. Two details: read the centre-lines over the app's own IPC
+  (`window.__TAURI_INTERNALS__.invoke("kana", { ch })`) rather than guessing them,
+  and **stub `canvas.setPointerCapture` first**, because a synthetic pointer was
+  never really down and the real call throws, which would abandon `down()` before
+  it records the stroke.
+
+### When the window is blank
+
+A blank white window is not a webview problem to be worked around; it is usually a
+JavaScript error, and the webview will not tell you — Tauri does not forward the
+console, and `log show` on the app's process showed nothing. What does work is a
+**beacon**: add to `index.html` a `window.addEventListener("error", …)` that
+`fetch`es `/__probe?error=…&stack=…`, and a Vite plugin (in `vite.config.ts`) whose
+middleware appends every request to a log file. The request log then says exactly
+how far the page got and the probe carries the message and stack. This is how
+`effect_update_depth_exceeded` was found after a screenshot had said only "blank".
+
+Two things to know about reading that log: WebKit serves already-fetched modules
+**from its cache**, so a reload shows the `index.html` request and nothing else —
+a cold app start is the honest measurement; and give each beacon a `?t=<now>` so
+its own fetches are not cached either.
+
+**And a false lead worth not repeating.** Vite binds loopback as **IPv6 only** here:
+`lsof` shows `[::1]:1422 (LISTEN)`, `curl http://[::1]:1422/` answers 200 and
+`curl http://127.0.0.1:1422/` gets connection refused. That looks exactly like "the
+webview cannot reach the dev server, hence the blank page" — but the webview had
+already connected (`com.apple.WebKit.Networking` holds an established connection to
+`[::1]:1422`) and the page's own modules were being served. Check
+`lsof -nP -iTCP:1422` before believing the DNS story.
+
 ---
 
 ## 6. Traps that cost time here
@@ -474,7 +557,10 @@ chased. On a normal run they do not appear.
 `osascript -e 'tell application "System Events" to get name of first process'`
 fails with `A privilege violation occurred. (-10004)`. There is no clicking
 buttons or drawing strokes from here. Screenshots and code changes are the only
-levers — which is why invariant 7's "look at it" recipe is worth the setup.
+levers — which is why invariant 7's "look at it" recipe is worth the setup, and §5's
+"Driving the interface" is how a click that matters still gets made. (Activating the
+app by name does not work either: it is a bare dev binary with no bundle, so
+`tell application "nihongo-tutor" to activate` answers `Can't get application`.)
 
 ### 7. Two `serde`/`format!` details that are each a compile error with a confusing message
 
@@ -494,6 +580,38 @@ claiming vowels because they come first in code-point order (invariant 11), and
 the katakana half of the table never being claimed because hiragana was iterated
 first (invariant 9). The readings themselves were never wrong. When the romaji
 engine misbehaves, suspect the loop before the table.
+
+### 9. An effect that reads what it writes never settles, and the window just goes blank
+
+`KanaCanvas`'s reset effect wrote `strokes`, `current`, `ghostCount` and `sweep`
+and then called `paint()`, which **reads all four**. So the effect depended on the
+state it wrote, and `strokes = []` is a fresh array — never `===` the previous
+value — so the write always notified: Svelte ran it until
+`effect_update_depth_exceeded` and the window came up blank on about half the cold
+starts. The fix is to let the *repaint* effect (which only reads) do the painting;
+`strokes = []` notifies it every time, so nothing is lost.
+
+The same mistake in a milder form was next door: the `ResizeObserver` effect called
+`measure()`, which calls `paint()`, from its own body, so it depended on the whole
+picture and rebuilt its observer **once per animation frame**. `untrack(measure)`
+fixes that — setup work that must not subscribe is wrapped, not avoided.
+
+Three things made this expensive rather than obvious: the failure is a race (a
+reload after the throw looked perfectly fine, so it read as webview flakiness); the
+error never reaches the terminal (`svelte-check`, the tests and clippy are all
+happy — an effect graph is not something any of them model); and a blank window
+says nothing. §5's "When the window is blank" is the way in. **The rule to carry to
+the kanji screens: an effect may read state or write it, and if it does both, one
+of those two has to be `untrack`ed.**
+
+### 10. `cargo test … | tail` throws the exit code away
+
+A pipeline's `$?` is the **last** command's, so
+`cargo test --workspace … 2>&1 | tail -60` reports `tail`'s status and a failing
+suite reads as `exit=0`. That nearly recorded a broken layer as green here. Either
+`set -o pipefail`, or send the output to a file and grep it, and check `$?` on the
+unpiped command: the same run as a file showed `exit=0` honestly and 762 passing,
+which is what the tailed form could not distinguish.
 
 ---
 

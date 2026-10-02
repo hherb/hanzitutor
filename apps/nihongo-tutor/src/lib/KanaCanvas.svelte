@@ -8,6 +8,7 @@
    * space, and driving the animation frame that reveals the guide stroke by
    * stroke.
    */
+  import { untrack } from "svelte";
   import { drawScene, type Scene } from "./render";
   import { isStroke, pointerToDisplay, sweepAt } from "./board";
   import type { GradeReport, Kana, Point } from "./types";
@@ -41,7 +42,7 @@
 
   /** When the learner starts fresh on a new kana, so does the board. */
   $effect(() => {
-    // Reading these is what makes the effect re-run on a change.
+    // Reading this is what makes the effect re-run on a change.
     void kana?.ch;
     strokes = [];
     current = null;
@@ -49,7 +50,12 @@
     ghostCount = kana ? kana.strokeCount : 0;
     sweep = null;
     cancelAnimationFrame(raf);
-    paint();
+    // Deliberately no `paint()` here. `paint` reads every one of those pieces of
+    // state, so calling it from this effect made the effect depend on what it
+    // writes — and `strokes = []` is a fresh array, never `===` the last, so the
+    // write always notified and the effect re-ran without end. Svelte threw
+    // `effect_update_depth_exceeded` on mount and the window came up blank. The
+    // repaint effect below covers this: `strokes = []` notifies it every time.
   });
 
   /**
@@ -62,6 +68,10 @@
    * from that measurement, which is how the board ended up a wide rectangle with
    * the kana stretched across it: any clamp on the box's height (a `max-height`,
    * a flex parent) made the measurement disagree with the layout.
+   *
+   * The first measurement is `untrack`ed because `paint` reads the whole picture;
+   * left tracked, this effect would depend on `strokes`, `ghostCount` and `sweep`
+   * and would rebuild its `ResizeObserver` on every animation frame.
    */
   $effect(() => {
     const cv = canvas;
@@ -74,7 +84,7 @@
       cv.height = px;
       paint();
     };
-    measure();
+    untrack(measure);
     const observer = new ResizeObserver(measure);
     observer.observe(cv);
     return () => observer.disconnect();

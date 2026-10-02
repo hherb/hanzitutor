@@ -46,10 +46,11 @@ references for no gain.
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | Last, and possibly never. The course teaches them and the input engine types them; a chart is a lookup convenience for a set a learner knows within the week. |
 
-Three things are deliberately **not** milestones, and are recorded as known weak
-spots instead: the three interface surfaces nobody has watched, the grading
-tolerances never re-fitted for kana, and grammar — the last of which is the
-largest gap in the product rather than in the kana course.
+Three things are deliberately **not** milestones. Two are recorded as known weak
+spots below — the grading tolerances never re-fitted for kana, and grammar, which
+is the largest gap in the product rather than in the kana course. The third was the
+set of three interface surfaces nobody had watched; that one is done, and it found
+two bugs rather than none (see "Cross-cutting polish").
 
 ---
 
@@ -86,7 +87,9 @@ kana in Make Me a Hanzi's own font space, so the transform was already right.
 * Every taught stroke count checked against KanjiVG, and `prepare-kana` refuses
   to write an artifact it could not check.
 * The artifact is committed and a clone builds with no data step.
-* 109 Rust tests and 11 frontend tests, clippy clean, `svelte-check` clean.
+* 110 Rust tests and 11 frontend tests, clippy clean, `svelte-check` clean. (109
+  when N0 was accepted; the contract test for the grading options payload was
+  added with `HANDOVER_NIHONGO.md` invariant 14.)
 * Run on a display: the course, the board, the animation, the drill and a
   hand-drawn あ in ink all seen working.
 
@@ -457,20 +460,31 @@ decomposition panel map onto the 214 radicals and the IDS strings.
 
 Recorded here rather than as milestones because none of them is a feature.
 
-* **The three surfaces nobody has watched.** The grading verdict, the Licences
-  panel and the katakana tab are tested and typechecked but were never seen
-  running. `HANDOVER_NIHONGO.md` §5 has the window-capture recipe; this is
-  fifteen minutes of work and should happen before anything else.
+* **The three surfaces nobody had watched — done, and two of the three were
+  broken.** The grading verdict, the Licences panel and the katakana tab have now
+  been seen running, and watching them was worth more than the fifteen minutes it
+  cost: the Grade button could not grade anything (the interface posts
+  `{ inkWidth }` and `GradeOptions` rejected the partial object with `missing field
+  'resampleK'`, so no verdict had ever reached the screen), and the board threw
+  `effect_update_depth_exceeded` on mount and came up blank on about half the cold
+  starts. Both are fixed, both now have the test that was missing, and they are
+  `HANDOVER_NIHONGO.md` invariant 14 and trap 9. The lesson for the kanji screens
+  is the general one: **a green suite, a clean `svelte-check` and clippy said
+  nothing about either bug**, so a screen that has never been looked at is not a
+  screen that works.
+* **The three interface bugs that shipped** are fixed and two are invariants now
+  (the board's geometry, the title bar inset), but the *class* of mistake — two
+  things deciding one dimension, and a layout that is only wrong on a display —
+  is worth remembering when the kanji screens are built. Kanji screens will have
+  a taller board and a longer sidebar, which is more of the same. Two more of the
+  class were found by watching the three surfaces above: an effect cycle that is
+  only wrong at runtime, and an IPC payload that is only wrong in the direction the
+  contract test did not check.
 * **The Chinese docs now point here, and should keep doing so.** `README.md`,
   `ROADMAP.md` and `HANDOVER.md` each gained a pointer when this file was written;
   until then `grep -c 'nihongo\|kana'` over the three returned 0. If the Japanese
   part is ever renamed or its documents move, those three pointers are what breaks
   first, and nothing tests them.
-* **The three interface bugs that shipped** are fixed and two are invariants now
-  (the board's geometry, the title bar inset), but the *class* of mistake — two
-  things deciding one dimension, and a layout that is only wrong on a display —
-  is worth remembering when the kanji screens are built. Kanji screens will have
-  a taller board and a longer sidebar, which is more of the same.
 * **The two Dependabot warnings that stand** (`glib`, `proc-macro-error`) are
   Linux-only and upstream-blocked. Nothing to do; recorded so they are not
   re-investigated.
