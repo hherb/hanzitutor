@@ -556,15 +556,26 @@ interface.
 ./scripts/with-cargo-env.sh cargo test -p nihongo-core -p nihongo-tutor
 
 # 2. Nothing else broke. Fast when the tree is warm.
-./scripts/with-cargo-env.sh cargo test --workspace --features hanzi-core/prepare
+./scripts/with-cargo-env.sh cargo test --workspace \
+  --features hanzi-core/prepare --features nihongo-core/prepare
 
 # 3. Lints. -D warnings, so a warning is a failure.
-./scripts/with-cargo-env.sh cargo clippy --workspace --all-targets -- -D warnings
+./scripts/with-cargo-env.sh cargo clippy --workspace --all-targets \
+  --features hanzi-core/prepare --features nihongo-core/prepare -- -D warnings
 
 # 4. The frontend: types, then the pure arithmetic.
 pnpm --dir apps/nihongo-tutor run check:web     # svelte-check
 pnpm run test:web                               # from the ROOT — it owns vitest
 ```
+
+**Layers 2 and 3 carry both `prepare` features deliberately, and layers 1 and 4
+being narrower is deliberate too.** `prepare-kana` and `prepare-kanji` declare
+`required-features = ["prepare"]`, so a plain `cargo clippy --workspace` does not
+compile them at all — the two binaries that write the committed artifacts would be
+the only Rust in the tree that no lint ever sees. `--features nihongo-core/prepare`
+closes that, and it is why `pnpm test` and `pnpm run check:rust` (what CI runs, see
+`.github/workflows/ci.yml`) spell it out rather than relying on
+`--all-targets`.
 
 `apps/nihongo-tutor/src/lib/board.test.ts` is picked up by the **root** project's
 vitest, through the `include` list in `vitest.config.ts`. The app itself installs
