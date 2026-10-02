@@ -32,6 +32,8 @@ MMAH="https://raw.githubusercontent.com/skishore/makemeahanzi/master"
 HANZIDB="https://raw.githubusercontent.com/ruddfawcett/hanziDB.csv/master"
 HSKVOCAB="https://raw.githubusercontent.com/drkameleon/complete-hsk-vocabulary/main"
 GOOGLEFONTS="https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc"
+ANIMCJK="https://raw.githubusercontent.com/parsimonhi/animCJK/master"
+KANJIVG="https://raw.githubusercontent.com/KanjiVG/kanjivg/master"
 
 # fetch <url> <destination> [optional]
 fetch() {
@@ -84,5 +86,59 @@ fetch "https://www.gnu.org/licenses/gpl-3.0.txt" "$LICENCES/GPL-3.0.txt"
 # outlines, so the font is only for Chinese rendered as text.
 echo "fetching the interface font into $FONTS"
 fetch "$GOOGLEFONTS/NotoSansSC%5Bwght%5D.ttf" "$FONTS/NotoSansSC-VF.ttf"
+
+# ---------------------------------------------------------------------------
+# Japanese kana, for `pnpm run prepare-kana`.
+#
+# Three sources, and they are not interchangeable:
+#   graphicsJaKana.txt  the geometry, one object per kana (LGPL-3.0-or-later).
+#   svgsJaKana/*.svg    the same characters as SVG. Only their element ids are
+#                       read, to recover which drawing segments make up one
+#                       taught stroke — the graphics file has lost that, and
+#                       without it あ would be stored as four strokes instead of
+#                       three. LGPL-3.0-or-later.
+#   kvgJa/*.svg         KanjiVG (CC BY-SA 3.0). NOT bundled and NOT an input to
+#                       the artifact: it is the second opinion the stroke counts
+#                       are checked against, because "how many strokes is あ"
+#                       should not be answered by the code being tested.
+#
+# The AnimCJK kana set is the hiragana block U+3041..U+3096, the katakana block
+# U+30A1..U+30FA, and the prolonged sound mark U+30FC — 177 characters, which is
+# what AnimCJK publishes and what the artifact asserts.
+kana_quiet() {
+  local url="$1" dest="$2"
+  [ -s "$dest" ] && return 0
+  if curl --fail --location --silent --show-error "$url" --output "$dest.partial"; then
+    mv "$dest.partial" "$dest"
+  else
+    rm -f "$dest.partial"
+    echo "        warning: not available at $url" >&2
+  fi
+}
+
+echo "fetching the kana material into $RAW"
+fetch "$ANIMCJK/graphicsJaKana.txt" "$RAW/graphicsJaKana.txt"
+
+KANA_SVG="$RAW/svgsJaKana"
+KVG_SVG="$RAW/kvgJa"
+mkdir -p "$KANA_SVG" "$KVG_SVG"
+
+# U+3041..U+3096 and U+30A1..U+30FA, plus U+30FC.
+kana_codepoints() {
+  seq $((0x3041)) $((0x3096))
+  seq $((0x30A1)) $((0x30FA))
+  echo $((0x30FC))
+}
+
+fetched_kana=0
+for cp in $(kana_codepoints); do
+  before=$(ls "$KANA_SVG" 2>/dev/null | wc -l | tr -d ' ')
+  kana_quiet "$ANIMCJK/svgsJaKana/$cp.svg" "$KANA_SVG/$cp.svg"
+  after=$(ls "$KANA_SVG" 2>/dev/null | wc -l | tr -d ' ')
+  [ "$before" != "$after" ] && fetched_kana=$((fetched_kana + 1))
+  kana_quiet "$KANJIVG/kanji/$(printf '%05x' "$cp").svg" "$KVG_SVG/$(printf '%05x' "$cp").svg"
+done
+echo "  kana SVGs        $(ls "$KANA_SVG" | wc -l | tr -d ' ') in $KANA_SVG ($fetched_kana fetched)"
+echo "  KanjiVG SVGs     $(ls "$KVG_SVG" | wc -l | tr -d ' ') in $KVG_SVG (the cross-check, not shipped)"
 
 echo "done"

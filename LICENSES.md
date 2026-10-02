@@ -422,6 +422,58 @@ of the time — and to HSK grading in general, because the two official HSK 3.0
 documents disagree on a large share of their shared vocabulary. The research
 behind both numbers is in `docs/research/`.
 
+## The Japanese kana data — committed, but not in this app's bundle
+
+`crates/nihongo-core/` holds the beginning of a Japanese tutor: a kana dataset
+built from **AnimCJK**, and the `merge_strokes` repair that source needs. It is
+recorded here because the **artifact is committed** —
+`crates/nihongo-core/data/kana.bin.gz`, 177 kana — so the repository distributes
+AnimCJK-derived data even though the Chinese app does not contain it. Nothing
+about this app's own bundle changes, and no entry is added to the catalogue in
+`src-tauri/src/licences.rs` until there is a Japanese app for it to travel with.
+
+Three upstream sources, and they are not interchangeable:
+
+| Source | What is taken | Licence |
+| --- | --- | --- |
+| [AnimCJK](https://github.com/parsimonhi/animCJK) `graphicsJaKana.txt` | Stroke outlines and centre-lines. **Redistributed**, compacted into the artifact | **Ambiguous — see below.** Either the Arphic Public License or LGPL-3.0-or-later, and both travel with this repository |
+| [AnimCJK](https://github.com/parsimonhi/animCJK) `svgsJaKana/*.svg` | Only the **element ids**, read at build time to recover which drawing segments make up one taught stroke. Not redistributed | LGPL-3.0-or-later |
+| [KanjiVG](https://github.com/KanjiVG/kanjivg) `kanji/*.svg` | Only the **stroke count**, read at build time as an independent check on the merge. Not redistributed | CC BY-SA 3.0 |
+
+AnimCJK splits its licence by file kind, and the split is awkward for exactly the file this project
+uses. Its `COPYING.txt` assigns *"text files prefixed by `graphics`"* to the **Arphic Public
+License**, but the only reason its character SVGs are Arphic-licensed is that they were traced from
+the Arphic fonts — and the same file puts *"SVG files … representing kana or strokes"* under
+**LGPL-3.0-or-later** precisely *because kana are not so derived*. `graphicsJaKana.txt` is a
+`graphics*` file whose content is kana, so it falls in the gap between the two clauses.
+
+**This is not a blocker, and it is not worked around by taking a view.** Both candidate licences are
+already satisfied by notices this repository ships: `licences/Arphic-Public-License.txt` (for Make
+Me a Hanzi, which is under the identical licence) and `licences/LGPL-3.0.txt`. Both permit
+redistribution and modification of the data with the notice attached. The ambiguity is recorded
+rather than resolved because it is upstream's to resolve, and an issue should be raised with AnimCJK
+to say which clause they intend for the kana `graphics` files.
+
+The copyright holders are the AnimCJK project (FM&SH); upstream's own statement is
+[`licenses/COPYING.txt`](https://github.com/parsimonhi/animCJK/blob/master/licenses/COPYING.txt).
+
+**What this project changed**, as LGPL-3.0 §2 requires be stated: nothing in the
+outlines or centre-lines themselves. AnimCJK stores a stroke that crosses itself
+as several drawing segments — あ arrives as four where three are taught — so the
+build folds each such stroke back into one, concatenating the outline paths and
+keeping the first centre-line (the later ones are displaced copies for the
+animation). Over all 177 kana that collapses 27 segments; 25 characters are
+affected. The grouping is read out of AnimCJK's own SVG element ids, and every
+one of the 177 resulting stroke counts is checked against KanjiVG before the
+artifact is written — `prepare-kana` refuses to write one it could not check,
+unless `--allow-unchecked` is passed deliberately.
+
+KanjiVG earns no entry of its own, and that is a judgement rather than an
+oversight: no KanjiVG file, and no adaptation of one, is redistributed. It is
+read for a number — how many strokes a kana has — and a stroke count is a fact
+about the language, not a copy of the work. The pipeline only needs it at build
+time, and it is fetched into `data/raw/kvgJa/`, which is not committed.
+
 ## Before you distribute
 
 1. **Nothing has to be gathered by hand.** The notices are in `licences/`, are
@@ -472,6 +524,14 @@ behind both numbers is in `docs/research/`.
    recorded above rather than satisfied here. An offline installer, a mirror or a
    pre-seeded cache changes that, and the FunASR model agreement is not a free
    licence in the sense the rest of this file uses.
+8. **No dependency's source is modified.** This is worth stating because it was not
+   true for the 0.6.0 iOS resubmission: `vendor/tao` was the published `tao` 0.35.3
+   (Apache-2.0) with upstream's one-line fix for the iOS launch crash applied, and
+   Apache-2.0 §4(b) required the changed file to say so, which it did. That copy is
+   gone — the fix is in released `tao` 0.36.0 and later, and `tauri` 2.12.0 brings it
+   in (HANDOVER invariant 38). **If a dependency is ever vendored or patched again,
+   the §4(b) notice comes with it:** a comment in the changed file naming the
+   modification, and the crate's own licence files in the same directory.
 
 ## Building from source
 

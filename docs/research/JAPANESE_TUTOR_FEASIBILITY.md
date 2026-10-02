@@ -224,18 +224,27 @@ assignment from KANJIDIC2's `grade` field**, or the app will teach 2016's curric
 **LGPL-3.0-or-later**. The outlines are clean and in the same box (aggregate x 35…1012,
 y −90…877), but:
 
-**Defect 1 — 21 of 177 kana store one taught stroke as two array entries.** Because AnimCJK
+**Defect 1 — 25 of 177 kana store one taught stroke as two array entries.** Because AnimCJK
 animates a self-overlapping stroke by splitting it, a kana is stored with more "strokes" than are
 taught. あ is stored as **4** strokes and 4 medians; it is taught as **3**. The affected set is
-exactly: ぁ あ ぉ お な ぬ は ば ぱ ほ ぼ ぽ ま み む め ょ よ る ゐ ゑ. The second entry's median is a
-**synthetic duplicate shifted out of the box** (あ's is at x = −210…845) so that it does not draw.
+exactly: ぁ あ ぉ お す ず な ぬ ね の は ば ぱ ほ ぼ ぽ ま み む め ょ よ る ゐ ゑ — 27 segments in
+total, since ぬ and ゐ are split in two places. The extra entries' medians are **displaced copies of
+the same centre-line** (あ's first three points are shifted to x = −210…845) so that they do not
+draw, while their outlines are genuine complementary halves of the shape.
+
+> **Correction.** This section originally said 21, from a heuristic that looked for medians landing
+> outside the design box. That test misses す, ず, ね and の, whose displaced medians stay inside it.
+> The authoritative count comes from AnimCJK's SVG element ids, which name the stroke each segment
+> belongs to, and it is **25**. The implementation found this; see
+> `crates/nihongo-core/src/kana.rs`.
 
 Left unfixed this **mis-grades handwriting**: the grader would look for four reference strokes and
 flag a correct three-stroke あ as missing a stroke, and the Kendall order score would be wrong. The
 fix is mechanical and authoritative — the SVG ids encode the grouping (`z12354d3a`, `z12354d3b` →
-taught stroke 3), so the importer should group segments by stroke index rather than trusting the
-array length. `dictionaryJa.txt` carries no stroke count for kana, so the SVG ids are the source of
-truth.
+taught stroke 3), so the importer groups segments by stroke index rather than trusting the array
+length. `dictionaryJa.txt` carries no stroke count for kana, so the SVG ids are the source of truth,
+and **KanjiVG is the independent check on the answer** — a different project's per-stroke paths say
+how many strokes each kana has, and all 177 must agree before an artifact is written.
 
 **Defect 2 — the file's own licence is ambiguous.** AnimCJK's `COPYING.txt` assigns *"text files
 prefixed by `graphics`"* to the Arphic Public License, while explicitly putting *"SVG files …
@@ -605,8 +614,11 @@ Expect mobile to be the first feature request.
    GPLv2 / LGPLv2.1 / BSD-New triple licence, and its own provenance.
 3. **`graphicsJaKana.txt` licence ambiguity** — confirm with upstream, or use `svgsJaKana/*.svg`
    whose per-file LGPL headers are explicit.
-4. **The 21 kana stroke merges** — verify the SVG-id grouping rule reproduces the taught stroke count
-   for all 21 (and check the two-median cases ぬ and ゐ).
+4. ~~**The 21 kana stroke merges**~~ — **done, and the count was wrong: it is 25.** The SVG-id
+   grouping rule does reproduce the taught stroke count, verified against KanjiVG for all 177, and
+   `prepare-kana` now refuses to write an artifact it could not check. See
+   `crates/nihongo-core/`. ぬ and ゐ are each split in two places, which the grouping handles because
+   it is read from the ids rather than inferred from the number of entries.
 5. **`cjkvi-ids`** "GPLv2": or-later vs v2-only. If v2-only it is AGPL-incompatible; prefer CHISE or
    `cjk-decomp`'s Apache-2.0 option.
 6. **Sudachi/SudachiDict** and **MeCab/IPADic** licences — unverified; prefer UniDic's BSD option.

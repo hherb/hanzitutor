@@ -1,0 +1,28 @@
+[package]
+name = "nihongo-core"
+description = "Offline kana and kanji data, stroke order and legibility grading for handwritten Japanese"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The geometry engine. `hanzi-core`'s `geom`, `grade` and `raster` modules are
+# language-neutral — they grade strokes against strokes and never look at the
+# character — so the Japanese data layer reuses them rather than reimplementing
+# the Hungarian pairing, the order analysis and the ink measures.
+hanzi-core = { path = "../hanzi-core" }
+serde.workspace = true
+postcard.workspace = true
+flate2.workspace = true
+
+# Only the `prepare-data` binary reads the upstream AnimCJK files, so the app
+# does not carry a JSON-lines reader it never uses.
+serde_json = { workspace = true, optional = true }
+
+[features]
+prepare = ["dep:serde_json"]
+
+[[bin]]
+name = "prepare-kana"
+path = "src/bin/prepare_kana.rs"
+required-features = ["prepare"]
