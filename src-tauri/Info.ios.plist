@@ -13,23 +13,40 @@
 
 	  which on a phone looks like a black flash and a return to the home screen,
 	  with a crash report and nothing in the app's own log. The simulator did not
-	  complain because it runs iOS 18.
+	  complain because the runtime installed at the time was iOS 18 — pick a
+	  simulator by its *OS*, not by its device name, when a failure is
+	  OS-dependent. An iPad Air on iPadOS 27.0 reproduces this one, and the
+	  release-build crash that replaced it.
 
-	  `UIApplicationSupportsMultipleScenes` is **true on purpose**, and it is not a
-	  claim that this app wants several windows: it is how `tao`, Tauri's windowing
-	  layer, is told to use the scene life cycle at all. Its code reads exactly
-	  this key (`multiple_scenes_enabled()` in `tao/src/platform_impl/ios/scene.rs`),
-	  and with it false tao takes the pre-scene path — it creates the window in
-	  `didFinishLaunching`, before any scene exists, and a window that is not
-	  attached to a scene is invisible once a manifest is present. The result is a
-	  *black screen rather than a crash*, which is a harder failure to read.
+	  What `tao` does with this has changed, so the reasoning that used to be here
+	  no longer applies. On `tao` 0.35 the *value* of
+	  `UIApplicationSupportsMultipleScenes` was the switch that put tao into scene
+	  mode at all (`multiple_scenes_enabled()`); on 0.36 and later that function is
+	  gone. Tao now decides by the **presence of this manifest**
+	  (`scene_lifecycle_enabled()`, `platform_impl/ios/scene.rs`) and registers
+	  `application:configurationForConnectingSceneSession:options:` unconditionally,
+	  so the delegate is installed whether the key is true or false.
 
-	  There is deliberately no `UISceneConfigurations` here: tao answers UIKit's
-	  `configurationForConnectingSceneSession` with a `UISceneConfiguration` named
-	  `TaoScene` whose delegate class it sets to `TaoSceneDelegate`. Naming a
-	  delegate here as well would be a second, competing source of truth.
+	  That leaves the key meaning what UIKit says it means — "this app supports
+	  more than one window" — and this app is single-window. It is kept **true**
+	  here only because that is what has shipped and what was reviewed; `false` is
+	  the more honest declaration and is now viable (`tao#1308` is what made it so),
+	  but it changes windowing behaviour and wants its own tested change rather
+	  than a ride along with a dependency upgrade.
 
-	  Tauri's iOS template does not add this file yet. Tauri merges it over the
+	  There is deliberately no `UISceneConfigurations` here either. Tao builds the
+	  configuration from the connecting session's own role with a `nil` name, which
+	  selects the app's configuration for that role if one is declared and a
+	  default otherwise; declaring one here would be a second, competing source of
+	  truth. This is also why the old UIKit log line
+
+	      Info.plist contained no UIScene configuration dictionary
+	      (looking for configuration named "TaoScene")
+
+	  no longer appears: `tao` 0.35 asked for a configuration by that name and
+	  0.36+ does not.
+
+	  Tauri's iOS template does not add this file. Tauri merges it over the
 	  generated `Info.plist` **at build time** — `tauri ios init` alone does not,
 	  so the built app's plist is where to check it landed.
 	-->

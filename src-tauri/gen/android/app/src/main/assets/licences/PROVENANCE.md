@@ -472,6 +472,14 @@ behind both numbers is in `docs/research/`.
    recorded above rather than satisfied here. An offline installer, a mirror or a
    pre-seeded cache changes that, and the FunASR model agreement is not a free
    licence in the sense the rest of this file uses.
+8. **No dependency's source is modified.** This is worth stating because it was not
+   true for the 0.6.0 iOS resubmission: `vendor/tao` was the published `tao` 0.35.3
+   (Apache-2.0) with upstream's one-line fix for the iOS launch crash applied, and
+   Apache-2.0 §4(b) required the changed file to say so, which it did. That copy is
+   gone — the fix is in released `tao` 0.36.0 and later, and `tauri` 2.12.0 brings it
+   in (HANDOVER invariant 38). **If a dependency is ever vendored or patched again,
+   the §4(b) notice comes with it:** a comment in the changed file naming the
+   modification, and the crate's own licence files in the same directory.
 
 ## Building from source
 

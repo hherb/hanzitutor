@@ -1388,19 +1388,36 @@ step here that needs a person. Six things about this build are not obvious:
   *Debug* Swift product, which exports them. The evidence and the reasoning are
   in the comment there and in HANDOVER §6; **delete the entries when Tauri
   declares those functions `public`**.
-- **A release build links, installs and then dies at launch — so a device build
-  is `--debug`.** The release binary crashes on start with `EXC_BAD_ACCESS` in
-  `objc_retain`, called from `-[UIApplication _connectUISceneFromFBSScene:…]`; no
-  frame of this app's own code is on the stack, which points at the scene
-  configuration Tauri hands UIKit (`tao`'s
-  `application:configurationForConnectingSceneSession:options:`). The debug build
-  runs, and the two differ in nothing but optimisation, so this is an upstream
-  lifetime bug in the iOS scene path rather than anything here. See HANDOVER §6.
-- **It is development-signed**, so it installs on a registered device and cannot
-  be uploaded anywhere. `src-tauri/gen/apple/ExportOptions.plist` says
-  `method = debugging`; the CLI can export for the App Store directly with
-  `--export-method app-store-connect` (or `release-testing`), but that needs a
-  distribution certificate and profile, which this project does not have yet.
+- **A release build used to die at launch, and that is what App Review rejected.**
+  The release binary crashed on start with `EXC_BAD_ACCESS` in `objc_retain`, called
+  from `-[UIApplication _connectUISceneFromFBSScene:…]`, with no frame of this app on
+  the stack; the debug build of the same commit ran. That was a use-after-free in the
+  scene configuration `tao` hands UIKit
+  (`application:configurationForConnectingSceneSession:options:`) — see HANDOVER §6
+  for the mechanism. It is **fixed in `tao` 0.36.0 and later** (upstream
+  [tao #1245](https://github.com/tauri-apps/tao/pull/1245)), which this project gets
+  through **`tauri` 2.12.0 → `tauri-runtime-wry` 2.12.0 → `tao ^0.37`**. So the
+  permanent fix is a Tauri version, not a patch: **do not pin `tao` below 0.36**, and
+  do not build the iOS app against a `tauri` older than 2.12 if it matters that the
+  release build launches. A device build need not be `--debug`.
+- **The exported IPA is an App Store build, and the *archive* inside the same
+  build is what installs on a device.** `src-tauri/gen/apple/ExportOptions.plist`
+  says `method = app-store-connect`, so `Hanzi Tutor.ipa` is re-signed with an
+  Apple Distribution certificate and carries `beta-reports-active` — it is the
+  artifact to upload, and `devicectl` refuses it with *"Attempted to install a
+  Beta profile without the proper entitlement"*, which is correct rather than a
+  fault to chase. The app the archive was made from is still development-signed
+  (`get-task-allow`, Apple Development) and installs normally:
+
+  ```bash
+  APP=src-tauri/gen/apple/build/hanzi-tutor_iOS.xcarchive/Products/Applications/"Hanzi Tutor.app"
+  xcrun devicectl device install app --device <udid> "$APP"
+  ```
+
+  That is the same optimised binary as the IPA, so it is the way to test a
+  **release** build by hand. Use `--export-method debugging` to get an installable
+  `Hanzi Tutor.ipa` itself, or `release-testing` for TestFlight, which needs the
+  distribution certificate and profile that `app-store-connect` already uses here.
 - **Clear the archive between builds.** A second one fails with `failed to rename
   app …: Directory not empty`; `rm -rf src-tauri/gen/apple/build` first.
 - **The team ID belongs in the environment**, as above, not in a committed file.

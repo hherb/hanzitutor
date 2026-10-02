@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 
@@ -51,8 +51,11 @@ opt-level = 1
 # The *Debug* configuration exports them, which is the only reason a `--debug`
 # device build works at all. Verified with `nm` on the two archives built for
 # this project: `T _register_plugin` in `Products/Debug-iphoneos/libTauri.a`,
-# `t _register_plugin` in `Products/Release-iphoneos/libTauri.a`. Tauri's `dev`
-# branch still declares them without `public`, so upgrading does not fix it.
+# `t _register_plugin` in `Products/Release-iphoneos/libTauri.a`. Upgrading does
+# not fix it, and **2.12.0 does not either**: its `Tauri.swift` still declares
+# `logStdout`, `registerPlugin`, `onWebviewCreated` and `runCommand` as plain
+# `func`s behind `@_cdecl`, with no `public` (re-checked when this project moved
+# to 2.12.0, 2026-09-30).
 #
 # `swift-rs` decides which Swift configuration to build from the `DEBUG`
 # environment variable cargo hands the *consumer's* build script, and a package

@@ -2,7 +2,9 @@
 
 What is in here is for the store listings: `listing.md` has the Google Play copy
 and Console answers, `app-store-listing.md` the App Store Connect copy, and
-the images are the ones they refer to.
+the images are the ones they refer to. `ios-resubmission.md` is the record of the
+iOS rejection under 2.1(a) and the build that answers it — the diagnosis, the
+artifact and its checksum, and the reply to paste into App Store Connect.
 
 ## Building a signed release
 

@@ -252,7 +252,7 @@ pnpm run install:cli     # installs a matching tauri-cli into .cargo-tools/
 | Tone pairs | Done — the sidebar's Tones screen derives minimal pairs from the dataset, hears them, quizzes which reading was spoken, and sends the set to the board for the contour comparison; the derivation rules and their three traps are §9 |
 | Speech recognition (M12) | Done — an optional ~163 MB SenseVoice model, installed from the settings screen |
 | Cross-device sync (M13) | Done — an optional Dropbox account, off by default, merging the attempt log (§7) |
-| Mobile shells (M9) | Runs on a physical iPhone and on Android hardware; an iOS release build links, installs and then crashes at launch while the debug build runs, so iOS device builds are debug ones and the Play paperwork is outstanding (ROADMAP M9) |
+| Mobile shells (M9) | Runs on a physical iPhone and on Android hardware; the iOS release build's launch crash — the App Review rejection of 1.0 (0.5.11) under 2.1(a) — is fixed in `tao` 0.36.0+ and reached by `tauri` 2.12.0 or later, so device builds need not be debug ones (invariant 38); the Play paperwork is outstanding (ROADMAP M9) |
 | Graded phrase audio (M14) | In progress — the HSK 1–2 clips are the corpus's own recordings, and the Phrases screen and optional synthesis model are built; the graded readers' voice is still open (ROADMAP M14) |
 | Pronunciation | The system synthesiser on macOS, iOS and Android; the bundled clips cover the graded phrases on any platform |
 | Network | Off unless the learner asks: two optional model downloads (recognition, synthesis) and an optional Dropbox sync |
@@ -1052,6 +1052,32 @@ after each item) both do this now. The shape is the rule, not either file.
       `replacing_from_a_backup_replaces_the_list_and_never_the_log` in
       `tests/ipc_contract.rs` pin all three.
 
+38. **Nothing in the dependency tree is patched, and the one time it was is a
+    version floor.** For 0.6.0's iOS resubmission this repository carried
+    `vendor/tao`: the published `tao` 0.35.3 with a single expression changed, a
+    use-after-free that crashed every **release** iOS build at launch and had App
+    Review reject 1.0 (0.5.11) under 2.1(a). **It is gone** — retired once `tao`
+    reached a version that contains upstream's fix. What replaces it is a
+    constraint, so keep it:
+
+    - **`tauri` must be 2.12.0 or later for the iOS release build to launch**,
+      because that is the first release whose `tauri-runtime-wry` (2.12.0) accepts
+      `tao ^0.37.0`. `tao` 0.36.0+ has the fix; no **0.35.x** ever received it,
+      which is why a `tauri` 2.11.x line cannot be made to work by pinning alone.
+      Check with `./scripts/with-cargo-env.sh cargo tree -p tao`.
+    - **If this ever has to be patched again, prefer the version bump.** Pinning a
+      fix commit as a git dependency was tried and rejected: the commit in question
+      was 11 commits past the release and carried a new `UIWindowSceneDelegate`
+      conformance, Linux and Windows input changes and objc2 bumps, none of them
+      wanted or tested here. Vendoring worked, but it cost a maintained copy of a
+      crate and six months of later changes.
+    - **The one thing the upgrade did *not* let us drop** is the Swift-glue
+      workaround in the root `Cargo.toml`: `tauri` 2.12.0 still declares
+      `log_stdout`, `register_plugin`, `on_webview_created` and
+      `run_plugin_command` as internal Swift functions behind `@_cdecl`, so the
+      `[profile.release.package.…] debug = 1` entries are still what make a release
+      iOS build link. Re-check when a Tauri release makes them `public`.
+
 ## 5. The verification loop
 
 Run before every commit:
@@ -1560,27 +1586,54 @@ back.
   printed nothing to its own log; the only evidence was a crash report
   (`idevicecrashreport -u <udid> -k <dir>`) naming
   `___UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption_block_` at
-  `EXC_BREAKPOINT (SIGTRAP)`. The simulator did not complain because it runs iOS 18.
+  `EXC_BREAKPOINT (SIGTRAP)`. The simulator did not complain because the runtime
+  installed at the time was iOS 18 — see the note at the end of this entry for how
+  to pick a simulator by OS rather than by name, which is what this cost.
   `tao` already implements the scene delegate (`TaoSceneDelegate`, in
-  `tao/src/platform_impl/ios/scene.rs`), so nothing needs patching — what was
-  missing is `UIApplicationSceneManifest`, which Tauri's iOS template does not add.
+  `tao/src/platform_impl/ios/scene.rs`), and from **0.36** it registers
+  `application:configurationForConnectingSceneSession:options:` unconditionally, so
+  nothing needs patching to *reach* the scene life cycle — what was missing is
+  `UIApplicationSceneManifest`, which Tauri's iOS template does not add.
   It lives in `src-tauri/Info.ios.plist`, which the CLI **merges at build time**
   (not at `ios init`: re-initialising alone left the generated `Info.plist` without
-  it). Two details are load-bearing:
-  * `UIApplicationSupportsMultipleScenes` must be **true**. That is not a claim that
-    this app wants several windows: it is the switch that puts `tao` into scene mode
-    at all (`multiple_scenes_enabled()`). With it **false** the crash is gone but the app shows a **black screen**,
-    because tao then creates the window in `didFinishLaunching` before any scene
-    exists, and a window not attached to a scene is invisible once a manifest is
-    present. A black screen instead of a crash is much harder to read: nothing is
-    logged and the crash reports stop.
+  it). Two details decide whether it works:
+
+  * **`UIApplicationSupportsMultipleScenes` is no longer tao's switch.** On 0.35 the
+    key's *value* was what put tao into scene mode at all (`multiple_scenes_enabled()`);
+    on 0.36+ that function is gone and `scene_lifecycle_enabled()` looks only for the
+    **presence** of this manifest. The key is kept `true` because that is what has
+    shipped and what was reviewed, but it now means what UIKit says it means — "this
+    app supports more than one window" — which a single-window app should probably not
+    claim. **`false` should now be viable** (that is what
+    [tao#1308](https://github.com/tauri-apps/tao/issues/1308) was about, and 0.36+
+    installs the delegate either way), but that is read from the source here, **not
+    measured** — test it on both iPad sizes and both OS versions before taking it.
+    The history is why it was not viable before, and is worth keeping: on 0.35 tao
+    registered its delegate *only* when the key was true, so with `false` the window
+    never joined a scene, WebKit reported the page `hidden`, and **`getUserMedia` was
+    parked for ever** — no prompt, no rejection — which would have silently disabled
+    tone practice as well as black-screening the app.
   * There must be **no `UISceneConfigurations`**. tao answers UIKit's
-    `configurationForConnectingSceneSession` with its own `UISceneConfiguration` named
-    `TaoScene`, with the delegate class set; naming a delegate here as well is a second, competing source
-    of truth.
+    `configurationForConnectingSceneSession` itself — from 0.36 it uses the
+    *connecting session's own role* with a `nil` name, which selects the app's
+    configuration for that role if it declares one — so naming a delegate here as well
+    would be a second, competing source of truth. (0.35 asked for a configuration
+    named `TaoScene`, which is why launches used to log *"Info.plist contained no
+    UIScene configuration dictionary (looking for configuration named "TaoScene")"*;
+    0.36+ passes a `nil` name and that line is gone.)
 
   Diagnose this on the **simulator**: the same manifest black-screens both, and the
   simulator can be screenshotted.
+
+  **Check which runtime the simulator is actually on, because that is how the
+  release-build crash below shipped.** "The simulator did not complain" was true
+  only because the installed runtime was iOS 18: whichever simulator device you
+  pick, the *runtime* decides. What is installed now is iOS 18.4, 26.1–26.5 and
+  **27.0**, and an iPad Air 11-inch or 13-inch on 27.0 is the closest thing to the
+  reviewer's device — pick it by OS, not by name, when the failure is
+  OS-dependent. Under 27.0 the release build crashes exactly as App Review
+  reported it, and the patched build runs (the full matrix is in the crash entry
+  below).
 - **A device build needs `~/Library/Developer/Xcode`, and the sandbox that
   withholds it fails in a way that reads like a signing problem.** Under a
   workspace-write file policy `xcodebuild` dies in *Build Preparation* — before it
@@ -1647,32 +1700,150 @@ back.
   that variable; the `CARGO_PROFILE_RELEASE_PACKAGE_…` environment form is **not**
   supported, so it has to be in the manifest. A new plugin with Swift glue needs a
   line of its own.
-- **…and a release build that links still does not run. Use `--debug` on a
-  device.** The release IPA installs and then dies immediately:
-  `App terminated due to signal 11`, and the crash report is `EXC_BAD_ACCESS`
-  (`SIGSEGV`, `KERN_INVALID_ADDRESS`) in `objc_retain`, called from
-  `-[UIApplication _connectUISceneFromFBSScene:transitionContext:]`. Measured on
-  HHIP1 against iOS 27 on 2026-09-25: the debug build of the same commit runs, the
-  release build of it does not, and reinstalling the debug IPA right after a
-  release crash launches normally — so it is the configuration and not the
-  install, the signing or the device. **No frame of this app is on the stack**,
-  which points at the object UIKit was handed earlier rather than at anything
-  running: `tao` 0.35.3 builds the scene configuration in
+- **A release iOS build crashed at launch, and this is why App Review rejected
+  1.0 (0.5.11).** The rejection names guideline 2.1(a) and four crash reports that
+  are all one crash: `EXC_BAD_ACCESS` (`SIGSEGV`, or `SIGBUS` after a
+  `KERN_PROTECTION_FAILURE`) in `objc_retain`, called from
+  `-[UIApplication _connectUISceneFromFBSScene:transitionContext:]`, with **no
+  frame of this app on the stack**. It was not the reviewer's machine: HHIP1
+  produced the identical stack on 2026-09-25, the debug build of the same commit
+  ran and the release build did not, and reinstalling the debug IPA right after a
+  release crash launched normally — so it was the configuration, not the install,
+  the signing or the device.
+
+  The diagnosis recorded here at the time was close but wrong in one place: it
+  blamed a lifetime bug around the **delegate** UIKit retains. The object is the
+  `UISceneConfiguration` itself. `tao` 0.35.3 returns it from
   `application:configurationForConnectingSceneSession:options:`
-  (`platform_impl/ios/view.rs`, which sets `TaoSceneDelegate`) and UIKit retains
-  the delegate when it connects the scene. A lifetime bug there would be invisible
-  at `-Onone` and fatal under optimisation, which is exactly the split observed.
-  Worth trying first, because the two configurations fail in *opposite* ways:
-  `UIApplicationSceneManifest` in `gen/apple/hanzi-tutor_iOS/Info.plist` is a
-  **hand-added** key that is not in `project.yml`, and it is what puts tao into
-  scene mode. Without it the app traps instead, but in a *debug-only* runtime
-  issue (`…EvaluateRuntimeIssueForNoSceneLifecycleAdoption…`, which is what the
-  crashes of 2026-09-19 were) — so a release build without the key may well run
-  where the debug one cannot. That is a hypothesis, not a measurement.
-- **The distribution gap after that is signing, not linking.** The exported IPA is
-  development-signed (`ExportOptions.plist` says `method = debugging`), so
-  TestFlight needs a distribution certificate and profile, and the CLI can export
-  for it directly with `--export-method app-store-connect` (or `release-testing`).
+  (`platform_impl/ios/view.rs`) as
+
+  ```rust
+  Retained::as_ptr(&config) as _      // upstream 0.35.3 — returns a released pointer
+  ```
+
+  and its selector follows Cocoa's "none" ownership convention, so UIKit is
+  promised an autoreleased (+0) object. The `Retained` was dropped as the function
+  returned, so UIKit retained freed memory. Everything about the debug/release
+  split follows from that one fact, and it is why the split is total rather than
+  occasional: the `objc2` binding for
+  `+[UISceneConfiguration configurationWithName:sessionRole:]` ends in
+  `Retained::retain_autoreleased`, whose fast path only engages when the magic
+  marker lands **immediately** after the `objc_msgSend`. At `-Onone` the binding
+  spills the object to the stack in between (`str x0, [sp]` before
+  `mov x29, x29`), so `objc_autoreleaseReturnValue` sees no marker, takes the slow
+  path and leaves the object in the autorelease pool — one extra retain, and it
+  outlives the release. Optimised, the marker is adjacent, no autorelease is
+  pending, and the object is freed on the spot.
+
+  Fixed upstream on 2026-06-30 in
+  [tao #1245](https://github.com/tauri-apps/tao/pull/1245), commit `f2163508`
+  ("fix(ios): use autorelease_ptr to fix UISceneConfiguration crash"), which is the
+  one-line change to `Retained::autorelease_ptr(config)`, and released in `tao`
+  **0.36.0**. It reaches this project through **`tauri` 2.12.0** — see invariant 38.
+  For 0.6.0's resubmission the fix was carried as `vendor/tao`, the published 0.35.3
+  with that one expression changed, because `tauri-runtime-wry` 2.11.4 pinned
+  `tao ^0.35` and no 0.35.x release ever received it; **that patch is now retired** and
+  the dependency carries the fix itself.
+
+  The check to repeat if this ever comes back — and it can be run against the artifact
+  that was uploaded rather than against a build directory, because the archive's dSYM
+  still has the symbol even though the shipped binary is stripped:
+
+  ```bash
+  B="Payload/Hanzi Tutor.app/Hanzi Tutor"      # unzipped from the exported IPA
+  DS="…/hanzi-tutor_iOS.xcarchive/dSYMs/Hanzi Tutor.app.dSYM/Contents/Resources/DWARF/Hanzi Tutor"
+  A=$(nm -a "$DS" | grep -m1 configuration_for_connecting_scene_session | awk '{print $1}')
+  S=$((16#$A)); xcrun llvm-objdump -d --start-address=$S --stop-address=$((S+0xB0)) "$B" \
+    | grep -E "bl\s|ret|mov\s+x0, x19"
+  #   mov  x0, x19 ; bl <setDelegateClass>
+  #   mov  x0, x19 ; bl 0x1006fc14c   <- the configuration, passed to _objc_autorelease
+  #   ret
+  otool -Iv "$B" | grep -E "1006fc14c|1006fc1f4"
+  #   0x00000001006fc14c  727 _objc_autorelease    <- the configuration
+  #   0x00000001006fc1f4  741 _objc_release        <- the NSString temporary
+  ```
+
+  On 0.35.3 the same function ended `mov x0, x19 ; bl _objc_release ; mov x0, x19 ;
+  ret` — it returned a pointer it had just released. That is the whole bug, and the two
+  disassemblies side by side are the proof.
+
+  Two things were tried first and are worth not repeating: answering the scene
+  callback from `Info.plist` instead (tao sets the delegate class itself, and with
+  `UIApplicationSupportsMultipleScenes` false tao never enters scene mode at all);
+  and pinning the fix commit as a git dependency, which is 11 commits past 0.35.3
+  and drags in unrelated iOS, Linux and Windows changes. **A device build no longer
+  has to be `--debug`** — that was the workaround while this was open, and the
+  release configuration is the one App Review runs.
+
+  Measured on 2026-09-30, on **`tauri` 2.12.0 / `tauri-runtime-wry` 2.12.0 / `tao`
+  0.37.1** — the configuration this project now ships rather than a patch. `tauri ios
+  build --target aarch64 --ci` links (so the Swift-glue override above is still doing
+  its job), exports the App Store IPA, and the exported binary autoreleases the
+  configuration as shown above. On the simulators, at both sizes:
+
+  | Simulator | Runtime | `tao` 0.35.3 | `tao` 0.37.1 |
+  | --- | --- | --- | --- |
+  | iPad Air 11-inch (M4) | iPadOS 27.0 | `SIGSEGV(11)` at launch | runs, renders |
+  | iPad Air 13-inch (M4) | iPadOS 27.0 | `SIGSEGV(11)` at launch | runs, renders |
+  | iPad Air 11-inch (M3) | iOS 26.2 | not run | runs, renders |
+  | iPad Air 13-inch (M3) | iOS 26.2 | not run | runs, renders |
+  | iPhone 13 Pro Max (HHIP1) | iOS 27.0 | crashed (2026-09-25, and 2026-09-30) | runs, renders (0.7.0, 2026-09-30) |
+
+  The 0.35.3 column was measured by building the same source twice, once with the fix
+  reverted, on the **same** simulator command; a run that "works" is therefore being
+  compared against a run that fails rather than against nothing. The 0.37.1 column is
+  the shipped configuration, and the device row was measured last, on 0.7.0 — the
+  version bumped so that a build on a phone can be told from the one before it.
+
+  Two `devicectl` facts that make this checkable rather than remembered:
+
+  ```bash
+  # what is actually installed on the phone, and its version
+  xcrun devicectl device info apps --device <udid> | grep -i hanzitutor
+  #  Hanzi Tutor   com.hanzitutor.app   0.7.0   0.7.0
+  # launch it (needs the phone unlocked), and screenshot it
+  xcrun devicectl device process launch --device <udid> --terminate-existing com.hanzitutor.app
+  xcrun devicectl device capture screenshot --device <udid> --destination shot.png
+  ```
+
+  The **simulator is the loop to use**, now that an iPadOS 27.0 runtime is installed.
+  `tauri ios build --target aarch64-sim --ci` produces
+  `gen/apple/build/arm64-sim/Hanzi Tutor.app`, which is a *release* build and so has
+  the bug on a `tao` that lacks the fix; `xcrun simctl install` / `launch` it and the
+  app dies inside the launch callout. The system log says why, and the exit status is
+  the crash App Review measured:
+
+  ```
+  xcrun simctl spawn <udid> log show --last 2m --style compact \
+    | grep -E "Process exited.*hanzitutor"
+  #  Process exited: <… status:<RBSProcessExitStatus| domain:signal(2) code:SIGSEGV(11)>>
+  ```
+
+  Two things that are easy to get wrong here. The **simulator build needs a wider
+  file policy than the rest of this project**: SwiftPM evaluates the Tauri iOS
+  package manifest through `sandbox-exec`, and a nested sandbox refuses it with
+  `sandbox-exec: sandbox_apply: Operation not permitted`, which surfaces as
+  `Failed to compile swift package Tauri` from `swift-rs` — nothing to do with the
+  code. (A *device* build gets away with it only because that Swift product is
+  already cached; the simulator triple has no cache the first time.) And a release
+  simulator build is **not** exportable — it produces a plain `.app` for
+  `simctl install`, there is no IPA.
+- **The exported IPA is an App Store build, and the *archive* beside it is what
+  installs on a device.** `ExportOptions.plist` now says
+  `method = app-store-connect` (it said `debugging` until 2026-09-25, `ccb0fe5`,
+  which is what the whole "development-signed" note here used to describe). So
+  `build/arm64/Hanzi Tutor.ipa` is re-signed with an Apple Distribution
+  certificate, carries `beta-reports-active`, and is the artifact to upload —
+  `devicectl` refuses it with *"Attempted to install a Beta profile without the
+  proper entitlement"* (0xe800801f), and that is the profile working, not a fault
+  to chase. The app inside `build/hanzi-tutor_iOS.xcarchive/Products/Applications/`
+  is still Apple Development-signed with `get-task-allow`, and installing that is
+  how a **release** build gets tested by hand — it is the same optimised binary
+  the IPA was cut from. `--export-method debugging` produces an installable IPA
+  directly; `release-testing` produces a TestFlight one.
+  * (Verified 2026-09-30: the archive app of a release build installs and runs;
+    the exported IPA is refused as above. Compare with
+    `codesign -d --entitlements :-` on each, which is what distinguishes them.)
   `ios build --open` is the way to work in Xcode: the project exists at
   `gen/apple/hanzi-tutor.xcodeproj`, but **opening it cold does not build** — its
   "Build Rust Code" phase runs `tauri ios xcode-script`, which reads the options
@@ -3449,11 +3620,27 @@ AAB also contain the graded readers' MeloTTS first pass, which is committed — 
 clip row in the table above and ROADMAP M14 for the caveat that the voice is still an
 open decision.
 
-**iOS is still absent on purpose.** The shell does run on a physical iPhone, but only
-from a `--debug` build installed with `devicectl`: an iOS *release* build fails to
-link Tauri's Swift glue (§6), so there is no IPA worth attaching until that toolchain
-question is settled. 0.5.5's iPhone build was made and installed that way — 156 MB of
-debug binary, launched and screenshotted — and is not attached to the release.
+**0.7.0 is a framework upgrade and nothing else, which is why it has no startup
+page.** `tauri` 2.12.0 replaces 2.11.5, bringing `tauri-runtime-wry` 2.12.0, `wry`
+0.57.0 and `tao` 0.37.1 — which is how the iOS release-build crash of invariant 38
+stopped being patched by hand. No source in this repository changed for it: 651 Rust
+tests, 69 interface tests, clippy and `svelte-check` were all green on the new
+dependency set with no edits, and the macOS, iOS and Android release builds all link
+and run. Nothing a learner would notice changed, so the version moved for the reason
+versions exist — so a build on a device can be told from the one before it — and
+`src/lib/startupPages.ts` deliberately has **no** 0.7.0 entry. That file shows nothing
+for a version it has no entry for, and it says itself that padding one out with things
+a learner would not notice is worse than silence.
+
+**iOS is not attached to a GitHub release, and that is now about distribution rather
+than about it working.** An iOS *release* build links — the
+`[profile.release.package.…] debug = 1` entries in the root `Cargo.toml` are what make
+it link (§6) — and it is what App Review receives: the CLI exports an
+`app-store-connect`-signed IPA, which is uploaded rather than attached. So the GitHub
+release carries the `.dmg`, the APK and the AAB, while iOS and the Mac App Store go
+through App Store Connect. (This paragraph used to say there was no IPA worth
+attaching because a release build could not link, and that 0.5.5's phone build was a
+156 MB debug binary; both stopped being true at 0.6.0.)
 
 ### Notarisation, if the app is to leave this machine
 

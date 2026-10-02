@@ -509,8 +509,11 @@ Deliberately not done, and why:
 
 **Status: in progress, iOS and Android.** Both build, run, draw and speak. On Android
 a signed release bundle exists and has been run on a device; what is outstanding
-there is the Play submission itself. On iOS a release build links and exports an
-IPA but does not yet run, so a device build is a debug one — see "What is left".
+there is the Play submission itself. On iOS the release build's launch crash — the
+one App Review rejected 1.0 (0.5.11) for — is fixed in `tao` 0.36.0 and reached here
+by `tauri` 2.12.0, so a device build no longer has to be a debug one and nothing in
+the dependency tree is patched (HANDOVER invariant 38); what is outstanding is the
+resubmission. See "What is left".
 
 **Why.** A touchscreen with a stylus is the right input device for handwriting
 practice; a trackpad is a compromise. Tauri 2 supports iOS and Android. On this
@@ -528,10 +531,14 @@ is carried when the iPad is not, and practice on it is the point.
 - **It runs on the simulator and on a physical iPhone.** The course loads, the
   character and its readings come over IPC, the data directory resolves inside the app
   sandbox, the board draws, and strokes can be drawn on the phone — M9's device
-  criterion is met for iOS. Two traps are recorded in `HANDOVER.md` §6: iOS 26 and
+  criterion is met for iOS. Three traps are recorded in `HANDOVER.md` §6: iOS 26 and
   later kill an app that has not adopted the scene life cycle, and the obvious repair
   turns the crash into a black screen because `tao` only enters scene mode when
-  `UIApplicationSupportsMultipleScenes` is true.
+  `UIApplicationSupportsMultipleScenes` is true; and `tao` below 0.36 returned a
+  released `UISceneConfiguration` from `configurationForConnectingSceneSession`,
+  which crashed every **release** build at launch and passed at `-Onone` — the bug
+  behind the App Review rejection of 1.0 (0.5.11) under 2.1(a), carried here as a
+  one-line patch until `tauri` 2.12.0 brought the fixed `tao` 0.37 in.
 - **A phone layout, made for practice.** Below 760px the shell becomes one column in
   the order practice happens — a top bar with a navigation button, the character and
   its reading, the *board* filling the width, the controls at touch size, and only
@@ -585,17 +592,25 @@ is carried when the iPad is not, and practice on it is the point.
 
 **What is left.**
 
-- **iOS distribution.** A release *build* now links and exports an IPA: the
-  profile override in the root `Cargo.toml` makes the crates that own a Swift
-  package build the Debug Swift product, which exports the `@_cdecl` entry points
-  that Tauri's Release archive keeps local (HANDOVER §6). But it does not *run*:
-  the release app dies at launch with `EXC_BAD_ACCESS` inside UIKit's scene
-  connection, where the debug build of the same commit runs, so a device build is
-  `--debug` until that is understood (HANDOVER §6 has the crash and the first
-  thing to try). After it runs, the gap is signing: the IPA is development-signed,
-  so TestFlight needs a distribution certificate and profile and an
-  `--export-method` of `release-testing` or `app-store-connect`, plus an App Store
-  Connect record.
+- **iOS distribution, and the App Review rejection of 1.0 (0.5.11).** A release
+  build links and exports an IPA: the profile override in the root `Cargo.toml` makes
+  the crates that own a Swift package build the Debug Swift product, which exports the
+  `@_cdecl` entry points that Tauri's Release archive keeps local (HANDOVER §6). It now
+  *runs* as well, which it did not when it was submitted: App Review rejected 1.0
+  under 2.1(a) because the app crashed on launch, and the crash was a use-after-free in
+  `tao` 0.35.3's `configurationForConnectingSceneSession` — a released
+  `UISceneConfiguration` handed back to UIKit, fatal only under optimisation, which is
+  why the debug build had run all along. It was carried as a one-line patch in
+  `vendor/tao` for the resubmission and **has since been retired**: `tao` 0.36.0 has
+  upstream's fix and `tauri` 2.12.0 pulls `tao` 0.37 (HANDOVER invariant 38 and §6).
+  Verified on the device and on iPad simulators at 11 and 13 inches, on iPadOS 27.0
+  and iOS 26.2. What is left of
+  M9's iOS half is the resubmission itself, not code or signing:
+  `ExportOptions.plist` is already `method = app-store-connect`, so
+  `tauri ios build --target aarch64 --ci` produces a distribution-signed IPA
+  carrying `beta-reports-active` — the artifact to upload, against the App Store
+  Connect record that already exists for the Mac build. Only a build number for the
+  new submission is still to choose.
 - **The Play submission itself, and it is waiting on the developer account.**
   `app-universal-release.aab` is built and signed, and the same code has been installed
   and used on a device as a release APK. What remains is the paperwork: publishing

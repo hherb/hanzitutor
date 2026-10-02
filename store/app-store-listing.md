@@ -7,7 +7,10 @@ copy is written to stay inside them — the counts beside each block were measur
 not estimated. The Google Play copy is in [`listing.md`](listing.md); the two say
 the same things, but Apple's fields are shaped differently.
 
-Reflects version **0.5.11**.
+Reflects version **0.5.11**, which is the version whose listing copy is written out
+below. Every field still describes the app; **What's New in This Version** is the one
+block that has to be rewritten per submission, and has not been for 0.6.0 or 0.7.0 yet
+— see the note under it.
 
 ## App Name (max 30 characters)
 
@@ -104,6 +107,14 @@ if you prefer.
 
 For the first App Store release, Apple still shows this field; a short line is
 enough.
+
+**Not yet rewritten for the next submission.** The block below is 0.5.11's. What the
+next one has to cover is 0.6.0 — colour by tone, and backing the vocabulary list and
+practice log up to one file and reading it back — for which
+[`../src/lib/startupPages.ts`](../src/lib/startupPages.ts) already has the
+learner-facing wording, plus one line for 0.7.0, which is a rebuild on a newer app
+framework with nothing a learner would notice (which is why 0.7.0 deliberately has no
+startup page of its own).
 
 ```
 First release on the App Store.
