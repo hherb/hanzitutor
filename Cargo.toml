@@ -34,7 +34,11 @@ serde_json = "1"
 # comes from `getrandom`, which is already in the graph through Tauri, so this
 # adds a name to the manifest but no new upstream project to the build.
 uuid = { version = "1", features = ["v4"] }
-postcard = { version = "1", features = ["alloc"] }
+# `default-features = false` matters: postcard's default is `heapless-cas`,
+# which pulls `heapless` and, through it, the unmaintained
+# `atomic-polyfill` — for a target this project never builds for. We use
+# `alloc` and nothing else.
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 flate2 = "1"
 
 # Development builds are optimised a little even in debug so that grading a
