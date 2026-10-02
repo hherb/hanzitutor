@@ -36,9 +36,9 @@ references for no gain.
 | | Milestone | Why here |
 | --- | --- | --- |
 | **N0** | *(shipped)* the kana foundation | Done. Treat it as the gateway it is and do not gold-plate it. |
-| **N3** | Per-learner confusability | **First, because it is nearly free.** The drill already knows which pairs it asked and which answer was picked, and throws it away. A few hours, and it is the only kana polish with real value left. |
+| **N3** | *(shipped)* per-learner confusability | Done, and it was as cheap as predicted: the drill weighs the 13 pairs by what this learner gets wrong and remembers it in the app's own file. See the milestone for the rule, and for what is deliberately not there. |
 | **N1** | Audio | Early, because audio is the one thing both halves need: a kana wants a sound and so does every kanji word. The system voices already work, so the desktop is wiring. |
-| **N2** | A review queue | Early, for the same reason — kanji study without spaced repetition is not study. Wire it while the tree is small, and answer "does kana even want SRS?" on the way. |
+| **N2** | A review queue | Early, for the same reason — kanji study without spaced repetition is not study. The store is this app's own (invariant 15); the scheduler's code is shared. |
 | **N6** | **The kanji data layer** | **The long pole, and the real work.** Everything after it depends on it; see the measurement above for why it is not the Chinese data. |
 | **N7** | Kanji through vocabulary | Reading, furigana, okurigana. This is where a Japanese tutor becomes one, and where the "near identical with the hanzi" instinct has to be resisted most: the *characters* overlap, the *readings and meanings do not*. |
 | **N8** | The kanji course and screens | After the data. Mostly reuse of `RadicalsPanel` and the decomposition machinery. |
@@ -208,33 +208,44 @@ that lives and it is unsolved there too.
 
 ## N2 — A review queue
 
-**Approach.** Reuse rather than invent. `hanzi-core::progress` carries the
-scheduler (`Sm2`, behind the `Scheduler` trait), the due-date arithmetic and the
-attempt log; `hanzi-store` is the SQLite side and depends only on those
-language-neutral types — measured at planning time, `hanzi-sync` depends on
-nothing but them either. That last part is a reading of the manifests rather than
-a demonstration — **nothing has yet used `hanzi-store` from a second app.** The
-tone trainer is evidence for the pattern, not for this crate: it shares
-`hanzi-core`, `hanzi-voice` and `hanzi-hearing` and does not touch the store at
-all. Expect to find the seams when you first wire it up.
+**Approach.** Reuse the *code*, keep the *data* here. `hanzi-core::progress`
+carries the language-neutral scheduler (`Sm2`, behind the `Scheduler` trait), the
+due-date arithmetic and the attempt log, and that is the part worth reusing.
+
+**`hanzi-store` is not the answer, and that is settled rather than open.** It is a
+SQLite store for the Chinese app's learner data — attempts, vocabulary, cursors,
+settings — and the Japanese app keeps its own learner data in its own file
+(`HANDOVER_NIHONGO.md` invariant 15). The two apps are separate products and their
+learners' data is separate with them: what is shared between them is code, never
+user data. So the store for a kana review queue is `apps/nihongo-tutor`'s, next to
+`confusions.json`, and the precedent is already written: `store.rs` is 280 lines
+that load, record and write atomically, with tests for the missing file, the
+corrupt file and the failed write. The temptation was real — the manifests say
+`hanzi-store` depends only on language-neutral types, and that is true — but a
+shared store for two separate apps is the thing that turns "separate" into
+"tangled", and the tangle shows up the day one app's schema change breaks the
+other's history.
 
 The open question, and it should be answered before building: **does kana want
 spaced repetition at all?** 179 characters is small enough that exposure may be
 enough, and `ROADMAP.md`'s own note about SM-2 versus FSRS applies — if a
 scheduler is worth having, `fsrs-rs` (BSD-3-Clause) is the better default, with
 the caveat that its pretrained weights are not openly licensed and should be
-fitted on-device instead.
+fitted on-device instead. N3's per-pair weights are the cheap answer to the same
+question and they ship; a scheduler has to earn its screen against them.
 
 **Acceptance criteria.**
 
 * A learner's attempts persist across restarts, in their own file, under
-  `com.hanzitutor.kana`.
+  `com.hanzitutor.kana`. *(N3's tallies already do this; a queue would add to the
+  same file or a sibling of it.)*
 * A due queue exists and is reachable from the sidebar.
 * Whatever scheduler ships, the choice is recorded with its reasoning — including
   if the answer is "no SRS, and here is why".
 
-**Deliberately not done.** Cross-device sync. `hanzi-sync` would give it, but
-sync is the wrong thing to add to an app nobody is yet studying with.
+**Deliberately not done.** Cross-device sync. `hanzi-sync` would give it, and it
+is the same kind of shared-data mistake as `hanzi-store` for two separate apps;
+sync is also the wrong thing to add to an app nobody is yet studying with.
 
 ---
 
@@ -254,6 +265,48 @@ learner's own wrong answers are the better list, and they are free.
 * The drill prefers a pair the learner has got wrong, and can be shown to.
 * A pair the learner never gets wrong stops being asked, or is asked rarely — and
   the rule is written down rather than emergent.
+
+### Shipped
+
+All three criteria are met, and the rule is written down in
+`nihongo_core::drill` — `weight = max(0.25, 1 + 2 × wrong − correct)`, drawn
+weighted at random, with the floor so that a pair the learner has stopped missing
+becomes rare rather than impossible and can still come back.
+
+**What changed, and why the drill is not a pool any more.** The interface used to
+be handed a pool of kana and draw from it, which cannot work once an answer has to
+be remembered: only the asker knows which pair it asked. So `drill_pool` is gone;
+`next_drill_question` draws the pair in Rust and returns it with the question, and
+`record_drill_answer` takes that pair back with the two kana and decides
+correctness itself — the interface has no field in which to claim it was right.
+The question also shrank to the pair's own two kana. The old four-option question
+tested more at once and taught less: with three wrong answers on screen a miss
+cannot be attributed to a pair, which is exactly what has to be measured.
+
+**The store is the app's own** (`apps/nihongo-tutor/src-tauri/src/store.rs`):
+`confusions.json` in the app's data directory, written by Rust after every answer,
+atomically, by `std::fs` — the webview still has no filesystem permission, and the
+app has no new dependency for it. A file that will not parse is moved aside rather
+than overwritten, and a write that fails still counts the answer and tells the
+learner it was not saved. The decision that this is app-local and stays app-local
+is `HANDOVER_NIHONGO.md` invariant 15, and it is why N2 below no longer reaches for
+`hanzi-store`.
+
+**Verified live, not only in tests**: eight answers written to
+`Library/Application Support/com.hanzitutor.kana/confusions.json`, the app
+restarted, and the next six questions continued those counts (ク|ワ 3→5, ソ|ン 1→2)
+while the weighted draw went to the pairs the first session had missed. 24 new
+tests cover the rule's arithmetic, the floor, the deterministic draw, the
+persistence round trip, the corrupt-file path and the payload the interface posts.
+
+**What is deliberately *not* here.** The pool is still the 13 classic pairs. The
+Approach above says the learner's own wrong answers are the better list, and they
+are — but a drill that only ever asks about the 13 cannot discover a 14th, because
+it never asks a question the 13 do not cover (あ/お, say). Growing the list means
+asking about kana rather than about pairs, which is a different drill and a
+different record. N4's yōon drills are the natural place for it.
+
+---
 
 ---
 
@@ -510,9 +563,16 @@ Recorded here rather than as milestones because none of them is a feature.
   kana course has unlocked grammar and been given nothing to use it on. This is
   not a kana-tutor weakness so much as the reason a kana tutor is not a Japanese
   tutor.
-* **The 13 confusion pairs are a fixed list.** N3 addresses it.
-* **`hanzi-store` and `hanzi-sync` are unused.** The measurement says they are
-  reusable; nothing has proved it yet.
+* **The 13 confusion pairs are still a fixed list.** N3 weighs them by what this
+  learner gets wrong, which is the half that was worth having — but the drill only
+  ever asks about those 13, so it cannot discover a 14th pair that this learner
+  actually confuses. Growing the list means asking about kana rather than about
+  pairs. See the note at the end of N3.
+* **`hanzi-store` and `hanzi-sync` are not for this app, by decision.** They are
+  the Chinese app's learner data, and invariant 15 keeps the two apps' data
+  separate: shared crates carry code, never user data. So "the measurement says
+  they are reusable" was true of the *types* and beside the point for the store.
+  `nihongo-tutor`'s own `store.rs` is the precedent for N2.
 * **The kanji milestones are plans, not measurements.** The kana estimates in the
   feasibility report were good, but the kanji data sizes are from upstream
   listings rather than from a build, and the artifact size is unknown.

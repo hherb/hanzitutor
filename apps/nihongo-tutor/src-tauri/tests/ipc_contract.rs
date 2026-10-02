@@ -10,10 +10,44 @@
 
 use nihongo_tutor_lib::AppState;
 use nihongo_core::{GradeOptions, Point};
+use serde::Deserialize;
 use serde_json::{json, Value};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 fn state() -> AppState {
     AppState::load()
+}
+
+/// A directory of our own under the system temporary directory, removed when the
+/// test ends. The store's own unit tests have the same helper; an integration
+/// test cannot reach it, and ten duplicated lines are cheaper than a public API
+/// that exists only for tests.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(tag: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "nihongo-tutor-contract-{}-{tag}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).expect("a temporary directory");
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 fn keys(value: &Value) -> Vec<String> {
@@ -200,6 +234,128 @@ fn an_error_crosses_as_a_string_not_as_a_panic() {
     let as_json = serde_json::to_value(&err).expect("a String serialises");
     assert!(as_json.is_string());
     assert!(as_json.as_str().expect("a string").contains("not in the kana set"));
+}
+
+/// The arguments `record_drill_answer` takes, as the webview posts them.
+///
+/// Spelled out rather than inferred, because this is the half of the contract
+/// that fails loudly (a wrong key is a rejected command) and the half that has
+/// already gone wrong once in this app — see invariant 14 in
+/// `HANDOVER_NIHONGO.md`. There is deliberately no `correct` field: the
+/// interface says what was asked and what was picked, and Rust decides.
+#[derive(Deserialize)]
+struct RecordDrillAnswer {
+    pair: String,
+    target: char,
+    picked: char,
+}
+
+#[test]
+fn a_drill_question_crosses_with_its_pair_its_prompt_and_its_options() {
+    let question = state().next_drill_question().expect("a pair can be asked");
+    let value = serde_json::to_value(&question).expect("serialises");
+    assert_eq!(keys(&value), vec!["ch", "hepburn", "options", "pair", "tell"]);
+    assert!(question.options.contains(&question.ch), "the answer is among the options");
+    assert_eq!(question.options.len(), 2, "the pair, and nothing else");
+    assert!(!question.hepburn.is_empty());
+    assert!(!question.tell.is_empty(), "a miss has to be able to teach something");
+}
+
+#[test]
+fn the_drill_answer_the_interface_posts_is_read_the_way_the_command_reads_it() {
+    // `src/lib/api.ts` authors exactly this payload for exactly this command:
+    //   invoke("record_drill_answer", { pair, target, picked })
+    // One state for both answers: `AppState::load()` keeps its record in memory,
+    // so two of them are two learners as far as this is concerned.
+    let state = state();
+    let payload = json!({ "pair": "シ|ツ", "target": "シ", "picked": "ツ" });
+    let args: RecordDrillAnswer =
+        serde_json::from_value(payload).expect("the payload the interface posts deserialises");
+
+    let tally = state
+        .record_drill_answer(&args.pair, args.target, args.picked)
+        .expect("records");
+    assert_eq!(tally.pair, "シ|ツ");
+    assert_eq!(tally.asked, 1);
+    assert_eq!(tally.wrong, 1, "シ asked for and ツ picked is a miss");
+    assert_eq!(tally.weight, 3.0);
+
+    let value = serde_json::to_value(&tally).expect("serialises");
+    assert_eq!(
+        keys(&value),
+        vec!["asked", "correct", "pair", "weight", "wrong"]
+    );
+
+    // The same payload, answered correctly, is a hit on the same pair.
+    let answered = json!({ "pair": "ツ|シ", "target": "ツ", "picked": "ツ" });
+    let args: RecordDrillAnswer = serde_json::from_value(answered).expect("deserialises");
+    let tally = state
+        .record_drill_answer(&args.pair, args.target, args.picked)
+        .expect("records");
+    assert_eq!(tally.pair, "シ|ツ", "one pair, whichever way it is named");
+    assert_eq!(tally.asked, 2);
+    assert_eq!(tally.correct, 1);
+    assert_eq!(tally.weight, 2.0, "1 + 2 for the miss − 1 for the hit");
+}
+
+#[test]
+fn an_answer_about_a_key_that_is_not_a_pair_is_refused_with_a_message() {
+    let state = state();
+    let payload = json!({ "pair": "あ|い", "target": "あ", "picked": "い" });
+    let args: RecordDrillAnswer = serde_json::from_value(payload).expect("deserialises");
+    let err = state
+        .record_drill_answer(&args.pair, args.target, args.picked)
+        .unwrap_err();
+    assert!(err.contains("not one of the confusion pairs"), "{err}");
+    assert!(state.log().is_empty(), "nothing was written");
+}
+
+#[test]
+fn what_the_drill_remembers_survives_a_restart() {
+    let dir = TempDir::new("restart");
+    let missed = {
+        let state = AppState::load_at(dir.path());
+        let question = state
+            .next_drill_question_with_rolls(0.0, 0.0)
+            .expect("a question");
+        let wrong = question
+            .options
+            .iter()
+            .copied()
+            .find(|ch| *ch != question.ch)
+            .expect("the other half of the pair");
+        state
+            .record_drill_answer(&question.pair, question.ch, wrong)
+            .expect("records");
+        question.pair
+    };
+
+    // The file is where the handover says it is, inside the app's own directory
+    // and named for what it holds.
+    assert!(
+        dir.path().join("confusions.json").exists(),
+        "the answer was written to the app's own file"
+    );
+
+    // A second AppState over the same directory is what a restart looks like.
+    let reopened = AppState::load_at(dir.path());
+    let log = reopened.log();
+    assert_eq!(log.pairs_seen(), 1);
+    assert_eq!(log.weight(&missed), 3.0, "the miss is still there");
+    let (heaviest, weight) = log.weights().remove(0);
+    assert_eq!(heaviest, missed);
+    assert_eq!(weight, 3.0);
+}
+
+#[test]
+fn a_first_run_writes_nothing_until_something_is_answered() {
+    let dir = TempDir::new("first-run");
+    let state = AppState::load_at(dir.path());
+    assert!(state.log().is_empty());
+    assert!(
+        !dir.path().join("confusions.json").exists(),
+        "an app that has been opened is not an app with a record"
+    );
 }
 
 #[test]

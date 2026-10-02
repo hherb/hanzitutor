@@ -34,6 +34,7 @@
 //! ```
 
 pub mod curriculum;
+pub mod drill;
 pub mod input;
 pub mod kana;
 pub mod readings;
@@ -41,6 +42,10 @@ pub mod readings;
 pub use curriculum::{
     confusions_for, lessons, to_hiragana, to_katakana, yoon, Confusable, Lesson, Row, Yoon,
     CHOONPU, CONFUSABLE, KATAKANA_ONLY, RARE_KANA, ROWS, SMALL_KANA,
+};
+pub use drill::{
+    find_pair, pair_key, ConfusionLog, PairTally, CORRECT_WEIGHT, MIN_WEIGHT, START_WEIGHT,
+    WRONG_WEIGHT,
 };
 pub use hanzi_core::{
     grade, grade_with_outlines, Grade, GradeOptions, GradeReport, Point, StrokeVerdict, Verdict,

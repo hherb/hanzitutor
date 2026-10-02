@@ -11,7 +11,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
   DatasetStats,
-  DrillKana,
+  DrillQuestion,
+  DrillTally,
   GradeReport,
   Kana,
   LessonView,
@@ -78,11 +79,31 @@ export function romajiToKana(input: string, script?: ScriptName): Promise<string
 }
 
 /**
- * The pool the discrimination drill draws from: kana that are mistaken for one
- * another, with the reading to prompt with and the wrong answers to offer.
+ * The next question for the discrimination drill, or `null` if no pair can be
+ * asked at all.
+ *
+ * The pair is drawn in Rust, weighted by how often this learner has missed it —
+ * the rule is in `nihongo_core::drill` — rather than drawn here from a pool. That
+ * is not a layering preference: only the asker knows which pair it asked, and the
+ * answer has to be remembered against that pair.
  */
-export function drillPool(): Promise<DrillKana[]> {
-  return invoke<DrillKana[]>("drill_pool");
+export function nextDrillQuestion(): Promise<DrillQuestion | null> {
+  return invoke<DrillQuestion | null>("next_drill_question");
+}
+
+/**
+ * Record what the learner answered, and get the pair's record back.
+ *
+ * `target` is the kana the question asked for and `picked` is the one that was
+ * chosen. There is deliberately no way to say whether it was right: correctness is
+ * decided in Rust from those two, against the pair the question named.
+ */
+export function recordDrillAnswer(
+  pair: string,
+  target: string,
+  picked: string,
+): Promise<DrillTally> {
+  return invoke<DrillTally>("record_drill_answer", { pair, target, picked });
 }
 
 /** Every notice this app owes, with its text. */

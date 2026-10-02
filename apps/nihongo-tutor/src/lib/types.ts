@@ -153,17 +153,35 @@ export interface AppInfo {
 }
 
 /**
- * A kana the discrimination drill can ask about.
+ * One question from the discrimination drill.
  *
- * `partners` are the kana it is mistaken for — the wrong answers. A kana that
- * confuses nobody is not in the pool at all.
+ * The pair travels with the question because the answer is recorded against the
+ * *pair*, and the asker is the only thing that knows which one it chose. `options`
+ * are the kana to offer, one of which is `ch`. Send `pair`, `ch` and the kana that
+ * was picked back unchanged: whether it was right is decided in Rust, because a
+ * client that could report its own correctness could lie to itself.
  */
-export interface DrillKana {
+export interface DrillQuestion {
+  /** The canonical key of the pair under test, e.g. `シ|ツ`. */
+  pair: string;
+  /** The kana the learner is being asked to recognise. */
   ch: string;
-  script: ScriptName;
   /** The reading to prompt with. */
   hepburn: string;
-  partners: string[];
+  /** The kana to offer as answers, one of which is `ch`. */
+  options: string[];
+  /** What tells the two apart, so a miss teaches as well as records. */
+  tell: string;
+}
+
+/** What the learner's record for one pair is, after an answer. */
+export interface DrillTally {
+  pair: string;
+  asked: number;
+  correct: number;
+  wrong: number;
+  /** The pair's share of the drill — see `nihongo_core::drill` for the rule. */
+  weight: number;
 }
 
 /** One licence notice, with its text, for a Licences screen. */

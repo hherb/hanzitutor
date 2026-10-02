@@ -14,25 +14,46 @@
 // The two that share a name with a command are aliased, so that `fn lessons`
 // below is the command and `build_lessons` is the course it serves.
 pub mod licences;
+pub mod store;
 
 use licences::{AppInfo, LicenceNotice};
 use nihongo_core::{
-    confusions_for, lessons as build_lessons, reading, to_kana, to_kana_in, yoon as build_yoon,
-    Confusable, GradeOptions, GradeReport, KanaDataset, Point, Script,
+    confusions_for, find_pair, lessons as build_lessons, pair_key, reading, to_kana, to_kana_in,
+    yoon as build_yoon, Confusable, ConfusionLog, GradeOptions, GradeReport, KanaDataset, Point,
+    Script, CONFUSABLE,
 };
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+use store::ConfusionStore;
+use tauri::{Manager, State};
 
-/// The kana dataset, loaded once and shared by every command.
+/// The kana dataset, loaded once and shared by every command, and the drill's
+/// memory of what this learner gets wrong.
 pub struct AppState {
     kana: KanaDataset,
+    /// Behind a `Mutex` because Tauri hands every command a shared `&AppState`
+    /// and recording an answer is a write. Contention is nil: one learner, one
+    /// window, and a lock held for the microseconds a JSON write takes.
+    drill: Mutex<ConfusionStore>,
 }
 
 impl AppState {
-    /// Load the committed artifact. Panics only if the artifact is corrupt,
-    /// which is a build-time fault rather than a runtime one: `build.rs` has
-    /// already checked the file is there.
+    /// Load the committed artifact, with the drill's record kept in memory only.
+    ///
+    /// This is what a test wants and what the app falls back to when the platform
+    /// will not name a data directory.
     pub fn load() -> Self {
+        Self::with_store(ConfusionStore::in_memory())
+    }
+
+    /// Load the committed artifact and the learner's record from `dir`.
+    pub fn load_at(dir: impl Into<PathBuf>) -> Self {
+        Self::with_store(ConfusionStore::at_dir(dir.into()))
+    }
+
+    fn with_store(drill: ConfusionStore) -> Self {
         const ARTIFACT: &[u8] = include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../crates/nihongo-core/data/kana.bin.gz"
@@ -40,11 +61,21 @@ impl AppState {
         Self {
             kana: KanaDataset::from_gzip_bytes(ARTIFACT)
                 .expect("the committed kana artifact decodes"),
+            drill: Mutex::new(drill),
         }
     }
 
     pub fn dataset(&self) -> &KanaDataset {
         &self.kana
+    }
+
+    /// The learner's record, for a caller that wants to show or assert on it.
+    pub fn log(&self) -> ConfusionLog {
+        self.drill
+            .lock()
+            .expect("the drill's store is not poisoned")
+            .log()
+            .clone()
     }
 
     /// What is in the course, in numbers.
@@ -140,45 +171,113 @@ impl AppState {
             .collect()
     }
 
-    /// Every kana that appears in a confusion pair, with the kana it is
-    /// confused with and how to tell them apart.
+    /// The pairs the drill can actually ask: **both** kana in the dataset and both
+    /// with a reading to prompt with. A pair that fails this is skipped rather than
+    /// asked with an empty prompt, which is why the field is filtered here instead
+    /// of being assumed complete.
+    fn askable_pairs(&self) -> Vec<Confusable> {
+        CONFUSABLE
+            .iter()
+            .copied()
+            .filter(|pair| self.pair_is_askable(pair))
+            .collect()
+    }
+
+    /// The pair the drill should ask about next, weighted towards the ones this
+    /// learner gets wrong.
     ///
-    /// This is the pool a discrimination drill draws from: a kana, its reading,
-    /// and its partners. A kana that confuses nobody is not in it.
-    pub fn drill_pool(&self) -> Vec<DrillKana> {
-        let mut pool: Vec<DrillKana> = Vec::new();
-        for pair in nihongo_core::CONFUSABLE {
-            for (ch, other) in [(pair.a, pair.b), (pair.b, pair.a)] {
-                if self.kana.get(ch).is_none() || self.kana.get(other).is_none() {
-                    continue;
-                }
-                let Some(reading) = reading(ch) else { continue };
-                let hepburn = reading.hepburn.first().copied().unwrap_or_default().to_string();
-                if hepburn.is_empty() {
-                    continue;
-                }
-                match pool.iter_mut().find(|d| d.ch == ch) {
-                    Some(existing) => {
-                        if !existing.partners.contains(&other) {
-                            existing.partners.push(other);
-                        }
-                    }
-                    None => pool.push(DrillKana {
-                        ch,
-                        script: self
-                            .kana
-                            .get(ch)
-                            .map(|k| k.script.name())
-                            .unwrap_or("hiragana")
-                            .to_string(),
-                        hepburn,
-                        partners: vec![other],
-                    }),
-                }
-            }
+    /// Two rolls, because two independent things are being decided: which pair,
+    /// and which of the pair is the one being asked for. Both are supplied rather
+    /// than drawn here so that the whole decision is deterministic in a test; the
+    /// command above passes two rolls from the clock.
+    pub fn next_drill_question_with_rolls(&self, pair_roll: f64, side_roll: f64) -> Option<DrillQuestion> {
+        let askable = self.askable_pairs();
+        let log = self
+            .drill
+            .lock()
+            .expect("the drill's store is not poisoned");
+        let pair = *log.log().pick(&askable, pair_roll)?;
+        drop(log);
+
+        // Which way round to ask. Both members are askable, so this cannot fail;
+        // it returns `None` rather than panicking all the same, because a kana
+        // dataset is data and data is allowed to be wrong.
+        let (target, other) = if side_roll < 0.5 {
+            (pair.a, pair.b)
+        } else {
+            (pair.b, pair.a)
+        };
+        let hepburn = reading(target)?.hepburn.first()?.to_string();
+
+        Some(DrillQuestion {
+            pair: pair_key(&pair),
+            ch: target,
+            hepburn,
+            // Exactly the two kana of the pair, so that every answer says
+            // something unambiguous about *this* pair: which of these two shapes
+            // is the reading. The wider four-option question the drill used to ask
+            // tested more at once and taught less — a miss could not be attributed
+            // to a pair, which is precisely what has to be remembered.
+            options: vec![target, other],
+            tell: pair.tell.to_string(),
+        })
+    }
+
+    /// The next question, with the randomness supplied by the clock.
+    pub fn next_drill_question(&self) -> Option<DrillQuestion> {
+        self.next_drill_question_with_rolls(roll(), roll())
+    }
+
+    /// Record what the learner answered, and say what the pair's record now is.
+    ///
+    /// The caller says which pair it was asked about, which kana was wanted and
+    /// which was picked; **correctness is decided here**, not sent by the
+    /// interface. A client that could post `correct: true` would be a client that
+    /// could lie to itself, and the file is meant to be worth reading.
+    pub fn record_drill_answer(
+        &self,
+        pair: &str,
+        target: char,
+        picked: char,
+    ) -> Result<DrillTally, String> {
+        let pair = find_pair(pair).ok_or_else(|| {
+            format!("{pair:?} is not one of the confusion pairs, so there is nothing to record")
+        })?;
+        if target != pair.a && target != pair.b {
+            return Err(format!("{target} is not in {}", pair_key(pair)));
         }
-        pool.sort_by_key(|d| d.ch as u32);
-        pool
+        if picked != pair.a && picked != pair.b {
+            return Err(format!(
+                "{picked} is neither of the two answers {} offers",
+                pair_key(pair)
+            ));
+        }
+        let key = pair_key(pair);
+        let tally = self
+            .drill
+            .lock()
+            .expect("the drill's store is not poisoned")
+            .record(&key, picked == target)
+            .map_err(|err| format!("the answer was counted but could not be saved: {err}"))?;
+        Ok(DrillTally {
+            pair: key,
+            asked: tally.asked,
+            correct: tally.correct,
+            wrong: tally.wrong,
+            weight: tally.weight(),
+        })
+    }
+
+    /// Whether a pair can be asked at all: both kana are in the dataset and both
+    /// have a reading to prompt with.
+    fn pair_is_askable(&self, pair: &Confusable) -> bool {
+        self.kana_has_a_prompt(pair.a) && self.kana_has_a_prompt(pair.b)
+    }
+
+    /// Whether a kana can be *asked about*: it is in the dataset and has a
+    /// non-empty Hepburn reading for the prompt.
+    fn kana_has_a_prompt(&self, ch: char) -> bool {
+        self.kana.get(ch).is_some() && reading(ch).is_some_and(|r| !r.hepburn.is_empty())
     }
 
     /// The yōon digraphs for one script — the pairs that make one mora.
@@ -247,16 +346,38 @@ pub struct ConfusionView {
     pub tell: String,
 }
 
-/// A kana the discrimination drill can ask about.
+/// One question for the discrimination drill.
+///
+/// The pair travels with the question because the answer is recorded against the
+/// *pair*, and the asker is the only thing that knows which pair it chose. The
+/// component is free to shuffle `options` for display; it must send `pair`,
+/// `ch` and the kana that was picked back unchanged.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct DrillKana {
+pub struct DrillQuestion {
+    /// The canonical key of the pair under test, e.g. `シ|ツ`.
+    pub pair: String,
+    /// The kana the learner is being asked to recognise.
     pub ch: char,
-    pub script: String,
     /// The reading to prompt with.
     pub hepburn: String,
-    /// The kana it is mistaken for — the wrong answers the drill offers.
-    pub partners: Vec<char>,
+    /// The kana to offer as answers, one of which is `ch`. Two, for now: the pair
+    /// itself — see `next_drill_question_with_rolls` for why not more.
+    pub options: Vec<char>,
+    /// What tells the two apart, so a miss teaches as well as records.
+    pub tell: String,
+}
+
+/// What the learner's record for one pair now is, after an answer.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DrillTally {
+    pub pair: String,
+    pub asked: u32,
+    pub correct: u32,
+    pub wrong: u32,
+    /// The pair's share of the drill, per the rule in `nihongo_core::drill`.
+    pub weight: f64,
 }
 
 /// A yōon digraph.
@@ -326,10 +447,22 @@ fn grade_attempt(
     state.grade(ch, &strokes, &options.unwrap_or_default())
 }
 
-/// The pool the confusion drill draws from.
+/// The next question for the discrimination drill, weighted towards the pairs
+/// this learner gets wrong. `None` only if no pair can be asked at all.
 #[tauri::command]
-fn drill_pool(state: State<'_, AppState>) -> Vec<DrillKana> {
-    state.drill_pool()
+fn next_drill_question(state: State<'_, AppState>) -> Option<DrillQuestion> {
+    state.next_drill_question()
+}
+
+/// Record what the learner answered, and return the pair's record now.
+#[tauri::command]
+fn record_drill_answer(
+    state: State<'_, AppState>,
+    pair: String,
+    target: char,
+    picked: char,
+) -> Result<DrillTally, String> {
+    state.record_drill_answer(&pair, target, picked)
 }
 
 /// Check a typed reading against a kana, accepting either romanisation.
@@ -371,10 +504,52 @@ struct YoonSummary {
     display: String,
 }
 
+/// A roll in `0..1`, from the clock and a counter.
+///
+/// Not cryptography, and not a game's RNG: it decides which pair to ask, and the
+/// only requirements are that two calls in quick succession differ and that the
+/// result is spread out rather than stuck at one end. `splitmix64`'s finaliser
+/// over `nanoseconds ^ counter` is enough for that, and it is written out here
+/// because a dependency for four lines of arithmetic would be the tail wagging
+/// the dog — `HANDOVER.md`'s "the app has no network path" is the same instinct.
+fn roll() -> f64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let mut z = nanos
+        ^ COUNTER
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // 53 bits is the whole of a f64's mantissa, so this is uniform where it can
+    // be and never rounds up to exactly 1.0.
+    (z >> 11) as f64 / (1u64 << 53) as f64
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState::load())
+        .setup(|app| {
+            // The learner's own file, in the app's own directory. Rust writes it
+            // rather than the webview, so the app still needs no filesystem
+            // permission in `capabilities/default.json` — the webview has no way
+            // to name, read or write a path.
+            let state = match app.path().app_data_dir() {
+                Ok(dir) => AppState::load_at(dir),
+                Err(err) => {
+                    eprintln!("no app data directory ({err}); this session will not be remembered");
+                    AppState::load()
+                }
+            };
+            app.manage(state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             app_info,
             licences,
@@ -382,7 +557,8 @@ pub fn run() {
             lessons,
             kana,
             grade_attempt,
-            drill_pool,
+            next_drill_question,
+            record_drill_answer,
             check_reading,
             romaji_to_kana,
             yoon,
@@ -484,45 +660,132 @@ mod tests {
     }
 
     #[test]
-    fn the_drill_pool_holds_the_confusable_kana_and_their_partners() {
-        let pool = state().drill_pool();
-        assert!(!pool.is_empty());
+    fn every_classic_pair_can_actually_be_asked() {
+        let state = state();
+        let askable = state.askable_pairs();
+        assert_eq!(
+            askable.len(),
+            CONFUSABLE.len(),
+            "a pair the dataset cannot prompt would silently shrink the drill"
+        );
 
-        // シ and ツ are the pair everyone starts with, and each must offer the
-        // other as a wrong answer.
-        let shi = pool.iter().find(|d| d.ch == 'シ').expect("シ is drillable");
-        assert_eq!(shi.hepburn, "shi");
-        assert_eq!(shi.script, "katakana");
-        assert!(shi.partners.contains(&'ツ'));
-        let tsu = pool.iter().find(|d| d.ch == 'ツ').expect("ツ is drillable");
-        assert!(tsu.partners.contains(&'シ'));
-
-        // A kana with a partner that is not in the set is not offered, and every
-        // prompt is answerable: a reading exists and at least one partner does.
-        for entry in &pool {
-            assert!(!entry.hepburn.is_empty(), "{} has no prompt", entry.ch);
-            assert!(!entry.partners.is_empty(), "{} has no wrong answers", entry.ch);
-            assert!(!entry.partners.contains(&entry.ch), "{} is its own partner", entry.ch);
-            for partner in &entry.partners {
+        // And the question each of them produces is answerable: the target is one
+        // of the options, both options are the pair's own kana, and the prompt is
+        // not empty.
+        for (index, pair) in askable.iter().enumerate() {
+            let roll = (index as f64 + 0.5) / askable.len() as f64;
+            for side in [0.0, 0.75] {
+                let question = state
+                    .next_drill_question_with_rolls(roll, side)
+                    .expect("an askable pair yields a question");
+                assert_eq!(question.pair, pair_key(pair));
                 assert!(
-                    state().kana(*partner).is_ok(),
-                    "{} offers {partner}, which cannot be drawn",
-                    entry.ch
+                    question.options.contains(&question.ch),
+                    "{} must be one of its own options",
+                    question.ch
                 );
+                assert_eq!(question.options.len(), 2, "the pair, and nothing else");
+                for option in &question.options {
+                    assert!(
+                        *option == pair.a || *option == pair.b,
+                        "{option} is not in {}",
+                        question.pair
+                    );
+                }
+                assert!(!question.hepburn.is_empty(), "{} has no prompt", question.ch);
+                assert!(!question.tell.is_empty(), "{} has no tell", question.pair);
             }
         }
 
-        // No duplicates, and stable order.
-        let mut chars: Vec<char> = pool.iter().map(|d| d.ch).collect();
-        let total = chars.len();
-        chars.sort_unstable();
-        chars.dedup();
-        assert_eq!(total, chars.len(), "a kana appears twice in the pool");
+        // The two sides are two questions, not the same one twice.
+        let first = state.next_drill_question_with_rolls(0.0, 0.0).expect("a question");
+        let second = state.next_drill_question_with_rolls(0.0, 1.0).expect("a question");
+        assert_eq!(first.pair, second.pair);
+        assert_ne!(first.ch, second.ch, "the pair asked from the other side");
+        let mut offered = first.options.clone();
+        offered.sort_unstable();
+        let mut both = vec![first.ch, second.ch];
+        both.sort_unstable();
+        assert_eq!(offered, both, "the pair's two kana, whichever side is asked");
     }
 
     #[test]
-    fn a_kana_that_confuses_nobody_is_not_in_the_drill() {
-        assert!(!state().drill_pool().iter().any(|d| d.ch == 'あ'));
+    fn an_answer_is_recorded_against_the_pair_and_the_arithmetic_says_so() {
+        let state = state();
+        let pair = pair_key(CONFUSABLE.iter().find(|p| p.a == 'シ').expect("シ/ツ"));
+
+        // A miss: 1 + 2.
+        let after_miss = state
+            .record_drill_answer(&pair, 'シ', 'ツ')
+            .expect("records");
+        assert_eq!(after_miss.pair, pair);
+        assert_eq!(after_miss.asked, 1);
+        assert_eq!(after_miss.wrong, 1);
+        assert_eq!(after_miss.correct, 0);
+        assert_eq!(after_miss.weight, 3.0);
+
+        // The same pair named the other way round, answered correctly: one pair,
+        // and the weight comes back down.
+        let after_hit = state
+            .record_drill_answer("ツ|シ", 'ツ', 'ツ')
+            .expect("records");
+        assert_eq!(after_hit.pair, pair, "one pair, whichever way it is named");
+        assert_eq!(after_hit.asked, 2);
+        assert_eq!(after_hit.weight, 2.0);
+
+        // Correctness is decided here, from the two kana — not sent by the caller.
+        let lying = state
+            .record_drill_answer(&pair, 'シ', 'ツ')
+            .expect("records");
+        assert_eq!(lying.wrong, 2, "シ asked for and ツ picked is a miss");
+        assert_eq!(lying.correct, 1);
+    }
+
+    #[test]
+    fn an_answer_about_something_that_is_not_a_pair_is_refused() {
+        let state = state();
+        let err = state
+            .record_drill_answer("あ|い", 'あ', 'い')
+            .unwrap_err();
+        assert!(err.contains("not one of the confusion pairs"), "{err}");
+
+        // A pair, but a kana that is not in it.
+        let err = state.record_drill_answer("シ|ツ", 'あ', 'ツ').unwrap_err();
+        assert!(err.contains("is not in シ|ツ"), "{err}");
+        let err = state.record_drill_answer("シ|ツ", 'シ', 'あ').unwrap_err();
+        assert!(err.contains("neither of the two answers"), "{err}");
+
+        // And nothing was written by any of it.
+        assert!(state.log().is_empty());
+    }
+
+    #[test]
+    fn the_drill_prefers_the_pair_the_learner_keeps_getting_wrong() {
+        let state = state();
+        // ン/ソ (ソ|ン) sits early in the list, so a mid-field roll lands past it
+        // while everything weighs the same.
+        let roll = 0.3;
+        let before = state.next_drill_question_with_rolls(roll, 0.0).expect("a question");
+        assert_ne!(before.pair, "ソ|ン");
+
+        state.record_drill_answer("ソ|ン", 'ン', 'ソ').expect("records");
+        state.record_drill_answer("ソ|ン", 'ン', 'ソ').expect("records");
+        let after = state.next_drill_question_with_rolls(roll, 0.0).expect("a question");
+        assert_eq!(after.pair, "ソ|ン", "the same roll now lands on the missed pair");
+    }
+
+    #[test]
+    fn the_question_is_never_one_the_board_cannot_draw() {
+        // Every kana the drill can ask about is in the dataset, so the pair is
+        // never outside the set the rest of the app works in.
+        let state = state();
+        for index in 0..CONFUSABLE.len() {
+            let roll = (index as f64 + 0.01) / CONFUSABLE.len() as f64;
+            let question = state.next_drill_question_with_rolls(roll, 0.5).expect("a question");
+            for option in &question.options {
+                assert!(state.kana(*option).is_ok(), "{option} cannot be drawn");
+            }
+        }
     }
 
     #[test]

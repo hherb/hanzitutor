@@ -63,7 +63,7 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **110
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **134
 tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
 
 | | |
@@ -73,17 +73,25 @@ tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
 | Course | 18 hiragana lessons, 20 katakana, 38 in all |
 | Yōon | 33 digraphs per script, 11 bases × 3 |
 | Confusions | 13 pairs, each with the one feature that tells them apart |
-| Tests | nihongo-core 75, nihongo-tutor 35, frontend 11 of the 80 |
+| Tests | nihongo-core 84, nihongo-tutor 50, frontend 11 of the 80 |
 | Artifact | 70,917 bytes, gzip + magic + postcard |
+| Learner data | one file, `confusions.json`, in the app's own data directory |
 | Version | both crates 0.1.0, and the app's to match |
 
 The app runs and has been looked at, all of it: the course, the board, stroke-order
 animation, handwriting grading, the discrimination drill, the typing box, the
 katakana tab and the Licences panel have each been seen working on a display.
 
-**Three of those were watched for the first time in the session that wrote this
-paragraph, and two of them were broken.** The test suite was green for both, which
-is the point of watching:
+**The drill is the one part that learns anything about its learner** (roadmap N3).
+It used to draw a kana from a pool and throw the answer away; it now draws a *pair*,
+weighted by how often this learner has missed it, and records what was answered in
+`confusions.json` under the app's own data directory. The rule, the record and the
+reason it is not a scheduler are in `nihongo_core::drill`, and invariant 15 is the
+part that must not be undone: the file is this app's, and no other app reads it.
+
+**Three of the surfaces were watched for the first time in the session before this
+one, and two of them were broken.** The test suite was green for both, which is the
+point of watching:
 
 * **The Grade button could not grade anything.** The interface posts
   `{ inkWidth }` and nothing else — deliberately, because the other three tunables
@@ -124,27 +132,29 @@ crates/nihongo-core/              the kana data layer. No UI, no Tauri.
                                   hiragana_with_readings the input table is built from
   src/curriculum.rs      (606)    the gojūon rows, lessons, yōon, and the confusions
   src/input.rs           (523)    romaji → kana, and the one-kana and whole-word checks
+  src/drill.rs           (377)    the pair weights, the tally, and the draw — N3
   src/lib.rs              (56)    re-exports, including hanzi-core's grade
   src/bin/prepare_kana.rs(246)    AnimCJK + KanjiVG → the artifact
   data/kana.bin.gz                COMMITTED, 70,917 bytes
   tests/kana_artifact.rs (261)    12 tests over the committed artifact
 
 apps/nihongo-tutor/               the app
-  src-tauri/src/lib.rs   (573)    AppState and the ten commands, all thin
+  src-tauri/src/lib.rs   (836)    AppState and the eleven commands, all thin
+  src-tauri/src/store.rs (280)    confusions.json: load, record, atomic write — N3
   src-tauri/src/licences.rs(150)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (212)  11 tests locking the JSON the webview
-                                  reads *and the options it posts* (invariant 14)
+  src-tauri/tests/ipc_contract.rs (368)  16 tests locking the JSON the webview
+                                  reads *and the arguments it posts* (invariant 14)
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
   src/App.svelte         (312)    the three views, the course, the board wiring
   src/lib/KanaCanvas.svelte(243)  pointer capture and the animation frame
-  src/lib/ConfusionDrill.svelte(209)  the discrimination drill
+  src/lib/ConfusionDrill.svelte(225)  the drill: one pair, one answer, remembered
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
   src/lib/board.ts        (97)    the board's arithmetic, as pure functions
   src/lib/board.test.ts   (99)    run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
-  src/lib/types.ts       (180)    the IPC shapes, and `Character = Kana`
-  src/lib/api.ts          (96)    one wrapper per command
+  src/lib/types.ts       (198)    the IPC shapes, and `Character = Kana`
+  src/lib/api.ts         (117)    one wrapper per command
 ```
 
 `src-tauri/gen/schemas/` is committed, as it is for the other two apps.
@@ -375,6 +385,35 @@ camelCase on both sides — and the half this app got wrong: 110 tests, clippy a
 because nothing deserialised the options the frontend sends. When a command takes
 a struct, test the *payload*, not the struct.
 
+### 15. **The learner's data is this app's, and it stays this app's.**
+
+Kana Tutor writes exactly one thing about its learner — the per-pair tallies in
+`confusions.json`, in its own directory under the app's data directory — and no
+other app reads it, imports it, or shares a store with it. **The Japanese and
+Chinese apps are separate products; what is shared between them is code, never user
+data.** So `hanzi-store` is not the answer for the drill's tallies, and it is not
+the answer for the review queue that `ROADMAP_NIHONGO.md` N2 plans either, however
+convenient its language-neutral types look. That was the maintainer's decision, and
+it is a boundary rather than an implementation detail: a shared store for two
+separate apps is what turns "separate" into "tangled", and the tangle is discovered
+on the day one app's schema change breaks the other's history.
+
+Two practical consequences:
+
+* **The file is written by Rust, not by the webview.** The app still has *no*
+  filesystem permission in `capabilities/default.json`, and that comment there is
+  accurate: the webview cannot name, read or write a path. `std::fs` in the app
+  crate does the writing, which also means the file needs no plugin, no permission
+  and no path crossing the IPC boundary.
+* **A write that fails is reported, not swallowed.** The answer is still counted in
+  memory and the learner is told that it was not saved. Under the harness's own
+  file sandbox this is the *normal* result — see trap 5 — because the sandbox denies
+  writes to `~/Library`, so a live drill run in an agent session shows
+  "the answer was counted but could not be saved: Operation not permitted" and the
+  app is working correctly. To exercise the real file from a sandboxed session,
+  start the app with `HOME` pointing inside the workspace (and `RUSTUP_HOME` left
+  alone, or cargo cannot find its toolchain): the data directory follows `HOME`.
+
 ---
 
 ## 5. The verification loop
@@ -493,6 +532,37 @@ webview cannot reach the dev server, hence the blank page" — but the webview h
 already connected (`com.apple.WebKit.Networking` holds an established connection to
 `[::1]:1422`) and the page's own modules were being served. Check
 `lsof -nP -iTCP:1422` before believing the DNS story.
+
+### Seeing what the drill remembered
+
+The drill's record is a file, which makes it the one part of this app that can be
+*read* rather than looked at:
+
+```bash
+cat ~/Library/Application\ Support/com.hanzitutor.kana/confusions.json
+```
+
+It is written after every answer, pretty-printed, and keyed by the pair
+(`"シ|ツ"`, lower code point first) — so a change to the weighting rule can be seen
+in the numbers rather than inferred from which kana came up. To prove that a
+restart reads it back, answer a few questions, quit, start again, and answer a few
+more: a pair's `asked` must continue from where it left off rather than restarting
+at 1. That is also the check the tests do over a temporary directory, and it is the
+one worth repeating by hand after touching `store.rs`.
+
+Under the agent harness the write is **denied** — the sandbox refuses `~/Library`,
+so the drill shows "the answer was counted but could not be saved" and is working
+correctly (trap 5, invariant 15). To exercise the real file there, point `HOME` at
+a directory inside the workspace and leave `RUSTUP_HOME` alone:
+
+```bash
+# The `$HOME` on the right is expanded by your shell *before* the assignment on
+# the left takes effect, which is the point: that is the real one, where cargo's
+# toolchain lives. Without it, rustup claims no default toolchain is configured.
+HOME="$PWD/.tmp-kana-home" RUSTUP_HOME="$HOME/.rustup" \
+  pnpm --dir apps/nihongo-tutor run dev
+```
+
 
 ---
 
@@ -634,10 +704,14 @@ weights** and the training labels. `docs/research/JAPANESE_TUTOR_FEASIBILITY.md`
 ### Whether kana want spaced repetition at all
 
 179 kana and 33 digraphs is small enough to learn by exposure, and the Chinese
-app's scheduler (`hanzi-core::progress`, SM-2) plus `hanzi-store` are reusable as
-they stand. But "reuse the SRS because it is there" is not an argument, and the
-honest question is whether a review queue helps kana or just adds a screen. The
-drill (§ROADMAP N3) may cover the same ground with less machinery.
+app's scheduler (`hanzi-core::progress`, SM-2) is reusable **as code** — it is
+language-neutral types and arithmetic, which is the kind of thing the two apps
+share. `hanzi-store` is not: it is a store, and a store holds a learner's data,
+which invariant 15 keeps app-local. But "reuse the SRS because it is there" is not
+an argument either way, and the honest question is whether a review queue helps
+kana or just adds a screen. The drill has now answered a smaller version of it —
+per-pair weights, no schedule, no due dates, no queue — and that is the thing to
+weigh a real scheduler against.
 
 ### Where kana audio comes from
 
@@ -651,9 +725,11 @@ about ten isolated kana clips with per-file licences. Undecided.
 
 It is `apps/nihongo-tutor/` with its own identifier `com.hanzitutor.kana`, which
 follows the repository's multi-app pattern and keeps the binary small. A learner
-studying both languages would want one app and one review queue. The shared
-`hanzi-store` schema makes a later merge cheap, so this is reversible — but it
-should be a decision rather than a drift.
+studying both languages might want one app — but **the data half of this question
+is settled**: the two apps' learner data is separate and stays separate
+(invariant 15), so "one app" would mean one window over two stores rather than one
+store. The shared *code* is what makes that cheap, and it is already shared. What
+remains open is the shell, not the storage.
 
 ### The kanji level ladder
 
@@ -765,8 +841,10 @@ first KANJIDIC2 data.
   kanji need `dictionaryJa.txt`'s own grade sets.
 * **Audio.** §7.
 * **Spaced repetition.** §7.
-* **A per-learner confusability matrix.** The 13 pairs are a fixed set; the drill
-  does not yet learn which pairs *this* learner gets wrong.
+* **A per-learner confusability *matrix*.** The drill does now learn which of the
+  13 pairs *this* learner gets wrong, and weights them (invariant 15, roadmap N3).
+  What is not built is a matrix: pairs beyond the fixed 13, or a screen that shows
+  the learner what they mix up. The record is there to build one on.
 * **Grammar and particles.** "Kanji won't teach you to read" is the defining
   Japanese failure mode, and a kana tutor with no grammar is a kana tutor only.
   Out of scope for now, and the largest thing missing from the product.
