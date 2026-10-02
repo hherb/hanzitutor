@@ -11,6 +11,10 @@ members = [
     # engine — grading, resampling and the ink measures are language-neutral —
     # and adds the kana dataset on top.
     "crates/nihongo-core",
+    # The Japanese kana app. It depends on `nihongo-core`, which carries the
+    # kana data and the course; the geometry engine underneath that is
+    # `hanzi-core`, shared with the Chinese app.
+    "apps/nihongo-tutor/src-tauri",
     "src-tauri",
     # The standalone tone-practice app. It depends on `hanzi-core` for the
     # scoring and the minimal pairs and on `hanzi-voice` for the microphone and

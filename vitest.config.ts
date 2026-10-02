@@ -26,7 +26,11 @@ export default mergeConfig(
   viteConfig,
   defineConfig({
     test: {
-      include: ["src/**/*.test.ts", "apps/tone-trainer/src/**/*.test.ts"],
+      include: [
+        "src/**/*.test.ts",
+        "apps/tone-trainer/src/**/*.test.ts",
+        "apps/nihongo-tutor/src/**/*.test.ts",
+      ],
       environment: "node",
     },
   }),

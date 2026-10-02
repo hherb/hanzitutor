@@ -1,0 +1,460 @@
+/* The kana tutor's stylesheet.
+ *
+ * Two of these variables are not mine to choose: `--board` and `--line` are what
+ * the board and its guide are painted on, and the canvas draws the guide in a
+ * colour that has to read against the board in both schemes. The rest is layout.
+ */
+
+:root {
+  /* The mobile shells report their insets; the desktop has none. Defined here
+     for the same reason the other two apps define it, and read by `main`. */
+  --safe-top: max(env(safe-area-inset-top, 0px), var(--inset-top, 0px));
+  --bg: #fbfaf7;
+  --panel: #ffffff;
+  --ink: #1d1c19;
+  --muted: #6b6862;
+  --line: #e2ded6;
+  --board: #ffffff;
+  --accent: #2f6f4f;
+  --accent-ink: #ffffff;
+  --ok: #2f6f4f;
+  --bad: #a33a2a;
+  --radius: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181a;
+    --panel: #1f2124;
+    --ink: #ecebe7;
+    --muted: #9a978f;
+    --line: #33363a;
+    --board: #14161a;
+    --accent: #64b48a;
+    --accent-ink: #10231a;
+    --ok: #64b48a;
+    --bad: #e0806f;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+main {
+  max-width: 1180px;
+  margin: 0 auto;
+  /* macOS hands the webview the whole window and draws the title bar over it, so
+     the first line has to clear the traffic-light strip — which is why 20px left
+     the heading half-hidden behind it. `--safe-top` carries the mobile insets
+     (notch, status bar) and is 0 on the desktop, so this is the desktop's
+     allowance plus whatever the mobile shell reports. */
+  padding: calc(var(--safe-top, 0px) + 2.25rem) clamp(12px, 3vw, 28px) 2.5rem;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.4rem;
+  letter-spacing: 0.01em;
+}
+
+header .sub {
+  margin: 2px 0 14px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.error {
+  background: color-mix(in srgb, var(--bad) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
+  color: var(--bad);
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+}
+
+.views {
+  display: flex;
+  gap: 4px;
+  margin: 12px 0 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.views button {
+  padding: 7px 14px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.views button.active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin: 12px 0 16px;
+}
+
+.tabs button {
+  text-transform: capitalize;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+}
+
+.tabs button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 210px minmax(220px, 1fr) minmax(320px, 1.25fr);
+  gap: 18px;
+  align-items: start;
+}
+
+@media (max-width: 940px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 70vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.lesson {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.lesson .kana {
+  font-size: 1.02rem;
+  letter-spacing: 0.06em;
+}
+
+.lesson .sound {
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.lesson.voiced {
+  border-left: 3px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.lesson.active {
+  border-color: var(--accent);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  gap: 6px;
+}
+
+.cell {
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  font-size: 1.7rem;
+  line-height: 1;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.cell.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.cell.small {
+  font-size: 1.2rem;
+  width: 34px;
+  height: 34px;
+  aspect-ratio: auto;
+}
+
+.picker .yoon {
+  margin-top: 12px;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin: 6px 0 0;
+}
+
+.practice {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+}
+
+.prompt {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.prompt .big {
+  font-size: 2.1rem;
+  line-height: 1;
+}
+
+.prompt .reading {
+  font-size: 1rem;
+}
+
+.prompt .reading small,
+.prompt .strokes {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.prompt .strokes {
+  margin-left: auto;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+button {
+  font: inherit;
+}
+
+.actions button,
+.typing button {
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.actions button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.verdict {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.verdict .overall {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 1.6rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.verdict .overall span {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.verdict .overall em {
+  font-size: 0.85rem;
+  font-style: normal;
+  color: var(--bad);
+}
+
+.verdict.ok .overall em {
+  color: var(--ok);
+}
+
+.scores {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.scores div {
+  background: color-mix(in srgb, var(--line) 35%, transparent);
+  border-radius: 8px;
+  padding: 5px 8px;
+}
+
+.scores dt {
+  font-size: 0.68rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.scores dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.strokes-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.84rem;
+}
+
+.strokes-list li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.strokes-list .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--c);
+}
+
+.fine {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin: 8px 0 0;
+}
+
+.typing {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.typing label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.typing .row {
+  display: flex;
+  gap: 8px;
+}
+
+.typing input {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+
+.typing .result {
+  margin: 8px 0 0;
+  font-size: 0.86rem;
+  color: var(--bad);
+}
+
+.typing .result.ok {
+  color: var(--ok);
+}
+
+.typing code {
+  font-size: 0.78rem;
+}
+
+.confusions {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.confusions h2 {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.confusions ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.confusions li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.84rem;
+}
+
+footer {
+  margin-top: 26px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.76rem;
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}

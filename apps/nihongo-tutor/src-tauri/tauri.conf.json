@@ -1,0 +1,81 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Kana Tutor",
+  "version": "0.1.0",
+  "identifier": "com.hanzitutor.kana",
+  "build": {
+    "beforeDevCommand": "pnpm run vite:dev",
+    "devUrl": "http://localhost:1422",
+    "beforeBuildCommand": "pnpm run vite:build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Kana Tutor",
+        "width": 980,
+        "height": 760,
+        "minWidth": 480,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "img-src": "'self' data: blob:",
+        "media-src": "'self' data: blob:"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "icon": [
+      "../../../src-tauri/icons/32x32.png",
+      "../../../src-tauri/icons/128x128.png",
+      "../../../src-tauri/icons/128x128@2x.png",
+      "../../../src-tauri/icons/icon.icns",
+      "../../../src-tauri/icons/icon.ico"
+    ],
+    "category": "Education",
+    "shortDescription": "Learn to read and write Japanese kana",
+    "longDescription": "An offline app for learning hiragana and katakana. It teaches the gojūon in order, one row at a time, with the dakuten and handakuten rows after the plain ones, the yōon digraphs, and the pairs learners actually mix up — シ and ツ, ソ and ン, る and ろ. Every kana can be traced on the board: each stroke is judged for shape, placement, ink and order against real stroke geometry, and the stroke order can be animated first. You can type a reading in either Hepburn or Kunrei romanisation and see the kana you produced. Everything the course teaches is in this bundle and needs no network.",
+    "copyright": "Copyright © Horst Herb and contributors",
+    "resources": {
+      "../../../LICENSE": "licences/AGPL-3.0.txt",
+      "../../../LICENSES.md": "licences/PROVENANCE.md",
+      "licences/AnimCJK-COPYING.txt": "licences/AnimCJK-COPYING.txt",
+      "../../../licences/LGPL-3.0.txt": "licences/LGPL-3.0.txt",
+      "../../../licences/Arphic-Public-License.txt": "licences/Arphic-Public-License.txt"
+    },
+    "android": {
+      "minSdkVersion": 26
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": "Entitlements.plist",
+      "dmg": {
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        }
+      }
+    },
+    "iOS": {
+      "minimumSystemVersion": "15.0"
+    }
+  }
+}

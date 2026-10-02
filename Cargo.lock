@@ -2621,6 +2621,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nihongo-tutor"
+version = "0.1.0"
+dependencies = [
+ "nihongo-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+]
+
+[[package]]
 name = "num-conv"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
