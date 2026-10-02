@@ -20,16 +20,14 @@ days — 177 characters and a handful of digraphs is a weekend's work, not a cou
 to be. Kanji is where the years go, and it is where a sibling to Hanzi Tutor earns
 its existence.
 
-That has one large consequence, and it is measured rather than assumed. What
-transfers between kanji and hanzi is **shape and stroke order**; pronunciation
-does not transfer at all, and meaning only partly. And of the 2,136 jōyō, **1,902
-(89%) have geometry in this repository already** — 1,200 as the same simplified
-character the HSK course teaches, 702 as characters whose traditional form is in
-the dataset but which the course never shows. Where both exist the shape agrees
-about nine times in ten. So the Chinese data is a genuine cross-check on the
-Japanese, and AnimCJK is authoritative for reasons of stroke order and the 234
-characters that have no counterpart at all. §"What transfers between the two" has
-the working.
+And the thing that transfers is the **mechanics**, not the data: counting strokes,
+pairing them and judging their order and direction is one software problem whatever
+the script — which is why `nihongo-core` uses `hanzi-core`'s `geom`, `raster` and
+`grade` unchanged. **The kanji data still comes from Japanese sources**, AnimCJK
+for geometry with KanjiVG as the stroke oracle, exactly as the kana did. The
+Chinese dataset is not an input. §"The mechanics transfer; the data does not" has
+the reasoning, and the learner-facing overlap figures that decide what a *screen*
+says rather than what the build reads.
 
 In priority order. **The N-numbers are labels, not a ranking** — they are what
 `HANDOVER_NIHONGO.md` §7 refers to, and renumbering them would break those
@@ -94,24 +92,56 @@ kana in Make Me a Hanzi's own font space, so the transform was already right.
 
 ---
 
-## What transfers between the two, and what does not
+## The mechanics transfer; the data does not
 
-Written from the maintainer's own experience, because they read **Japanese and
-then learned Chinese** — the opposite direction to the one this section is usually
-read in — and the summary is theirs:
+Two earlier versions of this section had this backwards, and the maintainer's
+correction is the point of it:
 
-> In many cases he will be familiar with the **meaning**, but the **phonemes will
-> be entirely different**, and sometimes even the meaning diverges. The only thing
-> that is basically the same is **stroke order and shape**, and to a degree the
-> meaning.
+> …technically counting strokes, assessing stroke order/direction etc is the same,
+> so the mechanics are transferable.
 
-That ordering matters, because it is the reverse of what a naive reading of
-"kanji are near identical with the hanzi" suggests. **Shape and stroke order are
-the parts that transfer. Pronunciation does not transfer at all. Meaning transfers
-partly, and unreliably enough that it must never be assumed.**
+So what is "near identical" between kanji and hanzi is the **software problem**,
+not the data. Counting strokes, pairing them, judging their order and direction,
+measuring ink and placement — that is one problem, whatever the script, and it is
+why this is a sibling app rather than a new one.
 
-Measured against this repository's own data (`data/raw/graphics.txt` for Make Me a
-Hanzi, `data/raw/hanziDB.csv` for what the course teaches), of the 2,136 jōyō:
+**That is demonstrated already, not planned.** `hanzi-core`'s `geom` (450 lines),
+`raster` (624) and `grade` (1,695) grade strokes against strokes and never look at
+the character, and `nihongo-core` uses all three unchanged: a handwritten あ is
+judged by exactly the code that judges 一. Measured before any of it was built —
+and recorded in `docs/research/JAPANESE_TUTOR_FEASIBILITY.md` §2.1 — those three
+plus `time` have **zero** Chinese coupling, and `hanzi-sync` depends only on
+language-neutral progress types.
+
+### The data stays Japanese
+
+**Use a Japanese dataset, and there is one.** The kanji half takes its geometry
+from AnimCJK's `graphicsJa.txt` for exactly the reasons the kana half did: 7,007
+characters with **outlines and medians**, in Make Me a Hanzi's own font space, so
+`prepare-kanji` is `prepare-kana`'s geometry half with a different file.
+
+The stroke-count and stroke-order **oracle is KanjiVG** — the same Japanese source
+the kana pipeline already checks against (CC BY-SA 3.0), and **measured against
+KANJIDIC2 across all 2,136 jōyō before writing this down: 2,127 agree, 99.6%.** The
+nine that do not are named and can be handled explicitly rather than discovered:
+謎 (16/17), 賭 (15/16), 葛 (11/12), 餌 (14/15), 遜 (13/14), 僅 (12/13), 遡 (13/14),
+餅 (14/15) — KanjiVG one higher in eight of them — and 牙 (5/4), the only one where
+KANJIDIC2 is higher. Verified agreeing examples: 愛 13, 学 8, 国 8, 鳥 11, 鳩 13,
+韓 18. `prepare-kanji` should refuse to write an artifact whose counts it could not
+check, exactly as `prepare-kana` does, and the nine are the list to decide about
+rather than to paper over.
+
+**The Chinese dataset is not an input to the kanji course.** It is not a data
+source, not a cross-check, and not a fallback — an earlier draft proposed using it
+as a second opinion, and that is the wrong instinct: a Japanese course built on
+Chinese geometry would be checked against the thing it is trying not to be. The
+only shared thing is the code.
+
+### Why the overlap still matters — as product, not as pipeline
+
+The characters do overlap enough that a learner who reads Chinese arrives with a
+real head start, and the app should say so. Measured against this repository's own
+data, of the 2,136 jōyō:
 
 | | jōyō | kyōiku |
 | --- | --- | --- |
@@ -119,66 +149,30 @@ Hanzi, `data/raw/hanziDB.csv` for what the course teaches), of the 2,136 jōyō:
 | Present in the dataset, but only as a **traditional** form | **702 (33%)** | 260 (26%) |
 | **No Chinese counterpart at all** — Japanese shinjitai | **234 (11%)** | 95 (9%) |
 
-**And where a character exists in both, the shape agrees about nine times in
-ten.** Comparing stroke counts at the same code point:
+And where a character exists in both, the **shape** agrees about nine times in ten
+— 1,117 of the 1,200 the course teaches (93.1%), and 619 of the 702 traditional
+forms (88.2%), comparing stroke counts at the same code point.
 
-| | identical stroke count | different |
-| --- | --- | --- |
-| the 1,200 the course teaches | **1,117 (93.1%)** | 83 (6.9%) |
-| the 702 present as traditional forms | **619 (88.2%)** | 83 (11.8%) |
+This is for deciding what a **screen says**, not what the build reads, and it is
+what makes the maintainer's transfer rules concrete:
 
-So **the geometry is available in this repository for 1,902 of the 2,136 jōyō —
-89% — and agrees on shape for about 90% of those.** That is the opposite of the
-"44% is unusable" reading this section first carried, and it is the more useful
-fact: the Chinese dataset is a real second opinion on the Japanese geometry.
+* **Shape and stroke order transfer.** A learner who knows 学 knows how to write
+  it. So does one who knows 學, for the 702.
+* **Pronunciation does not transfer at all** — which is the good news, because
+  there is no wrong habit to unlearn, only new material to teach.
+* **Meaning transfers partly and unreliably**, which is the dangerous amount. The
+  glosses come from JMdict senses and never from a Chinese dictionary: 娘 (JP
+  daughter / ZH mother), 手紙 (JP letter / ZH toilet paper), 汽車 (JP steam train /
+  ZH automobile), 勉強 (JP study / ZH reluctantly), 丈夫 (JP sturdy / ZH husband),
+  走る (JP run / ZH walk). See `docs/research/JAPANESE_TUTOR_FEASIBILITY.md` §4.1.
+* **The 234 shinjitai are genuinely new** — 両 乗 亀 亜 仏 仮 伝 価 働 児 剣 労 単 厳
+  収 営 団 — and they are worth knowing as a set, because they are where a Chinese
+  reader's head start runs out.
 
-The three rows mean three different things, and conflating them was the earlier
-mistake:
-
-* **1,200 are characters a Hanzi Tutor learner has already studied** — the same
-  simplified character, and their geometry is already in the shipped artifact.
-* **702 are characters whose *traditional* form is in the dataset** but which the
-  course does not teach, because the course is simplified. 愛 華 樂 學 國 會 體 數
-  萬 舊 價 傳 兩 亞 圖 歸 are all present — it is 爱 华 乐 学 国 会 体 数 万 旧 价 传
-  两 亚 图 归 that the HSK course teaches. **The geometry is here; the learner has
-  simply never been shown it.** Spot-checked: for each such pair, the traditional
-  form is in Make Me a Hanzi and not in the HSK set, and its simplified counterpart
-  is in the HSK set.
-* **234 have nothing.** 両 乗 亀 亜 仏 仮 伝 価 働 児 剣 労 単 厳 収 営 団 and their
-  like are Japanese forms with their own code points and no ancestor in the
-  Chinese set. These **must** come from AnimCJK.
-
-**What follows for the milestones.**
-
-* **AnimCJK stays authoritative, for three reasons, none of which is the shape.**
-  The 234 have no alternative; the ~10% that disagree are genuine regional glyph
-  variants (肺 cn8/jp9, 悔 cn10/jp9, 者, and the 辶 family) where the Chinese path
-  would be wrong; and **stroke order is AnimCJK's to state** — a stroke count that
-  agrees is necessary and not sufficient, and this repository has never compared
-  stroke *order* between the two.
-* **The Chinese geometry is a genuine cross-check**, in exactly the way KanjiVG
-  was for the kana — an independent statement of where the strokes go, for 89% of
-  jōyō. It should be used that way, and it is worth wiring before the kanji
-  artifact is trusted.
-* **Never take a gloss from a Chinese dictionary.** Meaning transfers *partly*,
-  which is the dangerous amount: 娘 (JP daughter / ZH mother), 手紙 (JP letter / ZH
-  toilet paper), 汽車 (JP steam train / ZH automobile), 勉強 (JP study / ZH
-  reluctantly), 丈夫 (JP sturdy / ZH husband), 走る (JP run / ZH walk). Every gloss
-  comes from JMdict senses. See
-  `docs/research/JAPANESE_TUTOR_FEASIBILITY.md` §4.1.
-* **Pronunciation is a clean slate**, which is the good news in the maintainer's
-  summary: a learner who knows the character has no bad habit to unlearn about how
-  it sounds, and the reading is new material to teach rather than old material to
-  correct.
-
-**The one comparison worth running before N6, and it is cheap:** stroke *order*
-for the 1,200 shared simplified characters, against AnimCJK. The maintainer's
-judgement is that the order is basically the same, and the measurement above says
-the shape is; but order is what decides whether a screen can say "you already know
-how to write this character" or only "you have met it", and the 83-plus-83
-divergences are where to look first.
-
----
+**And the direction works both ways.** The maintainer read Japanese first and
+learned Chinese second, a path served today by Hanzi Tutor itself. Anything that
+records "this character is already known from the other language" must not assume
+which language came first.
 
 ## N1 — Audio
 
@@ -365,15 +359,15 @@ curriculum. And **KanjiVG cannot substitute here**: the kana pipeline used it as
 an oracle, but for kanji it supplies only centre-lines and no ink outlines, so it
 is a stroke-order cross-check and nothing more.
 
-**And the thing to get right early: the Chinese geometry is a cross-check, not a
-substitute.** It is a tempting shortcut and it is nearly right — 1,902 of the
-2,136 jōyō have geometry here, and where both exist the shape agrees about nine
-times in ten. But AnimCJK is authoritative on three counts: the 234 shinjitai with
-no counterpart at all, the ~10% that are genuine regional glyph variants where the
-Chinese path is simply wrong (肺, 悔, the 辶 family), and **stroke order**, which
-this repository has never compared between the two. The measurement and the
-transfer rules are in §"What transfers between the two" above, which also names
-the one cheap comparison worth running before the curriculum is fixed.
+**And the thing to get right early: Japanese data, Japanese oracle.** The
+temptation is to reach for the Chinese geometry — 1,902 of the 2,136 jōyō have an
+equivalent in this repository, and where both exist the shape agrees about nine
+times in ten — but the kanji course is not built on it. Geometry from AnimCJK's
+`graphicsJa.txt`, and the stroke-count and stroke-order check against **KanjiVG**,
+the same Japanese source the kana pipeline uses — measured at **99.6% agreement
+with KANJIDIC2 across the 2,136 jōyō**, with nine named exceptions. `prepare-kanji`
+refuses to write an artifact whose counts it could not check. §"The mechanics transfer; the data does not" above has the
+reasoning.
 
 **Acceptance criteria.**
 
@@ -508,13 +502,14 @@ Recorded here rather than as milestones because none of them is a feature.
 * **The kanji milestones are plans, not measurements.** The kana estimates in the
   feasibility report were good, but the kanji data sizes are from upstream
   listings rather than from a build, and the artifact size is unknown.
-* **Nobody has compared Japanese and Chinese stroke *order*.** The shape
-  comparison above is stroke counts, which is a proxy, and the maintainer's
-  judgement that the order is basically the same is domain knowledge rather than a
-  measurement. It is the one unknown that decides how much of the Chinese dataset
-  a kanji course can lean on, and it is an afternoon's work —
-  §"What transfers between the two" says where to look first, which is the 166
-  characters whose stroke counts already disagree.
+* **The nine jōyō where KanjiVG and KANJIDIC2 disagree on stroke count.** 謎, 賭,
+  葛, 餌, 遜, 僅, 遡, 餅 (KanjiVG one higher) and 牙 (KANJIDIC2 higher). It is 0.4%
+  of jōyō and it is a real decision rather than a rounding error: the artifact
+  checks against KanjiVG, so these nine need either an explicit exception list with
+  the count taken from KANJIDIC2, or a look at whether KanjiVG has split a stroke.
+  Either way it should be a written list in the pipeline, not a silent pass — the
+  kana equivalent is the 25 split characters, and that one turned out to be a
+  genuine upstream format quirk rather than an error.
 
 ---
 

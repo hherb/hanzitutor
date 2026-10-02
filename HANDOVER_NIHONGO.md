@@ -545,14 +545,23 @@ which asserts no licence. The recommendation is to derive bands from
 `dictionaryJa.txt`'s kyōiku grades and JMdict's `nf01`–`nf48`, and to say so in
 the UI. Not yet decided, and it shapes the kanji course.
 
-### What transfers between kanji and hanzi, and what the app should say about it
+### What the app should say to a learner who already reads Chinese
 
-**The most interesting open question in the Japanese part, and a product question
-rather than a technical one.** It is also the one the maintainer is best placed to
-answer, because they read **Japanese first and then learned Chinese** — the
-opposite direction to the one this question is usually asked in.
+**A product question rather than a technical one, and the maintainer is best
+placed to answer it because they read Japanese first and learned Chinese second —
+the opposite direction to the one it is usually asked in.**
 
-Their summary, which governs everything below:
+**First, the part that is not a question.** The transferability that matters
+architecturally is the *mechanics*: counting strokes, pairing them and judging
+order and direction is one software problem whatever the script, which is why
+`nihongo-core` uses `hanzi-core`'s `geom`, `raster` and `grade` unchanged. **The
+data is a separate matter and stays Japanese** — AnimCJK for kanji geometry,
+KanjiVG as the stroke oracle, exactly as for the kana. The Chinese dataset is not
+an input to the kanji course: not a source, not a cross-check, not a fallback.
+
+**Then the product question.** The characters overlap enough that a Chinese reader
+arrives with a real head start, and the app should say something about it rather
+than pretend otherwise. The maintainer's summary of what actually carries over:
 
 > In many cases he will be familiar with the **meaning**, but the **phonemes will
 > be entirely different**, and sometimes even the meaning diverges. The only thing
@@ -560,45 +569,27 @@ Their summary, which governs everything below:
 > meaning.
 
 So: **shape and stroke order transfer; pronunciation does not transfer at all;
-meaning transfers partly and unreliably.** Do not write "readings and meanings do
-not transfer" into any screen or doc — the readings do not, and the meanings do
-about as often as not.
+meaning transfers partly and unreliably.** The measurements behind that — 1,200 of
+the 2,136 jōyō are the same simplified character the HSK course teaches, 702 exist
+only as traditional forms, 234 are shinjitai with no counterpart, and the shape
+agrees about nine times in ten where both exist — are in `ROADMAP_NIHONGO.md`
+§"Why the overlap still matters", which is explicit that they inform a *screen* and
+not a build.
 
-**The geometry, measured.** Of the 2,136 jōyō, **1,200 (56%) are the same
-simplified character the HSK course teaches**, **702 (33%) are characters whose
-traditional form is in the dataset but which the course never shows** (愛 華 樂 學
-國 … against the taught 爱 华 乐 学 国), and **234 (11%) are Japanese shinjitai with
-no Chinese counterpart at all** (両 乗 亀 亜 仏 仮 伝 価 …). So **1,902 of 2,136 —
-89% — have geometry in this repository already**, and where both exist the stroke
-count agrees about **nine times in ten**. The full split, the agreement figures
-per bucket and the spot checks are in `ROADMAP_NIHONGO.md` §"What transfers
-between the two, and what does not".
+The framing is probably "you have met this character — here is what Japanese reads
+it as" rather than "you know this", and the 234 両 乗 亀 亜 仏 仮 伝 価 働 児 剣 労 単
+厳 収 営 団 are worth knowing as a set, because they are where the head start runs
+out.
 
-Two decisions follow, and neither is made:
+**The non-negotiable part: glosses come from JMdict senses and never from a Chinese
+dictionary.** Meaning transfers often enough to be tempting and not often enough to
+be safe — 娘, 手紙, 汽車, 勉強, 丈夫 and 走る are actively wrong across the two
+languages, and a Chinese gloss on a Japanese card is worse than no card.
 
-* **AnimCJK is authoritative, but the Chinese geometry is not to be thrown away.**
-  It is a genuine cross-check on 89% of jōyō — exactly the role KanjiVG played for
-  the kana — and it is worth wiring before the kanji artifact is trusted. What
-  makes AnimCJK authoritative is not the shape: it is stroke order, the 234 with no
-  counterpart, and the ~10% that are real regional glyph variants where the Chinese
-  path is wrong (肺, 悔, the 辶 family).
-* **Say something to the learner who knows 1,200 of them already.** It is a real
-  advantage and discarding it would be perverse. The framing is probably "you have
-  met this character — here is what Japanese reads it as" rather than "you know
-  this", but that depends on the stroke-order comparison nobody has run, which the
-  roadmap puts before the curriculum is fixed.
-
-Whatever is decided, **the glosses must come from JMdict senses and never from a
-Chinese dictionary.** Meaning transfers often enough to be tempting and not often
-enough to be safe: 娘, 手紙, 汽車, 勉強, 丈夫 and 走る are actively wrong across the
-two languages, and a Chinese gloss on a Japanese card is worse than no card.
-
-**And the direction is worth supporting the other way too.** The maintainer's own
-path — Japanese first, Chinese second — is served today by Hanzi Tutor itself, and
-the same asymmetry applies in reverse: a Japanese reader taking up Chinese gets
-the shapes for free and has to learn every reading and the simplified forms. Any
-scheme that records "this character is already known from the other language"
-should not assume which language came first.
+**And the direction works both ways.** The maintainer's own path — Japanese first,
+Chinese second — is served today by Hanzi Tutor itself, so anything that records
+"this character is already known from the other language" must not assume which
+language came first.
 
 ### The `assets/website` duplication
 
