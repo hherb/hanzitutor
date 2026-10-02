@@ -13,6 +13,14 @@ A finished milestone keeps the decisions that still constrain new work — above
 what was deliberately left out, and why, so a settled question is not re-opened.
 Play-by-play of what a past session shipped belongs to git history, not here.
 
+**The Japanese part is not on this roadmap.** It is a sibling app built on the
+same grading engine, with its own documents —
+[`ROADMAP_NIHONGO.md`](ROADMAP_NIHONGO.md) and
+[`HANDOVER_NIHONGO.md`](HANDOVER_NIHONGO.md) — and its own version, currently
+0.1.0. The two share `hanzi-core`'s geometry, `raster` and `grade`, and nothing a
+milestone here needs to care about; the Japanese crates version themselves
+precisely so that a release here cannot drag them.
+
 ## Summary
 
 | # | Milestone | Why it matters | Size | Status |

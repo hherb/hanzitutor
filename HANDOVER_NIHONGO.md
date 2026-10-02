@@ -1,12 +1,12 @@
 # Handover — the Japanese part
 
 This is the Japanese counterpart to [`HANDOVER.md`](HANDOVER.md), and it is the
-only document that describes it. Nothing in `README.md`, `ROADMAP.md` or
-`HANDOVER.md` mentions the kana work at all — `grep -c 'nihongo\|kana'` over the
-three of them returns **0** — so a reader arriving from the repository root has
-no way to find it. That is worth fixing when the Japanese part is more than a
-few days old: a line in `README.md` pointing here, and a line at the top of
-`ROADMAP.md` pointing at [`ROADMAP_NIHONGO.md`](ROADMAP_NIHONGO.md).
+document that describes it in full. The repository root now points here: the
+`README.md` names the Japanese part in its "Next steps", `HANDOVER.md` lists this
+file in its "Read in this order", and `ROADMAP.md` says plainly that the Japanese
+work is not on its milestones. Until recently none of those was true —
+`grep -c 'nihongo\|kana'` over the three returned **0**, so the work was
+unfindable from the root.
 
 The two documents divide the same way the Chinese ones do. This file is what you
 need to *work on it*: the build, the shape of the code, the invariants that must
@@ -544,6 +544,35 @@ vocabulary list**, and the best-licensed community list chains to tanos.co.uk,
 which asserts no licence. The recommendation is to derive bands from
 `dictionaryJa.txt`'s kyōiku grades and JMdict's `nf01`–`nf48`, and to say so in
 the UI. Not yet decided, and it shapes the kanji course.
+
+### What to tell a learner who already reads Chinese
+
+**The most interesting open question in the Japanese part, and a product question
+rather than a technical one.**
+
+Kanji lean on the **traditional** forms where Hanzi Tutor teaches the
+**simplified** ones, so the overlap is smaller than it looks and the shortcut it
+invites is a trap. Measured against this repository's own data: of the 2,136 jōyō,
+**1,200 (56%) are the same simplified character the HSK course teaches**, **702
+(33%) exist here only as traditional forms**, and **234 (11%) are Japanese
+shinjitai with no Chinese counterpart at all.** The split, the examples and the
+spot checks are in `ROADMAP_NIHONGO.md` §"The kanji Hanzi Tutor already knows".
+
+Two decisions follow, and neither is made:
+
+* **Do not use the Chinese geometry** for the kanji course. It is wrong for 44% of
+  jōyō outright, and AnimCJK warns that stroke order or direction may differ even
+  where the glyph looks the same. `graphicsJa.txt` is the source.
+* **But say something to the learner who knows 1,200 of them already.** That is a
+  real advantage and discarding it would be perverse. The honest framing is
+  probably "you have met this character — here is how Japanese writes it and what
+  it reads as" rather than "you know this", but that depends on a stroke-order
+  comparison nobody has run, which the roadmap puts before the curriculum is
+  fixed.
+
+Whatever is decided, **the glosses must come from JMdict senses and never from a
+Chinese dictionary.** 娘, 手紙, 汽車, 勉強, 丈夫 and 走る are actively wrong across
+the two languages, and a Chinese gloss on a Japanese card is worse than no card.
 
 ### The `assets/website` duplication
 

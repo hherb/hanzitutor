@@ -8,7 +8,13 @@ Read in this order:
 1. **this file** — how to get a working build and what not to break;
 2. [`ROADMAP.md`](ROADMAP.md) — what to do next, in priority order;
 3. [`README.md`](README.md) — what the app is, and how grading works;
-4. [`LICENSES.md`](LICENSES.md) — the data notice obligations.
+4. [`LICENSES.md`](LICENSES.md) — the data notice obligations;
+5. [`HANDOVER_NIHONGO.md`](HANDOVER_NIHONGO.md) and
+   [`ROADMAP_NIHONGO.md`](ROADMAP_NIHONGO.md) — **the Japanese part**, if you are
+   touching it. It is a sibling app on the same grading engine with its own
+   version (0.1.0) and its own invariants, numbered separately from the ones in
+   §4 below. The two parts share `hanzi-core`'s geometry and nothing else a
+   change here needs to know about.
 
 ## 1. Get a working build first
 
