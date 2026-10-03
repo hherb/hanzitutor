@@ -8,6 +8,7 @@
 //! It drives `AppState` directly rather than through Tauri, which is the point of
 //! keeping the commands thin.
 
+use hanzi_voice::Language;
 use nihongo_tutor_lib::AppState;
 use nihongo_core::{GradeOptions, Point};
 use serde::Deserialize;
@@ -935,4 +936,72 @@ fn what_the_schedule_remembers_survives_a_restart() {
         Some(due.as_str()),
         "and it comes back when the schedule said it would"
     );
+}
+
+// ---- pronunciation --------------------------------------------------------
+
+/// The arguments `speak` takes, as the webview posts them.
+///
+/// One field, and the test is still worth having for the reason invariant 14
+/// gives: a `#[tauri::command]`'s arguments are read out of the payload **by
+/// name**, so a rename on either side is a rejected command rather than a
+/// compile error — and this is the app whose Grade button shipped unable to grade
+/// a single attempt for exactly that reason. Spelled out here the way
+/// `RecordDrillAnswer` is, rather than inferred from the command.
+#[derive(Deserialize)]
+struct Speak {
+    text: String,
+}
+
+#[test]
+fn the_text_the_interface_asks_to_hear_is_read_the_way_the_command_reads_it() {
+    // `src/lib/api.ts` authors exactly this payload for exactly this command:
+    //   invoke("speak", { text })
+    // The text is whatever the screen is showing — a kana, or a word's own stored
+    // reading — and is never composed in Rust; the round trip below is about the
+    // key, which is the half a test of `AppState::speak` cannot see.
+    let state = state();
+    let payload = json!({ "text": "あ" });
+    let args: Speak =
+        serde_json::from_value(payload).expect("the payload the interface posts deserialises");
+    assert_eq!(args.text, "あ");
+
+    // And the command refuses an empty utterance rather than calling silence a
+    // success — decided before the synthesiser is reached, which is what makes
+    // this safe to run in a suite: a test that really spoke would make a noise on
+    // whoever is at the machine. The successful path is checked by tapping the
+    // button on a real window, not from here.
+    assert!(state.speak("").is_err());
+    assert!(state.speak("   ").is_err());
+}
+
+/// The voice the interface is offered is a Japanese one.
+///
+/// `Speaker::default` speaks Chinese, because the two apps that existed before
+/// the kana tutor do — so "which language did this app ask for" is a real
+/// question with a wrong answer that no other test here would catch. The
+/// interface reads the answer to decide whether a "Hear it" button can do
+/// anything at all, and null is a legitimate answer on a machine with no Japanese
+/// voice installed; what is never legitimate is a Chinese voice.
+#[test]
+fn the_voice_the_interface_is_offered_is_japanese() {
+    let state = state();
+    assert_eq!(state.speaker_handle().language(), Language::Japanese);
+
+    match state.voice_status() {
+        Some(voice) => {
+            assert!(
+                voice.contains("ja_JP") || voice.contains("ja-JP") || voice.contains("Japanese"),
+                "a description of a Japanese voice, or nothing: {voice}"
+            );
+            // The shape the interface reads: a string, which it shows.
+            assert!(serde_json::to_value(&voice).expect("serialises").is_string());
+        }
+        None => {
+            // Nothing installed: the interface is handed `null` and disables the
+            // button, so `None` has to cross as null rather than as a message.
+            let absent: Option<String> = None;
+            assert!(serde_json::to_value(absent).expect("serialises").is_null());
+        }
+    }
 }

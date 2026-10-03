@@ -17,7 +17,18 @@
   import WordCard from "./WordCard.svelte";
   import * as api from "./api";
   import type { BandView, Word } from "./types";
+  import type { VoiceStatus } from "./speech";
   import { pageWindow } from "./words";
+
+  /**
+   * What the `voice` command answered.
+   *
+   * Passed straight through to the card rather than asked for here: `App.svelte`
+   * asks once, so one missing Japanese voice disables every control in the app
+   * together, and a panel that asked again would be a second answer to one
+   * question.
+   */
+  let { voice }: { voice: VoiceStatus } = $props();
 
   let bands = $state<BandView[]>([]);
   let band = $state(1);
@@ -145,7 +156,7 @@
 
     <section class="card-slot">
       {#if selected}
-        <WordCard word={selected} />
+        <WordCard word={selected} {voice} />
       {:else}
         <p class="placeholder">Choose a word to see its furigana and to check its reading.</p>
       {/if}

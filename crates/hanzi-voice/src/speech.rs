@@ -107,22 +107,105 @@ impl Voice {
     }
 }
 
-/// Voices preferred within mainland Mandarin, in order.
+/// Which language a [`Speaker`] pronounces.
 ///
-/// Ordered for a learner rather than for novelty: Tingting is the long-standing
-/// zh_CN system voice, and the newer "expressive" voices are only worth falling
-/// back to.
-const PREFERRED_NAMES: [&str; 3] = ["Tingting", "Ting-Ting", "Meijia"];
+/// The synthesiser belongs to the platform and knows every language the machine
+/// has installed; what it cannot be asked is which of them *this app* teaches.
+/// That is one decision per app rather than one per utterance — the kana tutor
+/// pronounces Japanese and never Chinese, and the two Hanzi Tutor apps do the
+/// reverse — so it is a field on [`Speaker`] rather than an argument to
+/// [`Speaker::speak`].
+///
+/// The default is Chinese, and that is not a shrug: `Speaker::default()` was the
+/// only constructor there was, and every caller that predates this type is a
+/// Chinese app. A speaker that started out undecided would have to fail its first
+/// call or guess, and neither is better than the language those apps already mean.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Language {
+    #[default]
+    Chinese,
+    Japanese,
+}
 
-/// Environment variable that overrides the automatically chosen voice.
-const VOICE_OVERRIDE: &str = "HANZI_TUTOR_VOICE";
+impl Language {
+    /// The first letters of the locales this language's voices carry.
+    ///
+    /// A prefix rather than an exact tag, because the tags disagree about their
+    /// separator — macOS reports `zh_CN` and `ja_JP`, iOS and Android `zh-CN` and
+    /// `ja-JP` — and the region is not what the choice turns on. `zh` also
+    /// deliberately keeps the Taiwanese and Cantonese voices in the list rather
+    /// than filtering a learner out of them.
+    pub fn locale_prefix(self) -> &'static str {
+        match self {
+            Language::Chinese => "zh",
+            Language::Japanese => "ja",
+        }
+    }
+
+    /// The locale whose voices are preferred, in the normalised form
+    /// [`locale_key`] produces.
+    fn home_locale(self) -> &'static str {
+        match self {
+            Language::Chinese => "zh_cn",
+            Language::Japanese => "ja_jp",
+        }
+    }
+
+    /// The voice names preferred within that locale, in order.
+    ///
+    /// Ordered for a learner rather than for novelty. Chinese: Tingting is the
+    /// long-standing mainland system voice, and the newer "expressive" voices are
+    /// only worth falling back to. Japanese: Kyoko is the voice macOS has shipped
+    /// as its Japanese system voice for years and Otoya is the other long-standing
+    /// one, while the expressive set — Eddy, Flo, Grandma, Grandpa, Reed, Rocko,
+    /// Sandy, Shelley — is the fallback rather than the first choice.
+    fn preferred_names(self) -> &'static [&'static str] {
+        match self {
+            Language::Chinese => &["Tingting", "Ting-Ting", "Meijia"],
+            Language::Japanese => &["Kyoko", "Otoya"],
+        }
+    }
+
+    /// How a person says this language's name, for a message.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Language::Chinese => "Chinese",
+            Language::Japanese => "Japanese",
+        }
+    }
+
+    /// The environment variable that overrides the automatically chosen voice.
+    ///
+    /// One per language rather than one shared: `HANZI_TUTOR_VOICE=Meijia` is
+    /// about the Chinese app, and a kana tutor obeying a variable named after
+    /// another product would be the same tangle as a shared learner store. The
+    /// two apps are separate products, and their settings are separate with them.
+    fn override_var(self) -> &'static str {
+        match self {
+            Language::Chinese => "HANZI_TUTOR_VOICE",
+            Language::Japanese => "NIHONGO_TUTOR_VOICE",
+        }
+    }
+}
 
 /// The longest string that will be handed to the synthesiser.
 const MAX_UTTERANCE: usize = 64;
 
 /// Pronunciation, with at most one utterance in flight.
+///
+/// A speaker pronounces **one language** for its whole life ([`Language`]), which
+/// is what each app means: the kana tutor has no Chinese to say and neither Hanzi
+/// Tutor app has Japanese. The language is fixed at construction rather than
+/// passed to [`Self::speak`] because the *voice list*, the *override variable* and
+/// the *message when nothing is installed* are all per-language too, and an
+/// argument repeated on every call would be a decision the caller could get wrong
+/// one call at a time.
 #[derive(Default)]
 pub struct Speaker {
+    /// Which language this speaker speaks, and therefore which voices it will
+    /// accept, which override variable it obeys, and what it says when the machine
+    /// has none of them.
+    language: Language,
     /// The voice the learner has asked for, by name, or `None` for the
     /// automatic choice. Set from the settings screen at startup and on every
     /// change; a name this machine does not have falls back to the automatic
@@ -136,10 +219,34 @@ pub struct Speaker {
     /// afresh. It never changes while the app runs, so a `OnceLock` is the right
     /// shape for it — unlike the *choice*, which is resolved on every call from
     /// this list and the preference together.
+    ///
+    /// Every voice, not the language's: the list is the platform's and is
+    /// resolved once for the process, while which of them count is
+    /// [`Self::learner_voices`]'s question and costs a scan.
     voices: OnceLock<Vec<Voice>>,
 }
 
 impl Speaker {
+    /// A speaker for `language`.
+    ///
+    /// [`Default`] is Chinese, so the two apps that predate this constructor are
+    /// unchanged; a new app says which language it teaches here.
+    pub fn new(language: Language) -> Self {
+        // Written out rather than `..Self::default()`: `Speaker` implements
+        // `Drop`, so the functional-update form would be a partial move out of a
+        // type that has a destructor.
+        Self {
+            language,
+            preferred: Mutex::new(None),
+            voices: OnceLock::new(),
+        }
+    }
+
+    /// The language this speaker pronounces.
+    pub fn language(&self) -> Language {
+        self.language
+    }
+
     /// The voice that will be used.
     ///
     /// Resolved on every call from the installed voices, the override and the
@@ -152,11 +259,12 @@ impl Speaker {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let overridden = override_voice();
+        let overridden = override_voice(self.language);
         resolve_voice(
             self.voices(),
             preferred.as_deref(),
             overridden.as_ref().map(|voice| voice.name.as_str()),
+            self.language,
         )
     }
 
@@ -166,15 +274,15 @@ impl Speaker {
             .get_or_init(|| list_voices().unwrap_or_default())
     }
 
-    /// The voices a Chinese character can be spoken with.
+    /// The voices a character of this speaker's language can be spoken with.
     ///
-    /// Filtered to the Chinese locales, sorted by name so that the settings
+    /// Filtered to the language's locales, sorted by name so that the settings
     /// screen's list does not reorder itself between one launch and the next
     /// (the order the system reports is not a promise), and carrying each
     /// voice's locale, which is the only thing that tells 美佳's `zh_TW` apart
     /// from a mainland voice of a similar name.
-    pub fn chinese_voices(&self) -> Vec<Voice> {
-        chinese_voices(self.voices())
+    pub fn learner_voices(&self) -> Vec<Voice> {
+        voices_for(self.voices(), self.language)
     }
 
     /// Choose a voice by name, or `None` for the automatic choice.
@@ -211,7 +319,7 @@ impl Speaker {
         }
 
         let Some(voice) = self.voice() else {
-            return Err(no_voice_message());
+            return Err(no_voice_message(self.language));
         };
 
         #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -773,7 +881,7 @@ impl Drop for Speaker {
     }
 }
 
-fn no_voice_message() -> String {
+fn no_voice_message(language: Language) -> String {
     // The path through Settings differs enough between the systems to be worth
     // getting right: telling someone on a phone to open "System Settings"
     // sends them looking for a window that does not exist, and Android's own
@@ -787,19 +895,22 @@ fn no_voice_message() -> String {
         "System Settings → Accessibility → Spoken Content → System Voice → Manage Voices";
 
     format!(
-        "no Chinese voice is installed, so pronunciation is unavailable. \
-         Add one in {WHERE}, or set {VOICE_OVERRIDE} to a voice name."
+        "no {} voice is installed, so pronunciation is unavailable. \
+         Add one in {WHERE}, or set {} to a voice name.",
+        language.display_name(),
+        language.override_var(),
     )
 }
 
-/// The voice named by [`VOICE_OVERRIDE`], if it is set to anything usable.
+/// The voice named by this language's override variable, if it is set to
+/// anything usable.
 ///
 /// The override outranks the stored preference, because that is what an
 /// environment variable is for: it is the escape hatch for a run that has to be
 /// reproducible, and a settings row silently outranking it would make
 /// `HANZI_TUTOR_VOICE=… pnpm run dev` a lie.
-fn override_voice() -> Option<Voice> {
-    let name = std::env::var(VOICE_OVERRIDE).ok()?;
+fn override_voice(language: Language) -> Option<Voice> {
+    let name = std::env::var(language.override_var()).ok()?;
     let name = name.trim();
     if name.is_empty() {
         return None;
@@ -812,7 +923,7 @@ fn override_voice() -> Option<Voice> {
 ///
 /// A function of the installed voices, the preference and the override, so every
 /// ordering rule here is testable without a synthesiser and without an
-/// environment variable in the way — the caller reads [`VOICE_OVERRIDE`] and
+/// environment variable in the way — the caller reads the override variable and
 /// passes the result in. The three inputs are also the three things that can
 /// change, and keeping the decision in one function is what makes "does my
 /// choice actually take effect?" answerable by reading this.
@@ -820,6 +931,7 @@ fn resolve_voice(
     installed: &[Voice],
     preferred: Option<&str>,
     overridden: Option<&str>,
+    language: Language,
 ) -> Option<Voice> {
     // An override is not "a preference that wins": it does not even have to name
     // an installed voice, because it exists to hand the synthesiser a name the
@@ -840,7 +952,7 @@ fn resolve_voice(
              falling back to the automatic choice"
         );
     }
-    pick_voice(installed)
+    pick_voice(installed, language)
 }
 
 /// Find an installed voice by name, ignoring the locale qualifier macOS appends.
@@ -953,9 +1065,9 @@ fn parse_voices(output: &str) -> Vec<Voice> {
         .collect()
 }
 
-/// The voices a Chinese character can be spoken with, sorted by name.
+/// The voices of `language` that a character can be spoken with, sorted by name.
 ///
-/// Filtered to the Chinese locales, sorted so that the settings screen's list
+/// Filtered to the language's locales, sorted so that the settings screen's list
 /// does not reorder itself between one launch and the next — the order the
 /// system reports is not a promise — and keeping each voice's locale, which is
 /// the only thing that tells 美佳's `zh_TW` apart from a mainland voice of a
@@ -966,16 +1078,12 @@ fn parse_voices(output: &str) -> Vec<Voice> {
 /// quirk, see HANDOVER §6 — and a list with a repeated name is not merely
 /// untidy: the settings screen keys its options by name, so a duplicate is a
 /// rendering error that takes the screen down. The first entry for a name wins;
-/// the duplicates are the same voice.
-fn chinese_voices(all: &[Voice]) -> Vec<Voice> {
+/// the duplicates are the same voice. macOS lists Kyoko twice for the same
+/// reason, so this is not a Chinese-only repair.
+fn voices_for(all: &[Voice], language: Language) -> Vec<Voice> {
     let mut voices: Vec<Voice> = Vec::new();
     for voice in all {
-        if !voice
-            .locale
-            .replace('-', "_")
-            .to_ascii_lowercase()
-            .starts_with("zh")
-        {
+        if !locale_key(voice).starts_with(language.locale_prefix()) {
             continue;
         }
         if voices
@@ -990,11 +1098,20 @@ fn chinese_voices(all: &[Voice]) -> Vec<Voice> {
     voices
 }
 
+/// A voice's locale, lower-cased with any dash turned into an underscore.
+///
+/// The two spellings are both real — macOS reports `zh_CN` and `ja_JP`, iOS and
+/// Android `zh-CN` and `ja-JP` — so every locale comparison in this file goes
+/// through here rather than each one remembering to normalise.
+fn locale_key(voice: &Voice) -> String {
+    voice.locale.replace('-', "_").to_ascii_lowercase()
+}
+
 /// The bare voice name, without the locale qualifier macOS appends.
 ///
 /// macOS reports names as `Tingting (Chinese (China mainland))` and
-/// `Eddy (Chinese (China mainland))`, so matching a preference against the full
-/// name would silently never fire.
+/// `Kyoko (Japanese (Japan))`, so matching a preference against the full name
+/// would silently never fire.
 fn base_name(name: &str) -> &str {
     match name.find(" (") {
         Some(index) => &name[..index],
@@ -1002,26 +1119,27 @@ fn base_name(name: &str) -> &str {
     }
 }
 
-/// Choose the best voice for Mandarin from those installed.
+/// Choose the best voice for `language` from those installed.
 ///
-/// Mainland simplified Chinese (`zh_CN`) is preferred, then any Chinese locale.
-/// Some macOS releases tag the mainland locale `zh-CN`, so the separator is
-/// normalised before matching.
-fn pick_voice(voices: &[Voice]) -> Option<Voice> {
-    let key = |v: &Voice| v.locale.replace('-', "_").to_ascii_lowercase();
-    let mandarin = |v: &&Voice| key(v).starts_with("zh_cn");
+/// The language's home locale is preferred — mainland simplified Chinese
+/// (`zh_CN`) or Japanese as spoken in Japan (`ja_JP`) — then any locale of that
+/// language, which keeps a Taiwanese or Cantonese voice reachable for Chinese
+/// rather than refusing to speak.
+fn pick_voice(voices: &[Voice], language: Language) -> Option<Voice> {
+    let home = |v: &&Voice| locale_key(v).starts_with(language.home_locale());
     let preferred = |v: &&Voice| {
-        PREFERRED_NAMES
+        language
+            .preferred_names()
             .iter()
             .any(|name| base_name(&v.name).eq_ignore_ascii_case(name))
     };
-    let chinese = |v: &&Voice| key(v).starts_with("zh");
+    let any = |v: &&Voice| locale_key(v).starts_with(language.locale_prefix());
 
     voices
         .iter()
-        .find(|v| mandarin(v) && preferred(v))
-        .or_else(|| voices.iter().find(mandarin))
-        .or_else(|| voices.iter().find(chinese))
+        .find(|v| home(v) && preferred(v))
+        .or_else(|| voices.iter().find(home))
+        .or_else(|| voices.iter().find(any))
         .cloned()
 }
 
@@ -1036,6 +1154,28 @@ Eddy (Chinese (China mainland)) zh_CN    # 你好！我叫Eddy。
 Meijia              zh_TW    # 你好，我叫美佳。
 Sinji               zh_HK    # 你好！我叫善怡。
 Tingting (Chinese (China mainland)) zh_CN    # 你好！我叫婷婷。
+";
+
+    /// The Japanese voice list, in the shape the legacy `say -v '?'` reports it.
+    ///
+    /// Genuine names rather than tidy ones, for the reason the Chinese fixture
+    /// exists: the qualified `Kyoko (Japanese (Japan))` form is what that command
+    /// prints, and it is the shape a preference written on one machine used to be
+    /// matched against. It lists Kyoko twice, which the settings list's
+    /// deduplication has to survive.
+    ///
+    /// **Measured, not assumed:** `AVSpeechSynthesisVoice.speechVoices()` — what
+    /// this file actually reads on macOS — reports the same voice as the bare name
+    /// `Kyoko` with the BCP-47 tag `ja-JP`, not the qualified `say` spelling. The
+    /// kana tutor's live check printed `[speech] using voice Kyoko (ja-JP)`, which
+    /// is both differences at once. Every rule here normalises the separator and
+    /// strips the qualifier, so the two shapes resolve to the same voice; a fixture
+    /// in only one of them is what would hide a regression in the other.
+    const SAMPLE_JA: &str = "\
+Albert              en_US    # Hello! My name is Albert.
+Eddy (Japanese (Japan)) ja_JP    # こんにちは! 私の名前はEddyです。
+Kyoko (Japanese (Japan)) ja_JP    # こんにちは! 私の名前はKyokoです。
+Kyoko (Japanese (Japan)) ja_JP    # こんにちは! 私の名前はKyokoです。
 ";
 
     #[test]
@@ -1070,7 +1210,7 @@ Tingting (Chinese (China mainland)) zh_CN    # 你好！我叫婷婷。
     #[test]
     fn prefers_mainland_mandarin_and_the_named_voice() {
         let voices = parse_voices(SAMPLE);
-        let picked = pick_voice(&voices).expect("a Chinese voice is present");
+        let picked = pick_voice(&voices, Language::Chinese).expect("a Chinese voice is present");
         // Tingting is zh_CN and on the preferred list, so it wins over the
         // other zh_CN voice and over the zh_TW / zh_HK entries.
         assert_eq!(base_name(&picked.name), "Tingting");
@@ -1090,7 +1230,7 @@ Eddy (Chinese (Taiwan)) zh_TW    # 你好，我叫Eddy。
 Meijia              zh_TW    # 你好，我叫美佳。
 Sinji               zh_HK    # 你好！我叫善怡。
 ";
-        let picked = pick_voice(&parse_voices(real)).expect("a Chinese voice");
+        let picked = pick_voice(&parse_voices(real), Language::Chinese).expect("a Chinese voice");
         assert_eq!(base_name(&picked.name), "Tingting");
 
         // Without Tingting, a mainland voice is still preferred over the
@@ -1099,7 +1239,7 @@ Sinji               zh_HK    # 你好！我叫善怡。
             .into_iter()
             .filter(|v| base_name(&v.name) != "Tingting")
             .collect::<Vec<_>>();
-        let fallback = pick_voice(&without).expect("a Chinese voice");
+        let fallback = pick_voice(&without, Language::Chinese).expect("a Chinese voice");
         assert_eq!(base_name(&fallback.name), "Eddy");
         assert_eq!(fallback.locale, "zh_CN");
     }
@@ -1112,7 +1252,7 @@ Sinji               zh_HK    # 你好！我叫善怡。
             .filter(|v| base_name(&v.name) != "Tingting")
             .collect::<Vec<_>>();
         assert_eq!(
-            base_name(&pick_voice(&no_preferred).unwrap().name),
+            base_name(&pick_voice(&no_preferred, Language::Chinese).unwrap().name),
             "Eddy"
         );
 
@@ -1121,15 +1261,15 @@ Sinji               zh_HK    # 你好！我叫善怡。
             .into_iter()
             .filter(|v| v.locale != "zh_CN")
             .collect::<Vec<_>>();
-        assert_eq!(pick_voice(&only_taiwan).unwrap().locale, "zh_TW");
+        assert_eq!(pick_voice(&only_taiwan, Language::Chinese).unwrap().locale, "zh_TW");
 
         // With no Chinese voice at all, say so rather than speaking English.
         let no_chinese = parse_voices(SAMPLE)
             .into_iter()
             .filter(|v| !v.locale.starts_with("zh"))
             .collect::<Vec<_>>();
-        assert!(pick_voice(&no_chinese).is_none());
-        assert!(pick_voice(&[]).is_none());
+        assert!(pick_voice(&no_chinese, Language::Chinese).is_none());
+        assert!(pick_voice(&[], Language::Chinese).is_none());
     }
 
     /// The voices iOS actually reports, captured from the simulator's log: 65
@@ -1152,7 +1292,7 @@ Sinji               zh_HK    # 你好！我叫善怡。
             .iter()
             .map(|(name, locale)| Voice::local(*name, *locale))
             .collect();
-        let picked = pick_voice(&voices).expect("iOS ships a Mandarin voice");
+        let picked = pick_voice(&voices, Language::Chinese).expect("iOS ships a Mandarin voice");
         assert_eq!(picked.name, "Tingting");
         assert_eq!(picked.locale, "zh-CN");
     }
@@ -1165,14 +1305,14 @@ Sinji               zh_HK    # 你好！我叫善怡。
             .iter()
             .map(|(name, locale)| Voice::local(*name, *locale))
             .collect();
-        assert_eq!(pick_voice(&voices), None);
-        assert!(no_voice_message().contains("no Chinese voice"));
+        assert_eq!(pick_voice(&voices, Language::Chinese), None);
+        assert!(no_voice_message(Language::Chinese).contains("no Chinese voice"));
     }
 
     #[test]
     fn accepts_a_dash_separated_locale() {
         let voices = parse_voices("Tingting zh-CN # 你好\n");
-        assert_eq!(pick_voice(&voices).unwrap().name, "Tingting");
+        assert_eq!(pick_voice(&voices, Language::Chinese).unwrap().name, "Tingting");
     }
 
     #[test]
@@ -1181,9 +1321,9 @@ Sinji               zh_HK    # 你好！我叫善怡。
         // never pick it — a learner who wants a Taiwanese voice has to be able
         // to say so, and the setting has to be what actually gets used.
         let voices = parse_voices(SAMPLE);
-        assert_eq!(base_name(&pick_voice(&voices).unwrap().name), "Tingting");
+        assert_eq!(base_name(&pick_voice(&voices, Language::Chinese).unwrap().name), "Tingting");
 
-        let chosen = resolve_voice(&voices, Some("Meijia"), None).expect("a voice");
+        let chosen = resolve_voice(&voices, Some("Meijia"), None, Language::Chinese).expect("a voice");
         assert_eq!(chosen.name, "Meijia");
         assert_eq!(chosen.locale, "zh_TW");
     }
@@ -1195,7 +1335,7 @@ Sinji               zh_HK    # 你好！我叫善怡。
         // and the override does not have to name an installed voice at all —
         // that is the whole point of it.
         let voices = parse_voices(SAMPLE);
-        let overruled = resolve_voice(&voices, Some("Meijia"), Some("Some Unlisted Voice"))
+        let overruled = resolve_voice(&voices, Some("Meijia"), Some("Some Unlisted Voice"), Language::Chinese)
             .expect("the override is used as given");
         assert_eq!(overruled.name, "Some Unlisted Voice");
         assert_eq!(overruled.locale, "override");
@@ -1236,20 +1376,144 @@ Sinji               zh_HK    # 你好！我叫善怡。
         // pronunciation: the automatic choice is used instead, and the settings
         // screen — which asks `voice()` what is really in use — can say so.
         let voices = parse_voices(SAMPLE);
-        let picked = resolve_voice(&voices, Some("Nonexistent Voice"), None).expect("a voice");
+        let picked = resolve_voice(&voices, Some("Nonexistent Voice"), None, Language::Chinese).expect("a voice");
         assert_eq!(base_name(&picked.name), "Tingting");
 
         // And with nothing Chinese installed there is still no voice to invent.
         let none: Vec<Voice> = Vec::new();
-        assert!(resolve_voice(&none, Some("Meijia"), None).is_none());
+        assert!(resolve_voice(&none, Some("Meijia"), None, Language::Chinese).is_none());
+    }
+
+    #[test]
+    fn a_japanese_speaker_offers_only_japanese_voices() {
+        // The kana tutor's settings-free list: the machine's Japanese voices,
+        // and not one English or Chinese voice among them. Picking one is what
+        // would make the app read あ as an English letter.
+        let offered = voices_for(&parse_voices(SAMPLE_JA), Language::Japanese);
+        let names: Vec<&str> = offered.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Eddy (Japanese (Japan))", "Kyoko (Japanese (Japan))"],
+            "{offered:?}"
+        );
+        assert!(offered.iter().all(|v| v.locale.starts_with("ja")));
+    }
+
+    /// The Japanese half of the macOS preference rule.
+    ///
+    /// Kyoko is the voice macOS has shipped as its Japanese system voice for
+    /// years, so she wins over the expressive voices even though `Eddy` sorts
+    /// first — the same shape as `Tingting` beating the mainland `Eddy`.
+    #[test]
+    fn prefers_kyoko_for_japanese() {
+        let picked = pick_voice(&parse_voices(SAMPLE_JA), Language::Japanese)
+            .expect("a Japanese voice is present");
+        assert_eq!(base_name(&picked.name), "Kyoko");
+
+        // Without Kyoko, a Japanese voice is still better than nothing, and the
+        // choice falls through to the expressive set rather than to silence.
+        let without: Vec<Voice> = parse_voices(SAMPLE_JA)
+            .into_iter()
+            .filter(|v| base_name(&v.name) != "Kyoko")
+            .collect();
+        let fallback = pick_voice(&without, Language::Japanese).expect("a Japanese voice");
+        assert_eq!(fallback.locale, "ja_JP");
+        assert_eq!(base_name(&fallback.name), "Eddy");
+    }
+
+    /// The language rule is a filter in both directions, which is the point.
+    ///
+    /// A Japanese speaker handed nothing but Chinese voices must find none, and
+    /// the Chinese speaker must not claim a Japanese one — the two apps ship
+    /// from one crate, so a rule that leaked would make the kana tutor speak
+    /// Mandarin and nobody would see it until they heard it.
+    #[test]
+    fn the_two_languages_do_not_claim_each_others_voices() {
+        let mut both = parse_voices(SAMPLE);
+        both.extend(parse_voices(SAMPLE_JA));
+        assert!(pick_voice(&both, Language::Japanese).unwrap().locale.starts_with("ja"));
+        assert!(pick_voice(&both, Language::Chinese).unwrap().locale.starts_with("zh"));
+
+        let chinese_only = parse_voices(SAMPLE);
+        assert_eq!(pick_voice(&chinese_only, Language::Japanese), None);
+        assert!(no_voice_message(Language::Japanese).contains("no Japanese voice"));
+
+        let japanese_only = parse_voices(SAMPLE_JA);
+        assert_eq!(pick_voice(&japanese_only, Language::Chinese), None);
+        assert!(no_voice_message(Language::Chinese).contains("no Chinese voice"));
+    }
+
+    /// Each language has its own override variable, and its own message names it.
+    ///
+    /// A shared variable would be one app obeying a setting named after the
+    /// other, which is the same mistake as a shared learner store — see
+    /// `HANDOVER_NIHONGO.md` invariant 15.
+    #[test]
+    fn each_language_names_its_own_override_variable() {
+        assert_eq!(Language::Chinese.override_var(), "HANZI_TUTOR_VOICE");
+        assert_eq!(Language::Japanese.override_var(), "NIHONGO_TUTOR_VOICE");
+        assert!(no_voice_message(Language::Japanese).contains("NIHONGO_TUTOR_VOICE"));
+        assert!(no_voice_message(Language::Chinese).contains("HANZI_TUTOR_VOICE"));
+        assert!(no_voice_message(Language::Japanese).contains("no Japanese voice"));
+    }
+
+    /// A preference written the way macOS names a voice still finds it.
+    #[test]
+    fn a_japanese_preference_matches_the_qualified_name() {
+        let voices = parse_voices(SAMPLE_JA);
+        for wanted in ["Kyoko", "Kyoko (Japanese (Japan))", "kyoko"] {
+            let found = find_voice(&voices, wanted).unwrap_or_else(|| panic!("{wanted}"));
+            assert_eq!(base_name(&found.name), "Kyoko");
+        }
+        let chosen = resolve_voice(&voices, Some("Kyoko"), None, Language::Japanese).expect("a voice");
+        assert_eq!(base_name(&chosen.name), "Kyoko");
+    }
+
+    /// The shape `AVSpeechSynthesisVoice` really reports, which is *not* the shape
+    /// `say -v '?'` prints.
+    ///
+    /// Measured rather than assumed: the kana tutor's live check printed
+    /// `[speech] using voice Kyoko (ja-JP)` — a bare name and a BCP-47 tag, where
+    /// the legacy command prints `Kyoko (Japanese (Japan)) ja_JP`. Both spellings
+    /// have to resolve to the same voice, and this fixture is the one the app
+    /// actually sees; the qualified one above is what a preference might have been
+    /// written from.
+    #[test]
+    fn the_avfoundation_spelling_of_a_japanese_voice_resolves_too() {
+        let voices: Vec<Voice> = vec![
+            Voice::local("Daniel", "en-GB"),
+            Voice::local("Eddy", "ja-JP"),
+            Voice::local("Kyoko", "ja-JP"),
+        ];
+        let picked = pick_voice(&voices, Language::Japanese).expect("a Japanese voice");
+        assert_eq!(picked.name, "Kyoko", "the preferred name still wins");
+        assert_eq!(picked.locale, "ja-JP");
+
+        // And the language filter holds for this spelling too: the English voice
+        // is not offered, and the two Japanese ones are, once each.
+        let offered = voices_for(&voices, Language::Japanese);
+        assert_eq!(offered.len(), 2, "{offered:?}");
+        assert!(offered.iter().all(|v| v.locale.starts_with("ja")));
+    }
+
+    /// A speaker remembers the language it was built for.
+    ///
+    /// `Default` has to keep meaning Chinese: two apps in this workspace were
+    /// written against it and neither says a word of Japanese.
+    #[test]
+    fn a_speaker_remembers_the_language_it_speaks() {
+        assert_eq!(Speaker::default().language(), Language::Chinese);
+        assert_eq!(Speaker::new(Language::Japanese).language(), Language::Japanese);
+        assert_eq!(Language::Japanese.display_name(), "Japanese");
+        assert_eq!(Language::Japanese.locale_prefix(), "ja");
     }
 
     #[test]
     fn only_chinese_voices_are_offered_for_a_chinese_character() {
-        // The settings screen's list is built from `chinese_voices`, so an
-        // English voice must not appear in it — picking one is what makes the
-        // app read 汉 as an English word.
-        let offered = chinese_voices(&parse_voices(SAMPLE));
+        // The settings screen's list is built from `voices_for`, so an English
+        // voice must not appear in it — picking one is what makes the app read
+        // 汉 as an English word.
+        let offered = voices_for(&parse_voices(SAMPLE), Language::Chinese);
         assert_eq!(offered.len(), 4, "{offered:?}");
         assert!(offered.iter().all(|v| v.locale.starts_with("zh")));
         // Sorted, so the list does not shuffle between launches.
@@ -1259,10 +1523,13 @@ Sinji               zh_HK    # 你好！我叫善怡。
         assert_eq!(names, unsorted);
         // An iOS-style dash separator is filtered the same way.
         assert_eq!(
-            chinese_voices(&[
-                Voice::local("Daniel", "en-GB"),
-                Voice::local("Tingting", "zh-CN"),
-            ])
+            voices_for(
+                &[
+                    Voice::local("Daniel", "en-GB"),
+                    Voice::local("Tingting", "zh-CN"),
+                ],
+                Language::Chinese,
+            )
             .len(),
             1
         );
@@ -1283,7 +1550,7 @@ Sinji               zh_HK    # 你好！我叫善怡。
             ..Voice::local("zh-cn-x-ccc-network", "zh-CN")
         };
         let on_device = Voice::local("zh-cn-x-ccc-local", "zh-CN");
-        let offered = chinese_voices(&[network.clone(), on_device.clone()]);
+        let offered = voices_for(&[network.clone(), on_device.clone()], Language::Chinese);
 
         assert_eq!(offered.len(), 2, "{offered:?}");
         // Sorted by name for the screen, so `-local` comes before `-network`.
@@ -1310,7 +1577,7 @@ Daniel              en_GB    # Hello, my name is Daniel.
         let parsed = parse_voices(real);
         assert_eq!(parsed.len(), 6, "the parser keeps both copies");
 
-        let offered = chinese_voices(&parsed);
+        let offered = voices_for(&parsed, Language::Chinese);
         assert_eq!(
             offered.len(),
             2,
@@ -1356,19 +1623,22 @@ Daniel              en_GB    # Hello, my name is Daniel.
         assert!(error.contains("limit"), "unexpected error: {error}");
     }
 
-    // There is deliberately no test here that checks the *real* macOS voice
-    // list (there was one — `the_system_actually_offers_a_chinese_voice` —
-    // before this file moved off `say`). `list_voices` is faked under
-    // `cfg(test)` on macOS (see its own doc comment), for a reason a
-    // real-system check can't route around: `AVSpeechSynthesisVoice` needs a
-    // run loop `cargo test` never provides. Checking against the real system
-    // voice list now happens by running the actual built app.
+    // There is deliberately no test here that asserts *which* voices a machine
+    // has installed (there was one — `the_system_actually_offers_a_chinese_voice`
+    // — before this file moved off `say`). The *list* is real: `list_voices` goes
+    // through `with_main`, whose macOS side is a worker thread this module owns,
+    // precisely so that a `cargo test` binary with no run loop can still read
+    // `AVSpeechSynthesisVoice.speechVoices()` — which is why
+    // `choosing_a_voice_does_not_change_what_the_speaker_resolves_to_elsewhere`
+    // can call `voice()` at all. What no test may assert is that a particular
+    // voice is present, because a CI machine and a learner's machine do not have
+    // the same set.
     //
-    // There is deliberately no `cargo test` equivalent of "speak a character
-    // and listen to it" here any more, for the same run-loop reason: `speak`
-    // and `stop` on macOS go through `speak_on_main`/`stop_on_main`, both real
-    // AVFoundation calls with no test-only stand-in the way `list_voices` has
-    // one. iOS was never testable this way either, for the same reason.
-    // Verify pronunciation by running the actual built app — see
-    // HANDOVER.md's macOS App Store section.
+    // There is deliberately no `cargo test` equivalent of "speak a character and
+    // listen to it" either: `speak` and `stop` on macOS reach real AVFoundation
+    // calls with no test-only stand-in, and a test that spoke would make a noise
+    // on whoever is at the machine. iOS was never testable this way, for the
+    // run-loop reason. Pronunciation is verified by running the actual built app —
+    // see `HANDOVER_NIHONGO.md` §5 for the probe that does it, which is how the
+    // kana tutor's Japanese voice was confirmed as `Kyoko (ja-JP)`.
 }

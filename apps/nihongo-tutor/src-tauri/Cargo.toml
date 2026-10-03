@@ -23,3 +23,8 @@ serde_json.workspace = true
 # engine. All of it is UI-free, so the whole interface below is testable without
 # opening a window.
 nihongo-core = { path = "../../../crates/nihongo-core" }
+# Pronunciation, through the platform's own synthesiser — the same `Speaker` the
+# two Hanzi Tutor apps use, told at construction that this one speaks Japanese.
+# `default-features = false` is the whole reason that crate has the switch: its
+# capture half carries `cpal`, and this app never opens a microphone.
+hanzi-voice = { path = "../../../crates/hanzi-voice", default-features = false }

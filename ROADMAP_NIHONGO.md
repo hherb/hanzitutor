@@ -37,7 +37,7 @@ references for no gain.
 | --- | --- | --- |
 | **N0** | *(shipped)* the kana foundation | Done. Treat it as the gateway it is and do not gold-plate it. |
 | **N3** | *(shipped)* per-learner confusability | Done, and it was as cheap as predicted: the drill weighs the 13 pairs by what this learner gets wrong and remembers it in the app's own file. See the milestone for the rule, and for what is deliberately not there. |
-| **N1** | Audio | Early, because audio is the one thing both halves need: a kana wants a sound and so does every kanji word. The system voices already work, so the desktop is wiring. |
+| **N1** | **Audio** | **Shipped.** The system's own Japanese voice, behind a button and a key. Nothing is bundled and nothing is downloaded; see the milestone for what the crate had to learn first. |
 | **N2** | **A review queue** | **Shipped.** The schedule the boards' attempts feed, in the app's own file, with the scheduler's code shared and the data never shared (invariant 15). See the milestone for the question it was asked to answer first. |
 | **N6** | **The kanji data layer** | **Shipped.** The artifact is committed and verified; see the milestone for the three things the measurement corrected. Vocabulary moved to N7, where it belongs. |
 | **N7** | Kanji through vocabulary | **Shipped.** Words with their own readings and furigana, a derived ladder, and two screens — Words and Read. The kanji artifact it embedded unread is now the character course's, at N8. |
@@ -212,6 +212,73 @@ worth doing for a first pass when the system voice works.
 
 **Deliberately not done.** Windows and Linux voices — `ROADMAP.md` M6 is where
 that lives and it is unsolved there too.
+
+### Shipped
+
+All three criteria are met, and the second is met by **bundling nothing at all**.
+
+**The wiring was not the hard part; the language was.** `hanzi_voice::Speaker`
+already drove `AVSpeechSynthesizer` in process, as this milestone predicted — but
+it picked a voice by construction: its list was the Chinese one, its preference
+was `Tingting`, and its message said "no Chinese voice is installed". It now
+carries a `Language`, and the default is still `Chinese`, so the two apps that
+were built against it are unchanged by the fact that a third one exists. Japanese
+prefers **Kyoko**, then Otoya, then any `ja` locale, which is the same three-step
+rule the mainland preference already used. **Each language also has its own
+override variable**: `NIHONGO_TUTOR_VOICE`, because a kana tutor obeying
+`HANZI_TUTOR_VOICE` would be the settings version of the shared-store mistake
+(invariant 15).
+
+**The microphone is a feature now.** `hanzi-voice`'s capture half carries `cpal`,
+and this app never opens a microphone, so `capture` is a **default** feature and
+the kana tutor takes the crate with `default-features = false`. The two
+tone-scoring apps get the whole crate without editing a line. Same instinct as
+refusing to bundle the analyser, one crate down.
+
+**Three thin commands** — `speak`, `stop_speaking`, `voice` — and one decision
+that governs all of them: **what is spoken is always kana.** A kana character, or a
+word's *own* reading, so the word card says ひとつ for 一つ. A bare kanji is never
+spoken, because it has a dozen readings and this app does not choose readings
+(`HANDOVER_NIHONGO.md` invariant 21), and a radical's prompt is a Kangxi number.
+The Review board therefore offers the button for a `kana` item and for nothing
+else — measured, below — which is the one place that rule is visible as a missing
+control rather than as a wrong sound.
+
+**The shortcut is `h`, and that is a decision rather than a preference.** Space is
+what the Tone Trainer gives its microphone, but on a page it already means
+"activate the control that has focus" — and a learner who has just clicked a kana
+cell still has that cell focused, so a Space shortcut would re-press the cell
+instead of speaking. The rule (which presses count, and which are a letter meant
+for the reading box) is a pure function with ten tests of its own; `command-H`
+hides the window and is deliberately not stolen.
+
+**Verified on a real window, by probe and by ear.** The app was driven through a
+DOM probe against a hand-written schedule with two characters due — the recipe is
+`HANDOVER_NIHONGO.md` §5 — and it reported:
+
+* `voice()` → `Kyoko (ja-JP)`, and `[speech] using voice Kyoko (ja-JP)` from the
+  app's own warm-up thread. **Measured, and not what was expected**:
+  `AVSpeechSynthesisVoice` reports the bare name and a BCP-47 tag, where the legacy
+  `say -v '?'` prints `Kyoko (Japanese (Japan)) ja_JP`. Both spellings resolve to
+  the same voice and both are now pinned.
+* the "Hear it (H)" button spoke あ, and pressing `h` on the window spoke it again;
+* `h` typed **into the reading box** and `command-H` spoke nothing, which is the
+  half that would have silently broken the course — `は` is typed `ha`;
+* the word card spoke **ひとつ** for 一つ, the reading and not the written form;
+* a due **あ** offered the button, and a due **学** offered none: *Show stroke
+  order · Undo · Clear · Grade*, and no "Hear it".
+
+The maintainer then heard it, which is the one thing no test can do. 5 new Rust
+tests (2 in the app, 2 in the contract suite, 1 more `hanzi-voice` fixture for the
+AVFoundation spelling) and 10 frontend ones; `hanzi-voice` is 29.
+
+**What is deliberately not here.** Bundled clips — the criterion for them is met
+by shipping none, and the licence position for a set is unchanged (§7 of the
+handover). The kanji card's readings have no button yet: each is kana and each
+*could* be spoken, but that is a control per reading and a decision about which to
+offer first, not wiring. The discrimination drill is silent for a different
+reason: シ against ツ is an exercise in telling two shapes apart, and handing the
+learner the sound would answer the question.
 
 ---
 

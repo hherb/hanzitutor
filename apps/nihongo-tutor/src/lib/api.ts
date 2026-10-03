@@ -229,3 +229,41 @@ export function passages(): Promise<PassageSummary[]> {
 export function passage(key: string): Promise<PassageView> {
   return invoke<PassageView>("passage", { key });
 }
+
+/**
+ * Say `text` in the system's Japanese voice, cutting off anything already being
+ * said.
+ *
+ * `text` is always **kana**: a kana character, or a word's own stored reading.
+ * Nothing here composes a reading from a written form — 大人 is おとな, and a bare
+ * kanji has a dozen readings — so a screen whose only text is characters does not
+ * call this at all.
+ *
+ * The utterance is the operating system's, spoken in process, and nothing is
+ * downloaded to produce it: the app still has no network path.
+ */
+export function speak(text: string): Promise<void> {
+  return invoke<void>("speak", { text });
+}
+
+/**
+ * Stop the current utterance.
+ *
+ * Separate from [`speak`], which starts one; the app calls this when the learner
+ * moves to another character or another screen, so a voice cannot keep talking
+ * over the thing they have moved on to.
+ */
+export function stopSpeaking(): Promise<void> {
+  return invoke<void>("stop_speaking");
+}
+
+/**
+ * The voice pronunciation will use, or `null` when the machine has none.
+ *
+ * Asked once at startup so every "Hear it" button can be disabled together and
+ * the reason shown, rather than offering a control that silently does nothing.
+ * The answer is cached in Rust after the first call, so this is cheap to ask.
+ */
+export function voice(): Promise<string | null> {
+  return invoke<string | null>("voice");
+}

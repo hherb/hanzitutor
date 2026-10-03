@@ -10,6 +10,7 @@
   import KanaCanvas from "./lib/KanaCanvas.svelte";
   import ConfusionDrill from "./lib/ConfusionDrill.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
+  import SpeakButton from "./lib/SpeakButton.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import PassagePanel from "./lib/PassagePanel.svelte";
   import KanjiPanel from "./lib/KanjiPanel.svelte";
@@ -17,6 +18,7 @@
   import ReviewPanel from "./lib/ReviewPanel.svelte";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./lib/render";
   import { scheduleNote } from "./lib/review";
+  import { canHear, isHearItKey, type VoiceStatus } from "./lib/speech";
   import * as api from "./lib/api";
   import type {
     AppInfo,
@@ -78,6 +80,16 @@
   let typed = $state("");
   let check = $state<ReadingCheck | null>(null);
   /**
+   * The voice pronunciation will use, or `null` when the machine has none.
+   *
+   * Asked once, here, and handed to every screen that offers a "Hear it" button,
+   * so one answer governs them all: a machine with no Japanese voice disables
+   * every button and says why, rather than each panel discovering it separately.
+   * `undefined` is the moment before the answer arrives, which is why the three
+   * states are kept apart — see `lib/speech.ts`.
+   */
+  let voice = $state<VoiceStatus>(undefined);
+  /**
    * What the review schedule did with the last attempt.
    *
    * Grading and scheduling are one command, so the verdict and the next due date
@@ -117,8 +129,51 @@
     } catch (e) {
       error = String(e);
     }
+    try {
+      voice = await api.voice();
+    } catch (e) {
+      // The command answers `null` when the machine has no Japanese voice, so a
+      // rejection is the IPC itself failing. Treated as "nothing can be heard"
+      // — the buttons stay off — and said rather than swallowed.
+      voice = null;
+      error = String(e);
+    }
   }
   void boot();
+
+  /**
+   * The "hear it" shortcut, live only on the screen that has a kana on the board.
+   *
+   * One view rather than the whole app deliberately: a window-level letter key
+   * that fired on every screen would speak whatever happened to be selected on a
+   * screen the learner is not looking at. The rule about which presses count is
+   * `isHearItKey`, which is a pure function because it is about typing.
+   */
+  function onKey(event: KeyboardEvent) {
+    if (!isHearItKey(event)) return;
+    if (view !== "practice" || !selected || !canHear(voice)) return;
+    event.preventDefault();
+    void api.speak(selected).catch((e) => {
+      error = String(e);
+    });
+  }
+
+  /**
+   * Choosing another character, or leaving the screen, ends whatever is being
+   * said.
+   *
+   * A voice that keeps talking over the next thing the learner looks at is the
+   * one way an audio feature becomes an annoyance, and speaking never changes
+   * either of these — the button does that — so this effect only ever stops.
+   */
+  $effect(() => {
+    view;
+    selected;
+    void api.stopSpeaking().catch(() => {
+      // Nothing to report: this is cleanup, and the usual answer is that nothing
+      // was being said.
+    });
+  });
 
   async function select(ch: string) {
     try {
@@ -272,6 +327,7 @@
         <KanaCanvas bind:this={board} character={kana} {report} onchange={onStrokes} />
 
         <div class="actions">
+          <SpeakButton text={kana.ch} {voice} label="Hear it (H)" />
           <button onclick={() => board?.animate()}>Show stroke order</button>
           <button onclick={() => board?.undo()}>Undo</button>
           <button onclick={() => board?.clear()}>Clear</button>
@@ -361,15 +417,15 @@
   {:else if view === "drill"}
     <ConfusionDrill />
   {:else if view === "review"}
-    <ReviewPanel />
+    <ReviewPanel {voice} />
   {:else if view === "kanji"}
     <KanjiPanel bind:pick={kanjiPick} onradical={seeRadical} />
   {:else if view === "radicals"}
     <RadicalsPanel bind:focus={selectedRadical} onopen={openKanji} onpractise={openRadical} />
   {:else if view === "words"}
-    <VocabularyPanel />
+    <VocabularyPanel {voice} />
   {:else if view === "read"}
-    <PassagePanel />
+    <PassagePanel {voice} />
   {:else}
     <LicencesPanel />
   {/if}
@@ -379,5 +435,16 @@
       <span>{info.name} {info.version} · {info.licence}</span>
     {/if}
     <span>Everything the course teaches is in this bundle. Nothing is downloaded.</span>
+    <span>
+      {#if canHear(voice)}
+        Pronunciation uses the system's own Japanese voice. Nothing is downloaded.
+      {:else if voice === null}
+        No Japanese voice is installed, so nothing here can be heard.
+      {:else}
+        Looking for a Japanese voice…
+      {/if}
+    </span>
   </footer>
 </main>
+
+<svelte:window onkeydown={onKey} />

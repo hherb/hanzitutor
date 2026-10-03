@@ -18,7 +18,11 @@
   import WordCard from "./WordCard.svelte";
   import * as api from "./api";
   import type { PassageSummary, PassageView, Word } from "./types";
+  import type { VoiceStatus } from "./speech";
   import { needsRuby, tokenIsTappable } from "./words";
+
+  /** What the `voice` command answered, asked once by `App.svelte`. */
+  let { voice }: { voice: VoiceStatus } = $props();
 
   let summaries = $state<PassageSummary[]>([]);
   let key = $state<string | null>(null);
@@ -137,7 +141,7 @@
 
     <section class="card-slot">
       {#if opened}
-        <WordCard word={opened} />
+        <WordCard word={opened} {voice} />
       {:else}
         <p class="placeholder">Tap any underlined word in the passage to open it here.</p>
       {/if}

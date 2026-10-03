@@ -1089,11 +1089,15 @@ impl AppState {
     }
 
     /// The Chinese voices this machine offers, and the one in use.
+    ///
+    /// `learner_voices` and not `chinese_voices`, because the filtering rule moved
+    /// onto the `Speaker`'s own language when the kana tutor started sharing this
+    /// crate: this speaker is Chinese, so this is the Chinese list.
     pub fn voices(&self) -> VoicesView {
         VoicesView {
             available: self
                 .speech
-                .chinese_voices()
+                .learner_voices()
                 .into_iter()
                 .map(|voice| VoiceOption {
                     name: voice.name,

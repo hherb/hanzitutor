@@ -21,10 +21,15 @@
    * board, the way `ConfusionDrill` owns its question.
    */
   import KanaCanvas from "./KanaCanvas.svelte";
+  import SpeakButton from "./SpeakButton.svelte";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
   import { overdueLabel, scheduleNote, upcomingLabel } from "./review";
   import * as api from "./api";
   import type { Drawable, DueItem, GradeReport, Point, ReviewQueueView } from "./types";
+  import type { VoiceStatus } from "./speech";
+
+  /** What the `voice` command answered, asked once by `App.svelte`. */
+  let { voice }: { voice: VoiceStatus } = $props();
 
   /** How many due characters one page carries. The header still counts them all. */
   const PAGE = 40;
@@ -192,6 +197,16 @@
         <KanaCanvas bind:this={board} character={drawn} {report} onchange={onStrokes} />
 
         <div class="actions">
+          {#if chosen?.kind === "kana"}
+            <!--
+              Only a kana is spoken, and the reason is the app's reading rule
+              rather than a missing feature: a bare kanji has a dozen readings and
+              this app never chooses between them, while a radical's prompt is a
+              Kangxi number. A kana is the one due item whose character *is* its
+              pronunciation, so it is the one that gets a button.
+            -->
+            <SpeakButton text={drawn.ch} {voice} />
+          {/if}
           <button onclick={() => board?.animate()}>Show stroke order</button>
           <button onclick={() => board?.undo()}>Undo</button>
           <button onclick={() => board?.clear()}>Clear</button>

@@ -9,13 +9,16 @@
 //! Everything the app teaches is **embedded**: the kana and kanji artifacts are
 //! compiled into the binary with `include_bytes!`. There is no network path in
 //! this crate at all — no download, no model, no sync — which is why it has no
-//! plugin permissions in `capabilities/default.json`.
+//! plugin permissions in `capabilities/default.json`. **Pronunciation does not
+//! change that**: the voice is the operating system's own, spoken in process, and
+//! nothing is fetched to speak a kana.
 
 // The two that share a name with a command are aliased, so that `fn lessons`
 // below is the command and `build_lessons` is the course it serves.
 pub mod licences;
 pub mod store;
 
+use hanzi_voice::{Language, Speaker};
 use licences::{AppInfo, LicenceNotice};
 use nihongo_core::{
     band_name, confusions_for, due_items, find_pair, grade_name,
@@ -27,13 +30,13 @@ use nihongo_core::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::{ConfusionStore, ReviewStore};
 use tauri::{Manager, State};
 
 /// The datasets, loaded once and shared by every command, the drill's memory of
-/// what this learner gets wrong, and the schedule of what comes back.
+/// what this learner gets wrong, the schedule of what comes back, and the voice.
 ///
 /// All four artifacts are **embedded** — `include_bytes!`, not read from a path —
 /// so there is no data directory to find, no file to go missing, and no filesystem
@@ -52,6 +55,16 @@ pub struct AppState {
     /// The review schedule, in this app's own file beside the drill's — never a
     /// shared one. See [`store`] and `HANDOVER_NIHONGO.md` invariant 15.
     review: Mutex<ReviewStore>,
+    /// The system synthesiser, told once and for all that this app speaks
+    /// **Japanese**. Behind an `Arc` because the warm-up thread outlives the
+    /// closure that builds the state, and because every command that speaks shares
+    /// one voice rather than racing to resolve a list of its own.
+    ///
+    /// No learner data is here and none is written: the voice is the machine's,
+    /// and which one is in use is the machine's answer. That is the opposite of
+    /// the two stores above, which are this app's own files — see
+    /// `HANDOVER_NIHONGO.md` invariant 15.
+    speaker: Arc<Speaker>,
 }
 
 impl AppState {
@@ -93,7 +106,44 @@ impl AppState {
                 .expect("the committed passages artifact decodes"),
             drill: Mutex::new(drill),
             review: Mutex::new(review),
+            speaker: Arc::new(Speaker::new(Language::Japanese)),
         }
+    }
+
+    /// The speaker, shared rather than borrowed.
+    ///
+    /// An `Arc` clone because the warm-up thread outlives the `setup` closure
+    /// that builds the state, while `AppState` itself belongs to Tauri from the
+    /// moment it is managed.
+    pub fn speaker_handle(&self) -> Arc<Speaker> {
+        Arc::clone(&self.speaker)
+    }
+
+    /// Speak `text` with the system's Japanese voice.
+    ///
+    /// Thin on purpose: the text is whatever the caller was looking at — a kana,
+    /// or a word's own reading — and no reading is composed here. Returning before
+    /// the sound finishes is [`Speaker::speak`]'s own contract, so the button
+    /// never blocks on the utterance.
+    pub fn speak(&self, text: &str) -> Result<(), String> {
+        self.speaker.speak(text)
+    }
+
+    /// Cut off whatever is being said.
+    pub fn stop_speaking(&self) {
+        self.speaker.stop();
+    }
+
+    /// The voice pronunciation will use, or `None` when the machine has no
+    /// Japanese voice installed.
+    ///
+    /// A description rather than a voice: the interface needs to know whether a
+    /// "Hear it" button can do anything, and, when it cannot, that the reason is
+    /// a missing system voice rather than a broken app. There is deliberately no
+    /// voice-*choosing* screen — one language, one automatic choice — which is the
+    /// same decision `apps/tone-trainer` records.
+    pub fn voice_status(&self) -> Option<String> {
+        self.speaker.status()
     }
 
     pub fn dataset(&self) -> &KanaDataset {
@@ -1230,6 +1280,59 @@ fn passage(state: State<'_, AppState>, key: String) -> Result<PassageView, Strin
     state.passage(&key)
 }
 
+/// Hear `text` in the system's Japanese voice, cutting off anything already being
+/// said.
+///
+/// This is the whole of the app's audio surface: the caller passes what it is
+/// showing — a kana, or a word's own stored reading — and never a reading composed
+/// here, for invariant 21's reason. Resolves as soon as the synthesiser has
+/// started rather than when the sound ends, so the button is never blocked by an
+/// utterance.
+#[tauri::command]
+fn speak(state: State<'_, AppState>, text: String) -> Result<(), String> {
+    state.speak(&text)
+}
+
+/// Stop the current utterance.
+///
+/// Separate from [`speak`] because a learner who has heard enough should be able
+/// to say so without starting another one, and because cutting off a long word is
+/// the one thing "speak" cannot express.
+#[tauri::command]
+fn stop_speaking(state: State<'_, AppState>) {
+    state.stop_speaking();
+}
+
+/// The voice pronunciation will use, or `null` when the machine has none.
+///
+/// The interface asks once at startup so it can disable every "Hear it" button
+/// and say why, rather than offering a control that silently does nothing.
+#[tauri::command]
+fn voice(state: State<'_, AppState>) -> Option<String> {
+    state.voice_status()
+}
+
+/// Resolve the voice and build the synthesiser before the first tap.
+///
+/// A thread of its own, and not on the startup path, because enumerating the
+/// installed voices takes about a second on macOS and the first screen must not
+/// wait for it. Nothing reports a failure: the worst case is that the first
+/// utterance pays the cost this exists to move, which is what happened before —
+/// `Speaker::prime` is a no-op on the platforms that have nothing to warm, so this
+/// is not gated by platform here.
+fn warm_voice(speaker: Arc<Speaker>) {
+    std::thread::spawn(move || {
+        match speaker.status() {
+            Some(voice) => eprintln!("[speech] using voice {voice}"),
+            None => eprintln!(
+                "[speech] no {} voice installed; pronunciation will be unavailable",
+                speaker.language().display_name()
+            ),
+        }
+        speaker.prime();
+    });
+}
+
 /// A yōon digraph in the cut-down form the input helper needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1281,7 +1384,11 @@ pub fn run() {
                     AppState::load()
                 }
             };
+            // Taken before the state is handed to Tauri, because the warm-up
+            // thread outlives this closure and `manage` takes ownership.
+            let speaker = state.speaker_handle();
             app.manage(state);
+            warm_voice(speaker);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1308,6 +1415,9 @@ pub fn run() {
             check_word,
             passages,
             passage,
+            speak,
+            stop_speaking,
+            voice,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the kana tutor");
@@ -1954,5 +2064,53 @@ mod tests {
         assert!(graded.scheduled);
         assert!(graded.next_due.is_some());
         assert_eq!(state.review_queue(40).cards, 1);
+    }
+
+    // ---- pronunciation ----------------------------------------------------
+
+    /// The app speaks Japanese, and that is asserted rather than assumed.
+    ///
+    /// [`Speaker::default`] is **Chinese**, because the two apps that existed
+    /// before the kana tutor were, and a Chinese voice reading あ is the one
+    /// failure here that no other test in this file could see: the command would
+    /// answer `Ok(())`, the button would not report an error, and the learner
+    /// would hear Mandarin. `hanzi-voice`'s own suite pins the two languages
+    /// apart; this pins which one this app asked for.
+    #[test]
+    fn the_app_speaks_japanese_and_not_chinese() {
+        let state = state();
+        assert_eq!(state.speaker_handle().language(), Language::Japanese);
+
+        // The voice the machine will really use, where it has one. A test machine
+        // with no Japanese voice installed is not a failure — the interface says
+        // so and disables the button — so this half is conditional on there being
+        // an answer at all, and the language above is the part that always holds.
+        if let Some(voice) = state.voice_status() {
+            assert!(
+                voice.contains("ja_JP") || voice.contains("ja-JP") || voice.contains("Japanese"),
+                "the voice in use must be a Japanese one: {voice}"
+            );
+        }
+    }
+
+    /// Nothing to say is an error, and a huge utterance is refused.
+    ///
+    /// Both are decided before the synthesiser is touched, which is what makes
+    /// this safe to run in a test suite: a test that spoke would make a noise on
+    /// whoever is at the machine, and a successful `speak` is checked by tapping
+    /// the button, not from here.
+    #[test]
+    fn an_utterance_with_nothing_in_it_is_refused_before_anything_speaks() {
+        let state = state();
+        assert!(state.speak("").is_err());
+        assert!(state.speak("   ").is_err());
+        let absurd = "あ".repeat(65);
+        let error = state.speak(&absurd).unwrap_err();
+        assert!(error.contains("limit"), "unexpected error: {error}");
+
+        // And stopping when nothing has ever been said is not a panic: the
+        // speaker is dropped with the state at the end of every one of these
+        // tests, which calls `stop` too.
+        state.stop_speaking();
     }
 }

@@ -15,14 +15,27 @@ license.workspace = true
 # platform code copied into it. Neither half is Tauri-specific in principle, but
 # the Android backends go through a Kotlin plugin, so `tauri` is a real
 # dependency rather than a convenience: see `platform`.
+#
+# A third app, `apps/nihongo-tutor`, needs the speaker and not the recorder: it
+# pronounces kana and never opens a microphone. `cpal` is therefore optional and
+# behind the default `capture` feature, so the two tone-scoring apps keep the
+# whole crate without editing a line while the kana tutor links no microphone
+# stack at all.
 [dependencies]
 hanzi-core = { path = "../hanzi-core" }
 serde.workspace = true
 serde_json.workspace = true
-cpal = "0.18"
+cpal = { version = "0.18", optional = true }
 # The Kotlin plugin on Android is registered through Tauri's plugin API, and
 # `register_android_plugin` is the only way to reach the Java side.
 tauri = { version = "2", features = [] }
+
+[features]
+# On by default, so the two apps built against this crate before the feature
+# existed are unaffected. `speech` does not depend on `capture`, so turning it
+# off leaves the synthesiser, the voice list and the language rules whole.
+default = ["capture"]
+capture = ["dep:cpal"]
 
 # iOS and macOS both speak in process through AVSpeechSynthesizer, which is
 # an `objc2` binding already in the tree through Tauri (the audio session

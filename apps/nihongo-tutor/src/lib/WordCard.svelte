@@ -14,18 +14,32 @@
    * derivation from the kyōiku grades and EDRDG's frequency ranking, and the name
    * under the word is `nihongo_core::band_name`'s rather than a level number that
    * would imply an authority the data does not have.
+   *
+   * **And the word can be heard, as its own reading.** What is spoken is the
+   * dictionary's kana — おとな for 大人 — and never the written form, which is the
+   * same rule the reading itself follows one step further out: a synthesiser handed
+   * 大人 would choose a reading, and the app does not choose readings.
    */
   import * as api from "./api";
+  import SpeakButton from "./SpeakButton.svelte";
   import type { ReadingCheck, Word } from "./types";
+  import type { VoiceStatus } from "./speech";
   import { furiganaCoversWord, furiganaSpellsReading, needsRuby, readingOf } from "./words";
 
   let {
     word,
+    /** What the `voice` command answered, asked once by the screen above. */
+    voice,
     /** Show the band and frequency line — off in a passage, where the word is in context. */
     showBand = true,
     /** Start with the reading box open. */
     askReading = true,
-  }: { word: Word; showBand?: boolean; askReading?: boolean } = $props();
+  }: {
+    word: Word;
+    voice: VoiceStatus;
+    showBand?: boolean;
+    askReading?: boolean;
+  } = $props();
 
   let typed = $state("");
   let check = $state<ReadingCheck | null>(null);
@@ -79,6 +93,7 @@
       </p>
     {/if}
     <p class="reading">{word.reading}</p>
+    <SpeakButton text={word.reading} {voice} />
   </div>
 
   <p class="meaning">{word.meaning}</p>

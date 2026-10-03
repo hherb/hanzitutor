@@ -29,8 +29,8 @@ without fetching anything.
 pnpm install                       # root: the shared scripts and the check tooling
 pnpm --dir apps/nihongo-tutor install
 
-# The engine and the kana data.
-./scripts/with-cargo-env.sh cargo test -p nihongo-core -p nihongo-tutor
+# The engine, the kana data, and the shared speech crate the app speaks through.
+./scripts/with-cargo-env.sh cargo test -p nihongo-core -p nihongo-tutor -p hanzi-voice
 
 # The app, on a display.
 pnpm --dir apps/nihongo-tutor run dev      # dev server on :1422, and the window
@@ -96,10 +96,11 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **268
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **273
 tests** — every `#[test]` in the two suites (168 became 175 in `nihongo-core`, 76
-became 93 in `nihongo-tutor`), plus one doc-test; the frontend's are counted
-separately below. `pnpm run test:web` runs 115, of which **46** are this app's.
+became 97 in `nihongo-tutor`), plus one doc-test; the frontend's are counted
+separately below. `pnpm run test:web` runs 125, of which **56** are this app's.
+`cargo test -p hanzi-voice`, the shared crate the audio half lives in, is 29.
 
 | | |
 | --- | --- |
@@ -120,8 +121,9 @@ separately below. `pnpm run test:web` runs 115, of which **46** are this app's.
 | Bands | 585 / 1,781 / 2,408 / 2,232 / 2,412 / 1,834 / 4,821 — this project's ladder, not the JLPT's (invariant 20) |
 | Furigana | 16,022 of 16,073 aligned (99.7%); the other 51 carry their reading and no ruby |
 | Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
+| Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button and the `h` key; nothing bundled, nothing downloaded (invariant 26) |
 | Screens | Practice, Tell them apart, **Review**, **Kanji**, **Radicals**, Words, Read, Licences |
-| Tests | nihongo-core 175, nihongo-tutor 93, frontend 46 of the 115 |
+| Tests | nihongo-core 175, nihongo-tutor 97, hanzi-voice 29, frontend 56 of the 125 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | two files, `confusions.json` and `review.json`, in the app's own data directory |
@@ -133,6 +135,13 @@ katakana tab, the Licences panel and the review queue have each been seen workin
 on a display, and so have the two kanji screens (below). The review queue has also
 been *used* — a character drawn on it was graded and rescheduled, which is not the
 same thing as being seen.
+
+**And it has been heard.** N1 put the machine's own Japanese voice behind a button
+and the `h` key, and the check that mattered was listening: あ from Practice, ひとつ
+for 一つ from a word card, a due あ offering the control where a due 学 offered
+none. It was verified by probe first and then confirmed by ear by the maintainer,
+which is the only half of it a test cannot reach — `speak` returning `Ok(())` says
+the synthesiser accepted the utterance, not that anything came out of a speaker.
 
 **Everything the app embeds is on screen now.** **Words** browses the ladder band
 by band with furigana over every word and grades a typed reading; **Read** draws a
@@ -255,28 +264,31 @@ scripts/fetch-unidic.sh           fetches and builds the UniDic dictionary into
                                   built, and the only thing that needs either
 
 apps/nihongo-tutor/               the app
-  src-tauri/src/lib.rs  (1958)    AppState and the 23 commands, all thin
+  src-tauri/src/lib.rs  (2116)    AppState, the speaker and the 26 commands, all thin
   src-tauri/src/store.rs (582)    the two files of this app's own: confusions.json
                                   (load, record, atomic write — N3) and review.json
                                   (the SM-2 schedule, and the rule for when an
                                   attempt is a review — N2)
   src-tauri/src/licences.rs(157)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (938)  33 tests locking the JSON the webview
+  src-tauri/tests/ipc_contract.rs (1007)  35 tests locking the JSON the webview
                                   reads *and the arguments it posts* (invariant 14)
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
-  src/App.svelte         (383)    the eight views, the course, the board wiring
+  src/App.svelte         (450)    the eight views, the course, the board wiring, and
+                                  the one place the voice status is asked for — N1
   src/lib/KanaCanvas.svelte(248)  pointer capture and the animation frame. Draws
                                   any `Drawable`, so a kana, a kanji and a radical
                                   all come through it
   src/lib/ConfusionDrill.svelte(225)  the drill: one pair, one answer, remembered
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
-  src/lib/ReviewPanel.svelte(331) what is due, and a board to write it on — N2
-  src/lib/KanjiPanel.svelte(563)  the kanji course, the board and the card — N8
+  src/lib/ReviewPanel.svelte(346) what is due, and a board to write it on — N2
+  src/lib/KanjiPanel.svelte(579)  the kanji course, the board and the card — N8
   src/lib/RadicalsPanel.svelte(501)   the 214 head forms and their families — N8
-  src/lib/VocabularyPanel.svelte(298) the ladder, a band's words, the card — N7
-  src/lib/PassagePanel.svelte(261)  a passage with furigana and a tap on any word — N7
-  src/lib/WordCard.svelte(250)      one word: its furigana, its reading, its band
+  src/lib/VocabularyPanel.svelte(309) the ladder, a band's words, the card — N7
+  src/lib/PassagePanel.svelte(265)  a passage with furigana and a tap on any word — N7
+  src/lib/WordCard.svelte(265)      one word: its furigana, its reading, its band
+  src/lib/SpeakButton.svelte(102)   the one "Hear it" control, for all three
+                                  screens that have something to say — N1
   src/lib/kanji.ts       (112)    the course's and the radicals' arithmetic, as
                                   pure functions — N8
   src/lib/kanji.test.ts  (120)    run by the ROOT project's vitest
@@ -285,16 +297,26 @@ apps/nihongo-tutor/               the app
   src/lib/review.ts       (89)    "2 days overdue" and "in 2 days", as pure
                                   functions — N2
   src/lib/review.test.ts (131)    run by the ROOT project's vitest
+  src/lib/speech.ts      (123)    what can be heard, and which key asks for it, as
+                                  pure functions — N1, and invariant 26's rules
+  src/lib/speech.test.ts  (81)    run by the ROOT project's vitest
   src/lib/board.ts        (97)    the board's arithmetic, as pure functions
   src/lib/board.test.ts   (99)    run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
   src/lib/types.ts       (466)    the IPC shapes, and `Character = Drawable`
-  src/lib/api.ts         (231)    one wrapper per command
+  src/lib/api.ts         (269)    one wrapper per command
+
+crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
+                                  part's data layer
+  src/speech.rs         (1644)    the system synthesiser and the voice rules — and
+                                  the `Language` this app taught it (invariant 26)
+  src/lib.rs              (48)    the re-exports; `capture`, the microphone half,
+                                  is a default feature this app turns off
 ```
 
 The line counts are the current tree's, and they were last checked while writing
-invariant 25; a few of the earlier numbers in this table were stale by then, which
-is worth knowing before treating one as a measurement.
+invariants 26 and 27; a few of the earlier numbers in this table were stale by
+then, which is worth knowing before treating one as a measurement.
 
 `src-tauri/gen/schemas/` is committed, as it is for the other two apps.
 
@@ -845,6 +867,86 @@ kanji study needs it, and the kana ride along on the same unit; FSRS is the bett
 algorithm and is deliberately not in, because its pretrained weights are not
 openly licensed and one learner cannot fit them. `Scheduler` is the seam.
 
+### 26. **The Japanese app speaks Japanese, and the voice is the machine's own.**
+
+`hanzi_voice::Speaker` now carries a `Language`, and `Speaker::default()` is
+still **Chinese**, because the two Hanzi Tutor apps were written against it and
+this crate is shared. A kana tutor that forgot to say otherwise would read あ with
+the Mandarin system voice, and **every test in this document would still pass**:
+a synthesiser accepts any string, the command returns `Ok(())`, the button reports
+no error, and the learner hears the wrong language. Two tests exist for exactly
+that, and neither is about audio quality:
+
+* `the_app_speaks_japanese_and_not_chinese` (the app's own suite) checks the
+  language the state was built with, and, where the machine has a voice at all,
+  that the resolved description names a Japanese one. A machine with no Japanese
+  voice installed is a legitimate `None` and not a failure — the interface
+  disables every button and says why;
+* `the_voice_the_interface_is_offered_is_japanese` (the contract suite) is the
+  same check on the other side of the IPC.
+
+Per language: the **preferred names** (Kyoko, then Otoya; Tingting, then Ting-Ting,
+then Meijia), the **home locale** (`ja_jp`, `zh_cn`), the **prefix filter**
+(`ja`, `zh`) and the **override variable**. That last one is separate on purpose —
+`NIHONGO_TUTOR_VOICE` here, `HANZI_TUTOR_VOICE` there — because a kana tutor obeying
+a variable named after the other product is invariant 15's mistake in settings
+form. The Tone Trainer's decision is repeated too: one voice, chosen
+automatically, no voice-picking screen.
+
+**A measurement worth keeping, because it is not what reading `say -v '?'`
+suggests.** `AVSpeechSynthesisVoice.speechVoices()` — what this crate actually
+reads on macOS — reports a voice as the **bare name with a BCP-47 tag**:
+`Kyoko`, `ja-JP`. The legacy command prints the qualified form,
+`Kyoko (Japanese (Japan)) ja_JP`. Both have to resolve to the same voice, and both
+are now pinned by a fixture, so a rule that only understands one spelling fails a
+test rather than silently falling through to another voice. The two normalisations
+are `locale_key` (lower-case, `-` to `_`) and `base_name` (strip the ` (` onward),
+and every locale comparison in the file goes through one of them.
+
+**Nothing is bundled and nothing is fetched.** The audio is the platform's own,
+spoken in process by `AVSpeechSynthesizer`; `apps/nihongo-tutor/src-tauri/src/lib.rs`
+still says "there is no network path in this crate at all" and N1 did not change
+that. `Speaker::prime` on macOS builds the synthesiser and resolves the list on a
+thread of the app's own (`warm_voice`), so the first tap pays for nothing — the
+line it prints, `[speech] using voice Kyoko (ja-JP)`, is the cheapest proof that a
+built app reached the real voice list.
+
+**And the microphone is deliberately not linked.** `hanzi-voice`'s capture half
+carries `cpal`, this app never opens a microphone, so `capture` is a *default*
+feature and this app takes the crate with `default-features = false`. The two
+tone-scoring apps are unaffected because the feature is on by default; a new app
+that only speaks turns it off. Same instinct as refusing to bundle the analyser.
+
+### 27. **Nothing is spoken that is not kana the app stored, and the shortcut is `h`.**
+
+What may be handed to `speak` is a **kana character** or a **word's own stored
+reading**, and the list is exhaustive rather than indicative:
+
+* never a reading composed from a written form — 大人 is おとな, and invariant 21
+  is the same rule one step out;
+* never a bare kanji. 生 has a dozen readings and the app does not choose between
+  them; it lists them on a card instead. This is why the **Review board offers the
+  button only for a `kind == "kana"` item**, and why a due 学 shows *Show stroke
+  order · Undo · Clear · Grade* and no "Hear it". That absence is the invariant
+  being visible;
+* never a gloss (the Review prompt for a kanji is English) and never a radical's
+  Kangxi number.
+
+The word card is the one that shows the difference: it speaks `word.reading`, so
+一つ says **ひとつ** and not the written form. The live check's log recorded
+`speak "ひとつ"` and never `speak "一つ"`, which is the assertion in a form a log
+can carry.
+
+**The shortcut is a letter.** `h`, for "hear", and *not* Space — Space is what the
+Tone Trainer gives its microphone, but on a page it already means "activate the
+control that has focus", and a learner who has just clicked a kana cell still has
+that cell focused. A Space shortcut would re-press the cell instead of speaking,
+which is the commonest way to reach for it and would have looked like a broken
+feature. The rule — a repeat does not count, `⌘`/`Ctrl`/`Alt` do not count (⌘H
+hides the window), `h` in an `INPUT`/`TEXTAREA`/`SELECT`/contenteditable does not
+count — is `isHearItKey` in `src/lib/speech.ts`, a pure function with ten tests,
+because the reading box is exactly where `は` is typed as `ha`.
+
 ## 5. The verification loop
 
 Four layers, cheapest first. All of them are worth running before a commit that
@@ -852,8 +954,9 @@ touches the engine or the data; the last two before one that touches the
 interface.
 
 ```bash
-# 1. The data layer and the app, including the IPC contract and the notices.
-./scripts/with-cargo-env.sh cargo test -p nihongo-core -p nihongo-tutor
+# 1. The data layer, the app, and the shared crate the audio half lives in —
+#    including the IPC contract and the notices.
+./scripts/with-cargo-env.sh cargo test -p nihongo-core -p nihongo-tutor -p hanzi-voice
 
 # 2. Nothing else broke. Fast when the tree is warm.
 ./scripts/with-cargo-env.sh cargo test --workspace \
@@ -988,6 +1091,22 @@ screencapture -x -o -l"$WID" /tmp/kana.png
 `-l<id>` captures that window's contents even when it is not frontmost, and `-o`
 omits the shadow. Read the result; do not assume.
 
+**And on a machine with no active display it captures a frozen frame.** N1's check
+hit exactly that: `CGGetActiveDisplayList` answered `0`, and every capture of the
+window — before a reload, after one, and minutes apart — came back with the **same
+md5**. The window had rendered once, at startup, and was never composited again, so
+the image was of the first frame for the life of the process. That is worse than
+trap 4's "capture whatever is in front", because it looks like the current screen.
+The discriminator costs nothing:
+
+```bash
+python3 -c "import Quartz; print(Quartz.CGGetActiveDisplayList(8, None, None)[0])"
+```
+
+Zero means no rectangle is being composited, so **do not believe a capture** and
+use the HTTP probe below instead. `screencapture` still works there, and the file
+it writes still looks right — which is the whole trap.
+
 To see a view that needs a click, change the initial value of `view` in
 `App.svelte` and **restart the app** — see trap 3, HMR preserves state.
 
@@ -1003,6 +1122,39 @@ any screen:
   constant plus a few lines that click a tab by its label and then report
   `document.querySelector(...).innerText` back over the dev server is the whole
   harness. Delete it before committing; it is a diagnostic, not a feature.
+
+  **When a capture cannot be trusted (above), the report goes over HTTP and is
+  read from the dev server's log** — a temporary Vite plugin in `vite.config.ts`
+  whose middleware answers `/__probe` with 204 and prints the line:
+
+  ```ts
+  server.middlewares.use((req, res, next) => {
+    if (req.url?.startsWith("/__probe")) {
+      server.config.logger.info(`[probe] ${decodeURIComponent(req.url)}`);
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+    next();
+  });
+  ```
+
+  That is better than a file sink, because the dev server's own log is already the
+  place the app's stderr lands — no path, no permission, nothing to write. Report
+  **one step at a time** rather than one object at the end: a probe that throws
+  half way through an async function is otherwise silent, since the DOM `error`
+  event does not fire for a rejected promise (`unhandledrejection` does). N1's
+  first probe reported nothing at all for exactly that reason, and the step-by-step
+  form said which line had failed.
+* **And a temporary `eprintln!` in the command under test**, which is how N1
+  proved the *interface's* press reached Rust rather than only its own JS: the
+  probe clicked the button, and `[probe] speak "あ" -> Ok(())` appeared in the dev
+  log. It is worth reaching for whenever the question is "did the app really do
+  it" — the webview cannot see its own failed `invoke`, and this can. Delete it
+  with the rest of the probe.
+* **`webview_log` does not exist in this app.** The Tone Trainer has one; adding
+  it here just for a check would put diagnostic code in a shipped command, and the
+  dev log carries the app's own `eprintln!`s already.
 * **Synthetic pointer events on the board**, which is how the verdict was finally
   seen. `kana.medians` are in display space, `pointerToDisplay` maps the canvas's
   client rectangle into that same box, so a driver can interpolate along each
@@ -1027,6 +1179,49 @@ any screen:
   DOM what it holds, then ask the person, and only then call an image an artefact.
   (The repository's own history has both cases: the N8 captures *were* stale, and
   this one was not.)
+
+### Hearing it speak
+
+The audio half has one check no test can make and one line that comes for free.
+
+**The free line first.** The app resolves the voice and builds the synthesiser on a
+thread of its own at startup, and says what it found: `[speech] using voice Kyoko
+(ja-JP)` in the dev log means the real `AVSpeechSynthesisVoice` list was read and a
+Japanese voice was chosen. `no Japanese voice installed; pronunciation will be
+unavailable` means the machine has none and every button will be disabled — which
+is a legitimate answer and not a failure to chase. This costs nothing and catches
+the one catastrophic case, a Chinese voice reading Japanese.
+
+**Then the press, which is the interface's half.** The DOM probe clicks "Hear it"
+and dispatches a synthetic `KeyboardEvent`, and a temporary `eprintln!` in the
+`speak` command prints `[probe] speak "あ" -> Ok(())` — so the log says *which
+string* reached Rust, which is how "the word card speaks the reading and not the
+written form" was checked (`speak "ひとつ"`, never `speak "一つ"`). Four presses are
+worth repeating after any change here: the button, `h` on the window (both must
+speak), `h` inside the reading box and `⌘H` (neither may).
+
+**`Ok(())` is not a sound, and the machine is not a test.** The synthesiser
+returning success means it accepted the utterance; whether anything came out of a
+speaker is the maintainer's to confirm, and N1's was. Do not record "audio works"
+on the strength of a return value.
+
+**A due item on demand.** Anything that offers a control only for one kind of
+scheduled character needs two cards due at once, and grading cannot produce that —
+a failed attempt comes back in a minute and a good one tomorrow. Run the app with
+`HOME` inside the workspace (the recipe under "Seeing what the drill remembered")
+and **hand-write the schedule** instead; `.tmp-*/` is gitignored, and
+`review.json` is `{ version, cards }` keyed by the character, so a card with `due`
+in the past is due now:
+
+```json
+{ "version": 1,
+  "cards": { "あ": { "attempts": 1, "lapses": 1, "due": "2026-10-01T09:01:00Z",
+                     "intervalDays": 0.000694, "ease": 2.5, "repetitions": 0 } } }
+```
+
+Two of those — one kana, one kanji — is what showed あ with a "Hear it" button and
+学 with none, in one run. The same trick is how a queue with anything in it can be
+seen at all in a sandboxed session, where `review.json` cannot otherwise be written.
 
 ### When the window is blank
 
@@ -1367,6 +1562,55 @@ file it reads and the file it writes.)
 stale backing store, and the DOM is the truth. A probe that reports `scrollY=0` with
 the header at y36 while the image shows neither is a capture artefact.
 
+### 17. A capture on a machine with no active display is frozen, and it looks current
+
+N1's live check began with a window capture that looked perfect — the app rendered,
+the course on the left, the board on the right — and was **wrong for the rest of the
+session**. Three captures across twenty minutes, one of them after a Vite reload
+that redrew the page, came back with the same md5. The window had been composited
+once, at startup, and never again: `CGGetActiveDisplayList` answered `0` active
+displays, so there was nothing to composite into.
+
+This is worse than trap 4's version of the mistake. There, a region capture showed
+another application, which is at least obviously wrong. Here the image is *of the
+right window*, at a plausible scroll position, with plausible content — just not of
+now. The DOM had moved on every time and nothing in the image said so.
+
+```bash
+python3 -c "import Quartz; print(Quartz.CGGetActiveDisplayList(8, None, None)[0])"
+```
+
+Zero means stop believing captures and use §5's HTTP probe, which needs no display
+at all. Capturing twice and comparing is not a substitute: on a frozen window all
+captures are identical, so the comparison that is supposed to reveal staleness
+confirms it instead.
+
+### 18. `tauri dev` leaves its Vite server behind, and the port is `strictPort`
+
+Killing the app binary — or `tauri-cli`, or both — leaves the `vite:dev` child
+running. The next `pnpm --dir apps/nihongo-tutor run dev` then fails with
+
+```
+Error: Port 1422 is already in use
+Error The "beforeDevCommand" terminated with a non-zero status code.
+```
+
+and **no window opens at all**, which reads as the app having broken rather than as
+a leftover process. `apps/nihongo-tutor/vite.config.ts` sets `strictPort: true` on
+purpose (three apps, three fixed ports), so it will not quietly move aside.
+
+```bash
+lsof -nP -iTCP:1422          # who has it
+kill $(lsof -t -nP -iTCP:1422 -sTCP:LISTEN)
+```
+
+One thing to know before tidying up: **under this harness the node processes are
+hosted by the `DSH Desktop` binary**, so `lsof` and `pgrep` report them under that
+name — `/Applications/DSH Desktop.app/Contents/MacOS/DSH Desktop … vite/bin/vite.js`
+— and not as `node`. A `pkill node`-shaped cleanup finds nothing and a
+`pkill -f "DSH Desktop"` would be catastrophic. Kill by the port's owner, which is
+unambiguous.
+
 ---
 
 ## 7. Open decisions
@@ -1401,11 +1645,19 @@ reason that section records.
 
 ### Where kana audio comes from
 
-macOS ships Japanese system voices (`Kyoko`, `Eddy` and others, `ja_JP`) and
-`hanzi-voice::speech` already drives the system synthesiser, so **the desktop
-needs no work**. Bundled clips would need generating — **MeloTTS-Japanese is MIT
-for both code and weights**, which is the cleanest option — and Commons has only
-about ten isolated kana clips with per-file licences. Undecided.
+**The desktop half of this is decided and shipped** — N1, and its Shipped section in
+`ROADMAP_NIHONGO.md`. macOS's own Japanese voices are what the app speaks with
+(`Kyoko (ja-JP)` on the machine this was built on), through the same in-process
+`AVSpeechSynthesizer` the other two apps already used, and the only thing the crate
+needed was to be told which language it speaks (invariant 26). Nothing is
+downloaded, nothing is bundled, and **the app has no audio files to license**.
+
+What remains open is only the bundled clips, and only if they are wanted: they
+would need generating — **MeloTTS-Japanese is MIT for both code and weights**,
+which is the cleanest option — and Commons has only
+about ten isolated kana clips with per-file licences. Nothing in the app needs them
+today, so the decision can wait; if it is taken, invariant 26's "nothing is bundled"
+changes and `licences.rs` grows a notice for the set.
 
 ### Whether this stays a separate app
 
@@ -1523,6 +1775,10 @@ check that the AnimCJK notice actually **records the modification** — LGPL-3.0
 requires it — and that none of the notice files is gitignored, since a
 gitignored notice vanishes from a clone and the bundle.
 
+**N1 added none of them, and that is itself a licence decision**: the voice is the
+operating system's, so there are no audio files to attribute. A notice for the
+synthesiser would be a notice for something this app does not ship.
+
 The app currently ships only `LICENSE`, `LICENSES.md` and the three notice files
 above. **Before distributing it**, read `LICENSES.md`'s "Before you distribute":
 the same rules apply, including the EDRDG update obligation that arrives with the
@@ -1549,7 +1805,13 @@ first KANJIDIC2 data.
   of 2,136 agree and 衷 is the written exception (invariant 19) — and "kanji need
   `dictionaryJa.txt`'s own grade sets" is the trap rather than the answer, since
   those are the pre-2017 grades and KANJIDIC2's are the authority (invariant 18).
-* **Audio.** §7.
+* **Audio beyond the system voice.** N1 shipped the desktop half: a kana and a
+  word's own reading are spoken with the machine's Japanese voice, by button and by
+  the `h` key (invariant 26). What is deliberately absent is **bundled clips** —
+  nothing needs them while the system voice works — and a **button on the kanji
+  card's readings**, which is a control per reading rather than wiring. The drill is
+  silent on purpose: hearing シ and ツ would answer the question the drill asks.
+  §7 has the clip position.
 * **Spaced repetition for the vocabulary.** N2's schedule is over *characters* —
   what a board grades — and it ships. A word is checked by typing, so it has no
   handwritten attempt to schedule; a word queue would need its own attempt source
