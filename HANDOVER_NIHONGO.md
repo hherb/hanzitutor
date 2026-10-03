@@ -96,8 +96,8 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **313
-tests** — every `#[test]` in the two suites (200 in `nihongo-core`, 113 in
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **314
+tests** — every `#[test]` in the two suites (200 in `nihongo-core`, 114 in
 `nihongo-tutor`), plus two doc-tests (`lib.rs`'s and `variants.rs`'s);
 the frontend's are counted separately below.
 `pnpm run test:web` runs 145, of which **76** are this app's.
@@ -128,7 +128,7 @@ the frontend's are counted separately below.
 | Words on a card | 16,073 words over 2,136 characters — 一 in 223, 人 in 218, and **57 characters in none**; a page of 12, in course order (invariant 28) |
 | Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
 | Screens | Practice, **Kana chart**, Tell them apart, **Review**, **Kanji**, **Radicals**, Words, Read, Licences |
-| Tests | nihongo-core 200, nihongo-tutor 113, hanzi-voice 29, frontend 76 of the 145 |
+| Tests | nihongo-core 200, nihongo-tutor 114, hanzi-voice 29, frontend 76 of the 145 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | two files, `confusions.json` and `review.json`, in the app's own data directory |
@@ -350,7 +350,7 @@ scripts/fetch-unidic.sh           fetches and builds the UniDic dictionary into
                                   built, and the only thing that needs either
 
 apps/nihongo-tutor/               the app
-  src-tauri/src/lib.rs  (2695)    AppState, the speaker, the chart and the 28
+  src-tauri/src/lib.rs  (2702)    AppState, the speaker, the chart and the 28
                                   commands, all thin — and the one place a kana is
                                   graded through `nihongo_core::grade_kana` rather
                                   than the shared engine — invariant 30
@@ -359,10 +359,10 @@ apps/nihongo-tutor/               the app
                                   (the SM-2 schedule, and the rule for when an
                                   attempt is a review — N2)
   src-tauri/src/licences.rs(157)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (1263)  42 tests locking the JSON the webview
+  src-tauri/tests/ipc_contract.rs (1287)  43 tests locking the JSON the webview
                                   reads *and the arguments it posts* (invariant 14),
                                   including the `joined` field a joined kana crosses
-                                  with — invariant 30
+                                  with — invariant 30 — and its empty twin on a kanji
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
   src/App.svelte         (552)    the nine views, the course, the board wiring, the
@@ -410,7 +410,7 @@ apps/nihongo-tutor/               the app
   src/lib/board.ts        (97)    the board's arithmetic, as pure functions
   src/lib/board.test.ts   (99)    run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
-  src/lib/types.ts       (547)    the IPC shapes, `Character = Drawable`, and the
+  src/lib/types.ts       (558)    the IPC shapes, `Character = Drawable`, and the
                                   chart's slots as `(string | null)[]`
   src/lib/api.ts         (303)    one wrapper per command
 
@@ -1247,11 +1247,15 @@ rather than implementation:
   gained `joined` (1-based, e.g. `[[3, 4]]`), `ipc_contract.rs` pins the request and
   the response — invariant 14's request half included — and `joinedLabel` in
   `src/lib/kana.ts` is the one line that renders it.
-* **It is a kana rule, deliberately.** The measurement is over the kana set; the
-  kanji half of the same question has not been measured, so a kanji and a radical are
-  still graded by the shared engine directly and their `joined` is always empty. The
-  app's `grade` does the kana branch itself for exactly that reason. Extending it is a
-  measurement first, not a flag.
+* **It is a kana rule, and kanji is excluded by decision rather than by omission.**
+  A kanji keeps the **strict taught stroke count and order** and accepts no combined
+  strokes: `AppState::grade` does the kana branch itself and sends a kanji or a
+  radical through the shared engine directly, so their `joined` is always empty and a
+  kanji drawn with two strokes joined is refused with the taught count. This is the
+  maintainer's call, made explicitly — kanji stroke order *is* the thing being
+  taught, and the Chinese app grades its characters the same strict way. It is
+  therefore not a gap waiting on a measurement and not a flag to flip; the rule in
+  `variants` is a kana rule.
 
 **Nothing in the shared engine changed.** The count gate, the bars and the Chinese
 app's grading are what they were, which is why its numbers did not move — the rule is

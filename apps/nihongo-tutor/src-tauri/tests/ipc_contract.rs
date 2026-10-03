@@ -1015,6 +1015,30 @@ fn a_joined_kana_crosses_with_the_strokes_it_was_read_as() {
     );
 }
 
+/// The other half of the same field: a **kanji** never carries a grouping, because
+/// it keeps the strict taught stroke count and order. A kanji drawn with two
+/// strokes joined crosses as refused, with the taught count and an empty `joined`,
+/// so the interface can never show a kanji the line a joined kana earns.
+#[test]
+fn a_joined_kanji_crosses_as_refused_and_never_as_a_grouping() {
+    let state = state();
+    let kanji = state.kanji('日').expect("日");
+    let mut strokes = kanji.medians.clone();
+    let second = strokes.remove(1);
+    strokes[0].extend(second);
+
+    let graded = state
+        .grade_and_schedule('日', &strokes, &GradeOptions::default())
+        .expect("grades");
+    let value = serde_json::to_value(&graded).expect("serialises");
+    assert_eq!(value["joined"], json!([]), "no grouping is read for a kanji");
+    assert_eq!(value["report"]["legible"], false);
+    assert_eq!(
+        value["report"]["expectedStrokes"], 4,
+        "the strict taught count is what comes back"
+    );
+}
+
 /// The rule that keeps one sitting from stretching an interval by months: an
 /// attempt on a character that is not due is graded and does not reschedule it.
 #[test]

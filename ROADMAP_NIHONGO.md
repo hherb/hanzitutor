@@ -1212,8 +1212,11 @@ Recorded here rather than as milestones because none of them is a feature.
   ズ 3+4, バ 3+4, ポ 2+3, ヹ 1+2). The half that matters is the safety property, and
   it is measured: **0 of 497** single omissions are accepted as joins and **0 of
   95** mid-stroke splits are legible. `HANDOVER_NIHONGO.md` invariant 30 is the
-  rule that must not be undone. **Kanji is deliberately not covered** — the same
-  rule is unmeasured there, so it would be a measurement first.
+  rule that must not be undone. **Kanji is excluded by decision, not by omission**:
+  a kanji keeps the strict taught stroke count and order and accepts no combined
+  strokes — kanji stroke order is the thing being taught, and the Chinese app has
+  always graded its characters that way. A kanji drawn with two strokes joined is
+  refused with the taught count, and `joined` is empty for a kanji and a radical.
 * **No grammar, and that is the largest gap in the product.** Particles, the
   copula and every inflectional ending are kana, so a learner who finishes the
   kana course has unlocked grammar and been given nothing to use it on. This is

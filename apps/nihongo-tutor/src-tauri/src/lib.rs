@@ -281,9 +281,11 @@ impl AppState {
     /// **A kana goes through [`nihongo_core::grade_kana`]**, which accepts a hand
     /// that joined adjacent strokes — さ drawn in two, き in three — and the
     /// answer says which strokes were joined (see [`GradedCharacter::joined`]).
-    /// A kanji and a radical are graded by the shared engine directly: that rule
-    /// rests on a measurement of the kana set, and the kanji half of the same
-    /// question has not been measured. See `nihongo_core::variants`.
+    /// **A kanji and a radical do not**: they keep the strict taught stroke count
+    /// and order and go to the shared engine directly, so a kanji drawn with two
+    /// strokes joined is refused with the taught count. Combining strokes is
+    /// accepted for kana only, by decision — kanji stroke order is the thing the
+    /// course teaches. See `nihongo_core::variants`.
     pub fn grade(
         &self,
         ch: char,
@@ -1239,7 +1241,7 @@ pub struct ReadingCheck {
 /// three — is graded against a reference put into the same grouping, and this
 /// names the taught strokes the hand drew as one, 1-based and in taught order
 /// (`vec![vec![3, 4]]`). Empty for the taught form, and always empty for a kanji
-/// or a radical, which the shared engine grades directly.
+/// or a radical: they keep the strict taught stroke count and order, by decision.
 ///
 /// The screen needs it for two reasons rather than one. It is the honest answer
 /// to "the prompt says four strokes and you drew three", and `report`'s own
@@ -1959,10 +1961,12 @@ mod tests {
     }
 
     #[test]
-    fn a_kanji_is_still_graded_by_the_shared_engine_alone() {
-        // The joined-stroke rule is a measured kana rule; the kanji half of the
-        // same question has not been measured, so a kanji with two strokes drawn
-        // as one is still graded by the taught reference and `joined` stays empty.
+    fn a_kanji_keeps_the_strict_count_and_order_and_no_combined_strokes() {
+        // The joined-stroke rule is a kana rule. A kanji keeps the strict taught
+        // stroke count and order — kanji stroke order is what the course teaches,
+        // and the Chinese app has always graded its characters this way — so a
+        // kanji drawn with two strokes joined is refused with the taught count
+        // rather than read as a different form.
         let state = state();
         let kanji = state.kanji('日').expect("日 is jōyō");
         let mut attempt = kanji.medians.clone();
@@ -1972,8 +1976,12 @@ mod tests {
         let graded = state
             .grade('日', &attempt, &GradeOptions::default())
             .expect("grades");
+        assert!(!graded.report.legible, "a combined kanji stroke is refused");
         assert!(graded.joined.is_empty());
-        assert_eq!(graded.report.expected_strokes, 4);
+        assert_eq!(
+            graded.report.expected_strokes, 4,
+            "four strokes taught, and the strict count is what comes back"
+        );
     }
 
     #[test]
