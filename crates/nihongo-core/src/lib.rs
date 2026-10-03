@@ -44,14 +44,16 @@ pub mod readings;
 pub mod words;
 
 pub use curriculum::{
-    confusions_for, lessons, to_hiragana, to_katakana, yoon, Confusable, Lesson, Row, Yoon,
-    CHOONPU, CONFUSABLE, KATAKANA_ONLY, RARE_KANA, ROWS, SMALL_KANA,
+    confusions_for, grade_name, kanji_lessons, lessons, to_hiragana, to_katakana, yoon, Confusable,
+    KanjiLesson, Lesson, Row, Yoon, CHOONPU, CONFUSABLE, KANJI_LESSON_SIZE, KATAKANA_ONLY,
+    RARE_KANA, ROWS, SMALL_KANA,
 };
 pub use drill::{
     find_pair, pair_key, ConfusionLog, PairTally, CORRECT_WEIGHT, MIN_WEIGHT, START_WEIGHT,
     WRONG_WEIGHT,
 };
 pub use hanzi_core::{
+    decompose::{parse as parse_decomposition, Component, Decomposition},
     grade, grade_with_outlines, Grade, GradeOptions, GradeReport, Point, StrokeVerdict, Verdict,
 };
 pub use kana::{
@@ -59,8 +61,8 @@ pub use kana::{
     ARTIFACT_MAGIC,
 };
 pub use kanji::{
-    parse_radical, Kanji, KanjiArtifact, KanjiDataset, KanjiSource, JOYO_COUNT, JOYO_GRADES,
-    KANJI_ARTIFACT_MAGIC,
+    parse_radical, Kanji, KanjiArtifact, KanjiDataset, KanjiSource, Radical, RadicalFamily,
+    JOYO_COUNT, JOYO_GRADES, KANJI_ARTIFACT_MAGIC, RADICAL_COUNT,
 };
 pub use input::{
     continuations, matches_reading, matches_word, normalise_to_hiragana, to_kana, to_kana_in,

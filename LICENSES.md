@@ -422,15 +422,15 @@ of the time — and to HSK grading in general, because the two official HSK 3.0
 documents disagree on a large share of their shared vocabulary. The research
 behind both numbers is in `docs/research/`.
 
-## The Japanese kana data — committed, but not in this app's bundle
+## The Japanese kana data — committed, and shipped by the Japanese app
 
-`crates/nihongo-core/` holds the beginning of a Japanese tutor: a kana dataset
-built from **AnimCJK**, and the `merge_strokes` repair that source needs. It is
-recorded here because the **artifact is committed** —
-`crates/nihongo-core/data/kana.bin.gz`, 177 kana — so the repository distributes
-AnimCJK-derived data even though the Chinese app does not contain it. Nothing
-about this app's own bundle changes, and no entry is added to the catalogue in
-`src-tauri/src/licences.rs` until there is a Japanese app for it to travel with.
+`crates/nihongo-core/` holds the Japanese tutor's data layer: a kana dataset built
+from **AnimCJK**, and the `merge_strokes` repair that source needs. The **artifact
+is committed** — `crates/nihongo-core/data/kana.bin.gz`, 177 kana — and
+`apps/nihongo-tutor` embeds it. Its notice therefore travels in that app's own
+catalogue, `apps/nihongo-tutor/src-tauri/src/licences.rs`, rather than in the
+shared `licences/` directory, which the *Chinese* app catalogues and which must not
+gain a notice for data it does not contain.
 
 Three upstream sources, and they are not interchangeable:
 
@@ -474,25 +474,23 @@ read for a number — how many strokes a kana has — and a stroke count is a fa
 about the language, not a copy of the work. The pipeline only needs it at build
 time, and it is fetched into `data/raw/kvgJa/`, which is not committed.
 
-## The Japanese kanji data — committed, and not yet in any bundle
+## The Japanese kanji data — committed, and shipped by the Japanese app
 
 `crates/nihongo-core/data/kanji.bin.gz` is the jōyō set: **2,136 characters** with
 their outlines, centre-lines, readings, English glosses, grades, radicals and IDS
-decompositions, about 3 MB. It is committed for the same reason the kana artifact
-is — a clone builds without the network — and recorded here for the same reason:
-**the repository distributes it**, even though no application bundle contains it
-yet. `apps/nihongo-tutor` embeds only the kana artifact at this commit. The kanji
-notices belong in that app's own `licences/` directory and its `licences.rs`
-catalogue on the commit that embeds this file (`ROADMAP_NIHONGO.md` N8), because
-the shared `licences/` directory is catalogued by the *Chinese* app, which
-contains none of this data — the same reason the kana notices are app-local.
+decompositions, **plus the 214 Kangxi radical head forms** and their geometry,
+about 3.2 MB. It is committed for the same reason the kana artifact is — a clone
+builds without the network — and `apps/nihongo-tutor` embeds it and serves it from
+its kanji and radicals screens. The notices below therefore travel with it, in that
+app's own `licences/` directory and `licences.rs` catalogue, for the same reason
+the kana notices are app-local.
 
 Four sources, and what each contributes is separated deliberately:
 
 | Source | What is taken | Licence |
 | --- | --- | --- |
 | [AnimCJK](https://github.com/parsimonhi/animCJK) `graphicsJa.txt` | Every stroke's outline **and** its centre-line. **Redistributed**, compacted into the artifact | **Arphic Public License** |
-| [AnimCJK](https://github.com/parsimonhi/animCJK) `dictionaryJa.txt` | The grade sets, the radical the character is written with and its note, and the IDS decomposition. **Redistributed**, compacted into the artifact | LGPL-3.0-or-later |
+| [AnimCJK](https://github.com/parsimonhi/animCJK) `dictionaryJa.txt` | The grade sets, the radical the character is written with and its note, the IDS decomposition, and the **214 radical head forms** in file order. **Redistributed**, compacted into the artifact | LGPL-3.0-or-later |
 | [KANJIDIC2](https://www.edrdg.org/wiki/index.php/KANJIDIC_Project) via [`scriptin/jmdict-simplified`](https://github.com/scriptin/jmdict-simplified) | Readings with their okurigana, English glosses, the frequency rank, and the **current** kyōiku grade. **Redistributed**, compacted into the artifact | **CC BY-SA 4.0** (EDRDG) |
 | [KanjiVG](https://github.com/KanjiVG/kanjivg) `kanji/*.svg` | Only the **stroke count**, read at build time as an independent check. Not redistributed | CC BY-SA 3.0 |
 
@@ -547,6 +545,17 @@ changed: the set is narrowed from AnimCJK's 7,007 characters to the 2,136 jōyō
 each centre-line is converted from Make Me a Hanzi's font space into the display
 space the grader works in, exactly as the kana centre-lines are; and the data is
 re-encoded from JSON lines into the compact artifact.
+
+**The radical table** is the same file's 214 entries whose `set` contains
+`radical`, kept in file order — **the position is the Kangxi number** — with each
+head form's geometry from `graphicsJa.txt` and its number checked against
+KANJIDIC2's classical radical number. Two of the 214 are recorded rather than
+checked, because KANJIDIC2 files them under the other form of the same radical:
+戶 (63) and 靑 (174), where EDRDG has 戸 and 青. The entries' own `definition`
+glosses are not read, which is a measurement rather than tidiness: three of the
+214 state the wrong number ("Kangxi radical 136" for 耒 at position 127, 133 for
+臼 at 134, 156 for 足 at 157), so the number could not be taken from them even if
+the provenance allowed it.
 
 ### KANJIDIC2 — CC BY-SA 4.0, with the update obligation designed
 

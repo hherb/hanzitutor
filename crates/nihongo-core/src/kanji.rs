@@ -68,6 +68,16 @@
 //! first, 牙 the larger). Compared against the taught count rather than against
 //! whichever value happens to be first, all nine agree, and only 衷 is left.
 //!
+//! # The radical table, and why it is in the artifact
+//!
+//! The characters carry the **combining** form of their radical — 扌 in 持, not
+//! 手 — because that is what is written inside the character. A radicals screen
+//! needs the other shape: the **head form** the family is named by, all 214 of
+//! them, including the 16 no jōyō character uses. That table is not derivable
+//! from the characters, so the artifact carries it (format version 2, see
+//! [`Radical`]) and `prepare-kanji` refuses to write an artifact whose table is
+//! not the 214, in order, with geometry.
+//!
 //! # Not carried, deliberately
 //!
 //! * **JLPT levels.** KANJIDIC2 has the pre-2010 1–4 values. There has been no
@@ -85,7 +95,13 @@ use serde::{Deserialize, Serialize};
 ///
 /// `postcard` is not self-describing, so a stale or foreign artifact would
 /// otherwise decode into nonsense. The trailing digits are the format version.
-pub const KANJI_ARTIFACT_MAGIC: &[u8; 8] = b"KANJD001";
+///
+/// **Version 2 added the radical table**, and the number moved with it: the
+/// field sits between the characters and the source, `postcard` writes it
+/// positionally, and an artifact written by version 1 would decode its source
+/// into it. Bumping the magic is what turns that into "re-run `prepare-kanji`"
+/// rather than a dataset with 214 fields of nonsense.
+pub const KANJI_ARTIFACT_MAGIC: &[u8; 8] = b"KANJD002";
 
 /// The KANJIDIC2 grades the artifact carries: 1–6 are kyōiku, 8 is the rest of
 /// jōyō. See the module docs for why 7 and 9/10 are not here.
@@ -93,6 +109,9 @@ pub const JOYO_GRADES: [u8; 7] = [1, 2, 3, 4, 5, 6, 8];
 
 /// How many characters those grades hold — the jōyō set.
 pub const JOYO_COUNT: usize = 2_136;
+
+/// How many Kangxi radicals there are, and how many the artifact carries.
+pub const RADICAL_COUNT: usize = 214;
 
 /// One kanji, with everything a course screen needs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -165,6 +184,88 @@ impl Kanji {
     }
 }
 
+/// One of the 214 Kangxi radicals: the head form a learner studies, and the
+/// geometry that lets the board write it.
+///
+/// # The head form is not the shape inside the character
+///
+/// A radical has two shapes, and the difference is the lesson. The head form is
+/// the whole radical as it is taught and as it heads its own family — 手, 水, 言
+/// — and this table carries that. The shape inside a character is a combining
+/// form of the same radical: 扌 in 持, 氵 in 池, 讠 in 説 in Chinese. A character
+/// stores the *combining* form in [`Kanji::radical`] and its number in
+/// [`Kanji::radical_number`], which is what [`KanjiDataset::radical_families`]
+/// groups by.
+///
+/// # Where the table comes from, and the trap in it
+///
+/// `dictionaryJa.txt` carries **214** entries whose `set` contains `radical`,
+/// one per Kangxi radical, and their order in the file is the numbering: the
+/// first is 一, the second 丨, the third 丶. That claim is checked rather than
+/// assumed — KANJIDIC2 gives each of 212 of them its classical radical number,
+/// and every one agrees with its position.
+///
+/// The **two exceptions** are written down in `prepare-kanji`, not skipped: 戶
+/// (63) and 靑 (174) have no classical number in KANJIDIC2, because EDRDG
+/// records the other form of those two radicals (戸 and 青).
+///
+/// Three of the 214 entries carry a **typo in their own `definition` text** —
+/// 耒 at position 127 says "Kangxi radical 136", 臼 at 134 says 133, 足 at 157
+/// says 156 — which is why the number is read from the position and checked
+/// against KANJIDIC2, and never parsed out of the gloss. The pipeline never
+/// reads that field at all (see `prepare_kanji`'s module docs on provenance), so
+/// the typos are recorded here rather than tested: a test may not open
+/// `data/raw/`, which is gitignored and absent from a clone.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Radical {
+    /// The classical number, 1–214.
+    pub number: u8,
+    /// The head form, e.g. 手 for 64 — never the combining form 扌.
+    pub ch: char,
+    /// How many strokes the head form is written with.
+    pub stroke_count: u8,
+    /// SVG path data in font space, one per stroke, as [`Kanji::outlines`].
+    pub outlines: Vec<String>,
+    /// Centre-lines in display space, as [`Kanji::medians`].
+    pub medians: Vec<Vec<Point>>,
+}
+
+impl Radical {
+    /// True when the board can draw and grade this radical: it has geometry, and
+    /// as many centre-lines as outlines.
+    ///
+    /// Every radical in the shipped artifact satisfies this — `prepare-kanji`
+    /// refuses to write one that does not — but the shape a course screen needs
+    /// to test is still the character one's, so it is here rather than assumed
+    /// at the call site.
+    pub fn is_practisable(&self) -> bool {
+        !self.medians.is_empty() && self.medians.len() == self.outlines.len()
+    }
+}
+
+/// One radical and the course's characters that are classified under it.
+///
+/// Derived rather than stored: a character already carries its radical number,
+/// and this is that grouping. The grouping is by **number**, not by glyph,
+/// which is the point — 持 writes 扌 and shares nothing visible with 手, and
+/// 手's family is a list of characters that look nothing like each other and
+/// belong together.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RadicalFamily {
+    /// The classical number, 1–214.
+    pub number: u8,
+    /// The head form, from the radical table.
+    pub ch: char,
+    /// The head form's stroke count.
+    pub stroke_count: u8,
+    /// The jōyō characters classified under it, most frequent first. Empty for
+    /// the 16 radicals no jōyō character uses — the family still exists, and a
+    /// screen should say so rather than hide the radical.
+    pub characters: Vec<char>,
+}
+
 /// Which EDRDG snapshot the readings in an artifact came from.
 ///
 /// Both fields are read out of the KANJIDIC2 document itself rather than being
@@ -186,30 +287,63 @@ pub struct KanjiSource {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct KanjiArtifact {
     pub kanji: Vec<Kanji>,
+    /// The 214 Kangxi radicals, in number order. Added in format version 2.
+    pub radicals: Vec<Radical>,
     pub source: KanjiSource,
 }
 
 impl KanjiArtifact {
-    pub fn new(kanji: Vec<Kanji>, source: KanjiSource) -> Self {
-        Self { kanji, source }
+    pub fn new(kanji: Vec<Kanji>, radicals: Vec<Radical>, source: KanjiSource) -> Self {
+        Self {
+            kanji,
+            radicals,
+            source,
+        }
     }
 }
 
-/// An indexed collection of kanji, ordered by code point.
+/// An indexed collection of kanji, ordered by code point, and the radical table.
 ///
 /// Code-point order is the storage order and nothing more: it is deterministic,
 /// which is what makes a rebuild byte-identical, and the *teaching* order is the
-/// grade ladder, which [`KanjiDataset::of_grade`] serves.
+/// grade ladder, which [`KanjiDataset::of_grade`] serves and
+/// [`crate::kanji_lessons`] turns into lessons.
 #[derive(Clone, Debug, Default)]
 pub struct KanjiDataset {
     kanji: Vec<Kanji>,
+    radicals: Vec<Radical>,
     source: KanjiSource,
 }
 
 impl KanjiDataset {
+    /// A dataset of characters and no radical table.
+    ///
+    /// What the unit tests and the words pipeline's fixtures want: grouping
+    /// characters is the part under test, and the table is 214 rows of geometry
+    /// that say nothing about it. [`KanjiDataset::from_parts`] is what the
+    /// artifact decodes through.
     pub fn from_kanji(mut kanji: Vec<Kanji>, source: KanjiSource) -> Self {
         kanji.sort_by_key(|k| k.ch as u32);
-        Self { kanji, source }
+        Self {
+            kanji,
+            radicals: Vec::new(),
+            source,
+        }
+    }
+
+    /// A dataset with its radical table, both sorted deterministically.
+    pub fn from_parts(
+        mut kanji: Vec<Kanji>,
+        mut radicals: Vec<Radical>,
+        source: KanjiSource,
+    ) -> Self {
+        kanji.sort_by_key(|k| k.ch as u32);
+        radicals.sort_by_key(|r| r.number);
+        Self {
+            kanji,
+            radicals,
+            source,
+        }
     }
 
     /// Drop any character that cannot be practised, so a course can never offer
@@ -245,7 +379,11 @@ impl KanjiDataset {
                     format!("corrupt kanji dataset artifact: {e}"),
                 )
             })?;
-        Ok(Self::from_kanji(artifact.kanji, artifact.source))
+        Ok(Self::from_parts(
+            artifact.kanji,
+            artifact.radicals,
+            artifact.source,
+        ))
     }
 
     pub fn kanji(&self) -> &[Kanji] {
@@ -280,6 +418,74 @@ impl KanjiDataset {
             .iter()
             .map(|&grade| (grade, self.of_grade(grade).count()))
             .collect()
+    }
+
+    /// The 214 radicals, in number order. Empty for a dataset built without a
+    /// table — see [`KanjiDataset::from_kanji`].
+    pub fn radicals(&self) -> &[Radical] {
+        &self.radicals
+    }
+
+    /// One radical by its classical number.
+    pub fn radical(&self, number: u8) -> Option<&Radical> {
+        self.radicals.iter().find(|r| r.number == number)
+    }
+
+    /// The head form of the radical a character is classified under.
+    ///
+    /// `None` when the dataset carries no radical table, or when the character's
+    /// number is outside 1–214 — which is a data error rather than a case to
+    /// paper over with the combining form, because the two shapes mean different
+    /// things on a screen.
+    pub fn head_form_of(&self, kanji: &Kanji) -> Option<&Radical> {
+        self.radical(kanji.radical_number)
+    }
+
+    /// Every radical with the characters the course classifies under it.
+    ///
+    /// All 214 are returned, in number order, including the ones no jōyō
+    /// character uses — a learner looking up 黹 should find it with an empty
+    /// family rather than find nothing, because "no jōyō character uses this" is
+    /// a fact about the set and not a hole in the panel.
+    ///
+    /// Members are ordered the way the course orders characters: most frequent
+    /// first, and the ones KANJIDIC2 does not rank last, by code point.
+    pub fn radical_families(&self) -> Vec<RadicalFamily> {
+        self.radicals
+            .iter()
+            .map(|radical| RadicalFamily {
+                number: radical.number,
+                ch: radical.ch,
+                stroke_count: radical.stroke_count,
+                characters: self.characters_under(radical.number),
+            })
+            .collect()
+    }
+
+    /// One radical's family, for a screen that has opened it.
+    ///
+    /// `None` when the dataset carries no radical table, or when the number is
+    /// outside it — 0 and 215 are not radicals, and a caller that asks for one
+    /// should be told rather than handed an empty family.
+    pub fn radical_family(&self, number: u8) -> Option<RadicalFamily> {
+        self.radical(number).map(|radical| RadicalFamily {
+            number: radical.number,
+            ch: radical.ch,
+            stroke_count: radical.stroke_count,
+            characters: self.characters_under(radical.number),
+        })
+    }
+
+    /// The course's characters classified under one radical number, in course
+    /// order.
+    fn characters_under(&self, number: u8) -> Vec<char> {
+        let mut members: Vec<&Kanji> = self
+            .kanji
+            .iter()
+            .filter(|k| k.radical_number == number)
+            .collect();
+        members.sort_by_key(|k| (k.frequency.is_none(), k.frequency, k.ch as u32));
+        members.into_iter().map(|k| k.ch).collect()
     }
 }
 
@@ -441,6 +647,108 @@ mod tests {
         assert_eq!(counts[0], (1, 1));
         assert_eq!(counts[4], (5, 1));
         assert_eq!(counts.iter().map(|(_, n)| n).sum::<usize>(), 2);
+    }
+
+    /// A `Radical` with geometry, for the grouping tests.
+    fn radical(number: u8, ch: char) -> Radical {
+        Radical {
+            number,
+            ch,
+            stroke_count: 2,
+            outlines: vec!["M0,0".to_string(), "M1,1".to_string()],
+            medians: vec![
+                vec![Point::new(0.0, 0.0)],
+                vec![Point::new(1.0, 1.0)],
+            ],
+        }
+    }
+
+    /// One character, classified under a radical number, with the combining form
+    /// and the frequency the grouping reads.
+    fn under(ch: char, radical_number: u8, form: char, frequency: Option<u16>) -> Kanji {
+        let mut k = sample();
+        k.ch = ch;
+        k.radical = form;
+        k.radical_number = radical_number;
+        k.frequency = frequency;
+        k
+    }
+
+    #[test]
+    fn families_group_by_radical_number_and_not_by_the_glyph() {
+        // 持 writes 扌 and 手 writes 手: nothing visible in common, one radical
+        // number, one family — and the family is named by the head form.
+        let dataset = KanjiDataset::from_parts(
+            vec![
+                under('持', 64, '扌', Some(500)),
+                under('手', 64, '手', Some(100)),
+                under('口', 30, '口', Some(7)),
+            ],
+            vec![radical(64, '手'), radical(30, '口'), radical(1, '一')],
+            KanjiSource::default(),
+        );
+
+        let families = dataset.radical_families();
+        assert_eq!(families.len(), 3, "a radical with no characters is still a family");
+        assert_eq!(
+            families.iter().map(|f| f.number).collect::<Vec<_>>(),
+            vec![1, 30, 64],
+            "number order, whatever order the table arrived in"
+        );
+
+        let hand = families.iter().find(|f| f.number == 64).expect("64 is a family");
+        assert_eq!(hand.ch, '手', "the head form, not the 扌 inside 持");
+        assert_eq!(hand.characters, vec!['手', '持'], "the more frequent first");
+        assert_eq!(hand.stroke_count, 2);
+
+        let empty = families.iter().find(|f| f.number == 1).expect("1 is a family");
+        assert!(
+            empty.characters.is_empty(),
+            "16 of the 214 radicals have no jōyō character, and they are still listed"
+        );
+
+        let held = dataset.get('持').expect("持 is held");
+        assert_eq!(dataset.head_form_of(held).map(|r| r.ch), Some('手'));
+    }
+
+    #[test]
+    fn an_unranked_character_sorts_after_the_ranked_ones_in_its_family() {
+        let dataset = KanjiDataset::from_parts(
+            vec![
+                under('甲', 1, '一', None),
+                under('乙', 1, '一', Some(900)),
+            ],
+            vec![radical(1, '一')],
+            KanjiSource::default(),
+        );
+        let family = &dataset.radical_families()[0];
+        assert_eq!(
+            family.characters,
+            vec!['乙', '甲'],
+            "no frequency is not a very high frequency"
+        );
+    }
+
+    #[test]
+    fn a_dataset_without_the_radical_table_has_no_families_and_names_no_head_form() {
+        // `from_kanji` is what the fixtures use. It must not invent a head form
+        // out of the combining shape, which is a different thing on a screen.
+        let dataset =
+            KanjiDataset::from_kanji(vec![under('持', 64, '扌', Some(500))], KanjiSource::default());
+        assert!(dataset.radicals().is_empty());
+        assert!(dataset.radical_families().is_empty());
+        assert!(dataset.radical(64).is_none());
+        assert!(dataset.head_form_of(dataset.get('持').expect("持")).is_none());
+    }
+
+    #[test]
+    fn a_radical_is_practisable_only_with_geometry_for_every_stroke() {
+        let mut table = radical(64, '手');
+        assert!(table.is_practisable());
+        table.medians.pop();
+        assert!(!table.is_practisable(), "two outlines and one centre-line is not a radical");
+        table.medians.clear();
+        assert!(!table.is_practisable());
     }
 
     #[test]

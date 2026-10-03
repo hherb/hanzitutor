@@ -1,5 +1,7 @@
-//! The course: the gojūon grid, the lessons built from it, and the kana learners
-//! actually confuse.
+//! The course: the gojūon grid for the kana, the grade ladder for the kanji, and
+//! the kana learners actually confuse.
+//!
+//! # The kana course
 //!
 //! The grid is the curriculum. A kana is learned as part of a row — あ い う え お
 //! together, then か き く け こ — because the row is what makes the five vowels
@@ -11,8 +13,22 @@
 //!
 //! Katakana are not listed twice. They are the same sounds in the same order, one
 //! code point apart, so the rows hold hiragana and [`Row::kana`] converts.
+//!
+//! # The kanji course
+//!
+//! The kanji have no gojūon: their order is the one Japanese schools teach in,
+//! which is the **kyōiku grade** — grades 1 to 6 and then the jōyō remainder —
+//! and it comes from KANJIDIC2 rather than from a list here, because the ministry
+//! moves characters between grades and the current assignment is the one a
+//! learner meets. [`kanji_lessons`] slices each grade into lessons, most frequent
+//! first, and the ladder is deliberately the *same* one the vocabulary's bands
+//! use (see [`grade_name`]): a word enters the course when its kanji do.
+//!
+//! Both courses filter through their dataset, so neither can list something the
+//! board cannot draw.
 
-use crate::{KanaDataset, Script};
+use crate::{words::band_name, JOYO_GRADES};
+use crate::{KanaDataset, Kanji, KanjiDataset, Script};
 
 /// Convert a hiragana to its katakana counterpart, if it has one.
 ///
@@ -219,6 +235,87 @@ pub fn lessons(dataset: &KanaDataset, script: Script) -> Vec<Lesson> {
         }
         if let Some(lesson) = katakana_only(&[CHOONPU], "choonpu", "Prolonged sound mark — ー") {
             out.push(lesson);
+        }
+    }
+
+    out
+}
+
+/// How many characters a kanji lesson holds.
+///
+/// Ten, the same group size the Chinese course uses: small enough that a lesson
+/// is a sitting rather than a project, large enough that the grade ladder's 2,136
+/// characters are 214 lessons instead of a wall.
+pub const KANJI_LESSON_SIZE: usize = 10;
+
+/// One lesson of the kanji course: a group of characters from one grade.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KanjiLesson {
+    /// Stable key, e.g. `"g1-3"` — grade 1, third lesson.
+    pub key: String,
+    /// Where the lesson sits inside its grade, e.g. `"21–30"`. The grade is on
+    /// the lesson view beside it, so this need not repeat it.
+    pub title: String,
+    /// KANJIDIC2's grade: 1–6 kyōiku, 8 the jōyō remainder. See [`grade_name`].
+    pub grade: u8,
+    /// The characters to study, in teaching order.
+    pub kanji: Vec<char>,
+}
+
+impl KanjiLesson {
+    pub fn len(&self) -> usize {
+        self.kanji.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.kanji.is_empty()
+    }
+}
+
+/// What a screen calls one grade of the kanji course.
+///
+/// The names are the **vocabulary ladder's** ([`crate::band_name`]), because the
+/// two are one ladder: a word's band is the highest grade among its kanji, so
+/// "kyōiku 3" means the same thing whether it labels a band of words or a grade of
+/// characters. `ROADMAP_NIHONGO.md` left that as an open question for this
+/// milestone; this is it answered, and the answer is that a learner meets a
+/// character and the vocabulary that uses it in the same band.
+pub fn grade_name(grade: u8) -> &'static str {
+    band_name(crate::words::band_for([grade]))
+}
+
+/// The kanji course: every grade in teaching order, each sliced into lessons.
+///
+/// The order is [`JOYO_GRADES`] — kyōiku 1 to 6, then the jōyō remainder — and
+/// inside a grade the most frequent characters come first, by KANJIDIC2's
+/// frequency rank, with the ones it does not rank last and in code-point order.
+/// That is the only ordering the data supports: the grades are a fixed set with
+/// no sequence inside them, and a learner meeting 日 before 鬱 is worth more than
+/// one meeting them in code-point order.
+///
+/// Only characters in `dataset` are included, so a lesson can never ask for
+/// something the board cannot draw.
+pub fn kanji_lessons(dataset: &KanjiDataset, lesson_size: usize) -> Vec<KanjiLesson> {
+    let size = lesson_size.max(1);
+    let mut out = Vec::new();
+
+    for &grade in &JOYO_GRADES {
+        let mut of_grade: Vec<&Kanji> = dataset.of_grade(grade).collect();
+        of_grade.sort_by_key(|k| (k.frequency.is_none(), k.frequency, k.ch as u32));
+
+        for (index, chunk) in of_grade.chunks(size).enumerate() {
+            let first = index * size + 1;
+            let last = first + chunk.len() - 1;
+            out.push(KanjiLesson {
+                key: format!("g{grade}-{}", index + 1),
+                title: if first == last {
+                    first.to_string()
+                } else {
+                    format!("{first}\u{2013}{last}")
+                },
+                grade,
+                kanji: chunk.iter().map(|k| k.ch).collect(),
+            });
         }
     }
 
@@ -602,5 +699,130 @@ mod tests {
         let from_tsu = confusions_for(&dataset, 'ツ');
         assert!(from_tsu.iter().any(|p| p.a == 'シ'));
         assert!(confusions_for(&dataset, 'あ').is_empty());
+    }
+
+    /// A kanji with the minimum the course reads: a character, a grade and a
+    /// rank. The real ones come from the committed artifact.
+    fn kanji(ch: char, grade: u8, frequency: Option<u16>) -> Kanji {
+        Kanji {
+            ch,
+            grade,
+            stroke_count: 1,
+            frequency,
+            radical: '一',
+            radical_note: None,
+            radical_number: 1,
+            on: Vec::new(),
+            kun: Vec::new(),
+            meanings: Vec::new(),
+            nanori: Vec::new(),
+            decomposition: String::new(),
+            outlines: vec!["M0,0".to_string()],
+            medians: vec![vec![crate::Point::new(0.0, 0.0)]],
+        }
+    }
+
+    #[test]
+    fn the_kanji_course_is_the_grades_in_order_and_then_the_remainder() {
+        let dataset = KanjiDataset::from_kanji(
+            vec![
+                kanji('鬱', 8, Some(2_000)),
+                kanji('一', 1, Some(2)),
+                kanji('学', 1, Some(63)),
+                kanji('亜', 8, Some(1_500)),
+            ],
+            crate::KanjiSource::default(),
+        );
+        let lessons = kanji_lessons(&dataset, KANJI_LESSON_SIZE);
+        assert_eq!(
+            lessons.iter().map(|l| l.grade).collect::<Vec<_>>(),
+            vec![1, 8],
+            "kyōiku first, then the jōyō remainder"
+        );
+        assert_eq!(lessons[0].kanji, vec!['一', '学'], "and inside a grade, frequency");
+        assert_eq!(lessons[1].kanji, vec!['亜', '鬱']);
+        assert_eq!(lessons[0].key, "g1-1");
+        assert_eq!(lessons[1].key, "g8-1");
+    }
+
+    #[test]
+    fn a_lesson_holds_ten_and_the_last_holds_the_rest() {
+        let characters: Vec<Kanji> = (0..25)
+            .map(|i| {
+                let ch = char::from_u32(0x4E00 + i).expect("valid");
+                kanji(ch, 1, Some(i as u16 + 1))
+            })
+            .collect();
+        let dataset = KanjiDataset::from_kanji(characters, crate::KanjiSource::default());
+        let lessons = kanji_lessons(&dataset, KANJI_LESSON_SIZE);
+
+        assert_eq!(lessons.len(), 3);
+        assert_eq!(lessons[0].len(), 10);
+        assert_eq!(lessons[1].len(), 10);
+        assert_eq!(lessons[2].len(), 5);
+        assert_eq!(lessons[0].title, "1\u{2013}10");
+        assert_eq!(lessons[2].title, "21\u{2013}25");
+        assert_eq!(lessons.iter().map(KanjiLesson::len).sum::<usize>(), 25);
+
+        // And every lesson key is its own.
+        let mut keys: Vec<&str> = lessons.iter().map(|l| l.key.as_str()).collect();
+        let total = keys.len();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(total, keys.len(), "two lessons share a key");
+    }
+
+    #[test]
+    fn an_unranked_kanji_sorts_after_the_ranked_ones() {
+        let dataset = KanjiDataset::from_kanji(
+            vec![
+                kanji('乙', 1, None),
+                kanji('甲', 1, Some(500)),
+                kanji('一', 1, Some(2)),
+            ],
+            crate::KanjiSource::default(),
+        );
+        let lessons = kanji_lessons(&dataset, KANJI_LESSON_SIZE);
+        // One lesson of three, in rank order with the unranked one last.
+        assert_eq!(lessons.len(), 1);
+        assert_eq!(lessons[0].kanji, vec!['一', '甲', '乙']);
+    }
+
+    #[test]
+    fn the_kanji_course_teaches_every_character_exactly_once() {
+        let dataset = KanjiDataset::from_kanji(
+            (0..23)
+                .map(|i| {
+                    let ch = char::from_u32(0x4E00 + i).expect("valid");
+                    kanji(ch, if i < 12 { 2 } else { 8 }, Some(i as u16))
+                })
+                .collect(),
+            crate::KanjiSource::default(),
+        );
+        let lessons = kanji_lessons(&dataset, KANJI_LESSON_SIZE);
+        let mut taught: Vec<char> = lessons.iter().flat_map(|l| l.kanji.iter().copied()).collect();
+        assert_eq!(taught.len(), dataset.len());
+        taught.sort_unstable();
+        let total = taught.len();
+        taught.dedup();
+        assert_eq!(total, taught.len(), "a character is taught twice");
+        for lesson in &lessons {
+            for ch in &lesson.kanji {
+                assert!(dataset.get(*ch).is_some(), "{ch} is not in the dataset");
+            }
+        }
+    }
+
+    #[test]
+    fn the_kanji_grades_are_named_by_the_vocabularys_ladder() {
+        assert_eq!(grade_name(1), "kyōiku 1");
+        assert_eq!(grade_name(6), "kyōiku 6");
+        assert_eq!(grade_name(8), "jōyō beyond the school grades");
+        // The point of naming them here rather than duplicating the strings: a
+        // kanji grade and a vocabulary band are the same rung.
+        for band in 1..=6u8 {
+            assert_eq!(grade_name(band), crate::band_name(band));
+        }
+        assert_eq!(grade_name(8), crate::band_name(crate::REMAINDER_BAND));
     }
 }

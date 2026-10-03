@@ -92,8 +92,8 @@ pub const NOTICES: &[LicenceNotice] = &[
         licence: "AGPL-3.0-only (this document)",
         source: "https://github.com/hherb/hanzitutor/blob/main/LICENSES.md",
         covers: "The repository's record of where every bundled dataset came from \
-                 and what had to travel with it. The Japanese kana section covers \
-                 this app.",
+                 and what had to travel with it. The Japanese sections cover this \
+                 app.",
         file: "LICENSES.md",
         bundle_path: "licences/PROVENANCE.md",
         text: include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../LICENSES.md")),
@@ -104,9 +104,15 @@ pub const NOTICES: &[LicenceNotice] = &[
         licence: "Arphic Public License, or LGPL-3.0-or-later for the kana",
         source: "https://github.com/parsimonhi/animCJK",
         covers: "The kana stroke outlines and centre-lines, from \
-                 `graphicsJaKana.txt`. Compacted into `kana.bin.gz`, and modified: \
-                 the drawing segments of a stroke that crosses itself are folded \
-                 back into the single stroke that is taught.",
+                 `graphicsJaKana.txt`; the kanji outlines and centre-lines, from \
+                 `graphicsJa.txt`; and the 214 radical head forms and the IDS \
+                 decompositions, from `dictionaryJa.txt`. Compacted into \
+                 `kana.bin.gz` and `kanji.bin.gz`, and modified: the drawing \
+                 segments of a kana stroke that crosses itself are folded back \
+                 into the single stroke that is taught, and the radical table's \
+                 numbering is read from the file's order rather than from its \
+                 glosses and then checked against KANJIDIC2's classical radical \
+                 number.",
         file: "apps/nihongo-tutor/src-tauri/licences/AnimCJK-COPYING.txt",
         bundle_path: "licences/AnimCJK-COPYING.txt",
         text: include_str!("../licences/AnimCJK-COPYING.txt"),
@@ -116,9 +122,10 @@ pub const NOTICES: &[LicenceNotice] = &[
         title: "GNU Lesser General Public License",
         licence: "LGPL-3.0-or-later",
         source: "https://www.gnu.org/licenses/lgpl-3.0.html",
-        covers: "The licence the kana SVG files and the kana `graphics` file are \
-                 under, per AnimCJK's own statement. See the AnimCJK notice above \
-                 for the ambiguity between this and the Arphic Public License.",
+        covers: "The licence the kana SVGs and the kana and kanji `graphics` files \
+                 are under, per AnimCJK's own statement. See the AnimCJK notice \
+                 above for the ambiguity between this and the Arphic Public \
+                 License.",
         file: "licences/LGPL-3.0.txt",
         bundle_path: "licences/LGPL-3.0.txt",
         text: include_str!(concat!(
@@ -131,10 +138,10 @@ pub const NOTICES: &[LicenceNotice] = &[
         title: "Arphic Public License",
         licence: "Arphic Public License",
         source: "https://ftp.gnu.org/non-gnu/chinese-fonts-truetype/LICENSE",
-        covers: "The other licence AnimCJK's kana `graphics` file could be under — \
-                 its statement assigns `graphics*` files to this one and kana SVGs \
-                 to the LGPL. Both texts travel so that neither reading is left \
-                 without its notice.",
+        covers: "The other licence AnimCJK's `graphics*` files could be under — its \
+                 statement assigns `graphics*` files to this one and kana SVGs to \
+                 the LGPL. Both texts travel so that neither reading is left without \
+                 its notice.",
         file: "licences/Arphic-Public-License.txt",
         bundle_path: "licences/Arphic-Public-License.txt",
         text: include_str!(concat!(

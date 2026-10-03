@@ -14,9 +14,13 @@
 //!   separate project's per-stroke paths — and refuses to write an artifact it
 //!   could not check. One character, 衷, is a written exception;
 //! * **the readings and glosses**, which come from EDRDG's KANJIDIC2 with their
-//!   okurigana markers intact.
+//!   okurigana markers intact;
+//! * **the 214-radical table** (artifact format version 2), which is what a
+//!   radicals screen is built from — all 214 head forms, including the 16 no jōyō
+//!   character uses — and the grouping of characters under them;
+//! * **the course**, which is the grades in teaching order, sliced into lessons.
 
-use nihongo_core::{Kanji, KanjiDataset, JOYO_COUNT, JOYO_GRADES};
+use nihongo_core::{Kanji, KanjiDataset, KANJI_LESSON_SIZE, JOYO_COUNT, JOYO_GRADES, RADICAL_COUNT};
 
 fn dataset() -> KanjiDataset {
     KanjiDataset::from_gzip_bytes(include_bytes!("../data/kanji.bin.gz"))
@@ -377,6 +381,236 @@ fn radicals_are_the_kangxi_radicals_with_their_notes() {
             assert!(!note.is_empty(), "{} has an empty radical note", k.ch);
         }
     }
+}
+
+/// The 214 head forms, which are the other shape of a radical: 手 where the
+/// character writes 扌.
+///
+/// The table is not derivable from the characters — 16 of the 214 are used by no
+/// jōyō character — so it is carried in the artifact, and this is the contract a
+/// radicals screen reads. The numbering is `dictionaryJa.txt`'s file order,
+/// checked against KANJIDIC2's classical number for 212 of the 214; the two
+/// exceptions are named in `prepare-kanji` and asserted here.
+#[test]
+fn the_radical_table_is_the_two_hundred_and_fourteen_head_forms() {
+    let dataset = dataset();
+    let radicals = dataset.radicals();
+    assert_eq!(radicals.len(), RADICAL_COUNT);
+    assert_eq!(radicals.len(), 214);
+
+    // Number order, 1 to 214 with nothing missing and nothing twice.
+    let numbers: Vec<u8> = radicals.iter().map(|r| r.number).collect();
+    assert_eq!(numbers, (1..=214u8).collect::<Vec<_>>());
+
+    // Each one is a whole radical the board can write, never a combining form.
+    let mut total_strokes = 0usize;
+    for r in radicals {
+        assert!(r.is_practisable(), "radical {} has no usable geometry", r.number);
+        assert_eq!(r.outlines.len(), r.stroke_count as usize, "radical {}", r.number);
+        total_strokes += r.stroke_count as usize;
+    }
+    assert_eq!(total_strokes, 1_222);
+
+    let head = |number: u8| {
+        dataset
+            .radical(number)
+            .unwrap_or_else(|| panic!("radical {number} is in the table"))
+    };
+    assert_eq!(head(1).ch, '一');
+    assert_eq!(head(1).stroke_count, 1);
+    assert_eq!(head(64).ch, '手');
+    assert_eq!(head(64).stroke_count, 4);
+
+    // The two KANJIDIC2 cannot number, at the numbers the file order gives them.
+    assert_eq!(head(63).ch, '戶');
+    assert_eq!(head(174).ch, '靑');
+
+    // The combining forms are *not* in the table: 扌 is the shape inside 持, and
+    // 手 is the radical. A table holding both would be two entries for one family.
+    assert!(
+        radicals.iter().all(|r| r.ch != '扌'),
+        "the table holds head forms, not the shapes written inside characters"
+    );
+}
+
+/// The families: which jōyō characters are classified under each of the 214.
+///
+/// Sixteen radicals are used by no jōyō character at all, and they are still
+/// returned with an empty family — "no character in this set uses it" is a fact
+/// about the set, not a hole in the panel. The list is pinned because it is a
+/// measurement: 90 爿 through 214 龠 are the radicals the jōyō set never reaches.
+#[test]
+fn the_families_are_grouped_by_number_and_sixteen_radicals_are_unused() {
+    let dataset = dataset();
+    let families = dataset.radical_families();
+    assert_eq!(families.len(), 214);
+
+    let empty: Vec<(u8, char)> = families
+        .iter()
+        .filter(|f| f.characters.is_empty())
+        .map(|f| (f.number, f.ch))
+        .collect();
+    assert_eq!(families.len() - empty.len(), 198, "jōyō uses 198 of the 214");
+    assert_eq!(
+        empty,
+        vec![
+            (90, '爿'),
+            (97, '瓜'),
+            (114, '禸'),
+            (179, '韭'),
+            (191, '鬥'),
+            (193, '鬲'),
+            (197, '鹵'),
+            (202, '黍'),
+            (204, '黹'),
+            (205, '黽'),
+            (206, '鼎'),
+            (208, '鼠'),
+            (210, '齊'),
+            (212, '龍'),
+            (213, '龜'),
+            (214, '龠'),
+        ]
+    );
+
+    // Every family is named by its head form, and every member is a character the
+    // course holds and is classified under that number.
+    let held: std::collections::BTreeSet<char> =
+        dataset.kanji().iter().map(|k| k.ch).collect();
+    let mut members = 0usize;
+    for family in &families {
+        assert_eq!(
+            family.ch,
+            dataset.radical(family.number).expect("in the table").ch
+        );
+        for ch in &family.characters {
+            assert!(held.contains(ch), "{ch} is not in the course");
+            assert_eq!(
+                dataset.get(*ch).expect("held").radical_number,
+                family.number,
+                "{ch} is in the wrong family"
+            );
+            members += 1;
+        }
+    }
+    assert_eq!(members, 2_136, "every character is in exactly one family");
+
+    // The families a learner meets first, and how big they are. 人's 102 and 手's
+    // 95 are why the panel is ordered by what a radical unlocks.
+    let family = |number: u8| {
+        families
+            .iter()
+            .find(|f| f.number == number)
+            .unwrap_or_else(|| panic!("radical {number} is a family"))
+    };
+    assert_eq!(family(9).ch, '人');
+    assert_eq!(family(9).characters.len(), 102);
+    assert_eq!(family(64).ch, '手');
+    assert_eq!(family(64).characters.len(), 95);
+    assert_eq!(family(64).characters[0], '手', "the head form leads its own family");
+    assert!(family(64).characters.contains(&'持'), "which writes 扌");
+    assert_eq!(family(1).characters.len(), 16);
+    assert_eq!(family(30).characters.len(), 71);
+}
+
+/// A character's *classification* and its *annotation* are two different things,
+/// and they disagree for 18 characters.
+///
+/// KANJIDIC2's classical radical is the Kangxi dictionary's index — 巡 is
+/// radical 47 巛 there, which is where a Kangxi-ordered dictionary files it —
+/// while `dictionaryJa.txt`'s note says which radical the character is *written*
+/// with (⻌ (辵) for 巡). The panel groups by the classification, because that is
+/// the one that is a number, and this test is what stops the other 2,118 being
+/// assumed to agree.
+#[test]
+fn eighteen_characters_are_annotated_with_a_radical_they_are_not_classified_under() {
+    let dataset = dataset();
+    let mut disagree: Vec<(char, char, u8)> = Vec::new();
+    for k in dataset.kanji() {
+        let Some(note) = &k.radical_note else { continue };
+        let head = dataset
+            .radical(k.radical_number)
+            .expect("every character's number is in the table")
+            .ch;
+        assert_eq!(note.chars().count(), 1, "{}'s note is not a single character", k.ch);
+        if !note.starts_with(head) {
+            disagree.push((k.ch, head, k.radical_number));
+        }
+    }
+    assert_eq!(
+        disagree.len(),
+        18,
+        "the note and the classification disagree for 18: {disagree:?}"
+    );
+    // The two shapes of that disagreement: 阝 is 阜 or 邑, and KANJIDIC2 picks by
+    // the side of the character it sits on; and 巡 is written with 辵 but the
+    // Kangxi dictionary files it under 巛.
+    assert!(disagree.contains(&('郭', '邑', 163)));
+    assert!(disagree.contains(&('巡', '巛', 47)));
+    assert!(disagree.contains(&('亀', '乙', 5)));
+    assert!(disagree.contains(&('全', '入', 11)));
+}
+
+/// The course: the grades in teaching order — kyōiku 1 to 6, then the jōyō
+/// remainder — each sliced into lessons of ten, most frequent first.
+#[test]
+fn the_course_covers_every_character_once_in_grade_order() {
+    let dataset = dataset();
+    let lessons = nihongo_core::kanji_lessons(&dataset, KANJI_LESSON_SIZE);
+    assert_eq!(lessons.len(), 216, "80/160/200/202/193/191/1110 in tens");
+
+    // Grade order, never going backwards through the ladder.
+    let ladder: Vec<u8> = JOYO_GRADES.to_vec();
+    let mut seen = 0usize;
+    let mut keys = std::collections::BTreeSet::new();
+    for lesson in &lessons {
+        let at = ladder
+            .iter()
+            .position(|g| *g == lesson.grade)
+            .unwrap_or_else(|| panic!("{} is not a jōyō grade", lesson.grade));
+        assert!(at >= seen, "{} comes after a later grade", lesson.key);
+        seen = at;
+        assert!(!lesson.is_empty());
+        assert!(lesson.len() <= KANJI_LESSON_SIZE);
+        assert!(keys.insert(lesson.key.clone()), "{} is used twice", lesson.key);
+    }
+
+    // Every character exactly once, and only characters the board can draw.
+    let mut taught: Vec<char> = lessons.iter().flat_map(|l| l.kanji.iter().copied()).collect();
+    assert_eq!(taught.len(), JOYO_COUNT);
+    taught.sort_unstable();
+    let total = taught.len();
+    taught.dedup();
+    assert_eq!(total, taught.len(), "a character is taught twice");
+    for ch in &taught {
+        assert!(dataset.get(*ch).is_some(), "{ch} is not in the artifact");
+    }
+
+    // The lessons a learner meets first, and the shape of the biggest grade.
+    assert_eq!(
+        lessons[0].kanji,
+        vec!['日', '一', '人', '年', '大', '十', '二', '本', '中', '出'],
+        "grade 1 opens with the ten most frequent kyōiku characters"
+    );
+    assert_eq!(lessons[0].key, "g1-1");
+    assert_eq!(lessons[0].title, "1\u{2013}10");
+    assert_eq!(lessons[0].grade, 1);
+    assert_eq!(
+        lessons.iter().filter(|l| l.grade == 1).count(),
+        8,
+        "grade 1's 80 characters"
+    );
+    assert_eq!(
+        lessons.iter().filter(|l| l.grade == 8).count(),
+        111,
+        "the remainder's 1,110"
+    );
+    assert_eq!(lessons.last().expect("lessons").grade, 8);
+
+    // And the ladder is named the way the vocabulary's bands are named, because
+    // they are one ladder: a word enters the course when its kanji do.
+    assert_eq!(nihongo_core::grade_name(1), "kyōiku 1");
+    assert_eq!(nihongo_core::grade_name(8), "jōyō beyond the school grades");
 }
 
 /// The decomposition is AnimCJK's IDS string, which is what a components panel

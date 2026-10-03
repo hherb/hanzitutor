@@ -66,7 +66,19 @@ fn dataset_stats_crosses_as_camel_case() {
     let stats = serde_json::to_value(state().stats()).expect("serialises");
     assert_eq!(
         keys(&stats),
-        vec!["hiragana", "kana", "katakana", "lessons", "passages", "strokes", "words"]
+        vec![
+            "hiragana",
+            "kana",
+            "kanji",
+            "kanjiLessons",
+            "katakana",
+            "kyoiku",
+            "lessons",
+            "passages",
+            "radicals",
+            "strokes",
+            "words"
+        ]
     );
     assert_eq!(stats["kana"], 177);
     assert_eq!(stats["hiragana"], 86);
@@ -74,6 +86,10 @@ fn dataset_stats_crosses_as_camel_case() {
     assert_eq!(stats["strokes"], 516);
     assert_eq!(stats["words"], 16_073, "the vocabulary the app embeds");
     assert_eq!(stats["passages"], 3);
+    assert_eq!(stats["kanji"], 2_136, "the jōyō set the app embeds");
+    assert_eq!(stats["kyoiku"], 1_026, "grades 1 to 6");
+    assert_eq!(stats["radicals"], 214);
+    assert_eq!(stats["kanjiLessons"], 216);
 }
 
 #[test]
@@ -232,10 +248,13 @@ fn the_options_the_interface_posts_survive_a_round_trip() {
 fn an_error_crosses_as_a_string_not_as_a_panic() {
     // Every fallible command returns Result<_, String>, so the interface can show
     // the message. This is the shape that makes that true.
-    let err = state().grade('一', &[], &GradeOptions::default()).unwrap_err();
+    let err = state().grade('鳩', &[], &GradeOptions::default()).unwrap_err();
     let as_json = serde_json::to_value(&err).expect("a String serialises");
     assert!(as_json.is_string());
-    assert!(as_json.as_str().expect("a string").contains("not in the kana set"));
+    assert!(as_json
+        .as_str()
+        .expect("a string")
+        .contains("not a kana, a jōyō kanji, or a radical"));
 }
 
 /// The arguments `record_drill_answer` takes, as the webview posts them.
@@ -523,5 +542,181 @@ fn a_passage_crosses_with_its_tokens_and_their_links() {
         for key in ["surface", "rt", "word"] {
             assert!(token.get(key).is_some(), "a token is missing {key}: {token}");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The kanji: the course, one character, and the 214 radicals.
+//
+// The same two halves as the vocabulary's — every response read with the keys
+// `types.ts` declares, and every request driven with the payload `api.ts` builds.
+
+#[test]
+fn a_kanji_lesson_crosses_with_its_characters_and_its_grade() {
+    let lessons = state().kanji_lessons();
+    assert_eq!(lessons.len(), 216);
+    let first = serde_json::to_value(&lessons[0]).expect("serialises");
+    assert_eq!(
+        keys(&first),
+        vec!["count", "grade", "gradeName", "kanji", "key", "title"]
+    );
+    assert_eq!(first["key"], "g1-1");
+    assert_eq!(first["title"], "1\u{2013}10");
+    assert_eq!(first["grade"], 1);
+    assert_eq!(
+        first["gradeName"], "kyōiku 1",
+        "the grade is named by the vocabulary ladder — see `nihongo_core::grade_name`"
+    );
+    assert_eq!(first["count"], 10);
+    assert_eq!(first["kanji"][0], "日");
+
+    // The remainder's grade is 8 in KANJIDIC2, and the screen is told what to call
+    // it rather than mapping a number to a claim itself.
+    let last = serde_json::to_value(lessons.last().expect("a last lesson")).expect("serialises");
+    assert_eq!(last["grade"], 8);
+    assert_eq!(last["gradeName"], "jōyō beyond the school grades");
+}
+
+#[test]
+fn a_kanji_crosses_with_the_geometry_the_readings_and_the_components() {
+    let value =
+        serde_json::to_value(state().kanji('学').expect("学 is jōyō")).expect("serialises");
+    assert_eq!(
+        keys(&value),
+        vec![
+            "ch",
+            "decomposition",
+            "frequency",
+            "grade",
+            "gradeName",
+            "kun",
+            "meanings",
+            "medians",
+            "nanori",
+            "on",
+            "outlines",
+            "practisable",
+            "radical",
+            "strokeCount",
+        ]
+    );
+    assert_eq!(value["ch"], "学");
+    assert_eq!(value["grade"], 1);
+    assert_eq!(value["gradeName"], "kyōiku 1");
+    assert_eq!(value["strokeCount"], 8);
+    assert_eq!(value["practisable"], true);
+    assert_eq!(value["on"], json!(["ガク"]));
+    assert_eq!(value["kun"], json!(["まな.ぶ"]));
+    assert!(!value["meanings"].as_array().expect("an array").is_empty());
+    assert_eq!(
+        value["outlines"].as_array().expect("an array").len(),
+        8,
+        "one outline per taught stroke, which is what the board draws"
+    );
+    let point = &value["medians"][0][0];
+    assert!(point.get("x").is_some() && point.get("y").is_some(), "{point}");
+
+    // The radical, in both shapes: 学 writes 子 and 子 is radical 39.
+    assert_eq!(
+        keys(&value["radical"]),
+        vec!["ch", "characters", "form", "note", "number", "strokeCount"]
+    );
+    assert_eq!(value["radical"]["number"], 39);
+    assert_eq!(value["radical"]["ch"], "子");
+    assert_eq!(value["radical"]["form"], "子");
+    assert_eq!(value["radical"]["note"], Value::Null, "present even when there is none");
+    assert_eq!(value["radical"]["characters"], 9);
+
+    // The components, from the IDS string: the arrangement in words, and the
+    // parts — `ch` null where the source could not name one, `drawable` telling
+    // the screen whether it can be opened on the board.
+    let decomposition = &value["decomposition"];
+    assert_eq!(
+        keys(decomposition),
+        vec!["layout", "parts", "raw"],
+        "the IDS shape `hanzi-core`'s parser hands both apps"
+    );
+    assert_eq!(decomposition["raw"], "⿳𰃮子");
+    assert_eq!(decomposition["layout"], "above, middle and below");
+    for part in decomposition["parts"].as_array().expect("an array") {
+        assert!(part.get("ch").is_some(), "ch is present even when null: {part}");
+        assert!(part.get("drawable").is_some(), "{part}");
+    }
+    assert!(
+        decomposition["parts"]
+            .as_array()
+            .expect("an array")
+            .iter()
+            .any(|p| p["ch"] == "子" && p["drawable"] == true),
+        "子 is a course character: {decomposition}"
+    );
+}
+
+/// The request half of the kanji command, driven as `api.ts` builds it:
+/// `{ ch }`, one character.
+#[test]
+fn the_kanji_the_interface_asks_for_is_looked_up_by_its_character() {
+    let payload = json!({ "ch": "海" });
+    let ch: char = payload["ch"]
+        .as_str()
+        .expect("a string")
+        .chars()
+        .next()
+        .expect("one character");
+    let view = state().kanji(ch).expect("海 is jōyō");
+    assert_eq!(view.ch, '海');
+    assert_eq!(view.grade, 2);
+    assert_eq!(view.radical.number, 85, "氵 is radical 85, whose head form is 水");
+    assert_eq!(view.radical.form, '氵');
+    assert_eq!(view.radical.ch, '水');
+
+    // And one the course does not hold is a message, camelCase not required.
+    assert!(state().kanji('鳩').is_err());
+}
+
+#[test]
+fn a_radical_family_crosses_with_its_head_form_and_its_members() {
+    let radicals = state().radicals();
+    assert_eq!(radicals.len(), 214);
+
+    let family = radicals.iter().find(|r| r.number == 64).expect("64 is 手");
+    let value = serde_json::to_value(family).expect("serialises");
+    assert_eq!(
+        keys(&value),
+        vec!["ch", "characters", "number", "strokeCount"]
+    );
+    assert_eq!(value["number"], 64);
+    assert_eq!(value["ch"], "手", "the head form, never the 扌 inside 持");
+    assert_eq!(value["strokeCount"], 4);
+    assert_eq!(value["characters"].as_array().expect("an array").len(), 95);
+    assert_eq!(value["characters"][0], "手");
+
+    // The sixteen radicals no jōyō character uses are still listed, because
+    // "nothing in this set uses it" is a fact about the set.
+    let empty: Vec<char> = radicals
+        .iter()
+        .filter(|r| r.characters.is_empty())
+        .map(|r| r.ch)
+        .collect();
+    assert_eq!(empty.len(), 16, "{empty:?}");
+    assert!(empty.contains(&'龠'), "{empty:?}");
+}
+
+/// The request half of the radical command: `{ number }`, 1 to 214.
+#[test]
+fn the_radical_the_interface_asks_for_comes_back_with_its_geometry() {
+    let payload = json!({ "number": 64 });
+    let number = payload["number"].as_u64().expect("a number") as u8;
+    let value = serde_json::to_value(state().radical(number).expect("64 is 手"))
+        .expect("serialises");
+    assert!(value["outlines"].as_array().expect("an array").len() == 4);
+    assert!(value["medians"].as_array().expect("an array").len() == 4);
+    assert_eq!(value["ch"], "手");
+    assert_eq!(value["characters"].as_array().expect("an array").len(), 95);
+
+    // A number that is not a radical is an error string, not a panic.
+    for number in [0u8, 215] {
+        let err = state().radical(number).unwrap_err();
+        assert!(err.contains("numbered 1 to 214"), "{err}");
     }
 }

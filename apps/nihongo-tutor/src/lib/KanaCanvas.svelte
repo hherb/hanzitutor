@@ -7,14 +7,19 @@
    * is only the interaction: turning pointer events into strokes in display
    * space, and driving the animation frame that reveals the guide stroke by
    * stroke.
+   *
+   * It draws **any** `Drawable`, not only a kana: the kana course was first, the
+   * kanji course and the radicals panel came later, and all three hand it the
+   * same four fields. The file keeps its name because that is what the handover,
+   * the traps and the article about the blank window call it.
    */
   import { untrack } from "svelte";
   import { drawScene, type Scene } from "./render";
   import { isStroke, pointerToDisplay, sweepAt } from "./board";
-  import type { GradeReport, Kana, Point } from "./types";
+  import type { Drawable, GradeReport, Point } from "./types";
 
   interface Props {
-    kana: Kana | null;
+    character: Drawable | null;
     report: GradeReport | null;
     /** How long the whole stroke-order animation should take, in ms. */
     sweepMs?: number;
@@ -24,7 +29,7 @@
     onanimate?: () => void;
   }
 
-  let { kana, report, sweepMs = 1400, onchange, onanimate }: Props = $props();
+  let { character, report, sweepMs = 1400, onchange, onanimate }: Props = $props();
 
   let canvas = $state<HTMLCanvasElement | null>(null);
 
@@ -40,14 +45,14 @@
 
   let raf = 0;
 
-  /** When the learner starts fresh on a new kana, so does the board. */
+  /** When the learner starts fresh on a new character, so does the board. */
   $effect(() => {
     // Reading this is what makes the effect re-run on a change.
-    void kana?.ch;
+    void character?.ch;
     strokes = [];
     current = null;
     drawing = false;
-    ghostCount = kana ? kana.strokeCount : 0;
+    ghostCount = character ? character.strokeCount : 0;
     sweep = null;
     cancelAnimationFrame(raf);
     // Deliberately no `paint()` here. `paint` reads every one of those pieces of
@@ -97,7 +102,7 @@
     void report;
     void ghostCount;
     void sweep;
-    void kana?.ch;
+    void character?.ch;
     paint();
   });
 
@@ -108,7 +113,7 @@
     if (!ctx) return;
     const scene: Scene = {
       size: cv.width,
-      character: kana,
+      character,
       ghostCount,
       ghostStyle: "faint",
       strokes,
@@ -126,7 +131,7 @@
   }
 
   function down(event: PointerEvent) {
-    if (!kana) return;
+    if (!character) return;
     cancelAnimationFrame(raf);
     sweep = null;
     drawing = true;
@@ -179,9 +184,9 @@
    * whole thing takes the same time on a slow machine.
    */
   export function animate() {
-    if (!kana || kana.medians.length === 0) return;
+    if (!character || character.medians.length === 0) return;
     onanimate?.();
-    const total = kana.medians.length;
+    const total = character.medians.length;
     const started = performance.now();
 
     const step = (now: number) => {

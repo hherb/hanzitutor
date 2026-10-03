@@ -80,11 +80,8 @@ export interface ConfusionView {
  * downwards) — the same two spaces as the Chinese app, because AnimCJK publishes
  * its kana in Make Me a Hanzi's own frame.
  */
-export interface Kana {
-  ch: string;
+export interface Kana extends Drawable {
   script: ScriptName;
-  /** How many strokes this kana is *taught* with, which is what the grader sees. */
-  strokeCount: number;
   practisable: boolean;
   /** Every spelling a learner might type, Hepburn first. */
   romaji: string[];
@@ -92,8 +89,6 @@ export interface Kana {
   hepburn: string;
   /** True for っ and ー, which have no sound of their own. */
   silent: boolean;
-  outlines: string[];
-  medians: Point[][];
   confusions: ConfusionView[];
 }
 
@@ -101,11 +96,32 @@ export interface Kana {
  * The name the renderer knows a drawable thing by.
  *
  * `render.ts` is lifted unchanged from Hanzi Tutor, where its input is a Chinese
- * `Character`; a kana carries the same two fields it actually reads — `outlines`
- * and `medians` — so the alias is all the adaptation it needs. Keeping the lift
- * verbatim is worth more than the name.
+ * `Character`; everything it actually reads is `outlines` and `medians`, which a
+ * kana, a kanji and a radical head form all carry. Keeping the lift verbatim is
+ * worth more than the name, so the name stays and the shape is structural: this
+ * was `= Kana` until the kanji screens were built, and widening it to the shape
+ * the file reads is what let one board serve all three without touching
+ * `render.ts` at all.
  */
-export type Character = Kana;
+export type Character = Drawable;
+
+/**
+ * Anything the practice board can draw and the grader can score.
+ *
+ * The app writes three kinds of thing — a kana, a jōyō kanji, and one of the 214
+ * radical head forms — and they differ in everything except this. A component
+ * asks for a `Drawable`, so there is one canvas, one animation and one grading
+ * call for all three; the Rust side resolves the character the same way.
+ */
+export interface Drawable {
+  ch: string;
+  /** How many strokes it is taught with, which is what the grader sees. */
+  strokeCount: number;
+  /** SVG path data in font space, one per taught stroke, in stroke order. */
+  outlines: string[];
+  /** Centre-lines in display space, for the faint guide and for grading. */
+  medians: Point[][];
+}
 
 export type ScriptName = "hiragana" | "katakana";
 
@@ -120,6 +136,14 @@ export interface DatasetStats {
   /** How many reading passages are shipped. */
   passages: number;
   strokes: number;
+  /** How many jōyō kanji the artifact holds. */
+  kanji: number;
+  /** How many of them are kyōiku — grades 1 to 6. */
+  kyoiku: number;
+  /** How many Kangxi radicals the table holds: always 214. */
+  radicals: number;
+  /** How many lessons the kanji course is sliced into. */
+  kanjiLessons: number;
 }
 
 /** One lesson, as the sidebar lists it. */
@@ -272,3 +296,108 @@ export interface PassageView {
   gloss: string | null;
   lines: PassageToken[][];
 }
+
+/** One lesson of the kanji course, as the sidebar lists it. */
+export interface KanjiLessonView {
+  /** Stable key, e.g. `"g1-3"`. */
+  key: string;
+  /** Where the lesson sits inside its grade, e.g. `1–10`. */
+  title: string;
+  /** KANJIDIC2's grade: 1–6 kyōiku, 8 the jōyō remainder. */
+  grade: number;
+  /**
+   * What to call the grade, from `nihongo_core::grade_name` — the same names the
+   * vocabulary's bands use, because the two are one ladder.
+   */
+  gradeName: string;
+  count: number;
+  kanji: string[];
+}
+
+/**
+ * The radical a character is classified under, in both of its shapes.
+ *
+ * `ch` is the head form from the 214-radical table (手) and `form` is the shape
+ * written inside the character (扌). They differ for most characters, and the
+ * difference is the lesson rather than an inconsistency.
+ */
+export interface RadicalRef {
+  /** The classical number, 1–214. */
+  number: number;
+  /** The head form. */
+  ch: string;
+  /** The shape written inside this character. */
+  form: string;
+  /** What the upstream dictionary says in parentheses, when it says anything. */
+  note: string | null;
+  strokeCount: number;
+  /** How many characters in the course are classified under it. */
+  characters: number;
+}
+
+/** One part of a character's decomposition. */
+export interface DecompositionPart {
+  /** The part, or null where the source could not name it. */
+  ch: string | null;
+  /** True when the board can write it, so it can be opened on its own. */
+  drawable: boolean;
+}
+
+/** What a character is built from, parsed from AnimCJK's IDS string. */
+export interface Decomposition {
+  /** The IDS string as stored, e.g. `⿳𰃮子`. Empty when there is none. */
+  raw: string;
+  /** The outermost arrangement in words, e.g. `"above, middle and below"`. */
+  layout: string;
+  /** The parts, in reading order. */
+  parts: DecompositionPart[];
+}
+
+/** One jōyō kanji, as the course draws it. */
+export interface KanjiView extends Drawable {
+  grade: number;
+  /** What to call the grade, from `nihongo_core::grade_name`. */
+  gradeName: string;
+  /** KANJIDIC2's frequency rank, or null for the characters it does not rank. */
+  frequency: number | null;
+  /** On'yomi in katakana, in KANJIDIC2's order. */
+  on: string[];
+  /** Kun'yomi, with KANJIDIC2's okurigana markers intact (た.べる). */
+  kun: string[];
+  meanings: string[];
+  nanori: string[];
+  radical: RadicalRef;
+  decomposition: Decomposition;
+  practisable: boolean;
+}
+
+/** One radical and the characters that share it. */
+export interface RadicalFamilyView {
+  /** The classical number, 1–214. */
+  number: number;
+  /** The head form, never the shape written inside a character. */
+  ch: string;
+  strokeCount: number;
+  /**
+   * The characters classified under it, most frequent first. Empty for the
+   * sixteen radicals no jōyō character uses — they are still listed.
+   */
+  characters: string[];
+}
+
+/** One radical on its own, with the geometry the board writes it with. */
+export interface RadicalView extends Drawable {
+  number: number;
+  characters: string[];
+}
+
+/**
+ * A character another screen has asked the kanji board to open.
+ *
+ * The radicals screen works in radicals, the course works in characters, and
+ * both end up on the one board — so the request says which kind it is rather
+ * than leaving the board to guess from the character.
+ */
+export type KanjiPick =
+  | { kind: "kanji"; ch: string }
+  | { kind: "radical"; number: number };

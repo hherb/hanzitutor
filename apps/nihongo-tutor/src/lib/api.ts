@@ -16,11 +16,15 @@ import type {
   DrillTally,
   GradeReport,
   Kana,
+  KanjiLessonView,
+  KanjiView,
   LessonView,
   LicenceNotice,
   PassageSummary,
   PassageView,
   Point,
+  RadicalFamilyView,
+  RadicalView,
   ReadingCheck,
   ScriptName,
   Word,
@@ -119,6 +123,38 @@ export function licences(): Promise<LicenceNotice[]> {
 /** The yōon digraphs for a script, for an input helper. */
 export function yoon(script: ScriptName): Promise<YoonView[]> {
   return invoke<YoonView[]>("yoon", { script });
+}
+
+/**
+ * The kanji course: every grade in teaching order, sliced into lessons.
+ *
+ * Whole rather than paged, unlike a band of words: it is 2,136 characters and
+ * their lesson keys, where a band is nearly five thousand words with readings,
+ * glosses and furigana each.
+ */
+export function kanjiLessons(): Promise<KanjiLessonView[]> {
+  return invoke<KanjiLessonView[]>("kanji_lessons");
+}
+
+/** One kanji: the geometry the board writes, the readings, and the structure. */
+export function kanji(ch: string): Promise<KanjiView> {
+  return invoke<KanjiView>("kanji", { ch });
+}
+
+/** The 214 Kangxi radicals, each with the characters that share it. */
+export function radicals(): Promise<RadicalFamilyView[]> {
+  return invoke<RadicalFamilyView[]>("radicals");
+}
+
+/**
+ * One radical, with the geometry the board writes it with.
+ *
+ * A head form is not always a jōyō character — 92 of the 214 are not — so this is
+ * how the board gets something to draw for the radicals the character course
+ * cannot reach.
+ */
+export function radical(number: number): Promise<RadicalView> {
+  return invoke<RadicalView>("radical", { number });
 }
 
 /** The vocabulary ladder: each band's name and how many words it holds. */

@@ -1589,11 +1589,14 @@ headline gaps are now:
    now recorded in `hanzi.db`, but nothing exports them, so the shape tolerance and
    the four grading weights are still set against synthetic jitter.
 
-**There is also a Japanese part**, built on the same grading engine: a kana tutor
-(`crates/nihongo-core`, `apps/nihongo-tutor`) that reuses `geom`, `raster` and
-`grade` unchanged, so a handwritten あ is judged by exactly the code that judges
-一. It versions itself at 0.1.0 and has its own handover and roadmap —
-**[HANDOVER_NIHONGO.md](HANDOVER_NIHONGO.md)** and
+**There is also a Japanese part**, built on the same grading engine: a kana and
+kanji tutor (`crates/nihongo-core`, `apps/nihongo-tutor`) that reuses `geom`,
+`raster` and `grade` unchanged, so a handwritten あ is judged by exactly the code
+that judges 一 — and so is a kanji. It teaches the 177 kana, the 2,136 jōyō kanji
+in kyōiku-grade order with the 214 Kangxi radicals and their IDS components, and
+16,073 words with their own readings and furigana, all from committed artifacts
+with nothing downloaded. It versions itself at 0.1.0 and has its own handover and
+roadmap — **[HANDOVER_NIHONGO.md](HANDOVER_NIHONGO.md)** and
 **[ROADMAP_NIHONGO.md](ROADMAP_NIHONGO.md)**. Nothing else in this README,
 `ROADMAP.md` or `HANDOVER.md` covers it.
 

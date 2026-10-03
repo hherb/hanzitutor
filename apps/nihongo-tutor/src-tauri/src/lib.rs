@@ -6,10 +6,10 @@
 //! does exactly that, and it is what stops the JSON the interface reads from
 //! drifting away from the JSON this returns.
 //!
-//! Everything the app teaches is **embedded**: the kana artifact is compiled into
-//! the binary with `include_bytes!`. There is no network path in this crate at
-//! all — no download, no model, no sync — which is why it has no plugin
-//! permissions in `capabilities/default.json`.
+//! Everything the app teaches is **embedded**: the kana and kanji artifacts are
+//! compiled into the binary with `include_bytes!`. There is no network path in
+//! this crate at all — no download, no model, no sync — which is why it has no
+//! plugin permissions in `capabilities/default.json`.
 
 // The two that share a name with a command are aliased, so that `fn lessons`
 // below is the command and `build_lessons` is the course it serves.
@@ -18,10 +18,11 @@ pub mod store;
 
 use licences::{AppInfo, LicenceNotice};
 use nihongo_core::{
-    band_name, confusions_for, find_pair, lessons as build_lessons, normalise_to_hiragana,
-    pair_key, reading, to_kana, to_kana_in, yoon as build_yoon, Confusable, ConfusionLog,
-    GradeOptions, GradeReport, KanaDataset, Passage, PassageDataset, PassageToken, Point, Ruby,
-    Script, Word, WordDataset, CONFUSABLE,
+    band_name, confusions_for, find_pair, grade_name, kanji_lessons as build_kanji_lessons,
+    lessons as build_lessons, normalise_to_hiragana, pair_key, parse_decomposition, reading,
+    to_kana, to_kana_in, yoon as build_yoon, Confusable, ConfusionLog, Decomposition, GradeOptions,
+    GradeReport, KanaDataset, Kanji, KanjiDataset, Passage, PassageDataset, PassageToken, Point,
+    Ruby, Script, Word, WordDataset, CONFUSABLE, KANJI_LESSON_SIZE,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -35,11 +36,12 @@ use tauri::{Manager, State};
 ///
 /// All four artifacts are **embedded** — `include_bytes!`, not read from a path —
 /// so there is no data directory to find, no file to go missing, and no filesystem
-/// permission for the webview to hold. The kanji artifact is the largest at 3 MB
-/// and is not served by any command yet; it is here because the vocabulary needs
-/// the characters it holds to be gradeable, which is N8's first half.
+/// permission for the webview to hold. The kanji artifact is the largest at 3.2 MB
+/// and carries the course, the radical table and the geometry the board draws a
+/// character from; every byte of it is served by a command now.
 pub struct AppState {
     kana: KanaDataset,
+    kanji: KanjiDataset,
     words: WordDataset,
     passages: PassageDataset,
     /// Behind a `Mutex` because Tauri hands every command a shared `&AppState`
@@ -75,6 +77,8 @@ impl AppState {
         Self {
             kana: KanaDataset::from_gzip_bytes(artifact!("kana.bin.gz"))
                 .expect("the committed kana artifact decodes"),
+            kanji: KanjiDataset::from_gzip_bytes(artifact!("kanji.bin.gz"))
+                .expect("the committed kanji artifact decodes"),
             words: WordDataset::from_gzip_bytes(artifact!("words.bin.gz"))
                 .expect("the committed words artifact decodes"),
             passages: PassageDataset::from_gzip_bytes(artifact!("passages.bin.gz"))
@@ -85,6 +89,11 @@ impl AppState {
 
     pub fn dataset(&self) -> &KanaDataset {
         &self.kana
+    }
+
+    /// The kanji, and the 214-radical table they are classified under.
+    pub fn kanji_dataset(&self) -> &KanjiDataset {
+        &self.kanji
     }
 
     /// The learner's record, for a caller that wants to show or assert on it.
@@ -102,6 +111,7 @@ impl AppState {
         let katakana = self.kana.of_script(Script::Katakana).count();
         let lesson_count = build_lessons(&self.kana, Script::Hiragana).len()
             + build_lessons(&self.kana, Script::Katakana).len();
+        let kanji_lessons = build_kanji_lessons(&self.kanji, KANJI_LESSON_SIZE).len();
         DatasetStats {
             kana: self.kana.len(),
             hiragana,
@@ -115,6 +125,15 @@ impl AppState {
                 .iter()
                 .map(|k| k.stroke_count as usize)
                 .sum(),
+            kanji: self.kanji.len(),
+            kyoiku: self
+                .kanji
+                .kanji()
+                .iter()
+                .filter(|k| k.is_kyoiku())
+                .count(),
+            radicals: self.kanji.radicals().len(),
+            kanji_lessons,
         }
     }
 
@@ -154,26 +173,57 @@ impl AppState {
         })
     }
 
-    /// Grade a handwritten attempt. The scoring is `hanzi-core`'s, unchanged:
-    /// shape, placement, ink and order, against the corrected stroke geometry.
+    /// Grade a handwritten attempt against whatever the app can draw.
+    ///
+    /// Three things can be written on the board, and they share the one engine:
+    /// a **kana**, a **jōyō kanji**, and a **radical head form** — 手 is all three
+    /// lists' business, but 亅 is only a radical, and a learner who is shown it
+    /// should be able to write it. The lookup is in that order and the geometry
+    /// comes from whichever holds the character; `hanzi-core`'s grader never looks
+    /// at what the character *is*, which is why one command can serve all three.
     pub fn grade(
         &self,
         ch: char,
         strokes: &[Vec<Point>],
         options: &GradeOptions,
     ) -> Result<GradeReport, String> {
-        let kana = self
-            .kana
-            .get(ch)
-            .ok_or_else(|| format!("{ch} (U+{:04X}) is not in the kana set", ch as u32))?;
-        if !kana.is_practisable() {
-            return Err(format!("{ch} has no stroke geometry to grade against"));
+        if let Some(kana) = self.kana.get(ch) {
+            if !kana.is_practisable() {
+                return Err(format!("{ch} has no stroke geometry to grade against"));
+            }
+            return Ok(nihongo_core::grade_with_outlines(
+                kana.reference_medians(),
+                &kana.outlines,
+                strokes,
+                options,
+            ));
         }
-        Ok(nihongo_core::grade_with_outlines(
-            kana.reference_medians(),
-            &kana.outlines,
-            strokes,
-            options,
+        if let Some(kanji) = self.kanji.get(ch) {
+            if !kanji.is_practisable() {
+                return Err(format!("{ch} has no stroke geometry to grade against"));
+            }
+            return Ok(nihongo_core::grade_with_outlines(
+                kanji.reference_medians(),
+                &kanji.outlines,
+                strokes,
+                options,
+            ));
+        }
+        if let Some(radical) = self.kanji.radicals().iter().find(|r| r.ch == ch) {
+            if !radical.is_practisable() {
+                return Err(format!("{ch} has no stroke geometry to grade against"));
+            }
+            return Ok(nihongo_core::grade_with_outlines(
+                &radical.medians,
+                &radical.outlines,
+                strokes,
+                options,
+            ));
+        }
+        Err(format!(
+            "{ch} (U+{:04X}) is not a kana, a jōyō kanji, or a radical, so there is no stroke \
+             order to grade against",
+            ch as u32
         ))
     }
 
@@ -312,6 +362,113 @@ impl AppState {
                 kana: y.kana,
             })
             .collect()
+    }
+
+    /// The kanji course: every grade in teaching order, each sliced into lessons.
+    ///
+    /// Whole rather than paged, unlike a band of words: this is 2,136 characters
+    /// and their lesson keys — tens of kilobytes of JSON — where a band is nearly
+    /// five thousand words with readings, glosses and furigana each.
+    pub fn kanji_lessons(&self) -> Vec<KanjiLessonView> {
+        build_kanji_lessons(&self.kanji, KANJI_LESSON_SIZE)
+            .into_iter()
+            .map(|lesson| KanjiLessonView {
+                key: lesson.key,
+                title: lesson.title,
+                grade: lesson.grade,
+                grade_name: grade_name(lesson.grade).to_string(),
+                count: lesson.kanji.len(),
+                kanji: lesson.kanji,
+            })
+            .collect()
+    }
+
+    /// One kanji, with everything a screen draws and says about it: the geometry
+    /// the board writes, the readings and glosses, the radical, and the IDS
+    /// components.
+    pub fn kanji(&self, ch: char) -> Result<KanjiView, String> {
+        let kanji = self
+            .kanji
+            .get(ch)
+            .ok_or_else(|| format!("{ch} (U+{:04X}) is not one of the jōyō kanji", ch as u32))?;
+        Ok(self.kanji_view(kanji))
+    }
+
+    fn kanji_view(&self, kanji: &Kanji) -> KanjiView {
+        let head = self.kanji.radical(kanji.radical_number);
+        KanjiView {
+            ch: kanji.ch,
+            grade: kanji.grade,
+            grade_name: grade_name(kanji.grade).to_string(),
+            stroke_count: kanji.stroke_count,
+            frequency: kanji.frequency,
+            on: kanji.on.clone(),
+            kun: kanji.kun.clone(),
+            meanings: kanji.meanings.clone(),
+            nanori: kanji.nanori.clone(),
+            radical: RadicalRefView {
+                number: kanji.radical_number,
+                // The head form where the table has it, and the shape written
+                // inside the character otherwise — which happens only for a
+                // dataset built without a table.
+                ch: head.map(|r| r.ch).unwrap_or(kanji.radical),
+                form: kanji.radical,
+                note: kanji.radical_note.clone(),
+                stroke_count: head.map(|r| r.stroke_count).unwrap_or(kanji.stroke_count),
+                characters: self
+                    .kanji
+                    .kanji()
+                    .iter()
+                    .filter(|k| k.radical_number == kanji.radical_number)
+                    .count(),
+            },
+            // The components come from AnimCJK's IDS string, and a component the
+            // course does not hold is still named — it is what the character is
+            // made of, whether or not the board can write it.
+            decomposition: parse_decomposition(&kanji.decomposition, |ch| {
+                self.kanji.get(ch).is_some()
+            }),
+            practisable: kanji.is_practisable(),
+            outlines: kanji.outlines.clone(),
+            medians: kanji.medians.clone(),
+        }
+    }
+
+    /// The 214 radicals, each with the characters the course classifies under it.
+    ///
+    /// All 214, in number order, including the sixteen no jōyō character uses: the
+    /// panel sorts them, and a radical that is missing from the list is a fact
+    /// about the set that would be invisible.
+    pub fn radicals(&self) -> Vec<RadicalFamilyView> {
+        self.kanji
+            .radical_families()
+            .into_iter()
+            .map(|family| RadicalFamilyView {
+                number: family.number,
+                ch: family.ch,
+                stroke_count: family.stroke_count,
+                characters: family.characters,
+            })
+            .collect()
+    }
+
+    /// One radical, with the geometry the board writes it with and its family.
+    pub fn radical(&self, number: u8) -> Result<RadicalView, String> {
+        let family = self.kanji.radical_family(number).ok_or_else(|| {
+            format!("{number} is not a Kangxi radical; they are numbered 1 to 214")
+        })?;
+        let radical = self
+            .kanji
+            .radical(number)
+            .expect("the family came from the table");
+        Ok(RadicalView {
+            number: radical.number,
+            ch: radical.ch,
+            stroke_count: radical.stroke_count,
+            characters: family.characters,
+            outlines: radical.outlines.clone(),
+            medians: radical.medians.clone(),
+        })
     }
 
     /// The ladder, one entry per band, with the counts a screen shows.
@@ -484,6 +641,14 @@ pub struct DatasetStats {
     /// How many reading passages are shipped.
     pub passages: usize,
     pub strokes: usize,
+    /// How many jōyō kanji the artifact holds.
+    pub kanji: usize,
+    /// How many of them are kyōiku — grades 1 to 6.
+    pub kyoiku: usize,
+    /// How many Kangxi radicals the table holds: always 214.
+    pub radicals: usize,
+    /// How many lessons the kanji course is sliced into.
+    pub kanji_lessons: usize,
 }
 
 /// One lesson, as the sidebar lists it.
@@ -569,6 +734,91 @@ pub struct YoonView {
     pub hepburn: String,
     pub kunrei: String,
     pub kana: Vec<char>,
+}
+
+/// One lesson of the kanji course, as the sidebar lists it.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KanjiLessonView {
+    pub key: String,
+    /// Where the lesson sits inside its grade, e.g. `1–10`.
+    pub title: String,
+    /// KANJIDIC2's grade: 1–6 kyōiku, 8 the jōyō remainder.
+    pub grade: u8,
+    /// The grade's label, which is the vocabulary ladder's — see
+    /// `nihongo_core::grade_name`.
+    pub grade_name: String,
+    pub count: usize,
+    pub kanji: Vec<char>,
+}
+
+/// The radical a character is classified under, in both of its shapes.
+///
+/// `ch` is the head form from the 214-radical table (手) and `form` is the shape
+/// written inside the character (扌). They differ for most characters, and the
+/// difference is the lesson rather than an inconsistency — see
+/// `nihongo_core::Radical`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RadicalRefView {
+    pub number: u8,
+    pub ch: char,
+    pub form: char,
+    pub note: Option<String>,
+    pub stroke_count: u8,
+    /// How many characters in the course are classified under it.
+    pub characters: usize,
+}
+
+/// One kanji, as the course draws it: the geometry, the readings, the radical and
+/// the components.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KanjiView {
+    pub ch: char,
+    pub grade: u8,
+    /// What the screen calls the grade, from `nihongo_core::grade_name`.
+    pub grade_name: String,
+    pub stroke_count: u8,
+    /// KANJIDIC2's frequency rank, or `null` for the characters it does not rank.
+    pub frequency: Option<u16>,
+    /// On'yomi in katakana, in KANJIDIC2's order.
+    pub on: Vec<String>,
+    /// Kun'yomi, with KANJIDIC2's okurigana markers intact.
+    pub kun: Vec<String>,
+    pub meanings: Vec<String>,
+    pub nanori: Vec<String>,
+    pub radical: RadicalRefView,
+    /// The IDS decomposition, parsed: the outermost arrangement in words and the
+    /// parts, each marked with whether the board can write it.
+    pub decomposition: Decomposition,
+    pub practisable: bool,
+    pub outlines: Vec<String>,
+    pub medians: Vec<Vec<Point>>,
+}
+
+/// One radical and the characters that share it.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RadicalFamilyView {
+    pub number: u8,
+    pub ch: char,
+    pub stroke_count: u8,
+    /// The characters classified under it, most frequent first. Empty for the
+    /// sixteen radicals no jōyō character uses.
+    pub characters: Vec<char>,
+}
+
+/// One radical on its own, with the geometry the board writes it with.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RadicalView {
+    pub number: u8,
+    pub ch: char,
+    pub stroke_count: u8,
+    pub characters: Vec<char>,
+    pub outlines: Vec<String>,
+    pub medians: Vec<Vec<Point>>,
 }
 
 /// One band of the vocabulary ladder.
@@ -755,6 +1005,30 @@ fn yoon(script: String) -> Result<Vec<YoonSummary>, String> {
         .collect())
 }
 
+/// The kanji course: every grade in teaching order, sliced into lessons.
+#[tauri::command]
+fn kanji_lessons(state: State<'_, AppState>) -> Vec<KanjiLessonView> {
+    state.kanji_lessons()
+}
+
+/// One kanji, with its geometry, readings, radical and components.
+#[tauri::command]
+fn kanji(state: State<'_, AppState>, ch: char) -> Result<KanjiView, String> {
+    state.kanji(ch)
+}
+
+/// The 214 Kangxi radicals, each with the characters that share it.
+#[tauri::command]
+fn radicals(state: State<'_, AppState>) -> Vec<RadicalFamilyView> {
+    state.radicals()
+}
+
+/// One radical, with the geometry the board writes it with.
+#[tauri::command]
+fn radical(state: State<'_, AppState>, number: u8) -> Result<RadicalView, String> {
+    state.radical(number)
+}
+
 /// The vocabulary ladder, one entry per band, with each band's size.
 #[tauri::command]
 fn word_bands(state: State<'_, AppState>) -> Vec<BandView> {
@@ -869,6 +1143,10 @@ pub fn run() {
             check_reading,
             romaji_to_kana,
             yoon,
+            kanji_lessons,
+            kanji,
+            radicals,
+            radical,
             word_bands,
             words_in_band,
             word,
@@ -902,6 +1180,155 @@ mod tests {
         assert_eq!(state.lessons(Script::Hiragana).len(), 18);
         assert_eq!(state.lessons(Script::Katakana).len(), 20);
         assert_eq!(stats.lessons, 38);
+    }
+
+    /// The kanji artifact, read the way the course reads it: the jōyō set, its
+    /// grades, and the 214-radical table behind the panels.
+    #[test]
+    fn the_embedded_kanji_artifact_is_the_joyo_set_with_its_radical_table() {
+        let stats = state().stats();
+        assert_eq!(stats.kanji, 2_136);
+        assert_eq!(stats.kyoiku, 1_026, "grades 1 to 6");
+        assert_eq!(stats.radicals, 214);
+        assert_eq!(stats.kanji_lessons, 216, "2,136 characters in tens, per grade");
+    }
+
+    #[test]
+    fn a_kanji_view_carries_the_geometry_the_readings_and_the_structure() {
+        let view = state().kanji('学').expect("学 is jōyō");
+        assert_eq!(view.ch, '学');
+        assert_eq!(view.grade, 1);
+        assert_eq!(view.grade_name, "kyōiku 1");
+        assert_eq!(view.stroke_count, 8);
+        assert!(view.practisable);
+        assert_eq!(view.outlines.len(), 8);
+        assert_eq!(view.medians.len(), 8);
+        assert_eq!(view.on, vec!["ガク".to_string()]);
+        assert_eq!(view.kun, vec!["まな.ぶ".to_string()]);
+        assert!(!view.meanings.is_empty());
+
+        // The radical in both of its shapes: 学 writes 子, and 子 is radical 39.
+        assert_eq!(view.radical.number, 39);
+        assert_eq!(view.radical.ch, '子');
+        assert_eq!(view.radical.form, '子');
+        assert_eq!(view.radical.note, None);
+        assert_eq!(view.radical.stroke_count, 3);
+        assert_eq!(view.radical.characters, 9, "the characters classified under 子");
+
+        // And its components, from AnimCJK's IDS string.
+        assert_eq!(view.decomposition.raw, "⿳𰃮子");
+        assert_eq!(view.decomposition.layout, "above, middle and below");
+        let parts: Vec<(Option<char>, bool)> = view
+            .decomposition
+            .parts
+            .iter()
+            .map(|part| (part.ch, part.drawable))
+            .collect();
+        assert!(
+            parts.contains(&(Some('子'), true)),
+            "子 is a course character, so it can be written on its own: {parts:?}"
+        );
+        assert!(
+            parts.iter().any(|(ch, drawable)| *ch != Some('子') && !*drawable),
+            "a component the course does not hold is still named, and is not drawable: {parts:?}"
+        );
+    }
+
+    #[test]
+    fn a_radical_is_both_shapes_of_the_same_thing() {
+        // 持 writes 扌 and is classified under 64, whose head form is 手 — the
+        // difference between the two shapes is what the radicals screen teaches.
+        let view = state().kanji('持').expect("持 is jōyō");
+        assert_eq!(view.radical.number, 64);
+        assert_eq!(view.radical.form, '扌');
+        assert_eq!(view.radical.ch, '手');
+        assert_eq!(view.radical.note.as_deref(), Some("手"));
+        assert_eq!(view.radical.stroke_count, 4);
+        assert!(view.radical.characters >= 90, "手 heads a large family");
+    }
+
+    #[test]
+    fn the_radical_panel_gets_all_two_hundred_and_fourteen() {
+        let state = state();
+        let radicals = state.radicals();
+        assert_eq!(radicals.len(), 214);
+        assert_eq!(radicals[0].number, 1);
+        assert_eq!(radicals[0].ch, '一');
+        assert_eq!(radicals[213].number, 214);
+        assert_eq!(radicals[213].ch, '龠');
+
+        let empty: Vec<char> = radicals
+            .iter()
+            .filter(|r| r.characters.is_empty())
+            .map(|r| r.ch)
+            .collect();
+        assert_eq!(empty.len(), 16, "no jōyō character uses these: {empty:?}");
+
+        let hand = radicals.iter().find(|r| r.number == 64).expect("64");
+        assert_eq!(hand.ch, '手');
+        assert_eq!(hand.characters.len(), 95);
+        assert_eq!(hand.characters[0], '手', "the head form leads its own family");
+        assert!(hand.characters.contains(&'持'));
+
+        // Every member of every family can be opened on the board, which is what
+        // makes a family a set of things to practise rather than a list.
+        let mut members = 0;
+        for family in &radicals {
+            for ch in &family.characters {
+                assert!(state.kanji(*ch).is_ok(), "{ch} cannot be opened");
+                members += 1;
+            }
+        }
+        assert_eq!(members, 2_136, "every character is in exactly one family");
+    }
+
+    #[test]
+    fn one_radical_comes_back_with_the_geometry_the_board_writes_it_with() {
+        let state = state();
+        let radical = state.radical(64).expect("64 is 手");
+        assert_eq!(radical.ch, '手');
+        assert_eq!(radical.stroke_count, 4);
+        assert_eq!(radical.outlines.len(), 4);
+        assert_eq!(radical.medians.len(), 4);
+        assert_eq!(radical.characters.len(), 95);
+
+        // The board can grade it with the same engine that grades a kana.
+        let report = state
+            .grade('手', &[radical.medians[0].clone()], &GradeOptions::default())
+            .expect("grades");
+        assert_eq!(report.expected_strokes, 4);
+
+        // A number that is not a radical is a message rather than a panic.
+        for number in [0u8, 215] {
+            let err = state.radical(number).unwrap_err();
+            assert!(err.contains("numbered 1 to 214"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_kanji_outside_the_joyo_set_is_an_error_not_a_panic() {
+        let err = state().kanji('鳩').unwrap_err();
+        assert!(err.contains("not one of the jōyō kanji"), "{err}");
+    }
+
+    #[test]
+    fn every_lesson_of_the_kanji_course_names_characters_that_can_be_opened() {
+        let state = state();
+        let lessons = state.kanji_lessons();
+        let mut taught = 0;
+        for lesson in &lessons {
+            assert_eq!(lesson.count, lesson.kanji.len());
+            assert!(!lesson.grade_name.is_empty());
+            for ch in &lesson.kanji {
+                assert!(
+                    state.kanji(*ch).is_ok(),
+                    "lesson {} lists {ch}, which cannot be opened",
+                    lesson.key
+                );
+                taught += 1;
+            }
+        }
+        assert_eq!(taught, 2_136);
     }
 
     #[test]
@@ -953,11 +1380,11 @@ mod tests {
     }
 
     #[test]
-    fn grading_a_mark_that_is_not_taught_is_an_error() {
-        let err = state()
-            .grade('一', &[], &GradeOptions::default())
-            .unwrap_err();
-        assert!(err.contains("not in the kana set"), "{err}");
+    fn grading_a_character_that_is_not_taught_is_an_error() {
+        // 鳩 is jinmeiyō: not a kana, not jōyō, and not one of the 214 radicals,
+        // so there is no reference to grade against and the message says so.
+        let err = state().grade('鳩', &[], &GradeOptions::default()).unwrap_err();
+        assert!(err.contains("not a kana, a jōyō kanji, or a radical"), "{err}");
     }
 
     #[test]

@@ -15,6 +15,12 @@
 //!   `on`, `kun` and `definition` fields are deliberately **not** read: readings
 //!   and glosses come from EDRDG, which is the attributed source for them, and a
 //!   second-hand copy of them would misrecord where the app's text comes from.
+//!   The same file's **214 entries whose `set` contains `radical`** are the
+//!   radical table, in Kangxi number order, and they are where the head forms on
+//!   the radicals screen come from. The number is read from the *position* and
+//!   checked against KANJIDIC2's classical number, never parsed out of the
+//!   entry's gloss — three of the 214 glosses carry the wrong number, and one of
+//!   those fields is not read at all.
 //! * `kanjidic2-all.json` — EDRDG's KANJIDIC2 (CC BY-SA 4.0), republished as one
 //!   JSON document by `scriptin/jmdict-simplified`. The authority for the
 //!   **current** kyōiku grade, the readings with their okurigana, the frequency
@@ -36,8 +42,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use nihongo_core::kanji::{
-    parse_radical, Kanji, KanjiArtifact, KanjiDataset, KanjiSource, JOYO_COUNT, JOYO_GRADES,
-    KANJI_ARTIFACT_MAGIC,
+    parse_radical, Kanji, KanjiArtifact, KanjiDataset, KanjiSource, Radical, JOYO_COUNT,
+    JOYO_GRADES, KANJI_ARTIFACT_MAGIC, RADICAL_COUNT,
 };
 use nihongo_core::Point;
 use serde::Deserialize;
@@ -58,6 +64,20 @@ use serde::Deserialize;
 /// count invents a disagreement. Both files were re-measured for this pipeline —
 /// see `nihongo_core::kanji`'s module docs.
 const KANJIVG_DISAGREES: [(char, usize, usize); 1] = [('衷', 10, 9)];
+
+/// The two radical head forms KANJIDIC2 gives no classical radical number for,
+/// with the number `dictionaryJa.txt`'s own order assigns them.
+///
+/// This is a written exception rather than a gap, checked in both directions: a
+/// radical with no KANJIDIC2 number that is *not* here fails the build, and so
+/// does one of these two turning up with a number, because then the exception is
+/// out of date and the check it documents has moved.
+///
+/// Neither is an error upstream — EDRDG records the other form of those two
+/// radicals (戸 for 63, 青 for 174), and AnimCJK's file writes this one — which
+/// is exactly why it belongs in a list with its reason rather than in a
+/// `continue`.
+const RADICALS_KANJIDIC2_CANNOT_NUMBER: [(char, u8); 2] = [('戶', 63), ('靑', 174)];
 
 /// One line of `graphicsJa.txt`, in Make Me a Hanzi's format.
 #[derive(Deserialize)]
@@ -325,8 +345,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
+    // Every KANJIDIC2 entry by its character, for the radical table's check: the
+    // radicals include 92 characters that are not jōyō, so `joyo` cannot answer
+    // for them.
+    let mut kd2_by_char: HashMap<char, &Kd2Entry> = HashMap::new();
+    for entry in &document.characters {
+        if let Some(ch) = single_char(&entry.literal) {
+            kd2_by_char.insert(ch, entry);
+        }
+    }
+
     // ---- dictionaryJa.txt: the radical and the decomposition -----------------
     let mut structure: HashMap<char, DictionaryLine> = HashMap::new();
+    // The 214 entries tagged `radical`, in file order. Their position *is* the
+    // Kangxi number — see `RADICALS_KANJIDIC2_CANNOT_NUMBER` and the check below.
+    let mut radical_chars: Vec<char> = Vec::new();
     for (line_no, line) in BufReader::new(File::open(&dictionary_path)?).lines().enumerate() {
         let line = line?;
         if line.trim().is_empty() {
@@ -335,6 +368,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let row: DictionaryLine = serde_json::from_str(&line)
             .map_err(|e| format!("{}:{}: {e}", dictionary_path.display(), line_no + 1))?;
         if let Some(ch) = single_char(&row.character) {
+            if row.set.iter().any(|member| member == "radical") {
+                radical_chars.push(ch);
+            }
             structure.insert(ch, row);
         }
     }
@@ -353,6 +389,132 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ch) = single_char(&row.character) {
             geometry.insert(ch, row);
         }
+    }
+
+    // ---- The 214 Kangxi radicals --------------------------------------------
+    //
+    // The head forms, in number order, from the entries `dictionaryJa.txt` tags
+    // `radical`. Two things are checked rather than assumed: that there are 214 of
+    // them, and that their position agrees with KANJIDIC2's classical radical
+    // number — which is what makes "position is the number" a measurement instead
+    // of a convention.
+    if radical_chars.len() != RADICAL_COUNT {
+        return Err(format!(
+            "dictionaryJa.txt tags {} entries `radical`, not the {RADICAL_COUNT} Kangxi \
+             radicals. The radical table's numbering is the file order, so this is a decision to \
+             take and record rather than a rebuild.",
+            radical_chars.len()
+        )
+        .into());
+    }
+    let mut radicals: Vec<Radical> = Vec::with_capacity(RADICAL_COUNT);
+    let mut radicals_checked = 0usize;
+    let mut cannot_number: Vec<String> = Vec::new();
+    let mut missing_radical_geometry: Vec<String> = Vec::new();
+    for (index, ch) in radical_chars.iter().enumerate() {
+        let number = (index + 1) as u8;
+        let ch = *ch;
+        match kd2_by_char.get(&ch).and_then(|entry| entry.classical_radical()) {
+            Some(says) if says == number => {
+                // The exception list is checked in *this* direction too: one of
+                // the two radicals KANJIDIC2 could not number turning up with one
+                // means the exception is out of date, not that the check passed.
+                if let Some((_, recorded)) = RADICALS_KANJIDIC2_CANNOT_NUMBER
+                    .iter()
+                    .find(|(c, _)| *c == ch)
+                {
+                    return Err(format!(
+                        "{ch} is written down as one of the radicals KANJIDIC2 cannot number \
+                         ({recorded}), but it now carries classical radical {says}. Remove it from \
+                         RADICALS_KANJIDIC2_CANNOT_NUMBER and record the change."
+                    )
+                    .into());
+                }
+                radicals_checked += 1;
+            }
+            Some(says) => {
+                return Err(format!(
+                    "{ch} is entry {number} of dictionaryJa.txt's radical list but KANJIDIC2 \
+                     calls it classical radical {says}. The file order is the numbering the \
+                     table is written with, so one of the two moved — decide which, and record it."
+                )
+                .into());
+            }
+            None => match RADICALS_KANJIDIC2_CANNOT_NUMBER.iter().find(|(c, _)| *c == ch) {
+                Some((_, recorded)) if *recorded == number => {
+                    cannot_number.push(format!("{ch}:{number}"));
+                }
+                Some((_, recorded)) => {
+                    return Err(format!(
+                        "{ch} is the written exception for classical radical {recorded} but sits at \
+                         position {number} in dictionaryJa.txt's radical list"
+                    )
+                    .into());
+                }
+                None => {
+                    return Err(format!(
+                        "{ch} (radical entry {number}) has no classical radical number in \
+                         KANJIDIC2, and is not one of the written exceptions. Either KANJIDIC2 \
+                         now numbers it — in which case remove it from \
+                         RADICALS_KANJIDIC2_CANNOT_NUMBER — or this is a new disagreement to \
+                         decide about."
+                    )
+                    .into());
+                }
+            },
+        }
+
+        let Some(row) = geometry.get(&ch) else {
+            missing_radical_geometry.push(format!("{ch} (radical {number})"));
+            continue;
+        };
+        if row.strokes.is_empty() || row.strokes.len() != row.medians.len() {
+            return Err(format!(
+                "{ch} (radical {number}): {} outlines and {} centre-lines — they must be one per \
+                 stroke, and there must be at least one",
+                row.strokes.len(),
+                row.medians.len()
+            )
+            .into());
+        }
+        radicals.push(Radical {
+            number,
+            ch,
+            stroke_count: row.strokes.len().min(u8::MAX as usize) as u8,
+            outlines: row.strokes.clone(),
+            medians: row
+                .medians
+                .iter()
+                .map(|stroke| {
+                    stroke
+                        .iter()
+                        .map(|[x, y]| Point::from_font(*x, *y))
+                        .collect()
+                })
+                .collect(),
+        });
+    }
+    if !missing_radical_geometry.is_empty() {
+        return Err(format!(
+            "{} of the {RADICAL_COUNT} radicals have no geometry in graphicsJa.txt, so the board \
+             could not write them:\n  {}",
+            missing_radical_geometry.len(),
+            missing_radical_geometry.join("\n  ")
+        )
+        .into());
+    }
+    // Every entry in the exception list has to have been *seen*, or the list is
+    // carrying a radical this file no longer has and the check it documents is
+    // not running.
+    if cannot_number.len() != RADICALS_KANJIDIC2_CANNOT_NUMBER.len() {
+        return Err(format!(
+            "{} of the {} written exceptions were found in dictionaryJa.txt's radical list. An \
+             exception for a radical the file does not carry is not a check, so either the file \
+             changed or RADICALS_KANJIDIC2_CANNOT_NUMBER did.",
+            cannot_number.len(),
+            RADICALS_KANJIDIC2_CANNOT_NUMBER.len()
+        )
+        .into());
     }
 
     // ---- Assemble, checking every character against every source -------------
@@ -543,12 +705,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
+    let ungradeable_radicals: Vec<String> = radicals
+        .iter()
+        .filter(|r| !r.is_practisable())
+        .map(|r| format!("{} (radical {})", r.ch, r.number))
+        .collect();
+    if !ungradeable_radicals.is_empty() {
+        return Err(format!(
+            "{} radicals would be written without usable geometry:\n  {}",
+            ungradeable_radicals.len(),
+            ungradeable_radicals.join("\n  ")
+        )
+        .into());
+    }
 
-    let dataset = KanjiDataset::from_kanji(kanji, source.clone());
+    let dataset = KanjiDataset::from_parts(kanji, radicals, source.clone());
     if dataset.len() != JOYO_COUNT {
         return Err(format!(
             "assembled {} characters, expected {JOYO_COUNT}",
             dataset.len()
+        )
+        .into());
+    }
+    if dataset.radicals().len() != RADICAL_COUNT {
+        return Err(format!(
+            "assembled {} radicals, expected {RADICAL_COUNT}",
+            dataset.radicals().len()
         )
         .into());
     }
@@ -558,6 +740,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|(grade, _)| *grade <= 6)
         .map(|(_, count)| count)
         .sum();
+    // How much of the Kangxi set the jōyō characters actually use. Measured here
+    // so the number in the README, the panel and the tests is one number.
+    let families = dataset.radical_families();
+    let radicals_in_use = families.iter().filter(|f| !f.characters.is_empty()).count();
 
     // Sort by code point before writing, so the artifact is byte-for-byte
     // reproducible — `from_kanji` has done that, and this makes it explicit that
@@ -565,7 +751,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut payload_kanji: Vec<Kanji> = dataset.kanji().to_vec();
     payload_kanji.sort_by_key(|k| k.ch as u32);
 
-    let payload = postcard::to_allocvec(&KanjiArtifact::new(payload_kanji, source))?;
+    let payload = postcard::to_allocvec(&KanjiArtifact::new(
+        payload_kanji,
+        dataset.radicals().to_vec(),
+        source,
+    ))?;
     let mut raw = Vec::with_capacity(payload.len() + KANJI_ARTIFACT_MAGIC.len());
     raw.extend_from_slice(KANJI_ARTIFACT_MAGIC);
     raw.extend_from_slice(&payload);
@@ -607,6 +797,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("  total strokes          {total_strokes} (average {avg_strokes:.2})");
     println!("  grades from KANJIDIC2  {}", grades.join(" "));
+    let radical_strokes: usize = dataset
+        .radicals()
+        .iter()
+        .map(|r| r.stroke_count as usize)
+        .sum();
+    println!(
+        "  radicals               {RADICAL_COUNT} ({radicals_in_use} used by jōyō, {} unused), \
+         {radical_strokes} strokes",
+        RADICAL_COUNT - radicals_in_use
+    );
+    println!(
+        "  radical numbering      {radicals_checked} agree with KANJIDIC2's classical number, {} \
+         it cannot number ({})",
+        cannot_number.len(),
+        cannot_number.join(" ")
+    );
     // Every number here is counted, none is asserted: if the two sources ever
     // agree about more or fewer characters, this line says so.
     println!(

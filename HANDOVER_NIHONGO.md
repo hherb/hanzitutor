@@ -38,8 +38,9 @@ pnpm --dir apps/nihongo-tutor run dev      # dev server on :1422, and the window
 
 There is no data step. `crates/nihongo-core/data/kana.bin.gz` is committed
 (70,917 bytes, 177 kana) precisely so that it does not need one — see invariant 1
-— and so are `kanji.bin.gz` (3,073,516 bytes, 2,136 jōyō kanji) and `words.bin.gz`
-(833,858 bytes, 21,902 words), which are the same decision made again for much
+— and so are `kanji.bin.gz` (3,236,713 bytes, 2,136 jōyō kanji, their geometry and
+the 214 radical head forms — invariant 24) and `words.bin.gz`
+(601,816 bytes, 16,073 words), which are the same decision made again for much
 larger files (invariants 16 and 20). The vocabulary inputs are 118 MB of JSON,
 63 MB of XML and 33 MB of furigana; none of it is needed to build or to test.
 
@@ -95,8 +96,10 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **206
-tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **244
+tests** — every `#[test]` in the two suites, plus one doc-test; the frontend's are
+counted separately below. `pnpm run test:web` runs 104, of which **35** are this
+app's.
 
 | | |
 | --- | --- |
@@ -109,30 +112,36 @@ tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
 | Kanji grades | 80/160/200/202/193/191 by grade, KANJIDIC2's **current** assignment |
 | Kanji strokes | 22,367, average 10.47; 一 is 1 and 鬱 is 29 |
 | Kanji readings | 2,854 on, 3,904 kun — 2,551 of them carrying okurigana and 364 affixes |
-| Kanji structure | 198 of the 214 radicals in use, 2,134 IDS decompositions, 2,037 frequency ranks |
+| Kanji course | 216 lessons of ten — kyōiku 1–6, then the remainder; the first is 日 一 人 年 大 十 二 本 中 出 |
+| Radicals | 214 head forms with geometry, 1,222 strokes, 198 used by jōyō; 18 characters are classified under a different number than their note names |
+| Kanji structure | 2,134 IDS decompositions, 2,037 frequency ranks |
 | Kanji oracle | 2,135 of 2,136 agree with KanjiVG; 衷 is the one written exception (invariant 19) |
 | Vocabulary | 16,073 words — every one with a kanji the board can draw, from EDRDG's common vocabulary (invariant 23) |
 | Bands | 585 / 1,781 / 2,408 / 2,232 / 2,412 / 1,834 / 4,821 — this project's ladder, not the JLPT's (invariant 20) |
 | Furigana | 16,022 of 16,073 aligned (99.7%); the other 51 carry their reading and no ruby |
 | Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
-| Screens | Practice, Tell them apart, **Words**, **Read**, Licences |
-| Tests | nihongo-core 156, nihongo-tutor 64, frontend 23 of the 92 |
-| Artifact | kana 70,917, kanji 3,073,516, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
+| Screens | Practice, Tell them apart, **Kanji**, **Radicals**, Words, Read, Licences |
+| Tests | nihongo-core 168, nihongo-tutor 76, frontend 35 of the 104 |
+| Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
+| Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | one file, `confusions.json`, in the app's own data directory |
 | Version | both crates 0.1.0, and the app's to match |
 
 The app runs and has been looked at, all of it: the course, the board, stroke-order
 animation, handwriting grading, the discrimination drill, the typing box, the
-katakana tab and the Licences panel have each been seen working on a display.
+katakana tab and the Licences panel have each been seen working on a display, and
+so have the two kanji screens (below).
 
-**The vocabulary and the passages are on screen; the kanji are not.** The app embeds
-all four artifacts and serves three of them: **Words** browses the ladder band by
-band with furigana over every word and grades a typed reading, and **Read** draws a
-passage with a reading over each kanji and opens a word card when one is tapped. The
-**kanji** artifact is embedded and read by nothing — the character course, the board
-showing a word's characters, the radicals panel and the decomposition panel are
-`ROADMAP_NIHONGO.md` N8. Each milestone's own record says what its measurement
-corrected.
+**Everything the app embeds is on screen now.** **Words** browses the ladder band
+by band with furigana over every word and grades a typed reading; **Read** draws a
+passage with a reading over each kanji and opens a word card when one is tapped;
+**Kanji** is the character course — grades, lessons of ten, a grid, the board, and
+a card carrying the readings, the glosses, the radical in both of its shapes and
+the IDS components; and **Radicals** shows all 214 head forms, each with the jōyō
+characters classified under it, searchable and ordered by what a radical unlocks.
+The kanji artifact was embedded and read by nothing for a whole milestone; N8 is
+what read it, and the radical table it now carries is what makes the second screen
+possible. Each milestone's own record says what its measurement corrected.
 
 **The drill is the one part that learns anything about its learner** (roadmap N3).
 It used to draw a kana from a pool and throw the answer away; it now draws a *pair*,
@@ -160,6 +169,15 @@ point of watching:
   `strokes`/`ghostCount`/`sweep` and then called `paint()`, which reads them, so
   the effect depended on what it wrote. Trap 9.
 
+**And the kanji screens were watched the same way, which found an interface bug
+that no test could have.** A temporary probe in `index.html` (§5) drove the three
+of them: a synthetic trace of 日's centre-lines graded **100/100** with all four
+scores 1.00, a member of 人's family opened 会 on the board, and the card's "See the
+family" link landed back on radical 9. One bug came out of it: the shared `.tabs`
+rule capitalises its labels for `hiragana` and `katakana`, so the grade tabs
+rendered as *Jōyō Beyond The School Grades* — this project's own ladder names,
+title-cased into proper nouns, which `svelte-check` and every test were happy with.
+
 ### What is genuinely reusable, and was reused
 
 The engine was not reimplemented, and that is the whole reason this was feasible:
@@ -180,37 +198,42 @@ reuse — see `ROADMAP_NIHONGO.md` N2.
 crates/nihongo-core/              the data layer. No UI, no Tauri.
   src/kana.rs            (499)    Script, Kana, KanaDataset, the artifact format,
                                   segment_to_stroke and merge_strokes — the repair
-  src/kanji.rs           (464)    Kanji, KanjiDataset, KanjiSource, parse_radical,
-                                  and the modules' account of the grade
-                                  reconciliation — the kanji half, N6
-  src/words.rs           (476)    Word, Ruby, WordDataset, the ladder's band_for
+  src/kanji.rs           (771)    Kanji, KanjiDataset, KanjiSource, parse_radical,
+                                  Radical and RadicalFamily, and the modules'
+                                  account of the grade reconciliation — the kanji
+                                  half, N6, plus the 214-radical table, N8
+  src/words.rs           (506)    Word, Ruby, WordDataset, the ladder's band_for
                                   and band_name — the vocabulary half, N7
   src/passages.rs        (387)    Passage, PassageToken, PassageDataset and the
                                   source-file parser — the reading half, N7
   src/readings.rs        (386)    Hepburn and Kunrei-shiki, and the enumeration
                                   hiragana_with_readings the input table is built from
-  src/curriculum.rs      (606)    the gojūon rows, lessons, yōon, and the confusions
+  src/curriculum.rs      (828)    the gojūon rows and lessons, yōon, the confusions,
+                                  and the grade-ordered kanji course — N8
   src/input.rs           (523)    romaji → kana, and the one-kana and whole-word checks
   src/drill.rs           (377)    the pair weights, the tally, and the draw — N3
-  src/lib.rs              (77)    re-exports, including hanzi-core's grade
+  src/lib.rs              (79)    re-exports, including hanzi-core's grade and
+                                  decomposition parser
   src/bin/prepare_kana.rs(246)    AnimCJK + KanjiVG → the artifact
-  src/bin/prepare_kanji.rs(646)   AnimCJK + KANJIDIC2 + KanjiVG → the artifact,
-                                  including the one written oracle exception
-  src/bin/prepare_words.rs(492)   JMdict (JSON and XML) + JmdictFurigana + the
+  src/bin/prepare_kanji.rs(821)   AnimCJK + KANJIDIC2 + KanjiVG → the artifact,
+                                  including the one written oracle exception, the
+                                  214-radical table and its two unnumbered forms
+  src/bin/prepare_words.rs(565)   JMdict (JSON and XML) + JmdictFurigana + the
                                   committed kanji artifact → the words artifact
   src/bin/prepare_passages.rs(357) lindera + UniDic → the segmented passages.
                                   Needs `--features nihongo-core/tokenize` and
                                   scripts/fetch-unidic.sh to have run once
   data/kana.bin.gz                COMMITTED, 70,917 bytes
-  data/kanji.bin.gz               COMMITTED, 3,073,516 bytes
+  data/kanji.bin.gz               COMMITTED, 3,236,713 bytes (format v2)
   data/words.bin.gz               COMMITTED, 601,816 bytes
   data/passages/*.txt             COMMITTED: the passage text and its glosses,
                                   which is what a person edits
   data/passages.bin.gz            COMMITTED, 502 bytes — the segmentation
   tests/kana_artifact.rs (261)    12 tests over the committed kana artifact
-  tests/kanji_artifact.rs(513)    21 tests over the committed kanji artifact,
-                                  including the whole grade reconciliation
-  tests/words_artifact.rs(390)    15 tests over the committed words artifact,
+  tests/kanji_artifact.rs(747)    25 tests over the committed kanji artifact: the
+                                  whole grade reconciliation, the 214-radical
+                                  table and the course
+  tests/words_artifact.rs(399)    15 tests over the committed words artifact,
                                   recomputing every band from the kanji one
   tests/passages_artifact.rs(247) 9 tests over the committed passages, including
                                   that they still match data/passages/*.txt
@@ -220,28 +243,39 @@ scripts/fetch-unidic.sh           fetches and builds the UniDic dictionary into
                                   built, and the only thing that needs either
 
 apps/nihongo-tutor/               the app
-  src-tauri/src/lib.rs   (836)    AppState and the eleven commands, all thin
+  src-tauri/src/lib.rs  (1757)    AppState and the 22 commands, all thin
   src-tauri/src/store.rs (280)    confusions.json: load, record, atomic write — N3
-  src-tauri/src/licences.rs(150)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (368)  16 tests locking the JSON the webview
+  src-tauri/src/licences.rs(157)  the notice catalogue, with the text compiled in
+  src-tauri/tests/ipc_contract.rs (722)  27 tests locking the JSON the webview
                                   reads *and the arguments it posts* (invariant 14)
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
-  src/App.svelte         (317)    the five views, the course, the board wiring
-  src/lib/KanaCanvas.svelte(243)  pointer capture and the animation frame
+  src/App.svelte         (360)    the seven views, the course, the board wiring
+  src/lib/KanaCanvas.svelte(248)  pointer capture and the animation frame. Draws
+                                  any `Drawable`, so a kana, a kanji and a radical
+                                  all come through it
   src/lib/ConfusionDrill.svelte(225)  the drill: one pair, one answer, remembered
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
-  src/lib/VocabularyPanel.svelte(332) the ladder, a band's words, the card — N7
-  src/lib/PassagePanel.svelte(306)  a passage with furigana and a tap on any word — N7
-  src/lib/WordCard.svelte(283)      one word: its furigana, its reading, its band
-  src/lib/words.ts        (137)     furigana and paging arithmetic, as pure functions
-  src/lib/words.test.ts   (137)     run by the ROOT project's vitest
+  src/lib/KanjiPanel.svelte(563)  the kanji course, the board and the card — N8
+  src/lib/RadicalsPanel.svelte(501)   the 214 head forms and their families — N8
+  src/lib/VocabularyPanel.svelte(298) the ladder, a band's words, the card — N7
+  src/lib/PassagePanel.svelte(261)  a passage with furigana and a tap on any word — N7
+  src/lib/WordCard.svelte(250)      one word: its furigana, its reading, its band
+  src/lib/kanji.ts       (112)    the course's and the radicals' arithmetic, as
+                                  pure functions — N8
+  src/lib/kanji.test.ts  (120)    run by the ROOT project's vitest
+  src/lib/words.ts       (101)    furigana and paging arithmetic, as pure functions
+  src/lib/words.test.ts  (131)    run by the ROOT project's vitest
   src/lib/board.ts        (97)    the board's arithmetic, as pure functions
   src/lib/board.test.ts   (99)    run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
-  src/lib/types.ts       (198)    the IPC shapes, and `Character = Kana`
-  src/lib/api.ts         (117)    one wrapper per command
+  src/lib/types.ts       (403)    the IPC shapes, and `Character = Drawable`
+  src/lib/api.ts         (211)    one wrapper per command
 ```
+
+The line counts are the current tree's, and they were last checked while writing
+invariant 24; a few of the earlier numbers in this table were stale by then, which
+is worth knowing before treating one as a measurement.
 
 `src-tauri/gen/schemas/` is committed, as it is for the other two apps.
 
@@ -358,15 +392,21 @@ checks `APP.version` against `tauri.conf.json`'s.
 display space, and because AnimCJK publishes kana in Make Me a Hanzi's own frame
 (§4), the transform is already right for a kana.
 
-`types.ts` does **not** fork it: it declares `export type Character = Kana`, so
-the file keeps the name it was written with and needs no edit. If `render.ts` is
-ever changed here, change it in the Chinese app too — or record why they diverge.
-This follows the pattern the repository already uses between its apps: Tone
-Trainer lifted `ToneChart.svelte` and `transcript.ts` the same way.
+`types.ts` does **not** fork it. It declares the name the file was written with,
+`export type Character`, and what that name is aliased to is this app's business:
+it was `= Kana` until the kanji screens were built, and it is now `= Drawable` — a
+structural shape with the four fields `render.ts` actually reads (`ch`,
+`strokeCount`, `outlines`, `medians`). That is what lets one canvas draw a kana, a
+kanji and one of the 214 radical head forms while the lifted file stays
+byte-identical. If `render.ts` is ever changed here, change it in the Chinese app
+too — or record why they diverge. This follows the pattern the repository already
+uses between its apps: Tone Trainer lifted `ToneChart.svelte` and `transcript.ts`
+the same way.
 
 `KanaCanvas.svelte` and `board.ts` are new, not lifted: Hanzi Tutor's
 `PracticeCanvas` carries tone-panel and verdict-display concerns this app does
-not have.
+not have. `KanaCanvas` keeps its name after growing a second and third caller, and
+its prop is `character` rather than `kana` for the same reason.
 
 ### 7. **The board's geometry belongs to the stylesheet; the script only sets resolution.**
 
@@ -448,8 +488,16 @@ data" section, which is the public record.
 
 `lessons()` filters through `dataset.get()`, and `KanaDataset::from_kana_teachable`
 drops anything without geometry, so the course cannot offer a kana the board
-cannot grade. This is the Japanese form of the Chinese invariants about not
-dead-ending a practice session.
+cannot grade. `kanji_lessons()` holds the same line for the character course: it is
+built from `KanjiDataset::of_grade`, so a grade can only offer characters the
+artifact actually holds, and every one of the 2,136 opens on the board. This is the
+Japanese form of the Chinese invariants about not dead-ending a practice session.
+
+**And the board resolves all three kinds of drawable thing**, which is the other
+half of the same rule: `grade_attempt` looks a character up as a kana, then a jōyō
+kanji, then a radical head form, because 92 of the 214 are not jōyō characters and
+the radicals screen would otherwise offer things it could not grade. A character
+that is none of the three — 鳩, say — is a message rather than a panic.
 
 ### 14. **An interface may post only the `GradeOptions` fields it means to change.**
 
@@ -505,26 +553,29 @@ Two practical consequences:
 ### 16. **The kanji artifact is committed too, and at 3 MB that is a decision.**
 
 `crates/nihongo-core/data/kanji.bin.gz` is in the repository — 2,136 jōyō kanji,
-**3,073,516 bytes**, against the kana artifact's 70,917. Same reasoning as
-invariant 1, and it needs saying separately because the size makes the opposite
-instinct reasonable: the Chinese artifact is generated and gitignored
-(`HANDOVER.md` invariant 7), and this one is fifty times the kana's. It is
-committed because a clone must build without the network *and* because it cannot
-be regenerated cheaply — it takes three upstreams, one of which is a pinned EDRDG
-snapshot.
+**3,236,713 bytes** since the radical table moved in (invariant 24), against the
+kana artifact's 70,917. Same reasoning as invariant 1, and it needs saying
+separately because the size makes the opposite instinct reasonable: the Chinese
+artifact is generated and gitignored (`HANDOVER.md` invariant 7), and this one is
+forty-five times the kana's. It is committed because a clone must build without the
+network *and* because it cannot be regenerated cheaply — it takes three upstreams,
+one of which is a pinned EDRDG snapshot.
 
 `prepare-kanji` refuses to write an artifact when the jōyō set is not exactly
 2,136 characters, when a character's geometry count is not one KANJIDIC2 lists,
 when KanjiVG disagrees and the character is not in the written exception table,
-when a jōyō character has no geometry or no oracle, or when any character would
-be written without usable geometry. `--allow-unchecked` is the only way past a
-missing oracle and must be passed deliberately — an artifact built with it rests
-on this code's own reading of the geometry and should not be committed.
+when a jōyō character has no geometry or no oracle, when any character would be
+written without usable geometry, or when the radical table is not the 214 head
+forms in order with geometry (invariant 24). `--allow-unchecked` is the only way
+past a missing oracle and must be passed deliberately — an artifact built with it
+rests on this code's own reading of the geometry and should not be committed.
 
-Nothing in the app reads this artifact yet, so there is no `build.rs` check for it
-the way `apps/nihongo-tutor/src-tauri/build.rs` checks the kana one. **N8 adds the
-`include_bytes!` and must add that check with it**, for the reason invariant 1
-gives.
+`apps/nihongo-tutor/src-tauri/build.rs` checks **both** artifacts before
+`tauri_build::build()`, which N8 added with the `include_bytes!` as this invariant
+required. The kanji artifact had sat in the repository unread for a whole
+milestone, which is exactly the state in which nobody notices it going missing —
+and that is the argument for the check being in the same commit as the reader,
+rather than one milestone later.
 
 ### 17. **A kanji's taught stroke count is the geometry's, and no merge is needed — measured, not assumed.**
 
@@ -699,6 +750,44 @@ through **two** of its signals, plus one condition on the spelling:
 part of membership: they would add about 1,200 words of technical and foreign
 terminology to a beginner's course.
 
+### 24. **The radical table is the 214 head forms, its order is the numbering, and a character's number is not its note.**
+
+Three claims, and each was measured rather than assumed. The table is what the
+radicals screen is built from, and the artifact carries it (format version 2,
+`KANJD002`) because it is **not derivable from the characters**: a character stores
+the *combining* form of its radical — 扌 in 持 — and the screen needs the head form
+手, for all 214, sixteen of which no jōyō character uses at all (90 爿 … 214 龠).
+
+* **The numbering is `dictionaryJa.txt`'s file order.** The file tags exactly 214
+  entries `radical`, and their position is the Kangxi number: 一, 丨, 丶 … That is
+  checked against KANJIDIC2's classical radical number, which agrees for **212** of
+  the 214. The other two — 戶 (63) and 靑 (174) — have no classical number in
+  KANJIDIC2 because EDRDG records the other form of the same radical (戸, 青), and
+  they are a written exception checked in both directions, so either file changing
+  fails the build.
+* **The entries' own glosses are never read.** Three of the 214 state the wrong
+  number — 耒 at position 127 says "Kangxi radical 136", 臼 at 134 says 133, 足 at
+  157 says 156 — so a pipeline that parsed the number out of the text would be
+  wrong three times in a way nothing else would catch. `prepare_kanji` does not
+  read the field at all, for the provenance reason invariant 18 gives as well.
+* **A character's classification and its annotation are two different things, and
+  they disagree for 18 characters.** `Kanji::radical_number` is KANJIDIC2's
+  classical radical, which is the *Kangxi dictionary's* index; `Kanji::radical`
+  and `radical_note` are AnimCJK's "the radical this character is written with" —
+  巡's note is ⻌ (辵), and Kangxi files 巡 under 47 巛; 郭's note says 阜 and
+  KANJIDIC2 classifies it under 163 邑, which is the correct side of 阝. The
+  families group by the **number**, because that is the classification and the
+  artifact is keyed by it, and `tests/kanji_artifact.rs` names all 18 so nobody
+  re-derives the other 2,118 as agreement.
+
+Two consequences worth carrying. **A radical the jōyō set never reaches is still
+returned**, with an empty family, because "no character in this set uses it" is a
+fact about the set and not a hole in the panel — and the head form has geometry
+regardless, so it can be written on the board. **And the board takes a radical as
+readily as a character**: `grade_attempt` resolves kana, jōyō kanji and radical head
+form, in that order, which is what makes "Write 水 on the board" work for the 92
+head forms that are not jōyō characters.
+
 ## 5. The verification loop
 
 Four layers, cheapest first. All of them are worth running before a commit that
@@ -761,23 +850,38 @@ failed rather than warned — unless `--allow-unchecked` was passed.
 `prepare-kanji` prints its own, and they are the numbers
 `tests/kanji_artifact.rs` pins: **KANJIDIC2 3.6.2 (2026-09-28), 7,007 graphics
 rows, 2,136 kanji (1,026 kyōiku, 1,110 remainder), 22,367 strokes, grades
-g1:80 g2:160 g3:200 g4:202 g5:193 g6:191 g8:1110, dictionaryJa 2,077 agree and 59
-differ (20 added in 2017, 39 reassigned), 2,136 checked against KanjiVG with 衷
-as the one written disagreement, artifact 3,074 KB from 6,334 KB**. Moving any of
-those numbers is a decision to take and record, not a rebuild: a different
-KANJIDIC2 snapshot, a different jōyō set, or a new oracle disagreement all mean
+g1:80 g2:160 g3:200 g4:202 g5:193 g6:191 g8:1110, radicals 214 (198 used by jōyō,
+16 unused), 1,222 strokes, 212 of the 214 numbers agreeing with KANJIDIC2 and 2 it
+cannot number (戶:63 靑:174), dictionaryJa 2,077 agree and 59 differ (20 added in
+2017, 39 reassigned), 2,136 checked against KanjiVG with 衷 as the one written
+disagreement, artifact 3,237 KB from 6,675 KB**. Moving any of those numbers is a
+decision to take and record, not a rebuild: a different KANJIDIC2 snapshot, a
+different jōyō set, a new oracle disagreement or a changed radical order all mean
 the tests need updating in the same commit.
+
+**The radical lines are the ones N8 added, and the two exceptions are the ones to
+read.** `radicals 214 (198 used by jōyō, 16 unused)` moving means the jōyō set or
+the classification changed; `radical numbering 212 agree …, 2 it cannot number
+(戶:63 靑:174)` moving means either a new disagreement — which the build refuses
+rather than prints — or that KANJIDIC2 has started numbering one of the two, in
+which case the written exception comes out of `RADICALS_KANJIDIC2_CANNOT_NUMBER`
+in the same commit.
 
 Both artifacts should be **byte-identical** to the committed ones. If one is not,
 something upstream moved, and the artifact test will say what changed.
 
 `prepare-words` prints its own, and they are the numbers `tests/words_artifact.rs`
-pins: **JMdict 3.6.2 (2026-09-28), the nf ranking from a JMdict_e created
-2026-10-02, furigana 2.3.1+2026-09-25, 22,430 ranked entries of 218,840, 21,902
-words in bands b1:655 b2:2284 b3:3284 b4:3072 b5:3408 b6:2705 b7:6494, 15 left out
-for having no kanji in the written form and 513 for a kanji the kanji artifact does
-not hold, 21,836 with furigana, artifact 834 KB from 1,893 KB**. It reads 118 MB of
-JSON and 63 MB of XML to do it, which takes a few seconds and is why the result is
+pins: **JMdict 3.6.2 (2026-09-28), the priority markers from a JMdict_e created
+2026-10-02 — 22,430 entries ranked and 2,471 marked common without a rank — furigana
+2.3.1+2026-09-25, 24,901 of 218,840 entries considered (193,939 not marked common),
+16,073 words in bands b1:585 b2:1781 b3:2408 b4:2232 b5:2412 b6:1834 b7:4821, 754
+left out for having no kanji at all, 7,629 whose kanji spelling is not the one
+EDRDG marks common, 445 with a kanji the kanji artifact does not hold, 16,022 with
+furigana, artifact 602 KB from 1,382 KB**. The vocabulary was **21,902** words
+before the common-spelling rule of invariant 23 was applied, which is why that
+invariant says "smaller and right rather than larger and wrong": the difference is
+7,629 spellings nobody writes plus the kana-only entries. It reads 118 MB of JSON
+and 63 MB of XML to do it, which takes a few seconds and is why the result is
 committed.
 
 `prepare-passages` prints its own, and they are what `tests/passages_artifact.rs`
@@ -874,6 +978,17 @@ position that the DOM does not have — and the DOM is the truth: a probe that r
 `scrollY=0` and the header at y36 while the image shows neither is a capture
 artefact, not a layout bug. Capture twice, and give the window a moment after a
 reload before believing what it shows.
+
+**N8 showed how far that can go.** Two captures of the same window, minutes apart
+and with nothing driving the app, came back as two *different views*: one showed the
+practice board with a confident hand-drawn あ that no learner had written, and the
+next showed the discrimination drill with a question answered and a save error. The
+DOM, asked directly, said `activeView=Practice`, `inkStrokes=0` — which is what a
+cold start is. Both images were artefacts. So the rule is not "capture twice and
+compare": it is **ask the DOM what it has, and treat the image as a second
+opinion**; and give the window a repaint (a reload) before a capture you mean to
+believe, because the two identical captures after that reload agreed with the DOM
+exactly.
 
 And when a window is blank, the harness above is the way in — but note that the
 window will also be blank if the page never ran at all. A probe log with *nothing*
@@ -1240,12 +1355,15 @@ jōyō remainder, and EDRDG's `nf` rank orders the words within a band. The
 alternative — frequency quantiles of roughly equal size — was rejected because a
 band would mix grade-1 and grade-6 kanji.
 
-**Still open is whether the *kanji course* uses the same ladder or a different one.**
-N8 orders characters by kyōiku grade, which is what `dictionaryJa.txt` supplies and
-what Japanese children actually learn in; the words ladder above is the same idea
-one level up, so the two should probably be the same ladder with the vocabulary
-arriving inside each band. Worth confirming before N8, because it decides whether a
-learner meets 大人 in the grade-1 band or the remainder.
+**It was open whether the *kanji course* uses the same ladder or a different one,
+and N8 settled it: the same one.** The course orders characters by kyōiku grade —
+which is what `dictionaryJa.txt` supplies and what Japanese children actually learn
+in — and its grade labels are `nihongo_core::grade_name`, which *is*
+`words::band_name`, so "kyōiku 3" means one rung in both screens and a learner
+meets a character and the vocabulary built on it in the same band (大人 arrives in
+the grade-1 band, because 大 is grade 1 and 人 is grade 1). `curriculum.rs`'s unit
+test asserts the two names cannot drift apart; a future divergence would have to be
+a deliberate second ladder rather than an accident of two string tables.
 
 ### What the app should say to a learner who already reads Chinese
 
@@ -1319,7 +1437,7 @@ in by `include_str!` and copied into the bundle as plain text:
 | --- | --- |
 | `agpl` | the app's own code, from the repository `LICENSE` |
 | `provenance` | `LICENSES.md`, bundled as `licences/PROVENANCE.md` |
-| `animcjk` | the kana geometry, **and the statement of what was changed** |
+| `animcjk` | the kana and kanji geometry, the 214 radical head forms, **and the statement of what was changed** |
 | `lgpl` | the licence the kana SVGs and the kana `graphics` file are under |
 | `arphic` | the other licence that file could be under, per invariant 12 |
 
@@ -1340,20 +1458,23 @@ first KANJIDIC2 data.
 
 ## 9. What is deliberately not built
 
-* **Kanji beyond the data layer.** The data layer is built and committed (N6,
-  `kanji.bin.gz`, 2,136 jōyō), so is the vocabulary it is taught through (N7's
-  `words.bin.gz`, 16,073 words with their own readings and furigana), and so are the
-  three reading passages (`passages.bin.gz`, segmented by UniDic at build time) —
-  but **nothing reads any of them yet**: no course, no screen, no command. What is
-  left of N7 is the **reading screen** that draws a passage with furigana and opens
-  a word card; everything else in N7 is data that now exists. Then N8's course and
-  panels. The feasibility work is in
-  `docs/research/JAPANESE_TUTOR_FEASIBILITY.md`.
-  **Two corrections to what this bullet used to say**: the KanjiVG-as-oracle trick
-  *does* transfer for stroke counts — 2,135 of 2,136 agree and 衷 is the written
-  exception (invariant 19) — and "kanji need `dictionaryJa.txt`'s own grade sets"
-  is the trap rather than the answer, since those are the pre-2017 grades and
-  KANJIDIC2's are the authority (invariant 18).
+* **The words a character is used in, on the character's card.** The kanji screen
+  shows the readings, the glosses, the radical and the components; it does not yet
+  list the vocabulary built on the character, though `words::of_kanji` exists for
+  exactly that and the course's ladder now matches the vocabulary's. A screen, not
+  a derivation — and the obvious next thing after N8.
+* **Kanji beyond the jōyō set.** 2,136 characters, their radical table and their
+  course are shipped (N6, N8), and so is the vocabulary they are taught through
+  (N7's `words.bin.gz`, 16,073 words with their own readings and furigana) and the
+  three reading passages (`passages.bin.gz`, segmented by UniDic at build time).
+  Jinmeiyō and hyōgai are deliberately out (invariant 16's refusal conditions and
+  invariant 21's membership rule), and adding them moves the vocabulary's size and
+  the course's shape with them. The feasibility work is in
+  `docs/research/JAPANESE_TUTOR_FEASIBILITY.md`. **Two corrections this bullet has
+  carried**: the KanjiVG-as-oracle trick *does* transfer for stroke counts — 2,135
+  of 2,136 agree and 衷 is the written exception (invariant 19) — and "kanji need
+  `dictionaryJa.txt`'s own grade sets" is the trap rather than the answer, since
+  those are the pre-2017 grades and KANJIDIC2's are the authority (invariant 18).
 * **Audio.** §7.
 * **Spaced repetition.** §7.
 * **A per-learner confusability *matrix*.** The drill does now learn which of the

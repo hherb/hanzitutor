@@ -40,8 +40,8 @@ references for no gain.
 | **N1** | Audio | Early, because audio is the one thing both halves need: a kana wants a sound and so does every kanji word. The system voices already work, so the desktop is wiring. |
 | **N2** | A review queue | Early, for the same reason — kanji study without spaced repetition is not study. The store is this app's own (invariant 15); the scheduler's code is shared. |
 | **N6** | **The kanji data layer** | **Shipped.** The artifact is committed and verified; see the milestone for the three things the measurement corrected. Vocabulary moved to N7, where it belongs. |
-| **N7** | Kanji through vocabulary | **Shipped.** Words with their own readings and furigana, a derived ladder, and two screens — Words and Read. The kanji artifact is embedded and unread: the character course is N8's. |
-| **N8** | The kanji course and screens | After the data. Mostly reuse of `RadicalsPanel` and the decomposition machinery. |
+| **N7** | Kanji through vocabulary | **Shipped.** Words with their own readings and furigana, a derived ladder, and two screens — Words and Read. The kanji artifact it embedded unread is now the character course's, at N8. |
+| **N8** | **The kanji course and screens** | **Shipped.** The course, the 214-radical table and the components screen, all served from the artifact the vocabulary already needed. See the milestone for what the measurement added — and for the one thing it decided that was open. |
 | **N9** | Distribution | Notices into the bundle, a listing, and the mobile shells. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | Last, and possibly never. The course teaches them and the input engine types them; a chart is a lookup convenience for a set a learner knows within the week. |
@@ -674,6 +674,68 @@ decomposition panel map onto the 214 radicals and the IDS strings.
 * Components shown by decomposition, from the IDS string.
 * The Chinese course still passes its own suite unchanged.
 
+### Shipped
+
+All four criteria are met, and one of them needed data the artifact did not have.
+
+**The radical table is in the artifact (format version 2).** The characters carry
+the *combining* form of their radical — 扌 in 持 — and a radicals screen needs the
+**head form** 手, for all 214, sixteen of which no jōyō character uses. That table
+is not derivable from the characters, so `kanji.bin.gz` carries it: all 214 head
+forms with their geometry, 1,222 strokes in all, 198 in use. The artifact grew from
+3,073,516 to 3,236,713 bytes (+5%), the magic moved to `KANJD002` because
+`postcard` writes the new field positionally, and `prepare-kanji` now refuses to
+write a table that is not the 214, in order, with usable geometry.
+
+**The numbering is a measurement, not a convention.** `dictionaryJa.txt` tags
+exactly **214** entries `radical`, and their file order is the Kangxi number: the
+first is 一, the second 丨, the third 丶. That claim was checked against KANJIDIC2's
+classical radical number, which agrees for **212** of the 214 and is *absent* for
+the other two — 戶 (63) and 靑 (174), which EDRDG files under the other form of the
+same radical (戸, 青). Both are written exceptions in the pipeline, checked in both
+directions. The entries' own glosses are not read at all, and that too was
+measured: **three of the 214 state the wrong number**.
+
+**A character's classification and its annotation are two different things, and
+they disagree for 18 characters.** KANJIDIC2's classical radical is the Kangxi
+dictionary's index — 巡 is 47 巛 there — while AnimCJK's note says which radical the
+character is written with (⻌ (辵)). The panel groups by the classification, because
+that is the one that is a number, and the artifact test names all 18 so the other
+2,118 are not assumed to agree.
+
+**The course.** Grades in `JOYO_GRADES` order — kyōiku 1 to 6, then the jōyō
+remainder — each sliced into lessons of ten, most frequent first inside a grade
+(KANJIDIC2's rank, unranked last). 2,136 characters become **216 lessons**, and the
+grade labels are the **vocabulary ladder's** names, which answers the question
+`HANDOVER_NIHONGO.md` §7 left open: the two are one ladder, so a learner meets a
+character and the words built from it in the same band. The first lesson is 日 一 人
+年 大 十 二 本 中 出.
+
+**The screens.** `Kanji` — grades, lessons, a character grid, the board and a card
+with the readings, the glosses, the radical in both shapes and the IDS components —
+and `Radicals` — all 214, ordered by what each unlocks or by number, searchable by
+glyph, number or a character that uses it. Every member of every family and every
+drawable component opens on the same board, and the board's `grade_attempt` command
+now resolves a kana, a jōyō kanji *or* a radical head form, because 92 of the 214
+are not jōyō characters and the course cannot reach them.
+
+**Reuse was real, not aspirational.** `hanzi-core::decompose::parse` reads
+AnimCJK's IDS strings unchanged — the twelve operators are the same twelve — and
+`render.ts` is untouched: `types.ts`'s `Character` became a structural `Drawable`,
+which is what let one canvas draw a kana, a kanji and a radical with no edit to the
+lifted file. `RadicalsPanel` is new rather than lifted (the Chinese one takes an
+injected loader and carries pinyin and etymology this data does not have), but its
+shape — the split, the size-first ordering, the family detail — is the same and is
+recorded as such.
+
+**What the live check found.** The three screens were driven through a DOM probe
+rather than assumed: a synthetic trace of 日's centre-lines graded **100/100** with
+all four scores 1.00, a family member opened 会 on the board, and the card's "See
+the family" link landed back on radical 9 人. One interface bug was caught this way:
+the shared `.tabs` rule capitalises its labels for `hiragana`/`katakana`, so the
+grade tabs rendered as *Jōyō Beyond The School Grades* — the ladder's own names,
+title-cased into proper nouns. The panel now overrides it and wraps.
+
 ---
 
 ## N9 — Distribution
@@ -758,15 +820,28 @@ Recorded here rather than as milestones because none of them is a feature.
   `nihongo-tutor`'s own `store.rs` is the precedent for N2.
 * **The kanji milestones are plans, not measurements.** The kana estimates in the
   feasibility report were good, but the kanji data sizes are from upstream
-  listings rather than from a build, and the artifact size is unknown.
-* **The nine jōyō where KanjiVG and KANJIDIC2 disagree on stroke count.** 謎, 賭,
-  葛, 餌, 遜, 僅, 遡, 餅 (KanjiVG one higher) and 牙 (KANJIDIC2 higher). It is 0.4%
-  of jōyō and it is a real decision rather than a rounding error: the artifact
-  checks against KanjiVG, so these nine need either an explicit exception list with
-  the count taken from KANJIDIC2, or a look at whether KanjiVG has split a stroke.
-  Either way it should be a written list in the pipeline, not a silent pass — the
-  kana equivalent is the 25 split characters, and that one turned out to be a
-  genuine upstream format quirk rather than an error.
+  listings rather than from a build, and the artifact size is unknown. *(N8 made
+  this one measurable: 3,236,713 bytes, +163 KB for the radical table.)*
+* **A radical's classical number and the radical a character is written with are
+  two different things, and they disagree for 18 characters.** 巡 is radical 47 巛
+  in the Kangxi dictionary — which is where a Kangxi-ordered dictionary files it —
+  while AnimCJK's note says ⻌ (辵); 郭's note says 阜 while KANJIDIC2 classifies it
+  under 163 邑, on the correct side of 阝. The panel groups by the **number**,
+  because that is the classification and it is the one the artifact is keyed by,
+  and `tests/kanji_artifact.rs` names all 18 so the other 2,118 are not assumed to
+  agree. A panel that grouped by the note instead would need a second, mixed rule.
+* **The kanji course has no words attached to a character yet.** A card shows the
+  readings, the glosses, the radical and the components, but not the vocabulary
+  built on it — the words artifact is keyed by text, and `words::of_kanji` exists
+  for exactly this, so it is a screen rather than a derivation.
+* **The nine jōyō where KanjiVG and KANJIDIC2 were said to disagree are not
+  real.** The measurement was corrected while building the data layer: 謎 賭 葛 餌
+  遜 僅 遡 餅 and 牙 are the characters where KANJIDIC2 lists **two** stroke counts
+  and the first is not the taught one, so comparing against "the" count invented
+  nine disagreements and hid the one that does exist. **衷** is the single written
+  exception — 10 strokes by the geometry and KANJIDIC2, 9 paths in KanjiVG — and
+  `prepare-kanji` checks both numbers. The nine are pinned in
+  `tests/kanji_artifact.rs` so the artefact cannot come back.
 
 ---
 

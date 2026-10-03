@@ -12,6 +12,8 @@
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import PassagePanel from "./lib/PassagePanel.svelte";
+  import KanjiPanel from "./lib/KanjiPanel.svelte";
+  import RadicalsPanel from "./lib/RadicalsPanel.svelte";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./lib/render";
   import * as api from "./lib/api";
   import type {
@@ -19,6 +21,7 @@
     DatasetStats,
     GradeReport,
     Kana,
+    KanjiPick,
     LessonView,
     ReadingCheck,
     ScriptName,
@@ -26,7 +29,9 @@
 
   let info = $state<AppInfo | null>(null);
   let stats = $state<DatasetStats | null>(null);
-  let view = $state<"practice" | "drill" | "words" | "read" | "licences">("practice");
+  let view = $state<
+    "practice" | "drill" | "kanji" | "radicals" | "words" | "read" | "licences"
+  >("practice");
   let script = $state<ScriptName>("hiragana");
   let course = $state<LessonView[]>([]);
   let lessonKey = $state<string | null>(null);
@@ -35,6 +40,38 @@
   let report = $state<GradeReport | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
+
+  /**
+   * A character or radical another screen has asked the kanji board to open.
+   *
+   * The radicals panel and the kanji course's own component chips both end up
+   * here: neither owns a board, and the kanji screen consumes this when it mounts
+   * or when it changes. `kind` says which lookup to make, because 92 of the 214
+   * head forms are not jōyō characters and cannot be fetched as one.
+   */
+  let kanjiPick = $state<KanjiPick | null>(null);
+
+  /** The radical family the radicals panel should open, if any. */
+  let selectedRadical = $state<number | null>(null);
+
+  /** Open a jōyō character on the kanji board. */
+  function openKanji(ch: string) {
+    kanjiPick = { kind: "kanji", ch };
+    view = "kanji";
+  }
+
+  /** Open one of the 214 radical head forms on the kanji board. */
+  function openRadical(number: number) {
+    kanjiPick = { kind: "radical", number };
+    view = "kanji";
+  }
+
+  /** The same panel, from its other side: the family a character belongs to. */
+  function seeRadical(number: number) {
+    kanjiPick = null;
+    selectedRadical = number;
+    view = "radicals";
+  }
 
   let typed = $state("");
   let check = $state<ReadingCheck | null>(null);
@@ -137,7 +174,8 @@
     {#if stats}
       <p class="sub">
         {stats.kana} kana · {stats.hiragana} hiragana · {stats.katakana} katakana ·
-        {stats.lessons} lessons · {stats.words.toLocaleString()} words
+        {stats.lessons} lessons · {stats.kanji} kanji · {stats.radicals} radicals ·
+        {stats.words.toLocaleString()} words
       </p>
     {/if}
   </header>
@@ -147,7 +185,7 @@
   {/if}
 
   <div class="views" role="tablist">
-    {#each [["practice", "Practice"], ["drill", "Tell them apart"], ["words", "Words"], ["read", "Read"], ["licences", "Licences"]] as const as [id, label] (id)}
+    {#each [["practice", "Practice"], ["drill", "Tell them apart"], ["kanji", "Kanji"], ["radicals", "Radicals"], ["words", "Words"], ["read", "Read"], ["licences", "Licences"]] as const as [id, label] (id)}
       <button
         role="tab"
         aria-selected={view === id}
@@ -216,7 +254,7 @@
             {kana.strokeCount === 1 ? "stroke" : "strokes"}</span>
         </div>
 
-        <KanaCanvas bind:this={board} {kana} {report} onchange={onStrokes} />
+        <KanaCanvas bind:this={board} character={kana} {report} onchange={onStrokes} />
 
         <div class="actions">
           <button onclick={() => board?.animate()}>Show stroke order</button>
@@ -301,6 +339,10 @@
 
   {:else if view === "drill"}
     <ConfusionDrill />
+  {:else if view === "kanji"}
+    <KanjiPanel bind:pick={kanjiPick} onradical={seeRadical} />
+  {:else if view === "radicals"}
+    <RadicalsPanel bind:focus={selectedRadical} onopen={openKanji} onpractise={openRadical} />
   {:else if view === "words"}
     <VocabularyPanel />
   {:else if view === "read"}
