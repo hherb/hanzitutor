@@ -579,12 +579,29 @@ carry no ruby — **gathered, never invented**.
   every word written with any kana and reported 17,366 where the answer is 21,902.
   The pipeline and an independent re-measurement now agree exactly.
 
-**Still to do for N7**, and both are real work rather than wiring: the
-**morphological analyser** (settled: a real one — `vibrato`/`lindera` + UniDic under
-its BSD option — rather than longest-match against this word list, so arbitrary
-text can be tokenised, and run at build time so the app keeps its no-download
-promise), and the **passage-reading screen** that taps a word and opens it. The
-vocabulary data they need is what shipped here.
+**Still to do for N7**, and both are real work rather than wiring:
+
+* **The morphological analyser**, and it is the largest dependency in the Japanese
+  part: `lindera` (MIT) and `vibrato` (MIT) are thin crates, and the dictionary
+  they need is **UniDic-CWJ 3.1.0, a 529 MB download**. It therefore runs at
+  **build time** — a `prepare-passages` step segments the passages and the artifact
+  carries the result — which is what keeps the app's "nothing is downloaded"
+  promise intact and keeps 529 MB out of the fetch every developer runs. UniDic is
+  triple-licensed (GPLv2 / LGPLv2.1 / BSD-New) and the **BSD option** is the one
+  taken, so it is AGPL-compatible; its licence and the exact dictionary version
+  belong in `LICENSES.md` beside the dictionaries before anything is bundled.
+* **The reading screen** that taps a word and opens it.
+
+**And the passages are written for this course, in-repo.** That is a decision rather
+than a default: Tatoeba is per-sentence licensed (some CC0, some BY, some **ND**,
+which must be filtered at import) and gives sentences rather than passages; Aozora
+Bunko is genuinely free but is pre-1930s literary Japanese, which is far harder than
+a beginner passage and uses none of the course's vocabulary; Wikipedia is modern but
+unlevelled. Authoring them costs writing and removes the licence question, and it
+buys a property none of the corpora have: **the vocabulary can be constrained to
+what the two artifacts already teach, and asserted** — the passage test should fail
+if a passage uses a word the course does not know and is not kana, a particle or a
+number. Kana-only passages come first, then band 1, then outward.
 
 ---
 
