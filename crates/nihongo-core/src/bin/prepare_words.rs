@@ -8,10 +8,11 @@
 //!   document by `scriptin/jmdict-simplified`. The authority for a word's written
 //!   form, its **own** reading (never composed from its characters), its English
 //!   glosses, and which forms are common.
-//! * `JMdict_e.gz` — EDRDG's own XML, read for **one thing only**: the
-//!   `nf01`–`nf48` priority rank. The JSON reformatting drops those tags
-//!   entirely, which was measured rather than assumed; the XML is scanned for
-//!   `<ent_seq>` and `<ke_pri>`/`<re_pri>` and nothing else is parsed.
+//! * `JMdict_e.gz` — EDRDG's own XML, read for **the priority markers and
+//!   nothing else**: the `nf01`–`nf48` rank, and the `ichi1`/`ichi2` markers that
+//!   name the most-common-word corpus. The JSON reformatting drops all of them,
+//!   which was measured rather than assumed; the XML is scanned for `<ent_seq>`
+//!   and `<ke_pri>`/`<re_pri>` and nothing else is parsed.
 //! * `JmdictFurigana.json` — [JmdictFurigana](https://github.com/Doublevil/JmdictFurigana)
 //!   (MIT), which puts each reading over the characters it belongs to. Its file
 //!   starts with a **UTF-8 BOM**, which `serde_json` rejects with a message about
@@ -63,6 +64,32 @@ struct Form {
     text: String,
     #[serde(default)]
     common: bool,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+/// The tags that mark a written form as one nobody actually writes.
+///
+/// EDRDG marks the *entry* common but can still tag the spelling: `ateji` is a
+/// kanji spelling chosen for its sound (型録 for カタログ), and `ik`/`oK`/`rK`/`sK`
+/// are irregular, outdated, rare and search-only kanji forms. 173 of the entries
+/// this pipeline would otherwise carry have a common form carrying one of these,
+/// and teaching them would teach 彼処 for あそこ.
+///
+/// It is not a cosmetic filter: the words it removes are words whose ordinary
+/// spelling is kana, and a *kanji* course that spells them with kanji is teaching
+/// a spelling its learner will never meet.
+const RARE_SPELLINGS: [&str; 7] = ["ateji", "ik", "oK", "rK", "sK", "io", "gikun"];
+
+impl Form {
+    /// Whether this is a spelling worth teaching.
+    fn is_teachable(&self) -> bool {
+        self.common
+            && !self
+                .tags
+                .iter()
+                .any(|tag| RARE_SPELLINGS.contains(&tag.as_str()))
+    }
 }
 
 #[derive(Deserialize)]
@@ -160,8 +187,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let kanji = KanjiDataset::from_gzip_bytes(&std::fs::read(&kanji_path)?)
         .map_err(|e| format!("{}: {e}", kanji_path.display()))?;
 
-    // ---- EDRDG's nf ranking, from the XML the JSON reformatting does not carry
-    let (nf, nf_source_date) = read_nf_ranks(&xml_path)?;
+    // ---- EDRDG's priority markers, from the XML the JSON reformatting drops
+    let (priorities, nf_source_date) = read_priorities(&xml_path)?;
 
     // ---- JMdict: written forms, readings, glosses ---------------------------
     let document: Jmdict = serde_json::from_reader(BufReader::new(File::open(&jmdict_path)?))
@@ -194,24 +221,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut words: Vec<Word> = Vec::new();
     let mut seen: std::collections::BTreeSet<(String, String)> = std::collections::BTreeSet::new();
     let mut ranked = 0usize;
+    let mut common_but_unranked = 0usize;
+    let mut not_common = 0usize;
     let mut kana_only = 0usize;
+    let mut no_common_spelling = 0usize;
     let mut outside_the_kanji_set = 0usize;
     let mut without_furigana: Vec<String> = Vec::new();
 
     for entry in &document.words {
-        let Some(&rank) = nf.get(&entry.id) else {
+        // Two of EDRDG's signals, and either is enough: the `nf` rank, or the
+        // `ichi` marker. See `Priority::is_common` for why the rank alone drops
+        // 行く and 本.
+        let priority = priorities.get(&entry.id).copied().unwrap_or_default();
+        if !priority.is_common() {
+            not_common += 1;
             continue;
-        };
-        ranked += 1;
+        }
+        if priority.nf.is_some() {
+            ranked += 1;
+        } else {
+            common_but_unranked += 1;
+        }
 
-        // The written form: the first one EDRDG marks common, or the first.
-        let Some(form) = entry
-            .kanji
-            .iter()
-            .find(|form| form.common)
-            .or_else(|| entry.kanji.first())
-        else {
-            kana_only += 1;
+        // The written form: the first one EDRDG marks common **and** does not tag
+        // as a rare or ateji spelling. There is deliberately no fallback to an
+        // unmarked form — 7,160 entries of this dictionary are common words whose
+        // kanji spelling is *not* what people write (あそこ, おにぎり, さっき), and
+        // teaching those as kanji words would be worse than leaving them to the
+        // kana course.
+        let Some(form) = entry.kanji.iter().find(|form| form.is_teachable()) else {
+            if entry.kanji.is_empty() {
+                kana_only += 1;
+            } else {
+                no_common_spelling += 1;
+            }
             continue;
         };
         let text = &form.text;
@@ -286,7 +329,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             furigana: aligned,
             meaning,
             band,
-            nf: rank,
+            nf: priority.nf,
         });
     }
 
@@ -298,7 +341,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let band_counts = dataset.band_counts();
     let total: usize = band_counts.iter().map(|(_, count)| count).sum();
     let with_furigana = dataset.words().iter().filter(|w| w.has_furigana()).count();
-    let total_nf: usize = dataset.words().iter().map(|w| w.nf as usize).sum();
+    let total_nf: usize = dataset
+        .words()
+        .iter()
+        .filter_map(|w| w.nf)
+        .map(usize::from)
+        .sum();
+    let ranked_words = dataset.words().iter().filter(|w| w.nf.is_some()).count();
 
     let payload = postcard::to_allocvec(&WordsArtifact::new(dataset.words().to_vec(), source))?;
     let mut raw = Vec::with_capacity(payload.len() + WORDS_ARTIFACT_MAGIC.len());
@@ -328,20 +377,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         dataset.source().jmdict_version,
         dataset.source().jmdict_date
     );
-    println!("  nf ranking             from JMdict_e created {}", dataset.source().nf_source_date);
+    println!(
+        "  priority markers       from JMdict_e created {}, {} entries ranked and {} marked \
+         common without a rank",
+        dataset.source().nf_source_date, ranked, common_but_unranked
+    );
     println!("  furigana               {}", dataset.source().furigana_release);
-    println!("  ranked entries         {ranked} of {} JMdict entries", document.words.len());
+    println!(
+        "  considered             {} of {} JMdict entries ({not_common} not marked common)",
+        ranked + common_but_unranked,
+        document.words.len()
+    );
     println!("  words                  {total} in {bands:?}");
     println!(
-        "  left out               {kana_only} with no kanji in the written form, \
-         {outside_the_kanji_set} with a kanji the artifact does not hold"
+        "  left out               {kana_only} with no kanji, {no_common_spelling} whose kanji \
+         spelling is not the common one, {outside_the_kanji_set} with a kanji the artifact does \
+         not hold"
     );
     println!(
         "  furigana               {with_furigana} of {total} ({} without, gathered rather \
          than invented)",
         without_furigana.len()
     );
-    println!("  mean nf rank           {:.1}", total_nf as f64 / total.max(1) as f64);
+    println!(
+        "  mean nf rank           {:.1} over the {ranked_words} ranked words",
+        total_nf as f64 / ranked_words.max(1) as f64
+    );
     println!(
         "  artifact               {:.0} KB compressed from {:.0} KB ({:.0}%)",
         artifact_bytes as f64 / 1e3,
@@ -379,12 +440,35 @@ fn applies(kana: &KanaForm, text: &str) -> bool {
             .any(|applies_to| applies_to == "*" || applies_to == text)
 }
 
-/// Read EDRDG's `nf01`–`nf48` ranking out of `JMdict_e.gz`, with the file's own
+/// What EDRDG says about one entry's commonness.
+#[derive(Clone, Copy, Debug, Default)]
+struct Priority {
+    /// The `nf01`–`nf48` frequency block, smaller being more frequent.
+    nf: Option<u8>,
+    /// Whether the entry carries `ichi1`/`ichi2`, EDRDG's marker for the words of
+    /// its most-common-word corpus. Some of those carry no `nf` rank at all —
+    /// 行く and 本 among them — which is why membership is this `or` and not the
+    /// rank alone.
+    ichi: bool,
+}
+
+impl Priority {
+    /// Whether EDRDG considers the entry worth teaching.
+    ///
+    /// `spec1`/`spec2` (specialist vocabulary) and `gai1` (loanwords) are
+    /// deliberately not part of this: they would add about 1,200 words of
+    /// technical and foreign terminology to a beginner's course.
+    fn is_common(self) -> bool {
+        self.nf.is_some() || self.ichi
+    }
+}
+
+/// Read EDRDG's priority markers out of `JMdict_e.gz`, with the file's own
 /// creation date.
 ///
 /// A targeted scan rather than an XML parser, and that is a deliberate choice:
-/// the only things wanted are the entry's `ent_seq` and the `nf` tokens in its
-/// `ke_pri`/`re_pri` elements, both of which are ASCII tokens with no entities and
+/// the only things wanted are the entry's `ent_seq` and the tokens in its
+/// `ke_pri`/`re_pri` elements, all of which are ASCII words with no entities and
 /// no nesting to speak of. Pulling in an XML dependency to read two fields would
 /// be the tail wagging the dog. The join key is `ent_seq`, which is the `id` the
 /// JSON reformatting publishes, so the two files meet exactly.
@@ -392,11 +476,13 @@ fn applies(kana: &KanaForm, text: &str) -> bool {
 /// The entry with the **best** (smallest) nf wins when a word has several, which
 /// is what "this word is in the 500-word block `nf`" means for the word as a
 /// whole rather than for one of its spellings.
-fn read_nf_ranks(path: &PathBuf) -> Result<(HashMap<String, u8>, String), Box<dyn std::error::Error>> {
+fn read_priorities(
+    path: &PathBuf,
+) -> Result<(HashMap<String, Priority>, String), Box<dyn std::error::Error>> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(flate2::read::GzDecoder::new(file));
 
-    let mut ranks: HashMap<String, u8> = HashMap::new();
+    let mut priorities: HashMap<String, Priority> = HashMap::new();
     let mut current: Option<String> = None;
     let mut created = String::new();
     let mut line = String::new();
@@ -423,31 +509,35 @@ fn read_nf_ranks(path: &PathBuf) -> Result<(HashMap<String, u8>, String), Box<dy
             }
             continue;
         }
-        for token in nf_tokens(&line) {
+        for token in priority_tokens(&line) {
             if let Some(id) = &current {
-                let rank = token.parse::<u8>().unwrap_or(0);
-                if rank >= 1 {
-                    ranks
-                        .entry(id.clone())
-                        .and_modify(|best| *best = (*best).min(rank))
-                        .or_insert(rank);
+                let entry = priorities.entry(id.clone()).or_default();
+                if let Some(number) = token.strip_prefix("nf") {
+                    if let Ok(rank) = number.parse::<u8>() {
+                        if rank >= 1 {
+                            entry.nf = Some(entry.nf.map_or(rank, |best| best.min(rank)));
+                        }
+                    }
+                } else if token == "ichi1" || token == "ichi2" {
+                    entry.ichi = true;
                 }
             }
         }
     }
 
-    if ranks.is_empty() {
+    if priorities.is_empty() {
         return Err(format!(
-            "{} yielded no nf ranks — is it EDRDG's JMdict_e, and has the format changed?",
+            "{} yielded no priority markers — is it EDRDG's JMdict_e, and has the format \
+             changed?",
             path.display()
         )
         .into());
     }
-    Ok((ranks, created))
+    Ok((priorities, created))
 }
 
-/// The `nf` numbers in one line's `<ke_pri>`/`<re_pri>` elements.
-fn nf_tokens(line: &str) -> Vec<&str> {
+/// The tokens in one line's `<ke_pri>`/`<re_pri>` elements.
+fn priority_tokens(line: &str) -> Vec<&str> {
     let mut out = Vec::new();
     for element in ["ke_pri", "re_pri"] {
         let open = format!("<{element}>");
@@ -456,10 +546,7 @@ fn nf_tokens(line: &str) -> Vec<&str> {
         while let Some(start) = rest.find(&open) {
             let after = &rest[start + open.len()..];
             let Some(end) = after.find(&close) else { break };
-            let value = after[..end].trim();
-            if let Some(number) = value.strip_prefix("nf") {
-                out.push(number);
-            }
+            out.push(after[..end].trim());
             rest = &after[end + close.len()..];
         }
     }

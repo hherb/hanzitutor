@@ -24,6 +24,8 @@
     "prepare-kana": "./scripts/with-cargo-env.sh cargo run --release -p nihongo-core --features nihongo-core/prepare --bin prepare-kana",
     "prepare-kanji": "./scripts/with-cargo-env.sh cargo run --release -p nihongo-core --features nihongo-core/prepare --bin prepare-kanji",
     "prepare-words": "./scripts/with-cargo-env.sh cargo run --release -p nihongo-core --features nihongo-core/prepare --bin prepare-words",
+    "prepare-passages": "./scripts/with-cargo-env.sh cargo run --release -p nihongo-core --features nihongo-core/tokenize --bin prepare-passages",
+    "fetch-unidic": "./scripts/fetch-unidic.sh",
     "test": "./scripts/with-cargo-env.sh cargo test --workspace --features hanzi-core/prepare --features nihongo-core/prepare",
     "test:core": "./scripts/with-cargo-env.sh cargo test -p hanzi-core --features prepare",
     "test:kana": "./scripts/with-cargo-env.sh cargo test -p nihongo-core --features nihongo-core/prepare",

@@ -1,0 +1,5 @@
+# key: gakko
+# title: がっこう
+# gloss: Every day I go to school. The teacher reads a book.
+毎日、学校へ行きます。
+先生は本を読みます。

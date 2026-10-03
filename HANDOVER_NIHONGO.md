@@ -50,7 +50,15 @@ If you *do* need to regenerate them, that is the one path that fetches:
 pnpm run prepare-kana
 pnpm run prepare-kanji
 pnpm run prepare-words         # needs the kanji artifact first — it decides what is teachable
+./scripts/fetch-unidic.sh      # once only: 134 MB of UniDic, built into .lindera/
+pnpm run prepare-passages      # needs the words artifact — it holds the passages to it
 ```
+
+`fetch-unidic.sh` is separate from `fetch-data.sh` on purpose, and so is the
+`tokenize` feature: the analyser is 100-odd crates and a 134 MB dictionary that only
+the passage pipeline needs, and nothing that ships depends on it. lindera's build
+script downloads **nothing** unless that script names a cache directory, so no
+ordinary `cargo test` or `cargo clippy` ever touches the network.
 
 `fetch-data.sh` pulls three things for the Japanese part, into `data/raw/`
 (which is gitignored): `graphicsJaKana.txt`, 177 SVGs under `svgsJaKana/`, and
@@ -87,7 +95,7 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **187
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **206
 tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
 
 | | |
@@ -103,11 +111,12 @@ tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
 | Kanji readings | 2,854 on, 3,904 kun — 2,551 of them carrying okurigana and 364 affixes |
 | Kanji structure | 198 of the 214 radicals in use, 2,134 IDS decompositions, 2,037 frequency ranks |
 | Kanji oracle | 2,135 of 2,136 agree with KanjiVG; 衷 is the one written exception (invariant 19) |
-| Vocabulary | 21,902 words — every one with a kanji the board can draw, from EDRDG's ranked vocabulary |
-| Bands | 655 / 2,284 / 3,284 / 3,072 / 3,408 / 2,705 / 6,494 — this project's ladder, not the JLPT's (invariant 20) |
-| Furigana | 21,836 of 21,902 aligned (99.7%); the other 66 carry their reading and no ruby |
-| Tests | nihongo-core 137, nihongo-tutor 50, frontend 11 of the 80 |
-| Artifact | kana 70,917, kanji 3,073,516 and words 833,858 bytes — all gzip + magic + postcard |
+| Vocabulary | 16,073 words — every one with a kanji the board can draw, from EDRDG's common vocabulary (invariant 23) |
+| Bands | 585 / 1,781 / 2,408 / 2,232 / 2,412 / 1,834 / 4,821 — this project's ladder, not the JLPT's (invariant 20) |
+| Furigana | 16,022 of 16,073 aligned (99.7%); the other 51 carry their reading and no ruby |
+| Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
+| Tests | nihongo-core 156, nihongo-tutor 50, frontend 11 of the 80 |
+| Artifact | kana 70,917, kanji 3,073,516, words 601,816 and passages 502 bytes — all gzip + magic + postcard |
 | Learner data | one file, `confusions.json`, in the app's own data directory |
 | Version | both crates 0.1.0, and the app's to match |
 
@@ -115,12 +124,11 @@ The app runs and has been looked at, all of it: the course, the board, stroke-or
 animation, handwriting grading, the discrimination drill, the typing box, the
 katakana tab and the Licences panel have each been seen working on a display.
 
-**The kanji and vocabulary halves are data only so far.** Three artifacts are
-committed, tested and documented, and nothing in the app reads the kanji or words
-ones yet: no course, no screen, no command, and no tokeniser. That is
-`ROADMAP_NIHONGO.md` N7 (whose vocabulary half has shipped: see its "Shipped — the
-words artifact") and N8, and each milestone's own record includes what its
-measurement corrected.
+**The kanji, vocabulary and passage halves are data only so far.** Four artifacts
+are committed, tested and documented, and **nothing in the app reads any of them**:
+no course, no screen, no command. That is `ROADMAP_NIHONGO.md` N7 (whose data half
+has shipped: see its two "Shipped" sections) and N8, and each milestone's own record
+includes what its measurement corrected.
 
 **The drill is the one part that learns anything about its learner** (roadmap N3).
 It used to draw a kana from a pool and throw the answer away; it now draws a *pair*,
@@ -171,27 +179,41 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
   src/kanji.rs           (464)    Kanji, KanjiDataset, KanjiSource, parse_radical,
                                   and the modules' account of the grade
                                   reconciliation — the kanji half, N6
-  src/words.rs           (472)    Word, Ruby, WordDataset, the ladder's band_for
+  src/words.rs           (476)    Word, Ruby, WordDataset, the ladder's band_for
                                   and band_name — the vocabulary half, N7
+  src/passages.rs        (387)    Passage, PassageToken, PassageDataset and the
+                                  source-file parser — the reading half, N7
   src/readings.rs        (386)    Hepburn and Kunrei-shiki, and the enumeration
                                   hiragana_with_readings the input table is built from
   src/curriculum.rs      (606)    the gojūon rows, lessons, yōon, and the confusions
   src/input.rs           (523)    romaji → kana, and the one-kana and whole-word checks
   src/drill.rs           (377)    the pair weights, the tally, and the draw — N3
-  src/lib.rs              (72)    re-exports, including hanzi-core's grade
+  src/lib.rs              (77)    re-exports, including hanzi-core's grade
   src/bin/prepare_kana.rs(246)    AnimCJK + KanjiVG → the artifact
   src/bin/prepare_kanji.rs(646)   AnimCJK + KANJIDIC2 + KanjiVG → the artifact,
                                   including the one written oracle exception
-  src/bin/prepare_words.rs(478)   JMdict (JSON and XML) + JmdictFurigana + the
+  src/bin/prepare_words.rs(492)   JMdict (JSON and XML) + JmdictFurigana + the
                                   committed kanji artifact → the words artifact
+  src/bin/prepare_passages.rs(357) lindera + UniDic → the segmented passages.
+                                  Needs `--features nihongo-core/tokenize` and
+                                  scripts/fetch-unidic.sh to have run once
   data/kana.bin.gz                COMMITTED, 70,917 bytes
   data/kanji.bin.gz               COMMITTED, 3,073,516 bytes
-  data/words.bin.gz               COMMITTED, 833,858 bytes
+  data/words.bin.gz               COMMITTED, 601,816 bytes
+  data/passages/*.txt             COMMITTED: the passage text and its glosses,
+                                  which is what a person edits
+  data/passages.bin.gz            COMMITTED, 502 bytes — the segmentation
   tests/kana_artifact.rs (261)    12 tests over the committed kana artifact
   tests/kanji_artifact.rs(513)    21 tests over the committed kanji artifact,
                                   including the whole grade reconciliation
-  tests/words_artifact.rs(337)    13 tests over the committed words artifact,
+  tests/words_artifact.rs(390)    15 tests over the committed words artifact,
                                   recomputing every band from the kanji one
+  tests/passages_artifact.rs(247) 9 tests over the committed passages, including
+                                  that they still match data/passages/*.txt
+
+scripts/fetch-unidic.sh           fetches and builds the UniDic dictionary into
+                                  .lindera/ (gitignored). 134 MB down, 190 MB
+                                  built, and the only thing that needs either
 
 apps/nihongo-tutor/               the app
   src-tauri/src/lib.rs   (836)    AppState and the eleven commands, all thin
@@ -620,6 +642,54 @@ lists full-width numerals such as `１０００` under `kanji`, so 15 words have
 character at all; without an explicit `is_kanji` check they are kept and land in band
 1, because an empty grade list falls back to band 1.
 
+### 22. **A passage is held to the vocabulary, and the analyser runs at build time.**
+
+`prepare-passages` **refuses to write** an artifact containing a kanji the words
+artifact does not teach, naming every offending token. A passage with a character
+the learner has no card for is one they can neither read nor tap, so this is an
+error rather than a warning — and `tests/passages_artifact.rs` re-checks the
+committed artifact against the committed vocabulary, which catches a passage edited
+*after* it was generated. Kana, particles, punctuation and numbers are free; the
+constraint is on kanji.
+
+**The analyser is a build-time dependency and must stay one.** `lindera` (MIT) and
+UniDic segment the passages when the artifact is built; the app renders tokens it
+was handed and tokenises nothing. That is not an optimisation: UniDic's
+`unidic-mebac-2.1.2` archive is a 134 MB download and 190 MB built, and shipping it
+would break the promise the rest of the app keeps. Two things follow:
+
+* the pipeline is behind the **`tokenize` feature**, which `pnpm test` and
+  `pnpm run check:rust` deliberately do **not** enable — they use `prepare`, which
+  covers the three pipelines that write shipped artifacts, while this one needs 100
+  more crates. `lint it deliberately` when you touch it (see §5);
+* lindera's build script downloads **nothing** unless
+  `LINDERA_BUILD_DICTIONARY_CACHE_DIR` names a directory, which only
+  `scripts/fetch-unidic.sh` does. Never call the fetch from a build.
+
+### 23. **A word's membership is EDRDG's judgement, not one of its fields.**
+
+The vocabulary's rule is EDRDG's own "this word is worth teaching", expressed
+through **two** of its signals, plus one condition on the spelling:
+
+* **`nf01`–`nf48`, or `ichi1`/`ichi2`.** Either is enough. The rank alone drops 行く
+  (to go) and 本 (book), which carry `ichi1` and no rank — `nf05` belongs to a
+  different entry of 本, read もと — and 2,471 entries are in that position. That is
+  also why `Word::nf` is an `Option`, and why unranked words sort *after* the ranked
+  ones in their band rather than in front of them.
+* **The written form must be one EDRDG marks common.** No fallback to an unmarked
+  form: 7,629 entries are common words whose kanji spelling is not what anyone
+  writes — 彼処 for あそこ, お握り for おにぎり, 先 for さっき, 型録 for カタログ — and
+  a further 173 carry an explicit `rK`/`sK`/`ateji` tag on their only common form.
+  A kanji course that taught those would teach spellings its learner will never
+  meet, so they are left to the kana course. **This is why the vocabulary is 16,073
+  and not 21,902: smaller and right rather than larger and wrong.**
+* **Every kanji must be in the committed kanji artifact** (invariant 21), which is
+  what keeps jinmeiyō and hyōgai vocabulary out until those sets exist.
+
+`spec1`/`spec2` (specialist vocabulary) and `gai1` (loanwords) are deliberately not
+part of membership: they would add about 1,200 words of technical and foreign
+terminology to a beginner's course.
+
 ## 5. The verification loop
 
 Four layers, cheapest first. All of them are worth running before a commit that
@@ -644,13 +714,20 @@ pnpm run test:web                               # from the ROOT — it owns vite
 ```
 
 **Layers 2 and 3 carry both `prepare` features deliberately, and layers 1 and 4
-being narrower is deliberate too.** `prepare-kana` and `prepare-kanji` declare
-`required-features = ["prepare"]`, so a plain `cargo clippy --workspace` does not
-compile them at all — the two binaries that write the committed artifacts would be
-the only Rust in the tree that no lint ever sees. `--features nihongo-core/prepare`
-closes that, and it is why `pnpm test` and `pnpm run check:rust` (what CI runs, see
-`.github/workflows/ci.yml`) spell it out rather than relying on
-`--all-targets`.
+being narrower is deliberate too.** `prepare-kana`, `prepare-kanji` and
+`prepare-words` declare `required-features = ["prepare"]`, so a plain
+`cargo clippy --workspace` does not compile them at all — the binaries that write
+the committed artifacts would be the only Rust in the tree that no lint ever sees.
+`--features nihongo-core/prepare` closes that, and it is why `pnpm test` and
+`pnpm run check:rust` (what CI runs, see `.github/workflows/ci.yml`) spell it out
+rather than relying on `--all-targets`.
+
+**`tokenize` is the one feature deliberately left out of that list** (invariant 22):
+`prepare-passages` needs `lindera`, which is 100-odd crates for a binary whose
+output is committed and whose tests need no analyser at all. Lint it by name when
+you touch it — the command is in "Regenerating the artifacts" above — and note that
+enabling it still downloads nothing, because lindera's build script is inert unless
+`LINDERA_BUILD_DICTIONARY_CACHE_DIR` is set.
 
 `apps/nihongo-tutor/src/lib/board.test.ts` is picked up by the **root** project's
 vitest, through the `include` list in `vitest.config.ts`. The app itself installs
@@ -693,6 +770,25 @@ for having no kanji in the written form and 513 for a kanji the kanji artifact d
 not hold, 21,836 with furigana, artifact 834 KB from 1,893 KB**. It reads 118 MB of
 JSON and 63 MB of XML to do it, which takes a few seconds and is why the result is
 committed.
+
+`prepare-passages` prints its own, and they are what `tests/passages_artifact.rs`
+pins: **lindera 6.2 with unidic-mecab-2.1.2, 3 passages, 7 lines, 37 tokens with 14
+linked to a vocabulary word, every kanji-bearing token taught, 502 bytes**. It
+refuses to write at all if a passage uses a kanji the vocabulary does not hold,
+naming the tokens. It needs the dictionary first:
+
+```bash
+./scripts/fetch-unidic.sh      # once: 134 MB down, 190 MB built into .lindera/
+pnpm run prepare-passages
+```
+
+To lint or test the passage pipeline you have to ask for its feature, because
+`pnpm test` and `pnpm run check:rust` deliberately do not:
+
+```bash
+./scripts/with-cargo-env.sh cargo clippy -p nihongo-core --features nihongo-core/tokenize \
+  --all-targets -- -D warnings
+```
 
 `fetch-data.sh` fetches the kanji oracle with `xargs -P 4` and every download
 carries `--retry 4`, which is not decoration — see trap 11. `JmdictFurigana.json`
@@ -990,6 +1086,54 @@ such as `１０００` under `kanji`, so "has a kanji form" is not "contains a k
 Those 15 words have no kanji character at all and would land in band 1, because an
 empty grade list falls back to it.
 
+### 14. UniDic's `reading` field is the **base** form's reading, and the field next to it is pronunciation
+
+Segmenting a passage looks like a two-line job until the furigana comes out wrong.
+Two fields look like "how is this word read", and **neither is right on its own**:
+
+| token | `reading` | `phonological_surface_form` |
+| --- | --- | --- |
+| 行き (行きます) | イク ✗ | イキ ✓ |
+| 食べ (食べます) | タベル ✗ | タベ ✓ |
+| 今日 | キョウ ✓ | キョー ✗ |
+| は (particle) | ハ ✓ | ワ ✗ |
+
+`reading` is the reading of the **base** form for an inflected word, so using it
+draws 行き(いく) and 食べ(たべる)ます. The phonological field is the surface's, but
+it is *pronunciation*: きょー for きょう, and ワ for a particle written は. The rule
+that works is to compare `orthographic_surface_form` with `orthographic_base_form`
+and use `reading` when they are equal, the pronunciation field when they are not —
+and to let the **course's own reading win** when the token is written exactly as the
+vocabulary word is, so a passage saying 私 cannot disagree with the card behind it
+about わたし and わたくし. `tests/passages_artifact.rs` asserts all four rows.
+
+Two smaller ones from the same afternoon. The link a tapped word opens is
+`lexeme`, the dictionary form, because the surface is 行き and the entry is 行く;
+and `lexeme` for 私 is `私-代名詞`, so the surface is the fallback rather than the
+other way round.
+
+### 15. `find` on a directory that does not exist kills a `set -e` script silently
+
+`scripts/fetch-unidic.sh` opened with
+
+```bash
+found=$(find "$CACHE" -maxdepth 2 -type d -name unidic 2>/dev/null | head -1)
+```
+
+under `set -euo pipefail`. `find` exits 1 when the directory is not there, `2>/dev/null`
+hides why, `pipefail` propagates the 1, and `set -e` aborts — **before a single line
+is printed**. The log was empty and the exit status was 1, which is the least
+debuggable shape a failure can have. The directory is now created first, the
+pipeline ends in `|| true`, and the script says what it is doing before it does it.
+
+The same evening's second version of that mistake was a name: the built dictionary
+is at `.lindera/<version>-fmt<n>/lindera-unidic`, from lindera-unidic's own
+`FetchParams::output_dir`. Both the script and `prepare-passages` were looking for a
+directory called `unidic`, found nothing, and the pipeline reported a missing
+dictionary that was sitting right there. Look for the name the producer chose, and
+check for `metadata.json` so a half-written directory is not mistaken for a built
+one.
+
 ---
 
 ## 7. Open decisions
@@ -1151,13 +1295,14 @@ first KANJIDIC2 data.
 ## 9. What is deliberately not built
 
 * **Kanji beyond the data layer.** The data layer is built and committed (N6,
-  `kanji.bin.gz`, 2,136 jōyō) and so is the vocabulary it is taught through (N7's
-  `words.bin.gz`, 21,902 words with their own readings and furigana), but **nothing
-  reads either yet**: no course, no screen, no command. Still to build for N7 are
-  the **morphological analyser** — settled as a real one, `vibrato`/`lindera` +
-  UniDic under its BSD option, run at build time so the app keeps its no-download
-  promise — and the **passage-reading screen**; then N8's course and panels. The
-  feasibility work is in `docs/research/JAPANESE_TUTOR_FEASIBILITY.md`.
+  `kanji.bin.gz`, 2,136 jōyō), so is the vocabulary it is taught through (N7's
+  `words.bin.gz`, 16,073 words with their own readings and furigana), and so are the
+  three reading passages (`passages.bin.gz`, segmented by UniDic at build time) —
+  but **nothing reads any of them yet**: no course, no screen, no command. What is
+  left of N7 is the **reading screen** that draws a passage with furigana and opens
+  a word card; everything else in N7 is data that now exists. Then N8's course and
+  panels. The feasibility work is in
+  `docs/research/JAPANESE_TUTOR_FEASIBILITY.md`.
   **Two corrections to what this bullet used to say**: the KanjiVG-as-oracle trick
   *does* transfer for stroke counts — 2,135 of 2,136 agree and 衷 is the written
   exception (invariant 19) — and "kanji need `dictionaryJa.txt`'s own grade sets"

@@ -23,25 +23,32 @@
 //!   contest.
 //! * [`Word::nf`] is EDRDG's own frequency ranking, `nf01`–`nf48`: the word is in
 //!   the `nf`th block of 500, smaller being more frequent. It orders the words
-//!   *within* a band, and it is the closest thing to a licensed word frequency
-//!   that exists. It lives in EDRDG's `JMdict_e` XML and **not** in the JSON
-//!   reformatting this pipeline otherwise reads, which is why the fetch takes
-//!   both files.
+//!   *within* a band. It lives in EDRDG's `JMdict_e` XML and **not** in the JSON
+//!   reformatting this pipeline otherwise reads, which is why the fetch takes both
+//!   files.
 //!
 //! # Which words are in, and which are out
 //!
-//! In: a JMdict entry that EDRDG ranks at all (that is what `nf01`–`nf48` means —
-//! the roughly 24,000 words EDRDG considers worth ranking), that has a kanji
-//! form, and whose **every kanji is in the committed kanji artifact**. The last
-//! clause is the important one: it is checked against `data/kanji.bin.gz` rather
-//! than against a second opinion, so a word this course offers is always one the
-//! board can draw and the character course can teach. It is also why jinmeiyō and
-//! hyōgai words are out for now — 5,061 of the ranked entries — and they become
-//! teachable the day those sets are added, not before.
+//! In: a JMdict entry **EDRDG marks as common by either of its two signals** — an
+//! `nf01`–`nf48` rank, or one of the `ichi1`/`ichi2` markers that name the words
+//! of EDRDG's most-common-word corpus — that has a kanji form, and whose **every
+//! kanji is in the committed kanji artifact**. The last clause is the important
+//! one: it is checked against `data/kanji.bin.gz` rather than against a second
+//! opinion, so a word this course offers is always one the board can draw and the
+//! character course can teach. It is also why jinmeiyō and hyōgai words are out for
+//! now — they become teachable the day those sets are added, not before.
 //!
-//! Out: kana-only entries (there are three among the ranked ones; the kana course
-//! already teaches kana, and a kana-only word teaches no character), and words
-//! whose kanji the artifact does not hold.
+//! **Both signals, and the reason is measured.** Taking only the `nf` rank looks
+//! sufficient until it drops 行く (to go) and 本 (book): both carry EDRDG's
+//! `ichi1`, neither carries an `nf` rank — `nf05` belongs to a *different* entry
+//! of 本, read もと. A beginner course that cannot say "go" or "book" is not one,
+//! so membership is EDRDG's judgement and not one of its two fields. What is
+//! deliberately *not* taken is `spec1`/`spec2` (specialist vocabulary) and `gai1`
+//! (loanwords), which would add about 1,200 words of technical and foreign
+//! terminology to a beginner's course.
+//!
+//! Out: kana-only entries (a kana-only word teaches no character, and the kana
+//! course already teaches kana), and words whose kanji the artifact does not hold.
 //!
 //! # Furigana, and the one thing it is allowed to be missing
 //!
@@ -52,7 +59,7 @@
 //! `ruby`) concatenate to the reading.
 //!
 //! Alignment is **not** derived here when it is missing. A small number of words
-//! have no furigana entry — 49 of 17,366 — and they are carried with an empty
+//! have no furigana entry — 66 of 21,902 — and they are carried with an empty
 //! `furigana` and their reading intact: the reading is what grading uses, and
 //! inventing an alignment would be the very thing this module refuses to do.
 
@@ -62,7 +69,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// `postcard` is not self-describing, so a stale or foreign artifact would
 /// otherwise decode into nonsense. The trailing digits are the format version.
-pub const WORDS_ARTIFACT_MAGIC: &[u8; 8] = b"WORDD001";
+pub const WORDS_ARTIFACT_MAGIC: &[u8; 8] = b"WORDD002";
 
 /// The bands this project's ladder has: grades 1–6, then the jōyō remainder.
 pub const BANDS: [u8; 7] = [1, 2, 3, 4, 5, 6, 7];
@@ -144,7 +151,11 @@ pub struct Word {
     pub band: u8,
     /// EDRDG's `nf` ranking, 1–48: the word is in the `nf`th block of 500, and
     /// smaller is more frequent. It orders words within a band.
-    pub nf: u8,
+    ///
+    /// `None` for a word EDRDG marks common by its `ichi1`/`ichi2` signal but does
+    /// not rank — 行く and 本 are the two that made this an `Option` — and those
+    /// words sort after the ranked ones in their band rather than being dropped.
+    pub nf: Option<u8>,
 }
 
 impl Word {
@@ -251,6 +262,10 @@ impl WordDataset {
         words.sort_by(|a, b| {
             a.band
                 .cmp(&b.band)
+                // An unranked word sorts after every ranked one in its band.
+                // `Option`'s own order puts `None` first, which is the opposite
+                // of what "unranked" should mean here.
+                .then(a.nf.is_none().cmp(&b.nf.is_none()))
                 .then(a.nf.cmp(&b.nf))
                 .then(a.text.cmp(&b.text))
                 .then(a.reading.cmp(&b.reading))
@@ -347,7 +362,7 @@ mod tests {
             furigana: Vec::new(),
             meaning: format!("meaning of {text}"),
             band,
-            nf,
+            nf: Some(nf),
         }
     }
 
@@ -437,8 +452,27 @@ mod tests {
             WordsSource::default(),
         );
         assert_eq!(dataset.of_text("生").map(|w| w.reading.as_str()), Some("なま"));
-        assert_eq!(dataset.find("生", "せい").map(|w| w.nf), Some(21));
+        assert_eq!(dataset.find("生", "せい").and_then(|w| w.nf), Some(21));
         assert!(dataset.find("生", "しょう").is_none());
+    }
+
+    /// EDRDG marks some words common without giving them an `nf` rank, and those
+    /// words must not be confused with words it does not consider common at all —
+    /// nor may `None` sort to the front, which is what `Option`'s own order would
+    /// do. 行く and 本 are the two real examples.
+    #[test]
+    fn an_unranked_word_sorts_after_the_ranked_ones_in_its_band() {
+        let unranked = Word {
+            nf: None,
+            ..word("行く", "いく", 1, 1)
+        };
+        let dataset = WordDataset::from_words(
+            vec![unranked, word("本", "ほん", 1, 5)],
+            WordsSource::default(),
+        );
+        let order: Vec<&str> = dataset.words().iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(order, vec!["本", "行く"]);
+        assert!(dataset.words()[1].nf.is_none());
     }
 
     #[test]

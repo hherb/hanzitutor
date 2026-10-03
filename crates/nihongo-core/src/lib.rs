@@ -39,6 +39,7 @@ pub mod drill;
 pub mod input;
 pub mod kana;
 pub mod kanji;
+pub mod passages;
 pub mod readings;
 pub mod words;
 
@@ -69,4 +70,8 @@ pub use readings::{reading, Reading};
 pub use words::{
     band_for, band_name, is_kanji, Ruby, Word, WordsArtifact, WordDataset, WordsSource, BANDS,
     REMAINDER_BAND, WORDS_ARTIFACT_MAGIC,
+};
+pub use passages::{
+    parse_passage, Passage, PassageDataset, PassageToken, PassagesArtifact, PassagesSource,
+    PASSAGES_ARTIFACT_MAGIC,
 };

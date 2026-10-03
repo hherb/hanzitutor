@@ -535,10 +535,10 @@ exactly the shape Japanese needs.
 * The level bands are derived from licensed data, the derivation is reproducible,
   and the UI says they are ours rather than the JLPT's.
 
-### Shipped — the words artifact
+### Shipped — the words artifact, and the passages
 
-`crates/nihongo-core/data/words.bin.gz` — **21,902 words, 833,858 bytes**,
-committed, byte-identical on a rebuild, and held by 13 tests in
+`crates/nihongo-core/data/words.bin.gz` — **16,073 words, 601,816 bytes** —
+committed, byte-identical on a rebuild, and held by 15 tests in
 `crates/nihongo-core/tests/words_artifact.rs` that need none of the 118 MB of JSON,
 63 MB of XML or 33 MB of furigana the pipeline reads. `prepare-words` joins three
 upstreams with the committed kanji artifact, which is what decides membership: a
@@ -547,61 +547,92 @@ draw**, so the course can never offer a word it cannot teach.
 
 **The ladder is decided, and it is ours.** A word's band is the **highest kyōiku
 grade among its kanji** (1–6), with band 7 for a word containing a jōyō-remainder
-kanji; EDRDG's `nf` rank orders the words *within* a band. Measured band sizes:
-**655 / 2,284 / 3,284 / 3,072 / 3,408 / 2,705 / 6,494**. The alternative —
-frequency-quantile bands of roughly equal size — was rejected because it mixes
-grade-1 and grade-6 kanji in one band, so a learner meets 秘密 before 六. The UI must
-present these as our approximation, not the JLPT's; there has been no official JLPT
-list since 2010. `word::band_name` exists so that it can, and
-`tests/words_artifact.rs` recomputes every band from the kanji artifact rather than
-trusting the stored number.
+kanji; EDRDG's `nf` rank orders the words *within* a band, and the unranked ones
+follow the ranked. Measured band sizes: **585 / 1,781 / 2,408 / 2,232 / 2,412 /
+1,834 / 4,821**. The alternative — frequency-quantile bands of roughly equal size —
+was rejected because it mixes grade-1 and grade-6 kanji in one band, so a learner
+meets 秘密 before 六. The UI must present these as our approximation, not the JLPT's;
+there has been no official JLPT list since 2010. `band_name` exists so that it can,
+and `tests/words_artifact.rs` recomputes every band from the kanji artifact rather
+than trusting the stored number.
 
 **Readings are the dictionary's, never composed.** 大人 is おとな and not だいじん,
 今日 is きょう, 一人 is ひとり, 明日 is あした — the test asserts those four, because
 they are what a "reading per character" design gets wrong. Furigana comes from
-JmdictFurigana and puts each reading over the characters it belongs to: 21,836 of
-21,902 words are aligned (99.7%), and the 66 that are not keep their reading and
+JmdictFurigana and puts each reading over the characters it belongs to: 16,022 of
+16,073 words are aligned (99.7%), and the 51 that are not keep their reading and
 carry no ruby — **gathered, never invented**.
 
-**Three things measuring changed.**
+**Five things measuring changed, and two of them were this author's errors.**
 
 * **The JSON has no `nf` tags at all**, so the frequency half of the ladder has no
   home in the reformatting this pipeline otherwise reads: the full document carries
   eleven tags total, all spelling-variant markers. EDRDG's own XML is therefore
-  fetched as well and read for that one field, joined on `ent_seq` (22,430 of
+  fetched as well and read for its priority markers, joined on `ent_seq` (22,430 of
   22,430 ids matched).
+* **Membership takes both of EDRDG's signals, because the rank alone drops the
+  beginner core.** 行く (to go) and 本 (book) carry `ichi1` — EDRDG's
+  most-common-word marker — and **no `nf` rank**: `nf05` belongs to a different
+  entry of 本, read もと. 2,471 entries are in that position, and 1,201 of them are
+  teachable; they are why `Word::nf` is an `Option`.
+* **And the written form has to be one EDRDG marks common.** 7,629 entries are
+  common words whose *kanji* spelling is not what anyone writes — 彼処 for あそこ,
+  お握り for おにぎり, さっき as 先, 型録 for カタログ — and 173 of those carry an
+  explicit `rK`/`sK`/`ateji` tag. Both are now excluded, because a kanji course that
+  taught them would teach spellings its learner will never meet. This is why the
+  vocabulary is 16,073 and not 21,902: **smaller and right rather than larger and
+  wrong.**
 * **"Has a kanji form" is not "contains a kanji."** JMdict lists full-width
   numerals such as `１０００` under `kanji`, so 15 words arrived with no kanji
   character at all and were landing in band 1 before the rule was tightened.
-* **The earlier figures for this milestone were wrong, and the error was this
-  author's**: an intermediate measurement tested *every* character of a word —
-  including its okurigana — against KANJIDIC2's grades, which silently excluded
-  every word written with any kana and reported 17,366 where the answer is 21,902.
-  The pipeline and an independent re-measurement now agree exactly.
+* **An intermediate figure for this milestone was wrong, and the error was this
+  author's**: it tested *every* character of a word — including its okurigana —
+  against KANJIDIC2's grades, which silently excludes every word written with any
+  kana, and reported 17,366. The pipeline and an independent re-measurement now
+  agree to the word. The handover carries the trap.
 
-**Still to do for N7**, and both are real work rather than wiring:
+### Shipped — the passages
 
-* **The morphological analyser**, and it is the largest dependency in the Japanese
-  part: `lindera` (MIT) and `vibrato` (MIT) are thin crates, and the dictionary
-  they need is **UniDic-CWJ 3.1.0, a 529 MB download**. It therefore runs at
-  **build time** — a `prepare-passages` step segments the passages and the artifact
-  carries the result — which is what keeps the app's "nothing is downloaded"
-  promise intact and keeps 529 MB out of the fetch every developer runs. UniDic is
-  triple-licensed (GPLv2 / LGPLv2.1 / BSD-New) and the **BSD option** is the one
-  taken, so it is AGPL-compatible; its licence and the exact dictionary version
-  belong in `LICENSES.md` beside the dictionaries before anything is bundled.
-* **The reading screen** that taps a word and opens it.
+`crates/nihongo-core/data/passages.bin.gz` — **three passages, 502 bytes**, with the
+text and the English glosses in `data/passages/*.txt` where a person can edit them,
+and 9 tests in `tests/passages_artifact.rs`. They are **written for this course**,
+which is a decision rather than a default: Tatoeba is per-sentence licensed (some
+CC0, some BY, some **ND**, which would have to be filtered at import) and gives
+sentences rather than passages; Aozora Bunko is free but is pre-1930s literary
+Japanese that uses none of this vocabulary; Wikipedia is modern and unlevelled.
+Writing them removes the licence question and buys the property none of the corpora
+have: **the text is held to the vocabulary the course teaches, and asserted**.
+`prepare-passages` refuses to write an artifact containing a kanji the words
+artifact does not hold, and a test re-checks it against the committed artifact, so a
+passage edited afterwards fails rather than shipping.
 
-**And the passages are written for this course, in-repo.** That is a decision rather
-than a default: Tatoeba is per-sentence licensed (some CC0, some BY, some **ND**,
-which must be filtered at import) and gives sentences rather than passages; Aozora
-Bunko is genuinely free but is pre-1930s literary Japanese, which is far harder than
-a beginner passage and uses none of the course's vocabulary; Wikipedia is modern but
-unlevelled. Authoring them costs writing and removes the licence question, and it
-buys a property none of the corpora have: **the vocabulary can be constrained to
-what the two artifacts already teach, and asserted** — the passage test should fail
-if a passage uses a word the course does not know and is not kana, a particle or a
-number. Kana-only passages come first, then band 1, then outward.
+**The analyser runs at build time**, and that is what keeps the app's promise: the
+artifact carries the segmentation, so the shipped app holds no tokeniser, no
+dictionary and no network path. `lindera` (MIT) segments with **UniDic**, whose
+`unidic-mecab-2.1.2` archive is a **134 MB** download — not the 529 MB CWJ zip this
+milestone first budgeted for, because lindera's own dictionary crate uses the MeCab
+variant. `scripts/fetch-unidic.sh` fetches and builds it into `.lindera/`
+(gitignored, 190 MB built), pinned by an MD5 that lives in `lindera-unidic`'s
+`build.rs`; lindera's build script downloads **nothing** unless that script names a
+cache directory, so no ordinary `cargo test` or `cargo clippy` touches the network.
+UniDic is BSD-3-Clause-equivalent (Copyright (c) 2011-2017, The UniDic Consortium)
+and nothing it contains is redistributed; `LICENSES.md` records both notices.
+
+**Two traps the analyser set, both now tests.** UniDic's `reading` field is the
+**base** form's reading for an inflected word — 行き gives イク and 食べ gives タベル
+— so reading it blindly draws 行き(いく) and 食べ(たべる)ます; the surface's own
+reading is in `phonological_surface_form`, which is pronunciation notation and gives
+きょー for 今日 and ワ for the particle は, so the pipeline takes `reading` for an
+uninflected word and the pronunciation field for an inflected one. And the link a
+tapped word opens has to be the **dictionary form** (UniDic's `lexeme`), so 行き
+opens 行く and 食べ opens 食べる — and where a token is written exactly as the course
+writes it, the course's own reading wins, so a passage saying 私 and the card behind
+it cannot disagree about わたし and わたくし.
+
+**Still to do for N7**: the reading screen itself — the view that draws the passage
+with furigana over every kanji, opens a word card when one is tapped, and grades a
+word as a word. The three artifacts it needs are committed; the app reads none of
+them yet, which is also N8's first half.
 
 ---
 

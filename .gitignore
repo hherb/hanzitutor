@@ -89,3 +89,8 @@ apps/tone-trainer/src-tauri/gen/schemas/
 #.idea/
 .DS_Store
 src-tauri/embedded.provisionprofile
+
+# The built UniDic dictionary, ~500 MB unpacked: fetched by scripts/fetch-unidic.sh
+# and used only by the build-time passage segmentation. Regenerable, and nothing
+# that ships needs it.
+.lindera/

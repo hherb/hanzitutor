@@ -15,12 +15,29 @@ serde.workspace = true
 postcard.workspace = true
 flate2.workspace = true
 
-# Only the `prepare-kana` and `prepare-kanji` binaries read the upstream files, so
-# the app does not carry a JSON reader it never uses.
+# Only the `prepare-kana`, `prepare-kanji`, `prepare-words` and `prepare-passages`
+# binaries read the upstream files, so the app does not carry a JSON reader it
+# never uses.
 serde_json = { workspace = true, optional = true }
+
+# Morphological analysis, for segmenting the reading passages. Optional and
+# behind `tokenize`, because it is the heaviest thing in the Japanese part: it
+# brings `lindera` (MIT) and the UniDic dictionary that `lindera-unidic` builds
+# from a **134 MB** download, pinned by MD5.
+#
+# Its build script does **nothing** unless `LINDERA_BUILD_DICTIONARY_CACHE_DIR`
+# names a cache directory (or `embed-unidic` is on), so a plain `cargo test` or
+# `cargo clippy` never touches the network — see `scripts/fetch-unidic.sh`, which
+# sets that variable deliberately and is the only thing that downloads.
+lindera = { version = "6.2", optional = true }
+lindera-unidic = { version = "6.2", optional = true }
 
 [features]
 prepare = ["dep:serde_json"]
+# The passage pipeline, and nothing the app ships: the analyser runs at build time
+# and the artifact carries the segmentation, so the app keeps its promise that
+# nothing is downloaded and the 134 MB dictionary stays out of every clone.
+tokenize = ["prepare", "dep:lindera", "dep:lindera-unidic"]
 
 [[bin]]
 name = "prepare-kana"
@@ -42,3 +59,11 @@ required-features = ["prepare"]
 name = "prepare-words"
 path = "src/bin/prepare_words.rs"
 required-features = ["prepare"]
+
+# The reading passages, segmented by UniDic. Behind `tokenize` rather than
+# `prepare` because the analyser is 100-odd crates and a 134 MB dictionary that
+# only this binary needs; see `passages.rs` and scripts/fetch-unidic.sh.
+[[bin]]
+name = "prepare-passages"
+path = "src/bin/prepare_passages.rs"
+required-features = ["tokenize"]

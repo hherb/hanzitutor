@@ -1,0 +1,6 @@
+# key: asa
+# title: あさ
+# gloss: Morning. I am a student. The weather is good today.
+おはよう。
+私は学生です。
+今日はいい天気です。

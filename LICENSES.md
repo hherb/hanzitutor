@@ -694,6 +694,73 @@ JmdictFurigana is released monthly and **is** pinned, in two places that must ag
 `JMDICT_FURIGANA` in `scripts/fetch-data.sh` and `FURIGANA_RELEASE` in
 `prepare_words.rs`.
 
+## The reading passages, and the analyser that segments them
+
+`crates/nihongo-core/data/passages.bin.gz` holds the short passages the reading
+screen draws, each segmented into words with a reading over every kanji. **The
+passage text is this project's own writing** — nothing is quoted, adapted or
+scraped — which is why the file is 502 bytes and why there is no licence question
+about the prose itself. The licence question is about the **analyser**, and it is
+answered below because the segmentation is derived from it.
+
+### The passages
+
+Written for the course, in `crates/nihongo-core/data/passages/*.txt`, and held to
+the vocabulary by `prepare-passages`, which refuses to write an artifact containing
+a kanji the words artifact does not teach. `ROADMAP_NIHONGO.md` N7 records why
+corpora were rejected: Tatoeba is per-sentence licensed (some CC0, some BY, some
+**ND**) and gives sentences rather than passages; Aozora Bunko is free but is
+pre-1930s literary Japanese that uses none of this course's vocabulary; Wikipedia is
+modern and unlevelled. Writing them costs writing and removes the question.
+
+### UniDic and lindera — what the segmentation is derived from
+
+The segmentation is **not** redistributed text and it is **not** a dictionary: it is
+one analyser's answer about three short passages, stored as token boundaries and
+readings. It is still derived from the analyser and its dictionary, so both are
+recorded.
+
+| Source | What the artifact takes | Licence |
+| --- | --- | --- |
+| [lindera](https://github.com/lindera/lindera) 6.2 | The segmentation and the readings, computed by `prepare-passages` | **MIT** |
+| `unidic-mecab-2.1.2`, via [`lindera-unidic`](https://crates.io/crates/lindera-unidic) | The dictionary the analyser reads | **BSD-3-Clause-equivalent**, Copyright (c) 2011-2017, The UniDic Consortium |
+
+UniDic's terms are the three-clause BSD form, verbatim in the crate's own
+`NOTICE.txt` and reproduced here as the attribution it requires:
+
+> Copyright (c) 2011-2017, The UniDic Consortium
+> All rights reserved.
+>
+> Redistribution and use in source and binary forms, with or without modification,
+> are permitted provided that the following conditions are met:
+>
+> * Redistributions of source code must retain the above copyright notice, this
+>   list of conditions and the following disclaimer.
+> * Redistributions in binary form must reproduce the above copyright notice, this
+>   list of conditions and the following disclaimer in the documentation and/or
+>   other materials provided with the distribution.
+> * Neither the name of the UniDic Consortium nor the names of its contributors may
+>   be used to endorse or promote products derived from this software without
+>   specific prior written permission.
+
+**Nothing UniDic contains is redistributed.** The dictionary is built into
+`.lindera/`, which is gitignored, is about 500 MB unpacked, and is not part of any
+bundle; only the token boundaries it produced for three passages are. The fetch is
+`scripts/fetch-unidic.sh`, and the archive is pinned by MD5 in `lindera-unidic`'s
+own `build.rs` (repeated in that script so a change to it is visible in a diff):
+
+```
+md5 f4502a563e1da44747f61dcd2b269e35  unidic-mecab-2.1.2.tar.gz
+```
+
+The dictionary is fetched from lindera's mirror, `https://Lindera.dev/`, rather
+than from NINJAL, and lindera verifies that hash before it will build anything.
+
+**The analyser is not in any application bundle.** The embedding is a build-time
+step, so the shipped app carries the artifact and no Japanese dictionary, no
+tokeniser and no network path — which is the same promise the rest of the app
+makes, kept by moving the cost to the build.
+
 ## Before you distribute
 
 1. **Nothing has to be gathered by hand.** The notices are in `licences/`, are

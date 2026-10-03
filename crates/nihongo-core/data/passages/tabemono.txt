@@ -1,0 +1,5 @@
+# key: tabemono
+# title: たべもの
+# gloss: I drink water. I eat a meal.
+水を飲みます。
+ごはんを食べます。

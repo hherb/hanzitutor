@@ -39,10 +39,10 @@ fn word(text: &str, reading: &str) -> nihongo_core::Word {
 #[test]
 fn the_artifact_holds_the_ranked_vocabulary() {
     let dataset = dataset();
-    assert_eq!(dataset.len(), 21_902);
+    assert_eq!(dataset.len(), 16_073);
     assert_eq!(
         dataset.band_counts(),
-        vec![(1, 655), (2, 2_284), (3, 3_284), (4, 3_072), (5, 3_408), (6, 2_705), (7, 6_494)],
+        vec![(1, 585), (2, 1_781), (3, 2_408), (4, 2_232), (5, 2_412), (6, 1_834), (7, 4_821)],
         "the ladder's shape: a word is readable when its kanji are known, so the bands \
          are not the same size and are not meant to be"
     );
@@ -60,12 +60,13 @@ fn every_word_is_one_a_course_can_teach() {
             w.text,
             w.band
         );
-        assert!(
-            (1..=48).contains(&w.nf),
-            "{} has nf {}, and nf is a block of 500 between 1 and 48",
-            w.text,
-            w.nf
-        );
+        if let Some(rank) = w.nf {
+            assert!(
+                (1..=48).contains(&rank),
+                "{} has nf {rank}, and nf is a block of 500 between 1 and 48",
+                w.text
+            );
+        }
         assert!(
             !w.kanji().is_empty(),
             "{} contains no kanji, so it teaches no character and is not this course's",
@@ -154,12 +155,12 @@ fn furigana_covers_the_word_and_spells_its_reading() {
     }
 
     assert_eq!(
-        with_furigana, 21_836,
+        with_furigana, 16_022,
         "the alignment JmdictFurigana solves; the rest keep their reading and no ruby"
     );
     assert_eq!(
         without.len(),
-        66,
+        51,
         "the words carried without furigana: the upstream release does not align them — \
          gathered, never invented"
     );
@@ -169,7 +170,7 @@ fn furigana_covers_the_word_and_spells_its_reading() {
     kana_type_only.sort();
     assert_eq!(
         kana_type_only,
-        vec!["タンパク質".to_string(), "生ゴミ".to_string()],
+        vec!["タンパク質".to_string(), "夏バテ".to_string()],
         "the words whose ruby is the same reading in the other kana type"
     );
 }
@@ -248,13 +249,22 @@ fn furigana_sits_over_the_right_characters() {
 #[test]
 fn words_are_ordered_by_band_then_frequency_without_duplicates() {
     let dataset = dataset();
-    let mut pairs: Vec<(u8, u8)> = Vec::new();
-    for w in dataset.words() {
-        pairs.push((w.band, w.nf));
-    }
-    let mut sorted = pairs.clone();
-    sorted.sort_unstable();
-    assert_eq!(pairs, sorted, "the course order is the stored order");
+    // The stored order is the course order: band, then the ranked words before the
+    // unranked-but-common ones, then the rank itself, then text and reading so the
+    // order is total and a rebuild is byte-identical.
+    let key = |w: &nihongo_core::Word| {
+        (
+            w.band,
+            w.nf.is_none(),
+            w.nf,
+            w.text.clone(),
+            w.reading.clone(),
+        )
+    };
+    let keys: Vec<_> = dataset.words().iter().map(key).collect();
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(keys, sorted, "the course order is the stored order");
 
     let unique: std::collections::BTreeSet<(String, String)> = dataset
         .words()
@@ -271,7 +281,7 @@ fn words_are_ordered_by_band_then_frequency_without_duplicates() {
 #[test]
 fn a_word_is_found_by_its_text_by_its_reading_and_by_its_kanji() {
     let dataset = dataset();
-    assert_eq!(dataset.find("食べる", "たべる").map(|w| w.nf), Some(25));
+    assert_eq!(dataset.find("食べる", "たべる").and_then(|w| w.nf), Some(25));
     assert!(dataset.find("食べる", "くう").is_none(), "that is a different word");
 
     let eater = dataset.of_text("食べる").expect("食べる is present");
@@ -298,6 +308,58 @@ fn the_ladder_is_ours_and_its_names_say_what_it_is() {
         assert!(
             !name.to_ascii_uppercase().contains("JLPT"),
             "the ladder is derived, not the JLPT's, and {band} says {name:?}"
+        );
+    }
+}
+
+/// **Why membership takes two of EDRDG's signals rather than one.**
+///
+/// 行く and 本 carry EDRDG's `ichi1` — its marker for the words of the
+/// most-common-word corpus — and **no `nf` rank at all**. (`nf05` belongs to a
+/// different entry of 本, read もと.) A vocabulary that ranked words and stopped
+/// there could not say "to go" or "book", which is not a beginner's course. They
+/// are also why `Word::nf` is an `Option`: common and unranked is not the same as
+/// unranked and therefore absent.
+#[test]
+fn a_common_word_without_an_nf_rank_is_still_taught() {
+    let dataset = dataset();
+    for &(text, reading) in &[("行く", "いく"), ("本", "ほん")] {
+        let word = dataset
+            .find(text, reading)
+            .unwrap_or_else(|| panic!("{text} ({reading}) is core vocabulary and must be here"));
+        assert_eq!(
+            word.nf, None,
+            "{text} carries ichi1 and no nf rank, which is the whole point of this test"
+        );
+        assert!(!word.furigana.is_empty(), "{text} should still be aligned");
+    }
+    assert!(
+        dataset.words().iter().filter(|w| w.nf.is_none()).count() > 1_000,
+        "the unranked-but-common words are a thirteenth of the course, not an edge case"
+    );
+}
+
+/// **And why the written form has to be one EDRDG marks common.**
+///
+/// These entries are common words whose kanji spelling is not what anybody
+/// writes: 彼処 for あそこ, お握り for おにぎり, 型録 for カタログ, 愚図愚図 for
+/// ぐずぐず. EDRDG marks the *entry* common and tags the spelling `rK`, `sK` or
+/// `ateji`, and 7,629 entries are in that position. A kanji course that carried
+/// them would teach spellings its learner will never meet, so they are left to the
+/// kana course — and this asserts that they really are absent rather than merely
+/// unlikely.
+#[test]
+fn a_word_whose_kanji_spelling_is_not_the_common_one_is_not_taught() {
+    let dataset = dataset();
+    for (text, reading) in [
+        ("彼処", "あそこ"),
+        ("お握り", "おにぎり"),
+        ("型録", "カタログ"),
+        ("愚図愚図", "ぐずぐず"),
+    ] {
+        assert!(
+            dataset.find(text, reading).is_none(),
+            "{text} is a rare spelling of {reading} and must not be taught as a kanji word"
         );
     }
 }
@@ -329,7 +391,7 @@ fn every_band_has_words_and_the_first_is_the_smallest() {
         assert!(count > 0, "band {band} is empty");
     }
     let first = dataset.of_band(1).count();
-    assert_eq!(first, 655);
+    assert_eq!(first, 585);
     assert!(
         dataset.of_band(1).all(|w| w.band == 1),
         "a band holds only its own words"
