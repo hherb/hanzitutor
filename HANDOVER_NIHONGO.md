@@ -96,10 +96,10 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **280
-tests** — every `#[test]` in the two suites (178 in `nihongo-core`, 101 in
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **302
+tests** — every `#[test]` in the two suites (193 in `nihongo-core`, 109 in
 `nihongo-tutor`), plus one doc-test; the frontend's are counted separately below.
-`pnpm run test:web` runs 129, of which **60** are this app's.
+`pnpm run test:web` runs 142, of which **73** are this app's.
 `cargo test -p hanzi-voice`, the shared crate the audio half lives in, is 29.
 
 | | |
@@ -107,7 +107,9 @@ tests** — every `#[test]` in the two suites (178 in `nihongo-core`, 101 in
 | Kana | 177 — 86 hiragana (U+3041–3096), 91 katakana (U+30A1–30FA plus ー) |
 | Strokes | 516, average 2.92; あ is 3, not the 4 upstream stores (§4.2) |
 | Course | 18 hiragana lessons, 20 katakana, 38 in all |
-| Yōon | 33 digraphs per script, 11 bases × 3 |
+| Chart | 16 rows × 5 columns: 71 kana on the grid and **9 holes** the language leaves; 15 kana off it in hiragana, 20 in katakana (invariant 29) |
+| Yōon | 33 digraphs per script, 11 bases × 3 — each one drilled against its own two-mora spelling, so きゃ is set against きや |
+| Voicing | 25 contrasts per script — か/が, は/ば and は/ぱ — each drilled with the mark named |
 | Confusions | 13 pairs, each with the one feature that tells them apart |
 | Kanji | 2,136 jōyō — 1,026 kyōiku (grades 1–6) and 1,110 in the remainder (grade 8) |
 | Kanji grades | 80/160/200/202/193/191 by grade, KANJIDIC2's **current** assignment |
@@ -123,8 +125,8 @@ tests** — every `#[test]` in the two suites (178 in `nihongo-core`, 101 in
 | Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
 | Words on a card | 16,073 words over 2,136 characters — 一 in 223, 人 in 218, and **57 characters in none**; a page of 12, in course order (invariant 28) |
 | Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
-| Screens | Practice, Tell them apart, **Review**, **Kanji**, **Radicals**, Words, Read, Licences |
-| Tests | nihongo-core 178, nihongo-tutor 101, hanzi-voice 29, frontend 60 of the 129 |
+| Screens | Practice, **Kana chart**, Tell them apart, **Review**, **Kanji**, **Radicals**, Words, Read, Licences |
+| Tests | nihongo-core 193, nihongo-tutor 109, hanzi-voice 29, frontend 73 of the 142 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | two files, `confusions.json` and `review.json`, in the app's own data directory |
@@ -173,6 +175,27 @@ because there was no display to capture: the Kanji tab came up on 日 with
 beginning 日本人 にほんじん, a tap on that row opened the word card with its own
 reading and band, `Next` turned to page 2 of 12, and 且 — found through the
 course's own lesson list — read `No word this course teaches is written with 且.`
+
+**The kana chart is the one screen that is not a lesson, and the drill now has five
+exercises over one question shape.** The chart draws the gojūon grid row by row —
+16 rows of five columns, with the nine slots the language never filled left as
+**holes**, so ゆ sits under う and not under い — and the characters that are off
+the grid at all: the small kana, the rare ones, and katakana's ヷ ヸ ヹ ヺ ー.
+Tapping any of them opens it on the board, and it lands in its own lesson rather
+than the course's first: the live check opened ゆ from the chart and found
+`lesson=や ゆ よ` highlighted, then opened ヷ — which is on no grid — in `V-series`.
+The drill's second kind of question is what a pair of unrelated kana cannot
+express, and it has two forms: the **yōon contrast** (the digraph against the same
+consonant and vowel written long — きゃ against きや, one mora against two) and the
+**voicing contrast** (か against が, は against ば and ぱ — the mark a beginner
+leaves off). It is one question shape, one weighting rule and one file
+(invariant 29), because confusing きゃ with きや is a confusion like any other.
+There was no display for this milestone either, so it was checked the way N8's
+screens were — by probe over the dev server's log (§5) — which reported the grid,
+the holes, both scripts, all five exercises, the yōon tell (*ビョ is byo, not ビヨ.
+ビョ is one mora — the small ョ; ビヨ is two, ビ + ヨ*) and the voicing tell in both
+of its forms (*て is the plain kana; で is the same kana with the dakuten ゛* and
+*ホ is the plain kana; ポ is the same kana with the handakuten ゜*).
 
 **Two parts of the app learn about their learner now.** The drill is **N3**'s: it
 used to draw a kana from a pool and throw the answer away, and it now draws a
@@ -247,10 +270,15 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   source-file parser — the reading half, N7
   src/readings.rs        (386)    Hepburn and Kunrei-shiki, and the enumeration
                                   hiragana_with_readings the input table is built from
-  src/curriculum.rs      (828)    the gojūon rows and lessons, yōon, the confusions,
-                                  and the grade-ordered kanji course — N8
+  src/curriculum.rs     (1030)    the gojūon rows **as five-slot grids**, the
+                                  lessons, yōon and the two-mora spellings they
+                                  contrast with, the confusions, and the
+                                  grade-ordered kanji course — N8, N4
   src/input.rs           (523)    romaji → kana, and the one-kana and whole-word checks
-  src/drill.rs           (377)    the pair weights, the tally, and the draw — N3
+  src/drill.rs           (930)    the pairs the drill asks (the classic confusions,
+                                  the yōon contrasts and the voicing contrasts), the
+                                  weights, the tally, and the draw with its
+                                  **spelling** keys — N3, N4
   src/review.rs          (322)    what a scheduled character is, the prompt beside
                                   it and the due queue — N2. The schedule itself is
                                   hanzi-core's; this is the Japanese half
@@ -285,22 +313,28 @@ scripts/fetch-unidic.sh           fetches and builds the UniDic dictionary into
                                   built, and the only thing that needs either
 
 apps/nihongo-tutor/               the app
-  src-tauri/src/lib.rs  (2243)    AppState, the speaker and the 27 commands, all thin
+  src-tauri/src/lib.rs  (2591)    AppState, the speaker, the chart and the 28
+                                  commands, all thin
   src-tauri/src/store.rs (582)    the two files of this app's own: confusions.json
                                   (load, record, atomic write — N3) and review.json
                                   (the SM-2 schedule, and the rule for when an
                                   attempt is a review — N2)
   src-tauri/src/licences.rs(157)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (1057)  37 tests locking the JSON the webview
+  src-tauri/tests/ipc_contract.rs (1220)  41 tests locking the JSON the webview
                                   reads *and the arguments it posts* (invariant 14)
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
-  src/App.svelte         (450)    the eight views, the course, the board wiring, and
-                                  the one place the voice status is asked for — N1
+  src/App.svelte         (539)    the nine views, the course, the board wiring, the
+                                  one place the voice status is asked for — N1 —
+                                  and the one `openKana` a screen calls to put a
+                                  kana on the board — N4
   src/lib/KanaCanvas.svelte(248)  pointer capture and the animation frame. Draws
                                   any `Drawable`, so a kana, a kanji and a radical
                                   all come through it
-  src/lib/ConfusionDrill.svelte(225)  the drill: one pair, one answer, remembered
+  src/lib/ConfusionDrill.svelte(392)  the drill: five exercises, one question, one
+                                  answer, remembered — N3, N4
+  src/lib/KanaChart.svelte(234)   the gojūon grid with its holes, and the characters
+                                  off it — N4
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
   src/lib/ReviewPanel.svelte(346) what is due, and a board to write it on — N2
   src/lib/KanjiPanel.svelte(869)  the kanji course, the board and the card — N8,
@@ -316,6 +350,10 @@ apps/nihongo-tutor/               the app
   src/lib/kanji.ts       (138)    the course's and the radicals' arithmetic, and
                                   `spokenReading`, as pure functions — N8, N1
   src/lib/kanji.test.ts  (170)    run by the ROOT project's vitest
+  src/lib/kana.ts         (71)    which lesson a kana belongs to, which kana a
+                                  loaded course should open on, how wide the chart's
+                                  grid is, and whether a drill answer is one kana — N4
+  src/lib/kana.test.ts   (128)    run by the ROOT project's vitest
   src/lib/words.ts       (101)    furigana and paging arithmetic, as pure functions
   src/lib/words.test.ts  (131)    run by the ROOT project's vitest
   src/lib/review.ts       (89)    "2 days overdue" and "in 2 days", as pure
@@ -327,8 +365,9 @@ apps/nihongo-tutor/               the app
   src/lib/board.ts        (97)    the board's arithmetic, as pure functions
   src/lib/board.test.ts   (99)    run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
-  src/lib/types.ts       (482)    the IPC shapes, and `Character = Drawable`
-  src/lib/api.ts         (283)    one wrapper per command
+  src/lib/types.ts       (547)    the IPC shapes, `Character = Drawable`, and the
+                                  chart's slots as `(string | null)[]`
+  src/lib/api.ts         (303)    one wrapper per command
 
 crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
                                   part's data layer
@@ -610,8 +649,11 @@ Two practical consequences:
   writes to `~/Library`, so a live drill run in an agent session shows
   "the answer was counted but could not be saved: Operation not permitted" and the
   app is working correctly. To exercise the real file from a sandboxed session,
-  start the app with `HOME` pointing inside the workspace (and `RUSTUP_HOME` left
-  alone, or cargo cannot find its toolchain): the data directory follows `HOME`.
+  start the app with `HOME` pointing inside the workspace — the data directory
+  follows `HOME` — and pass rustup's real home as an explicit path, because writing
+  `RUSTUP_HOME="$HOME/.rustup"` on the same command line does not do what it looks
+  like it does. The recipe and the reason are in §5, under "Seeing what the drill
+  remembered".
 
 ---
 
@@ -1043,6 +1085,76 @@ still the dictionary's**: the card links to `WordCard`, which speaks
 `word.reading` and grades against it, so nothing here composes a reading or hands a
 bare kanji to the voice (invariants 21 and 27).
 
+---
+
+### 29. **A grid row is five slots with holes, and a drill pair is two spellings.**
+
+Five rules N4 added, and each one is a thing that looks like a simplification and
+is not.
+
+* **A row's holes are data, not a shorter list.** `Row::cells` is five slots —
+  a, i, u, e, o — with `None` where the language never filled one, and `Row::kana`
+  is derived from it, so the course and the chart read one table. や has three kana
+  and they are in the a, u and o columns: a chart built from a list draws ゆ under
+  い and teaches the wrong vowel. **16 rows, 80 slots, 71 kana, 9 holes** (や's i
+  and e, わ's i, u and e, ん's four). The layout is stated in the table and then
+  *checked* against something independent — a kana's own Hepburn vowel, which is
+  the column it has to be in (`every_cell_sits_in_the_column_its_vowel_names`) —
+  because a hand-typed grid is exactly the kind of table that is wrong once and
+  never noticed.
+* **The chart offers nothing that cannot be opened.** `curriculum::off_grid` is the
+  small kana, the rare ones and katakana's v-series and ー, it is the *same*
+  function `lessons()` adds to the grid, and `kana_chart` serves geometry through
+  the same `kana` command everything else uses. So acceptance criterion 3 of N4 —
+  a kana offered anywhere can be opened and graded — is a property of the data
+  rather than a promise in a comment, and `every_kana_the_chart_offers_can_be_opened`
+  is what holds it. This is invariant 13's rule one screen out.
+* **A drill pair is two *spellings*, and the keys already in the learner's file
+  must not move.** A yōon contrast's two answers are two characters each (きゃ
+  against きや) while a voicing contrast's are one (か against が), so the pair is a
+  pair of strings and `key_of` orders them. It reproduces `pair_key` exactly for all
+  thirteen classic pairs — `a_kana_pair_keeps_the_key_it_was_stored_under` is the
+  check — because `confusions.json` already holds them and invariant 15's file is
+  not something to re-key. And the lookup **canonicalises before comparing**: a
+  caller may name a pair either way round (`ツ|シ`, `が|か`), which is what the
+  contract test posts even though the app's own payload is always canonical, and
+  what the first version of this generalisation broke.
+* **A side carries its own prompt, and a prompt is a reading the app can type.**
+  Which of a pair is asked for is a roll, and each spelling has its own reading, so
+  the prompt travels with the side rather than being looked up afterwards. The
+  two-mora counterpart is *composed* — きや is き's reading plus や's, and しや's
+  Kunrei is `siya` — and then held to a second path:
+  `the_plain_counter_of_every_yoon_is_what_the_input_engine_types` asks the romaji
+  engine to type both spellings of all 66 contrasts. Hand-writing the counterpart's
+  reading would be the same mistake as composing a kanji's (invariant 21), one step
+  further out.
+
+  **With four written exceptions, which are the yotsugana.** ぢ's Hepburn reading is
+  `ji` and づ's is `zu` — the same as じ's and ず's — so those four sides of the
+  voicing drill's hundred are the only ones whose prompt does not type back to its
+  own kana: `to_kana_in` answers じ and ず, and it is *right* to, because
+  `matches_reading('ぢ', "ji")` is true. Kunrei distinguishes them (`di`, `du`) and
+  swapping the prompts would teach a romanisation the Practice screen never shows,
+  so they are pinned instead —
+  `four_voicing_prompts_are_the_yotsugana_and_type_back_to_their_pair` names all
+  four, asserts the other 96 round-trip, and asserts the pair is still answerable
+  because its two prompts differ. What it means is that a prompt identifies the
+  *contrast*, and only for these four does it not also identify the character.
+* **A voiced row is related to its plain row, not to a code point.** The voicing
+  exercise's 50 pairs (25 per script) come from `VOICED_FROM`, which names the five
+  voiced rows and the plain row each is written from — は twice, because ば carries
+  the dakuten and ぱ the handakuten — and the pairs are zipped from the two rows'
+  slots. The kana in a pair differ by one code point (dakuten) or two (handakuten),
+  and `the_voicing_pairs_differ_only_by_the_mark` checks that *after the fact*
+  rather than the pairs being built from it: deriving the language from the encoding
+  would work for all 25 and be the wrong reason, and it would break silently the day
+  a character is added to the block in another order.
+
+What is **not** changed by this: the record is still this app's own file under this
+app's own directory (invariant 15), the classic pairs are still the classic thirteen
+with the flat list's discovery gap standing, and nothing about the yōon or voicing
+exercises touches the kanji or the schedule.
+
 ## 5. The verification loop
 
 Four layers, cheapest first. All of them are worth running before a commit that
@@ -1395,15 +1507,25 @@ one worth repeating by hand after touching `store.rs`.
 Under the agent harness the write is **denied** — the sandbox refuses `~/Library`,
 so the drill shows "the answer was counted but could not be saved" and is working
 correctly (trap 5, invariant 15). To exercise the real file there, point `HOME` at
-a directory inside the workspace and leave `RUSTUP_HOME` alone:
+a directory inside the workspace **and give rustup its real home explicitly** —
+`RUSTUP_HOME="$HOME/.rustup"` on the same line does *not* work, and why is worth
+reading:
 
 ```bash
-# The `$HOME` on the right is expanded by your shell *before* the assignment on
-# the left takes effect, which is the point: that is the real one, where cargo's
-# toolchain lives. Without it, rustup claims no default toolchain is configured.
-HOME="$PWD/.tmp-kana-home" RUSTUP_HOME="$HOME/.rustup" \
+# Bash expands the assignments left to right, so `$HOME` on the right of
+# `RUSTUP_HOME=` is the **new** home, not the one this shell started with. The
+# result is `RUSTUP_HOME=<workspace>/.tmp-kana-home/.rustup`, which has no
+# toolchain in it, and the app never starts: rustup answers "could not choose a
+# version of cargo to run, because one wasn't specified explicitly, and no default
+# is configured". Measured, on the second attempt at this recipe.
+REAL_RUSTUP="$HOME/.rustup"
+HOME="$PWD/.tmp-kana-home" RUSTUP_HOME="$REAL_RUSTUP" \
   pnpm --dir apps/nihongo-tutor run dev
 ```
+
+The toolchain is the *only* thing that has to stay real: `scripts/with-cargo-env.sh`
+already points `CARGO_HOME` and `CARGO_TARGET_DIR` inside the repository, so cargo's
+registry and build output follow the project rather than `HOME`.
 
 
 ---
@@ -1898,6 +2020,12 @@ first KANJIDIC2 data.
   (invariant 28). Recorded here because the bullet that *was* here is what the
   reader of an older copy remembers; `ROADMAP_NIHONGO.md`'s known weak spots had
   the same line and now records it shipped.
+* **The kana chart and the yōon and voicing drills — built.** N4 shipped all three:
+  a chart of the gojūon grid with its holes and the characters off it, every kana on
+  it openable on the board, the 33 yōon contrasts of each script drilled against
+  their own two-mora spellings, and the 25 voicing contrasts of each script drilled
+  with the mark that makes them named (invariant 29). The chart is a lookup and not
+  a lesson, which is why it has no romaji under each cell; the prose is in §2.
 * **Kanji beyond the jōyō set.** 2,136 characters, their radical table and their
   course are shipped (N6, N8), and so is the vocabulary they are taught through
   (N7's `words.bin.gz`, 16,073 words with their own readings and furigana) and the
@@ -1922,9 +2050,11 @@ first KANJIDIC2 data.
   and its own decision about what a wrong reading costs. §7 and
   `ROADMAP_NIHONGO.md`'s known weak spots record it.
 * **A per-learner confusability *matrix*.** The drill does now learn which of the
-  13 pairs *this* learner gets wrong, and weights them (invariant 15, roadmap N3).
-  What is not built is a matrix: pairs beyond the fixed 13, or a screen that shows
-  the learner what they mix up. The record is there to build one on.
+  13 pairs *this* learner gets wrong, and weights them (invariant 15, roadmap N3) —
+  and N4's yōon contrasts are weighted and recorded the same way, so the record
+  covers more than the thirteen. What is not built is a matrix: a screen that shows
+  the learner what they mix up, or a drill that can *discover* a fourteenth kana
+  pair. The record is there to build both on.
 * **Grammar and particles.** "Kanji won't teach you to read" is the defining
   Japanese failure mode, and a kana tutor with no grammar is a kana tutor only.
   Out of scope for now, and the largest thing missing from the product.

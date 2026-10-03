@@ -7,8 +7,10 @@
    * small, rare and katakana-only characters — and every kana on the board is
    * graded by the same engine that grades a Chinese character.
    */
+  import { untrack } from "svelte";
   import KanaCanvas from "./lib/KanaCanvas.svelte";
   import ConfusionDrill from "./lib/ConfusionDrill.svelte";
+  import KanaChart from "./lib/KanaChart.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import SpeakButton from "./lib/SpeakButton.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
@@ -16,6 +18,7 @@
   import KanjiPanel from "./lib/KanjiPanel.svelte";
   import RadicalsPanel from "./lib/RadicalsPanel.svelte";
   import ReviewPanel from "./lib/ReviewPanel.svelte";
+  import { focusFor, lessonKeyOf } from "./lib/kana";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./lib/render";
   import { scheduleNote } from "./lib/review";
   import { canHear, isHearItKey, type VoiceStatus } from "./lib/speech";
@@ -34,7 +37,15 @@
   let info = $state<AppInfo | null>(null);
   let stats = $state<DatasetStats | null>(null);
   let view = $state<
-    "practice" | "drill" | "review" | "kanji" | "radicals" | "words" | "read" | "licences"
+    | "practice"
+    | "chart"
+    | "drill"
+    | "review"
+    | "kanji"
+    | "radicals"
+    | "words"
+    | "read"
+    | "licences"
   >("practice");
   let script = $state<ScriptName>("hiragana");
   let course = $state<LessonView[]>([]);
@@ -44,6 +55,27 @@
   let report = $state<GradeReport | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
+
+  /**
+   * A kana another screen asked the practice board to open, waiting for the
+   * course of the script it belongs to to load.
+   *
+   * Only ever set when the course for that script is not loaded yet: within a
+   * script that is already loaded the kana opens at once. It carries the script
+   * with it, so a slow load can tell whether the request is still the one being
+   * waited for — a single slot without it would let a load that has been overtaken
+   * apply the kana from the tap *before* the last one.
+   */
+  let wanted = $state<{ ch: string; script: ScriptName } | null>(null);
+
+  /**
+   * The script whose course is in `course` right now, or `null` while one loads.
+   *
+   * `script` is the toggle and `loadedScript` is what is actually on screen, and
+   * they disagree for as long as a load takes — which is exactly when a tap has to
+   * know better than to look the kana up in the wrong course.
+   */
+  let loadedScript = $state<ScriptName | null>(null);
 
   /**
    * A character or radical another screen has asked the kanji board to open.
@@ -114,13 +146,68 @@
 
   async function loadCourse(which: ScriptName) {
     try {
-      course = await api.lessons(which);
-      lessonKey = course[0]?.key ?? null;
-      const first = course[0]?.kana[0] ?? null;
-      if (first) await select(first);
+      const lessons = await api.lessons(which);
+      // A load that has been overtaken by a later toggle is dropped rather than
+      // applied: the two responses can arrive in either order, and the course on
+      // screen has to be the script the learner last chose.
+      if (untrack(() => script) !== which) return;
+      course = lessons;
+      loadedScript = which;
+      // A kana another screen asked for wins over the first of the course — but
+      // only the request that belongs to *this* script. Cleared either way, so a
+      // request whose script is not this one cannot be applied to the next load.
+      // Read untracked deliberately: this effect must not depend on the request it
+      // is consuming, or setting it would re-run the load that clears it.
+      const asked = untrack(() => wanted);
+      wanted = null;
+      const focus = focusFor(asked, which, lessons);
+      const inLesson = focus ? lessonKeyOf(lessons, focus) : null;
+      lessonKey = inLesson ?? lessons[0]?.key ?? null;
+      if (focus) await select(focus);
     } catch (e) {
+      // The request goes with the course that failed to load, rather than staying
+      // to be applied to whichever script loads next.
+      wanted = null;
+      loadedScript = null;
       error = String(e);
     }
+  }
+
+  /**
+   * Open a kana on the practice board, from wherever it was offered.
+   *
+   * The chart, the lesson grid, the confusions list and the drill's own feedback
+   * all end up here, and all of them are promises that tapping a kana writes it.
+   * The script is not worked out from the character here: the app's own dataset is
+   * the authority on which of り and リ is which and on ー being katakana, and it
+   * already says so in the `Kana` it returns. A caller that knows the script —
+   * the chart does — passes it and saves the round trip.
+   *
+   * The last tap wins. A kana is opened directly only when its script's course is
+   * the one on screen; otherwise it is handed to the load that is bringing that
+   * course, which leaves the *latest* request in force — so a tap that overtakes an
+   * earlier one is the one that lands, and a load that fails takes its request with
+   * it.
+   */
+  async function openKana(ch: string, where?: ScriptName) {
+    view = "practice";
+    error = null;
+    let target = where;
+    if (!target) {
+      try {
+        target = (await api.kana(ch)).script;
+      } catch (e) {
+        error = String(e);
+        return;
+      }
+    }
+    if (target !== script || loadedScript !== target) {
+      wanted = { ch, script: target };
+      script = target;
+      return;
+    }
+    lessonKey = lessonKeyOf(course, ch) ?? lessonKey;
+    await select(ch);
   }
 
   async function boot() {
@@ -255,7 +342,7 @@
   {/if}
 
   <div class="views" role="tablist">
-    {#each [["practice", "Practice"], ["drill", "Tell them apart"], ["review", "Review"], ["kanji", "Kanji"], ["radicals", "Radicals"], ["words", "Words"], ["read", "Read"], ["licences", "Licences"]] as const as [id, label] (id)}
+    {#each [["practice", "Practice"], ["chart", "Kana chart"], ["drill", "Tell them apart"], ["review", "Review"], ["kanji", "Kanji"], ["radicals", "Radicals"], ["words", "Words"], ["read", "Read"], ["licences", "Licences"]] as const as [id, label] (id)}
       <button
         role="tab"
         aria-selected={view === id}
@@ -403,7 +490,7 @@
             <ul>
               {#each kana.confusions as c (c.ch)}
                 <li>
-                  <button class="cell small" onclick={() => select(c.ch)}>{c.ch}</button>
+                  <button class="cell small" onclick={() => openKana(c.ch)}>{c.ch}</button>
                   <span>{c.tell}</span>
                 </li>
               {/each}
@@ -414,8 +501,10 @@
     </section>
   </div>
 
+  {:else if view === "chart"}
+    <KanaChart onopen={openKana} />
   {:else if view === "drill"}
-    <ConfusionDrill />
+    <ConfusionDrill onopen={openKana} />
   {:else if view === "review"}
     <ReviewPanel {voice} />
   {:else if view === "kanji"}

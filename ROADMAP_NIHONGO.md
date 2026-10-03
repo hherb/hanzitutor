@@ -44,7 +44,7 @@ references for no gain.
 | **N8** | **The kanji course and screens** | **Shipped.** The course, the 214-radical table and the components screen, all served from the artifact the vocabulary already needed. See the milestone for what the measurement added — and for the one thing it decided that was open. |
 | **N9** | Distribution | Notices into the bundle, a listing, and the mobile shells. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
-| **N4** | Yōon drills and a kana chart | Last, and possibly never. The course teaches them and the input engine types them; a chart is a lookup convenience for a set a learner knows within the week. |
+| **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
 Three things are deliberately **not** milestones. Two are recorded as known weak
 spots below — the grading tolerances never re-fitted for kana, and grammar, which
@@ -513,6 +513,193 @@ rather than a second component.
 * Yōon can be drilled, and きゃ is distinguished from きや — they are one mora
   against two, which is the point.
 * A kana offered anywhere in the interface can be opened and graded.
+
+### Shipped
+
+All three criteria are met, and the first one needed the grid to stop being a
+list. **The title names two drills and the criteria name one** — yōon and dakuten —
+so both are drilled: the acceptance list's きゃ/きや is the yōon contrast and the
+voiced rows got the same treatment, because "the course teaches them and nothing
+drills them" was true of both.
+
+**A row's holes are now data, and that is the whole chart.** `Row` held a row's
+kana in gojūon order, which is enough to *teach* a row and not enough to *draw* one:
+や has three kana and they sit in the a, u and o columns, so a chart built from the
+list draws ゆ under い and teaches the wrong vowel. Each row now holds its five
+slots — a, i, u, e, o — with `None` where the language never filled one, and
+`Row::kana` is derived from them, so the course and the chart read the same table.
+Measured: **16 rows, 80 slots, 71 kana, 9 holes** (や's i and e, わ's i, u and e,
+ん's four), and the layout is checked against something independent rather than
+trusted — `every_cell_sits_in_the_column_its_vowel_names` reads each filled slot's
+own Hepburn vowel and fails if a kana is in the wrong column.
+
+**The chart is the grid plus everything off it.** `off_grid` is now a function of
+its own — the small kana, the rare ones, and in katakana the v-series and the
+prolonged sound mark — and the course *is* the grid plus it, so the two cannot
+disagree about what exists. Hiragana's chart is **16 rows and 15 kana off the
+grid**, katakana's is **16 rows and 20 off it** (small 10 + rare 5 + v-series 4 +
+ー), which is every kana of the script and not most of them. Tapping any of them
+opens it on the board: `kana_chart` serves the geometry through the same `kana`
+command the course uses, so acceptance criterion 3 is a property of the data
+rather than a promise in a comment.
+
+**The columns are labelled with the vowels**, from the engine's own table
+(`VOWEL_COLUMNS`) rather than a string in the component: a chart whose columns are
+unlabelled hides the thing that makes ゆ sit under う.
+
+**The yōon drill is the same drill, not a second component.** The pool grew from a
+list of kana pairs to a list of **pairs of spellings** — a side carries its reading
+with it — so one question shape now serves シ/ツ, きゃ/きや and か/が, and the
+command's `kind` picks the pool. Five exercises: the classic `confusion`, the yōon
+and voicing contrasts of each script. The script is part of the exercise rather
+than a setting beside it, and that is not tidiness: `kya` names きゃ in hiragana and
+キャ in katakana, and `ga` is が and not ガ, so a question that mixed them would have
+two right answers. The classic pairs are the exception — り/リ is a pair *across*
+the scripts, which is the point of it — so that one carries no script. **33 yōon
+contrasts and 25 voicing contrasts per script**, 129 pairs in all.
+
+**The voicing exercise is the mark, and it is derived from the rows.** か against
+が, は against ば *and* against ぱ: the two kana are the same character with a
+dakuten or a handakuten, which is exactly what a beginner leaves off, and the two
+shapes are near identical on purpose. The relation is stated between **rows**
+(`VOICED_FROM`: ga←ka, za←sa, da←ta, ba←ha, pa←ha) rather than by arithmetic on code
+points, because は has two voiced forms and a rule that subtracted one from が and
+two from ぱ would be inferring the language from the encoding. The pairs are zipped
+from the two rows' slots, and the independent half is the test: the two kana of
+every one of the 50 pairs really are one code point apart (dakuten) or two
+(handakuten), and the tell names the mark that the difference is.
+
+**The two-mora counterpart is derived, not written out.** `Yoon` now carries the
+full-size spelling (`きや`), its reading (`kiya`) and its Kunrei reading (`siya` for
+しゃ), composed from the base's own reading and the full-size kana's — and checked
+against a second path to the same string,
+`the_plain_counter_of_every_yoon_is_what_the_input_engine_types`, which asks the
+romaji engine to type both spellings of all 66 contrasts. The drill's prompt is
+that same reading, which the live check cross-checked by asking the app's own
+`romaji_to_kana` what the prompt spelled.
+
+**The record is the same file, under a new kind of key.** A yōon contrast is
+recorded in `confusions.json` under `きゃ|きや` and weighted by N3's rule unchanged,
+because confusing きゃ with きや is a confusion like any other — and the two apps'
+data boundary (invariant 15) is untouched, since it is still this app's own file.
+Widening the key from a pair of kana to a pair of spellings moved **no existing
+key**: `key_of(a, b)` orders two strings and reproduces `pair_key` exactly, which
+`a_kana_pair_keeps_the_key_it_was_stored_under` pins over all thirteen.
+
+**Four things the work corrected, and one of them was a bug in this document's
+own milestone.**
+
+* **The katakana small and rare lessons listed hiragana kana.** Their titles were
+  written out by hand — `Small kana — ゃ ゅ ょ っ` — while their members were
+  converted, so the katakana course drew ャ ュ ョ ッ and named ゃ ゅ ょ っ beside
+  them. The title is now drawn from the lesson's own kana, which is also what makes
+  it right for the ten small kana rather than the four a hand-written title
+  remembered.
+* **Generalising the drill's record lookup lost the either-order key.** The first
+  version looked a pair up by comparing the key literally, and the existing test
+  caught it immediately: `ツ|シ` is what a caller may post and `シ|ツ` is what the
+  file stores, and the app has already written files under the canonical spelling.
+  The key is now canonicalised before the lookup, and
+  `an_answer_is_recorded_against_the_pair_and_the_arithmetic_says_so` is why that
+  was caught rather than shipped.
+* **`YOON_SMALL` carried each vowel twice** — once as the Hepburn vowel and once as
+  the Kunrei one, which are the same thing, because the two systems disagree over
+  the consonant (し is `shi`/`si`) and never over the vowel. It now carries the
+  full-size kana instead, which is the fact the drill actually needed.
+* **The voicing tell ended in a full stop, and the screen adds one of its own.** The
+  live check printed the learner's feedback as *で is the same kana with the dakuten
+  ゛..* — two stops, from a tell that was a sentence where every other tell is a
+  clause. No test looked for it, because the thirteen classic tells happen to have
+  no stop at all; there is one now, over every pool, since a generated tell is
+  exactly where the mistake comes back. This is the class of bug the probe exists
+  for: the suite was green, `svelte-check` was happy, and the extra character was
+  only visible in words a learner would read.
+
+**Verified on a running window, by probe.** There is no active display in this
+session, so §5's capture recipe is a frozen frame (trap 17) and the check went over
+HTTP to the dev server's log. It reported, in its own words:
+
+* the chart: `vowels=[a,i,u,e,o] ka=[か,き,く,け,こ] ya=[や,_,ゆ,_,よ]
+  wa=[わ,_,_,_,を] n=[ん,_,_,_,_]` — the holes in the columns the language leaves
+  them, which is the measurement the first acceptance criterion turns on;
+* tapping ゆ opened `big=ゆ reading=yu lesson=や ゆ よ` — the board *and* the lesson
+  highlight, so a kana opened from the chart lands in its own row rather than the
+  first lesson's;
+* the katakana chart read `ya=[ヤ,_,ユ,_,ヨ]`, and ヷ — a character that is on no
+  grid at all — opened with `lesson=V-series`;
+* the yōon drill asked `Which one is byo?` with `opts=ビヨ,ビョ`, the app's own
+  romaji engine confirmed `byo -> ビョ`, and answering the long spelling gave
+  *ビョ is byo, not ビヨ. ビョ is one mora — the small ョ; ビヨ is two, ビ + ヨ.* with
+  `record=ビョ|ビヨ: missed 1 of 1`, `score=0 / 1` and no "write it" button — a
+  digraph is not one character and the board is not offered half an answer;
+* all five exercises rendered (`Confusable kana|Yōon きゃ|Yōon キャ|Voiced が|
+  Voiced ガ`), and the voicing drill asked `Which one is te?` with `opts=て,で`,
+  answering with *て is te, not で. て is the plain kana; で is the same kana with
+  the dakuten ゛* and `record=て|で: missed 1 of 1`. The **handakuten** was seen too
+  — katakana asked `Which one is ho?` with `opts=ホ,ポ` and answered *ホ is ho, not
+  ポ. ホ is the plain kana; ポ is the same kana with the handakuten ゜* — which is
+  the half of the voiced rows a rule that only knew about dakuten would have got
+  wrong;
+* the classic drill's `Write り on the board` opened り in `ら り る れ ろ`, and the
+  same path from ク crossed the script toggle on its way;
+* and the script handoff was driven **in both directions** after the race fix
+  below rewrote it: ヷ from the katakana chart opened with `lesson=V-series`, then
+  ゆ from the hiragana chart opened with `lesson=や ゆ よ` — two crossings, each
+  landing on the kana's own lesson rather than the first lesson of the course.
+
+One scratch run's file held all three kinds of key at once, which is the record
+claim in one image — a classic pair, a voicing contrast and a katakana yōon:
+
+```json
+{"pairs": {"ソ|ン":   {"asked": 1, "correct": 0, "wrong": 1},
+           "す|ず":   {"asked": 1, "correct": 0, "wrong": 1},
+           "ジョ|ジヨ": {"asked": 1, "correct": 0, "wrong": 1}}}
+```
+
+**And three frontend races an adversarial review found, all fixed — recorded
+because the suite could not see any of them.** The frontend has no component test
+harness (vitest runs pure TypeScript in node, deliberately), so a component's state
+handling is checked by reading it and by driving it, and these were found by
+reading it:
+
+* **The drill could draw one exercise's question under another's chip.** `Next` and
+  a chip press can both be in flight, and the older response landing last put a
+  きゃ/きや pair on screen under the "Voiced が" note, with the score, the note and
+  the "Write it" target belonging to the wrong exercise. `DrillQuestion::kind` was
+  added on the Rust side for exactly this ("echoed back so a screen can tell a
+  question from the exercise it is showing now from one it left") and the component
+  never read it. There is now a ticket per ask, a check that the answer's kind is
+  the one asked for, the note derived from the **question's** kind rather than from
+  the selected chip, and the previous question cleared when the exercise changes.
+* **`openKana`'s script handoff held one un-tagged kana.** A tap that overtook an
+  earlier one could be replaced by it — the board ending on the *first* tap — and a
+  load that failed left its request to be applied to whichever course loaded next,
+  opening one script's kana under the other's lessons. The request now carries its
+  script, only a load for that script may consume it, a superseded load is dropped,
+  and the rule itself is `focusFor` in `src/lib/kana.ts` with four tests, because a
+  race in a component with no test harness is a rule that should not live inline.
+* **The chart could stick on "Loading the chart…".** A response for a script the
+  toggle had left was assigned to `view` and then hidden at render, so two quick
+  toggles arriving out of order left nothing to show and nothing left to re-request
+  it. A stale answer is now dropped where it arrives.
+
+The fix for the first two was the same shape in both places — **tag a request with
+what it was for, and let only the answer that matches the current ask land** — which
+is worth carrying: this app has three asynchronous panels over one IPC boundary, and
+"the last click wins" is not something a screenshot or a unit test will notice.
+
+**What is deliberately not here.** The chart is a lookup, not a lesson: it has no
+romaji under each cell (the Practice screen shows the reading when the kana opens)
+and no stroke-order animation of its own. The voicing exercise covers the grid's
+five voiced rows, so **う/ゔ is the one voicing contrast the course teaches and does
+not drill** — ゔ is in the rare-kana lesson and the chart offers it, but it is off the
+grid and its katakana ヴ belongs to loanword spelling rather than to the ladder the
+rest of this course is built on. The drill now covers the three things the course
+teaches that a single kana cannot express — the classic confusions, the yōon
+contrasts and the voicing contrasts — but it still cannot *discover* a fourteenth
+kana pair: the pool grew two new exercises, not a new way of asking about kana, so
+the gap the N3 note names stands. Asking about kana generally is a different drill
+and a different record, and it is still not built.
 
 ---
 
@@ -1000,11 +1187,14 @@ Recorded here rather than as milestones because none of them is a feature.
   kana course has unlocked grammar and been given nothing to use it on. This is
   not a kana-tutor weakness so much as the reason a kana tutor is not a Japanese
   tutor.
-* **The 13 confusion pairs are still a fixed list.** N3 weighs them by what this
-  learner gets wrong, which is the half that was worth having — but the drill only
-  ever asks about those 13, so it cannot discover a 14th pair that this learner
-  actually confuses. Growing the list means asking about kana rather than about
-  pairs. See the note at the end of N3.
+* **The 13 confusion pairs are still a fixed list, and the yōon drill did not
+  change that.** N3 weighs them by what this learner gets wrong, which is the half
+  that was worth having — and N4's second exercise records its 33 yōon contrasts
+  under the same rule and in the same file, so the *record* now covers more than
+  the thirteen. What is still not built is a drill that can discover a fourteenth
+  *kana* pair (あ/お, say) that this learner actually confuses: the pool grew a
+  second exercise, not a second way of asking about kana. See the note at the end
+  of N3 and N4's Shipped section.
 * **`hanzi-store` and `hanzi-sync` are not for this app, by decision.** They are
   the Chinese app's learner data, and invariant 15 keeps the two apps' data
   separate: shared crates carry code, never user data. So "the measurement says

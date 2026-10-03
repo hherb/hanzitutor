@@ -21,12 +21,12 @@ pub mod store;
 use hanzi_voice::{Language, Speaker};
 use licences::{AppInfo, LicenceNotice};
 use nihongo_core::{
-    band_name, confusions_for, due_items, find_pair, grade_name,
-    kanji_lessons as build_kanji_lessons, lessons as build_lessons, normalise_to_hiragana,
-    now_iso8601, pair_key, parse_decomposition, reading, to_kana, to_kana_in,
-    yoon as build_yoon, Confusable, ConfusionLog, Decomposition, DueItem, GradeOptions,
-    GradeReport, KanaDataset, Kanji, KanjiDataset, Passage, PassageDataset, PassageToken, Point,
-    Ruby, Script, Word, WordDataset, CONFUSABLE, KANJI_LESSON_SIZE,
+    band_name, confusions_for, due_items, grade_name, kanji_lessons as build_kanji_lessons,
+    key_of, lessons as build_lessons, normalise_to_hiragana, now_iso8601, off_grid,
+    parse_decomposition, reading, split_key, to_kana, to_kana_in, yoon as build_yoon, Confusable,
+    ConfusionLog, Decomposition, DrillKind, DrillPair, DueItem, GradeOptions, GradeReport,
+    KanaDataset, Kanji, KanjiDataset, Passage, PassageDataset, PassageToken, Point, Row, Ruby,
+    Script, Word, WordDataset, KANJI_LESSON_SIZE, ROWS, VOWEL_COLUMNS,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -210,6 +210,42 @@ impl AppState {
             .collect()
     }
 
+    /// The whole kana chart for one script: the gojūon grid row by row, with the
+    /// holes each row has, and the groups that are not on the grid at all.
+    ///
+    /// The grid is `ROWS` — the same table the course is built from — and the
+    /// off-grid groups come from the same function the course's own extra lessons
+    /// do, so the chart cannot show a kana the course does not teach or miss one
+    /// it does.
+    pub fn chart(&self, script: Script) -> ChartView {
+        ChartView {
+            // Echoed back so a screen can tell an answer to its own question from
+            // one about the script that was up a moment ago.
+            script: script.name().to_string(),
+            vowels: VOWEL_COLUMNS.iter().map(char::to_string).collect(),
+            rows: ROWS
+                .iter()
+                .map(|row: &Row| ChartRowView {
+                    sound: row.sound.to_string(),
+                    voiced: row.voiced,
+                    cells: row
+                        .scripted_cells(script)
+                        .iter()
+                        .map(|cell| cell.map(|ch| ch.to_string()))
+                        .collect(),
+                })
+                .collect(),
+            off_grid: off_grid(&self.kana, script)
+                .into_iter()
+                .map(|lesson| ChartGroupView {
+                    key: lesson.key,
+                    title: lesson.title,
+                    kana: lesson.kana.iter().map(char::to_string).collect(),
+                })
+                .collect(),
+        }
+    }
+
     /// One kana, with everything a practice screen needs: the geometry it draws
     /// and grades against, how it is read, and what it is confused with.
     pub fn kana(&self, ch: char) -> Result<KanaView, String> {
@@ -378,14 +414,16 @@ impl AppState {
             .collect()
     }
 
-    /// The pairs the drill can actually ask: **both** kana in the dataset and both
-    /// with a reading to prompt with. A pair that fails this is skipped rather than
-    /// asked with an empty prompt, which is why the field is filtered here instead
-    /// of being assumed complete.
-    fn askable_pairs(&self) -> Vec<Confusable> {
-        CONFUSABLE
-            .iter()
-            .copied()
+    /// The pairs one exercise can actually ask: every spelling written with kana
+    /// the app holds, and every prompt non-empty.
+    ///
+    /// A pair that fails this is skipped rather than asked with an empty prompt or
+    /// a character the board cannot draw, which is why the pool is filtered here
+    /// instead of being assumed complete. It is also what the app validates an
+    /// answer against, so a key that is not askable is a key that is not recorded.
+    pub fn askable_pairs(&self, kind: DrillKind) -> Vec<DrillPair> {
+        kind.pairs()
+            .into_iter()
             .filter(|pair| self.pair_is_askable(pair))
             .collect()
     }
@@ -397,69 +435,91 @@ impl AppState {
     /// and which of the pair is the one being asked for. Both are supplied rather
     /// than drawn here so that the whole decision is deterministic in a test; the
     /// command above passes two rolls from the clock.
-    pub fn next_drill_question_with_rolls(&self, pair_roll: f64, side_roll: f64) -> Option<DrillQuestion> {
-        let askable = self.askable_pairs();
+    pub fn next_drill_question_with_rolls(
+        &self,
+        kind: DrillKind,
+        pair_roll: f64,
+        side_roll: f64,
+    ) -> Option<DrillQuestion> {
+        let askable = self.askable_pairs(kind);
         let log = self
             .drill
             .lock()
             .expect("the drill's store is not poisoned");
-        let pair = *log.log().pick(&askable, pair_roll)?;
+        let pair = log.log().pick_by(&askable, DrillPair::key, pair_roll)?.clone();
         drop(log);
 
-        // Which way round to ask. Both members are askable, so this cannot fail;
-        // it returns `None` rather than panicking all the same, because a kana
+        // Which way round to ask. Both sides are askable, so this cannot fail; it
+        // returns the question rather than panicking all the same, because a kana
         // dataset is data and data is allowed to be wrong.
-        let (target, other) = if side_roll < 0.5 {
-            (pair.a, pair.b)
-        } else {
-            (pair.b, pair.a)
-        };
-        let hepburn = reading(target)?.hepburn.first()?.to_string();
+        let [first, second] = &pair.sides;
+        let (target, other) = if side_roll < 0.5 { (first, second) } else { (second, first) };
 
         Some(DrillQuestion {
-            pair: pair_key(&pair),
-            ch: target,
-            hepburn,
-            // Exactly the two kana of the pair, so that every answer says
+            kind: kind.name().to_string(),
+            pair: pair.key(),
+            ch: target.spelling.clone(),
+            hepburn: target.prompt.clone(),
+            // Exactly the pair's own two spellings, so that every answer says
             // something unambiguous about *this* pair: which of these two shapes
             // is the reading. The wider four-option question the drill used to ask
             // tested more at once and taught less — a miss could not be attributed
             // to a pair, which is precisely what has to be remembered.
-            options: vec![target, other],
-            tell: pair.tell.to_string(),
+            options: vec![target.spelling.clone(), other.spelling.clone()],
+            tell: pair.tell.clone(),
         })
     }
 
     /// The next question, with the randomness supplied by the clock.
-    pub fn next_drill_question(&self) -> Option<DrillQuestion> {
-        self.next_drill_question_with_rolls(roll(), roll())
+    pub fn next_drill_question(&self, kind: DrillKind) -> Option<DrillQuestion> {
+        self.next_drill_question_with_rolls(kind, roll(), roll())
     }
 
     /// Record what the learner answered, and say what the pair's record now is.
     ///
-    /// The caller says which pair it was asked about, which kana was wanted and
-    /// which was picked; **correctness is decided here**, not sent by the
+    /// The caller says which pair it was asked about, which spelling was wanted
+    /// and which was picked; **correctness is decided here**, not sent by the
     /// interface. A client that could post `correct: true` would be a client that
     /// could lie to itself, and the file is meant to be worth reading.
+    ///
+    /// The pair is looked up in the pools the app can actually ask rather than in
+    /// a list of its own, so a key that names a pair the learner could not have
+    /// been asked about is refused instead of written into the file for good.
     pub fn record_drill_answer(
         &self,
         pair: &str,
-        target: char,
-        picked: char,
+        target: &str,
+        picked: &str,
     ) -> Result<DrillTally, String> {
-        let pair = find_pair(pair).ok_or_else(|| {
-            format!("{pair:?} is not one of the confusion pairs, so there is nothing to record")
-        })?;
-        if target != pair.a && target != pair.b {
-            return Err(format!("{target} is not in {}", pair_key(pair)));
+        // The caller may name the pair either way round — the file is written in
+        // one canonical order, and a caller should not have to know which — so
+        // the key is canonicalised before it is looked up. A key that is not two
+        // spellings between one bar stays as it is and matches nothing, which is
+        // how it is refused.
+        let wanted = match split_key(pair) {
+            Some((a, b)) => key_of(&a, &b),
+            None => pair.to_string(),
+        };
+        let found = DrillKind::ALL
+            .iter()
+            .flat_map(|kind| self.askable_pairs(*kind))
+            .find(|candidate| candidate.key() == wanted)
+            .ok_or_else(|| {
+                format!(
+                    "{pair:?} is not one of the pairs this drill asks about, so there is nothing \
+                     to record"
+                )
+            })?;
+        if !found.holds(target) {
+            return Err(format!("{target} is not in {}", found.key()));
         }
-        if picked != pair.a && picked != pair.b {
+        if !found.holds(picked) {
             return Err(format!(
                 "{picked} is neither of the two answers {} offers",
-                pair_key(pair)
+                found.key()
             ));
         }
-        let key = pair_key(pair);
+        let key = found.key();
         let tally = self
             .drill
             .lock()
@@ -475,16 +535,18 @@ impl AppState {
         })
     }
 
-    /// Whether a pair can be asked at all: both kana are in the dataset and both
-    /// have a reading to prompt with.
-    fn pair_is_askable(&self, pair: &Confusable) -> bool {
-        self.kana_has_a_prompt(pair.a) && self.kana_has_a_prompt(pair.b)
-    }
-
-    /// Whether a kana can be *asked about*: it is in the dataset and has a
-    /// non-empty Hepburn reading for the prompt.
-    fn kana_has_a_prompt(&self, ch: char) -> bool {
-        self.kana.get(ch).is_some() && reading(ch).is_some_and(|r| !r.hepburn.is_empty())
+    /// Whether a pair can be asked at all: every character either spelling is
+    /// written with is a kana the app holds, and neither side is prompted with
+    /// nothing.
+    ///
+    /// Checking the *characters* rather than the spelling is what lets one rule
+    /// serve a kana and a digraph: きゃ is two characters the board can draw as
+    /// two kana, and it is not one character the board cannot.
+    fn pair_is_askable(&self, pair: &DrillPair) -> bool {
+        pair.sides
+            .iter()
+            .all(|side| !side.prompt.is_empty() && !side.spelling.is_empty())
+            && pair.characters().all(|ch| self.kana.get(ch).is_some())
     }
 
     /// The yōon digraphs for one script — the pairs that make one mora.
@@ -841,6 +903,50 @@ pub struct LessonView {
     pub count: usize,
 }
 
+/// One row of the kana chart: the grid's five slots, holes included.
+///
+/// `cells` is always five long — a, i, u, e, o — and a slot is null where the row
+/// has no kana. A shorter list would draw や's three kana left-aligned and put ゆ
+/// under い, which is a chart teaching the wrong vowel.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartRowView {
+    /// The row's Hepburn label: `ka`, `ya`, `n`.
+    pub sound: String,
+    /// True for the dakuten and handakuten rows, which a chart sets apart.
+    pub voiced: bool,
+    pub cells: Vec<Option<String>>,
+}
+
+/// A group of kana the chart draws **beside** the grid: the small kana, the rare
+/// ones, and — in katakana only — the v-series and the prolonged sound mark.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartGroupView {
+    /// Stable key, e.g. `hiragana-small`.
+    pub key: String,
+    /// What the group is called, with its kana in the title as the course writes
+    /// them: `Small kana — ゃ ゅ ょ っ`.
+    pub title: String,
+    pub kana: Vec<String>,
+}
+
+/// The whole kana chart for one script.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartView {
+    /// The script this chart is of, echoed back so a screen can tell an answer to
+    /// its own question from one about the script that was up a moment ago.
+    pub script: String,
+    /// The five vowels the columns stand for — `a i u e o` — so a screen can label
+    /// them. They are the grid's meaning: it is why ゆ is under う and not under い.
+    pub vowels: Vec<String>,
+    /// The gojūon grid, plain rows first and then the voiced ones.
+    pub rows: Vec<ChartRowView>,
+    /// The characters that are not on the grid.
+    pub off_grid: Vec<ChartGroupView>,
+}
+
 /// One kana, as a practice screen uses it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -875,19 +981,27 @@ pub struct ConfusionView {
 /// The pair travels with the question because the answer is recorded against the
 /// *pair*, and the asker is the only thing that knows which pair it chose. The
 /// component is free to shuffle `options` for display; it must send `pair`,
-/// `ch` and the kana that was picked back unchanged.
+/// `ch` and the spelling that was picked back unchanged.
+///
+/// A **spelling** rather than a kana, because a yōon contrast's two answers are
+/// two characters each: the question is きゃ against きや, and asking it with one
+/// character per answer is not possible.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DrillQuestion {
-    /// The canonical key of the pair under test, e.g. `シ|ツ`.
+    /// Which exercise asked this — `confusion`, `yoon-hiragana` or
+    /// `yoon-katakana`. Echoed back so a screen can tell a question from the
+    /// exercise it is showing now from one it left.
+    pub kind: String,
+    /// The canonical key of the pair under test, e.g. `シ|ツ` or `きゃ|きや`.
     pub pair: String,
-    /// The kana the learner is being asked to recognise.
-    pub ch: char,
+    /// The spelling the learner is being asked to recognise.
+    pub ch: String,
     /// The reading to prompt with.
     pub hepburn: String,
-    /// The kana to offer as answers, one of which is `ch`. Two, for now: the pair
-    /// itself — see `next_drill_question_with_rolls` for why not more.
-    pub options: Vec<char>,
+    /// The spellings to offer as answers, one of which is `ch`. Two, for now: the
+    /// pair itself — see `next_drill_question_with_rolls` for why not more.
+    pub options: Vec<String>,
     /// What tells the two apart, so a miss teaches as well as records.
     pub tell: String,
 }
@@ -1200,11 +1314,29 @@ fn grade_attempt(
     state.grade_and_schedule(ch, &strokes, &options.unwrap_or_default())
 }
 
+/// The whole kana chart — the gojūon grid and the characters off it — for one
+/// script.
+///
+/// One answer rather than two commands: the grid and the off-grid groups are what
+/// one screen draws together, and asking for them separately would let the two
+/// halves describe different scripts.
+#[tauri::command]
+fn kana_chart(state: State<'_, AppState>, script: String) -> Result<ChartView, String> {
+    Ok(state.chart(script_of(&script)?))
+}
+
 /// The next question for the discrimination drill, weighted towards the pairs
 /// this learner gets wrong. `None` only if no pair can be asked at all.
+///
+/// `kind` picks the exercise — the classic confusions, or the yōon contrasts of
+/// one script — and defaults to the classic pairs, so a caller that predates the
+/// yōon drill asks for exactly what it used to get.
 #[tauri::command]
-fn next_drill_question(state: State<'_, AppState>) -> Option<DrillQuestion> {
-    state.next_drill_question()
+fn next_drill_question(
+    state: State<'_, AppState>,
+    kind: Option<DrillKind>,
+) -> Option<DrillQuestion> {
+    state.next_drill_question(kind.unwrap_or(DrillKind::Confusion))
 }
 
 /// What the board has taught this learner, and what is due.
@@ -1224,14 +1356,17 @@ fn review_queue(state: State<'_, AppState>, limit: Option<usize>) -> ReviewQueue
 const REVIEW_PAGE: usize = 40;
 
 /// Record what the learner answered, and return the pair's record now.
+///
+/// `target` and `picked` are **spellings**, not kana: a yōon question's answers
+/// are two characters each.
 #[tauri::command]
 fn record_drill_answer(
     state: State<'_, AppState>,
     pair: String,
-    target: char,
-    picked: char,
+    target: String,
+    picked: String,
 ) -> Result<DrillTally, String> {
-    state.record_drill_answer(&pair, target, picked)
+    state.record_drill_answer(&pair, &target, &picked)
 }
 
 /// Check a typed reading against a kana, accepting either romanisation.
@@ -1469,6 +1604,7 @@ pub fn run() {
             dataset_stats,
             lessons,
             kana,
+            kana_chart,
             grade_attempt,
             review_queue,
             next_drill_question,
@@ -1740,23 +1876,25 @@ mod tests {
     #[test]
     fn every_classic_pair_can_actually_be_asked() {
         let state = state();
-        let askable = state.askable_pairs();
+        let kind = DrillKind::Confusion;
+        let askable = state.askable_pairs(kind);
         assert_eq!(
             askable.len(),
-            CONFUSABLE.len(),
+            kind.pairs().len(),
             "a pair the dataset cannot prompt would silently shrink the drill"
         );
 
         // And the question each of them produces is answerable: the target is one
-        // of the options, both options are the pair's own kana, and the prompt is
-        // not empty.
+        // of the options, both options are the pair's own spellings, and the
+        // prompt is not empty.
         for (index, pair) in askable.iter().enumerate() {
             let roll = (index as f64 + 0.5) / askable.len() as f64;
             for side in [0.0, 0.75] {
                 let question = state
-                    .next_drill_question_with_rolls(roll, side)
+                    .next_drill_question_with_rolls(kind, roll, side)
                     .expect("an askable pair yields a question");
-                assert_eq!(question.pair, pair_key(pair));
+                assert_eq!(question.kind, kind.name());
+                assert_eq!(question.pair, pair.key());
                 assert!(
                     question.options.contains(&question.ch),
                     "{} must be one of its own options",
@@ -1764,11 +1902,7 @@ mod tests {
                 );
                 assert_eq!(question.options.len(), 2, "the pair, and nothing else");
                 for option in &question.options {
-                    assert!(
-                        *option == pair.a || *option == pair.b,
-                        "{option} is not in {}",
-                        question.pair
-                    );
+                    assert!(pair.holds(option), "{option} is not in {}", question.pair);
                 }
                 assert!(!question.hepburn.is_empty(), "{} has no prompt", question.ch);
                 assert!(!question.tell.is_empty(), "{} has no tell", question.pair);
@@ -1776,25 +1910,116 @@ mod tests {
         }
 
         // The two sides are two questions, not the same one twice.
-        let first = state.next_drill_question_with_rolls(0.0, 0.0).expect("a question");
-        let second = state.next_drill_question_with_rolls(0.0, 1.0).expect("a question");
+        let first = state.next_drill_question_with_rolls(kind, 0.0, 0.0).expect("a question");
+        let second = state.next_drill_question_with_rolls(kind, 0.0, 1.0).expect("a question");
         assert_eq!(first.pair, second.pair);
         assert_ne!(first.ch, second.ch, "the pair asked from the other side");
         let mut offered = first.options.clone();
-        offered.sort_unstable();
+        offered.sort();
         let mut both = vec![first.ch, second.ch];
-        both.sort_unstable();
-        assert_eq!(offered, both, "the pair's two kana, whichever side is asked");
+        both.sort();
+        assert_eq!(offered, both, "the pair's two spellings, whichever side is asked");
+    }
+
+    #[test]
+    fn the_yoon_drill_asks_the_digraph_against_the_long_spelling() {
+        let state = state();
+        for (kind, digraph, plain) in [
+            (DrillKind::YoonHiragana, "きゃ", "きや"),
+            (DrillKind::YoonKatakana, "キャ", "キヤ"),
+        ] {
+            assert_eq!(state.askable_pairs(kind).len(), 33, "{kind:?}");
+
+            // The contrast, found by its key rather than by a roll, is the one
+            // the milestone names: one mora against two.
+            let pair = state
+                .askable_pairs(kind)
+                .into_iter()
+                .find(|p| p.key() == format!("{digraph}|{plain}"))
+                .unwrap_or_else(|| panic!("{kind:?} holds the {digraph} contrast"));
+            assert_eq!(pair.kind, kind);
+
+            // Ask for the digraph, then for the long spelling: two questions,
+            // two prompts — `kya` and `kiya` — and one recorded pair.
+            let long = {
+                let index = state
+                    .askable_pairs(kind)
+                    .iter()
+                    .position(|p| p.key() == pair.key())
+                    .expect("the pair is in the pool");
+                let roll = (index as f64 + 0.5) / 33.0;
+                let asked_for_digraph =
+                    state.next_drill_question_with_rolls(kind, roll, 0.0).expect("a question");
+                assert_eq!(asked_for_digraph.ch, digraph);
+                assert_eq!(asked_for_digraph.hepburn, "kya");
+                assert_eq!(asked_for_digraph.options.len(), 2);
+                assert!(asked_for_digraph.options.contains(&plain.to_string()));
+
+                state
+                    .record_drill_answer(&asked_for_digraph.pair, &asked_for_digraph.ch, plain)
+                    .expect("records");
+                asked_for_digraph.pair
+            };
+
+            let tally = state.log().tally(&long);
+            assert_eq!(tally.asked, 1);
+            assert_eq!(tally.wrong, 1, "writing the long spelling for きゃ is a miss");
+            assert_eq!(
+                state.log().weight(&long),
+                3.0,
+                "and a yōon miss is weighted by the same rule"
+            );
+        }
+    }
+
+    #[test]
+    fn the_voicing_drill_asks_the_plain_kana_against_its_voiced_form() {
+        let state = state();
+        for (kind, plain, voiced) in [
+            (DrillKind::VoicingHiragana, "か", "が"),
+            (DrillKind::VoicingKatakana, "カ", "ガ"),
+        ] {
+            let pool = state.askable_pairs(kind);
+            assert_eq!(pool.len(), 25, "{kind:?}: five voiced rows of five");
+
+            // The contrast the exercise is for, found by its key rather than by a
+            // roll: the plain kana and the same kana with the mark.
+            let key = format!("{plain}|{voiced}");
+            let index = pool
+                .iter()
+                .position(|p| p.key() == key)
+                .unwrap_or_else(|| panic!("{kind:?} holds {key}"));
+            let roll = (index as f64 + 0.5) / pool.len() as f64;
+
+            let asked = state
+                .next_drill_question_with_rolls(kind, roll, 0.0)
+                .expect("a question");
+            assert_eq!(asked.kind, kind.name());
+            assert_eq!(asked.ch, plain, "the plain kana is the side the low roll asks for");
+            assert_eq!(asked.hepburn, "ka");
+            assert_eq!(asked.options.len(), 2);
+            assert!(asked.options.contains(&voiced.to_string()));
+            assert!(asked.tell.contains(plain) && asked.tell.contains(voiced));
+
+            // Writing the voiced kana for the plain one is a miss, recorded in the
+            // same file as every other exercise's.
+            let tally = state
+                .record_drill_answer(&asked.pair, &asked.ch, voiced)
+                .expect("records");
+            assert_eq!(tally.pair, key);
+            assert_eq!(tally.wrong, 1);
+            assert_eq!(tally.weight, 3.0, "the weighting rule is the same one");
+        }
     }
 
     #[test]
     fn an_answer_is_recorded_against_the_pair_and_the_arithmetic_says_so() {
         let state = state();
-        let pair = pair_key(CONFUSABLE.iter().find(|p| p.a == 'シ').expect("シ/ツ"));
+        let pair = "シ|ツ".to_string();
 
         // A miss: 1 + 2.
         let after_miss = state
-            .record_drill_answer(&pair, 'シ', 'ツ')
+            .record_drill_answer(&pair, "シ", "ツ")
             .expect("records");
         assert_eq!(after_miss.pair, pair);
         assert_eq!(after_miss.asked, 1);
@@ -1805,15 +2030,16 @@ mod tests {
         // The same pair named the other way round, answered correctly: one pair,
         // and the weight comes back down.
         let after_hit = state
-            .record_drill_answer("ツ|シ", 'ツ', 'ツ')
+            .record_drill_answer("ツ|シ", "ツ", "ツ")
             .expect("records");
         assert_eq!(after_hit.pair, pair, "one pair, whichever way it is named");
         assert_eq!(after_hit.asked, 2);
         assert_eq!(after_hit.weight, 2.0);
 
-        // Correctness is decided here, from the two kana — not sent by the caller.
+        // Correctness is decided here, from the two spellings — not sent by the
+        // caller.
         let lying = state
-            .record_drill_answer(&pair, 'シ', 'ツ')
+            .record_drill_answer(&pair, "シ", "ツ")
             .expect("records");
         assert_eq!(lying.wrong, 2, "シ asked for and ツ picked is a miss");
         assert_eq!(lying.correct, 1);
@@ -1823,15 +2049,21 @@ mod tests {
     fn an_answer_about_something_that_is_not_a_pair_is_refused() {
         let state = state();
         let err = state
-            .record_drill_answer("あ|い", 'あ', 'い')
+            .record_drill_answer("あ|い", "あ", "い")
             .unwrap_err();
-        assert!(err.contains("not one of the confusion pairs"), "{err}");
+        assert!(err.contains("not one of the pairs this drill asks about"), "{err}");
 
-        // A pair, but a kana that is not in it.
-        let err = state.record_drill_answer("シ|ツ", 'あ', 'ツ').unwrap_err();
+        // A pair, but a spelling that is not in it.
+        let err = state.record_drill_answer("シ|ツ", "あ", "ツ").unwrap_err();
         assert!(err.contains("is not in シ|ツ"), "{err}");
-        let err = state.record_drill_answer("シ|ツ", 'シ', 'あ').unwrap_err();
+        let err = state.record_drill_answer("シ|ツ", "シ", "あ").unwrap_err();
         assert!(err.contains("neither of the two answers"), "{err}");
+
+        // A yōon contrast named with the *other* script's characters is refused:
+        // `kya` names きゃ here and キャ there, which is why the two scripts are
+        // separate exercises.
+        let err = state.record_drill_answer("きゃ|きや", "キャ", "キヤ").unwrap_err();
+        assert!(err.contains("is not in きゃ|きや"), "{err}");
 
         // And nothing was written by any of it.
         assert!(state.log().is_empty());
@@ -1840,30 +2072,146 @@ mod tests {
     #[test]
     fn the_drill_prefers_the_pair_the_learner_keeps_getting_wrong() {
         let state = state();
+        let kind = DrillKind::Confusion;
         // ン/ソ (ソ|ン) sits early in the list, so a mid-field roll lands past it
         // while everything weighs the same.
         let roll = 0.3;
-        let before = state.next_drill_question_with_rolls(roll, 0.0).expect("a question");
+        let before = state.next_drill_question_with_rolls(kind, roll, 0.0).expect("a question");
         assert_ne!(before.pair, "ソ|ン");
 
-        state.record_drill_answer("ソ|ン", 'ン', 'ソ').expect("records");
-        state.record_drill_answer("ソ|ン", 'ン', 'ソ').expect("records");
-        let after = state.next_drill_question_with_rolls(roll, 0.0).expect("a question");
+        state.record_drill_answer("ソ|ン", "ン", "ソ").expect("records");
+        state.record_drill_answer("ソ|ン", "ン", "ソ").expect("records");
+        let after = state.next_drill_question_with_rolls(kind, roll, 0.0).expect("a question");
         assert_eq!(after.pair, "ソ|ン", "the same roll now lands on the missed pair");
     }
 
     #[test]
     fn the_question_is_never_one_the_board_cannot_draw() {
-        // Every kana the drill can ask about is in the dataset, so the pair is
-        // never outside the set the rest of the app works in.
+        // Every character the drill can ask about is in the dataset, so a question
+        // is never outside the set the rest of the app works in — and that holds
+        // for a digraph, whose two characters are checked rather than its spelling
+        // being one character, which it is not.
         let state = state();
-        for index in 0..CONFUSABLE.len() {
-            let roll = (index as f64 + 0.01) / CONFUSABLE.len() as f64;
-            let question = state.next_drill_question_with_rolls(roll, 0.5).expect("a question");
-            for option in &question.options {
-                assert!(state.kana(*option).is_ok(), "{option} cannot be drawn");
+        for kind in DrillKind::ALL {
+            let pool = state.askable_pairs(kind);
+            // A yōon exercise asks with two-character spellings and the others ask
+            // with one kana — read from the pool rather than from a list of which
+            // kinds are which.
+            let expected = pool
+                .first()
+                .map_or(1, |pair| pair.sides[0].spelling.chars().count());
+            for index in 0..pool.len() {
+                let roll = (index as f64 + 0.01) / pool.len() as f64;
+                let question = state
+                    .next_drill_question_with_rolls(kind, roll, 0.5)
+                    .expect("a question");
+                for option in &question.options {
+                    assert_eq!(
+                        option.chars().count(),
+                        expected,
+                        "{kind:?} asks with {expected}-character spellings"
+                    );
+                    for ch in option.chars() {
+                        assert!(state.kana(ch).is_ok(), "{ch} of {option} cannot be drawn");
+                    }
+                }
             }
         }
+    }
+
+    #[test]
+    fn the_chart_is_the_grid_with_its_holes_and_the_characters_off_it() {
+        let state = state();
+        for script in [Script::Hiragana, Script::Katakana] {
+            let chart = state.chart(script);
+            assert_eq!(chart.script, script.name());
+            assert_eq!(chart.vowels, vec!["a", "i", "u", "e", "o"], "the column labels");
+            assert_eq!(chart.rows.len(), 16, "eleven plain rows and five voiced");
+            assert!(chart.rows.iter().all(|row| row.cells.len() == 5));
+
+            // The grid holds 71 kana in 80 slots, and the holes are the language's.
+            let filled: usize = chart
+                .rows
+                .iter()
+                .map(|row| row.cells.iter().filter(|cell| cell.is_some()).count())
+                .sum();
+            assert_eq!(filled, 71);
+            let holes: usize = chart
+                .rows
+                .iter()
+                .map(|row| row.cells.iter().filter(|cell| cell.is_none()).count())
+                .sum();
+            assert_eq!(holes, 9);
+
+            // や is the row a left-aligned chart would get wrong: ゆ is in the u
+            // column and the i and e columns are empty.
+            let ya = chart.rows.iter().find(|row| row.sound == "ya").expect("the や row");
+            let expected: Vec<Option<String>> = if script == Script::Hiragana {
+                vec![Some("や".into()), None, Some("ゆ".into()), None, Some("よ".into())]
+            } else {
+                vec![Some("ヤ".into()), None, Some("ユ".into()), None, Some("ヨ".into())]
+            };
+            assert_eq!(ya.cells, expected);
+
+            // And the voiced rows are the last five, marked as such.
+            assert_eq!(chart.rows.iter().filter(|row| row.voiced).count(), 5);
+            assert!(chart.rows[..11].iter().all(|row| !row.voiced));
+            assert!(chart.rows[11..].iter().all(|row| row.voiced));
+
+            // Nothing on the grid is offered twice, and the off-grid groups hold
+            // the rest — katakana's two extra groups included.
+            let mut on_grid: Vec<String> =
+                chart.rows.iter().flat_map(|row| row.cells.iter().flatten().cloned()).collect();
+            let total = on_grid.len();
+            on_grid.sort();
+            on_grid.dedup();
+            assert_eq!(total, on_grid.len(), "{script:?} draws a kana twice");
+
+            let keys: Vec<&str> = chart.off_grid.iter().map(|g| g.key.as_str()).collect();
+            assert!(keys.contains(&format!("{}-small", script.name()).as_str()));
+            assert!(keys.contains(&format!("{}-rare", script.name()).as_str()));
+            assert_eq!(keys.contains(&"katakana-v"), script == Script::Katakana);
+            assert_eq!(keys.contains(&"katakana-choonpu"), script == Script::Katakana);
+        }
+    }
+
+    #[test]
+    fn every_kana_the_chart_offers_can_be_opened() {
+        // Acceptance criterion 3 of N4: a kana offered anywhere can be opened and
+        // graded. The chart is the screen that offers them all, so it is the one
+        // that has to be exhaustive rather than indicative.
+        let state = state();
+        for script in [Script::Hiragana, Script::Katakana] {
+            let chart = state.chart(script);
+            let offered: Vec<String> = chart
+                .rows
+                .iter()
+                .flat_map(|row| row.cells.iter().flatten().cloned())
+                .chain(chart.off_grid.iter().flat_map(|group| group.kana.iter().cloned()))
+                .collect();
+            assert!(!offered.is_empty());
+            for ch in offered {
+                let mut chars = ch.chars();
+                let (Some(one), None) = (chars.next(), chars.next()) else {
+                    panic!("{ch} in the chart is not one character")
+                };
+                let view = state
+                    .kana(one)
+                    .unwrap_or_else(|err| panic!("the chart offers {ch}, which cannot be opened: {err}"));
+                assert!(view.practisable, "{ch} is offered but cannot be graded");
+            }
+        }
+
+        // And the count is the whole script, not most of it: the chart is the one
+        // screen that has to show ヷ ヸ ヹ ヺ ー as well as the gojūon.
+        let katakana = state.chart(Script::Katakana);
+        let offered: usize = katakana
+            .rows
+            .iter()
+            .map(|row| row.cells.iter().filter(|cell| cell.is_some()).count())
+            .sum::<usize>()
+            + katakana.off_grid.iter().map(|group| group.kana.len()).sum::<usize>();
+        assert_eq!(offered, state.dataset().of_script(Script::Katakana).count());
     }
 
     #[test]

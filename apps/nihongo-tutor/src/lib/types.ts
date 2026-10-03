@@ -155,6 +155,46 @@ export interface LessonView {
   count: number;
 }
 
+/**
+ * One row of the kana chart.
+ *
+ * `cells` is always five long — a, i, u, e, o — and a slot is `null` where the
+ * row has no kana, so や arrives as `["や", null, "ゆ", null, "よ"]`. The holes
+ * are the point: drawing the three left-aligned would put ゆ under い.
+ */
+export interface ChartRow {
+  /** The row's Hepburn label: `ka`, `ya`, `n`. */
+  sound: string;
+  /** True for the dakuten and handakuten rows. */
+  voiced: boolean;
+  cells: (string | null)[];
+}
+
+/** A group of kana the chart draws beside the grid. */
+export interface ChartGroup {
+  key: string;
+  /** Its title, with its own kana in it: `Small kana — ゃ ゅ ょ っ`. */
+  title: string;
+  kana: string[];
+}
+
+/**
+ * The whole chart for one script: the gojūon grid and the characters off it.
+ *
+ * `script` is echoed back so a screen can tell an answer to its own question from
+ * one about the script that was up a moment ago.
+ */
+export interface ChartView {
+  script: ScriptName;
+  /**
+   * The five vowels the columns stand for — `a i u e o` — which is the grid's
+   * meaning: it is why ゆ sits under う and not under い.
+   */
+  vowels: string[];
+  rows: ChartRow[];
+  offGrid: ChartGroup[];
+}
+
 /** A yōon digraph: two kana that make one mora. */
 export interface YoonView {
   key: string;
@@ -181,22 +221,47 @@ export interface AppInfo {
 }
 
 /**
+ * Which exercise a drill question belongs to.
+ *
+ * The classic confusions are pairs of single kana, sometimes across the two
+ * scripts (り against リ). The other two exercises are what a pair of unrelated
+ * kana cannot express: a **yōon contrast** — the digraph きゃ against the same
+ * sound written with full-size kana, きや, one mora against two — and a **voicing
+ * contrast**, where か and が are the same kana with a mark added.
+ *
+ * The script is part of the exercise because a prompt must name one script's
+ * answer: `kya` is きゃ in hiragana and キャ in katakana, and `ga` is が and not ガ.
+ */
+export type DrillKind =
+  | "confusion"
+  | "yoon-hiragana"
+  | "yoon-katakana"
+  | "voicing-hiragana"
+  | "voicing-katakana";
+
+/**
  * One question from the discrimination drill.
  *
  * The pair travels with the question because the answer is recorded against the
  * *pair*, and the asker is the only thing that knows which one it chose. `options`
- * are the kana to offer, one of which is `ch`. Send `pair`, `ch` and the kana that
- * was picked back unchanged: whether it was right is decided in Rust, because a
- * client that could report its own correctness could lie to itself.
+ * are the spellings to offer, one of which is `ch`. Send `pair`, `ch` and the
+ * spelling that was picked back unchanged: whether it was right is decided in
+ * Rust, because a client that could report its own correctness could lie to
+ * itself.
  */
 export interface DrillQuestion {
-  /** The canonical key of the pair under test, e.g. `シ|ツ`. */
+  /** Which exercise asked this, echoed back. */
+  kind: DrillKind;
+  /** The canonical key of the pair under test, e.g. `シ|ツ` or `きゃ|きや`. */
   pair: string;
-  /** The kana the learner is being asked to recognise. */
+  /**
+   * The spelling the learner is being asked to recognise. Not always one
+   * character: a yōon answer is a digraph.
+   */
   ch: string;
   /** The reading to prompt with. */
   hepburn: string;
-  /** The kana to offer as answers, one of which is `ch`. */
+  /** The spellings to offer as answers, one of which is `ch`. */
   options: string[];
   /** What tells the two apart, so a miss teaches as well as records. */
   tell: string;

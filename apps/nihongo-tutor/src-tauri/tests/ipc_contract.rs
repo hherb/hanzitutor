@@ -9,8 +9,8 @@
 //! keeping the commands thin.
 
 use hanzi_voice::Language;
+use nihongo_core::{DrillKind, GradeOptions, Point};
 use nihongo_tutor_lib::AppState;
-use nihongo_core::{GradeOptions, Point};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::fs;
@@ -273,22 +273,185 @@ fn an_error_crosses_as_a_string_not_as_a_panic() {
 /// already gone wrong once in this app — see invariant 14 in
 /// `HANDOVER_NIHONGO.md`. There is deliberately no `correct` field: the
 /// interface says what was asked and what was picked, and Rust decides.
+///
+/// A spelling rather than a kana, because a yōon question's two answers are two
+/// characters each — きゃ against きや — and a `char` would reject the payload.
 #[derive(Deserialize)]
 struct RecordDrillAnswer {
     pair: String,
-    target: char,
-    picked: char,
+    target: String,
+    picked: String,
 }
 
 #[test]
 fn a_drill_question_crosses_with_its_pair_its_prompt_and_its_options() {
-    let question = state().next_drill_question().expect("a pair can be asked");
+    let question = state()
+        .next_drill_question(DrillKind::Confusion)
+        .expect("a pair can be asked");
     let value = serde_json::to_value(&question).expect("serialises");
-    assert_eq!(keys(&value), vec!["ch", "hepburn", "options", "pair", "tell"]);
+    assert_eq!(keys(&value), vec!["ch", "hepburn", "kind", "options", "pair", "tell"]);
+    assert_eq!(question.kind, "confusion");
     assert!(question.options.contains(&question.ch), "the answer is among the options");
     assert_eq!(question.options.len(), 2, "the pair, and nothing else");
     assert!(!question.hepburn.is_empty());
     assert!(!question.tell.is_empty(), "a miss has to be able to teach something");
+}
+
+#[test]
+fn a_yoon_question_crosses_with_two_character_answers() {
+    // The one shape a `char`-typed payload could not carry: the answers are
+    // spellings, and the two of them differ only in the size of the small kana.
+    let question = state()
+        .next_drill_question_with_rolls(DrillKind::YoonHiragana, 0.0, 0.0)
+        .expect("the first yōon can be asked");
+    let value = serde_json::to_value(&question).expect("serialises");
+    assert_eq!(keys(&value), vec!["ch", "hepburn", "kind", "options", "pair", "tell"]);
+    assert_eq!(question.kind, "yoon-hiragana");
+    assert_eq!(question.pair, "きゃ|きや");
+    assert_eq!(question.ch, "きゃ");
+    assert_eq!(question.hepburn, "kya");
+    assert_eq!(question.options, vec!["きゃ".to_string(), "きや".to_string()]);
+    assert!(question.tell.contains("きゃ") && question.tell.contains("きや"));
+
+    // And the payload the interface posts for it is read the way the command
+    // reads it, which is the half invariant 14 exists for.
+    let payload = json!({ "pair": "きゃ|きや", "target": "きゃ", "picked": "きや" });
+    let args: RecordDrillAnswer =
+        serde_json::from_value(payload).expect("the payload the interface posts deserialises");
+    let tally = state()
+        .record_drill_answer(&args.pair, &args.target, &args.picked)
+        .expect("records");
+    assert_eq!(tally.pair, "きゃ|きや");
+    assert_eq!(tally.wrong, 1);
+    assert_eq!(tally.weight, 3.0, "a yōon miss is weighted by the same rule");
+}
+
+/// The argument `kana_chart` takes, as the webview posts it.
+///
+/// The **request** half of the contract, spelled out for the same reason
+/// `RecordDrillAnswer` is: a `#[tauri::command]`'s arguments are read out of the
+/// payload by name, so a renamed key is a rejected command and the screen shows an
+/// error rather than a chart. `AppState::chart` cannot catch that — it takes a
+/// `Script`, not a payload — which is the whole of invariant 14.
+#[derive(Deserialize)]
+struct KanaChartArgs {
+    script: String,
+}
+
+/// The argument `next_drill_question` takes, as the webview posts it.
+///
+/// `kind` is **optional on the wire**: a caller that predates the yōon drill asks
+/// for nothing and must still get the classic pairs, which is what the command's
+/// `unwrap_or(DrillKind::Confusion)` is for.
+#[derive(Deserialize)]
+struct NextDrillQuestionArgs {
+    kind: Option<DrillKind>,
+}
+
+#[test]
+fn the_chart_the_interface_asks_for_is_read_the_way_the_command_reads_it() {
+    // `src/lib/api.ts` authors exactly this payload for exactly this command:
+    //   invoke("kana_chart", { script })
+    // The name is parsed by the same function the command parses it with, so this
+    // pins the key *and* the two names the interface is allowed to send.
+    let args: KanaChartArgs =
+        serde_json::from_value(json!({ "script": "katakana" })).expect("the interface's payload");
+    assert_eq!(
+        nihongo_core::Script::from_name(&args.script),
+        Some(nihongo_core::Script::Katakana),
+        "the script the screen sent is the script the command resolves"
+    );
+    let args: KanaChartArgs =
+        serde_json::from_value(json!({ "script": "hiragana" })).expect("the interface's payload");
+    assert_eq!(
+        nihongo_core::Script::from_name(&args.script),
+        Some(nihongo_core::Script::Hiragana)
+    );
+
+    // And a name the app does not know is rejected by that parse rather than
+    // silently answered with a different script.
+    assert_eq!(nihongo_core::Script::from_name("kanji"), None);
+}
+
+#[test]
+fn the_kind_the_interface_asks_for_is_read_the_way_the_command_reads_it() {
+    // `src/lib/api.ts` authors exactly this payload for exactly this command:
+    //   invoke("next_drill_question", { kind })
+    // The strings are the frontend's `DrillKind` union, and each has to resolve to
+    // the exercise whose pairs it names.
+    for (name, kind) in [
+        ("confusion", DrillKind::Confusion),
+        ("yoon-hiragana", DrillKind::YoonHiragana),
+        ("yoon-katakana", DrillKind::YoonKatakana),
+        ("voicing-hiragana", DrillKind::VoicingHiragana),
+        ("voicing-katakana", DrillKind::VoicingKatakana),
+    ] {
+        let args: NextDrillQuestionArgs = serde_json::from_value(json!({ "kind": name }))
+            .unwrap_or_else(|e| panic!("the interface's payload for {name:?}: {e}"));
+        assert_eq!(args.kind, Some(kind), "{name:?} is {kind:?}");
+        // And the exercise it names is a pool the app can actually ask from, so a
+        // name that deserialises but has no pairs is not a silent empty drill.
+        assert!(!state().askable_pairs(kind).is_empty(), "{name:?} has no askable pairs");
+    }
+
+    // A caller that sends nothing, or an explicit null, gets the classic pairs
+    // rather than a rejection — which is what "optional" has to mean here.
+    let args: NextDrillQuestionArgs = serde_json::from_value(json!({})).expect("an omitted kind");
+    assert_eq!(args.kind, None);
+    let args: NextDrillQuestionArgs =
+        serde_json::from_value(json!({ "kind": null })).expect("a null kind");
+    assert_eq!(args.kind, None);
+    assert_eq!(args.kind.unwrap_or(DrillKind::Confusion), DrillKind::Confusion);
+
+    // And a name outside the union is a deserialisation failure rather than a
+    // quietly different exercise.
+    assert!(serde_json::from_value::<NextDrillQuestionArgs>(json!({ "kind": "kana" })).is_err());
+}
+
+#[test]
+fn a_kana_chart_crosses_with_the_grid_and_the_groups_off_it() {
+    let chart = state().chart(nihongo_core::Script::Katakana);    let value = serde_json::to_value(&chart).expect("serialises");
+    assert_eq!(keys(&value), vec!["offGrid", "rows", "script", "vowels"]);
+    assert_eq!(value["script"], "katakana");
+    assert_eq!(value["vowels"], json!(["a", "i", "u", "e", "o"]));
+
+    let rows = chart.rows.as_slice();
+    assert_eq!(rows.len(), 16);
+    assert_eq!(keys(&serde_json::to_value(&rows[0]).expect("serialises")), vec![
+        "cells",
+        "sound",
+        "voiced"
+    ]);
+    // Five slots whatever the row holds, and a hole crosses as null rather than
+    // being left out — a screen that receives four cells cannot know which column
+    // the missing one was.
+    for row in rows {
+        assert_eq!(row.cells.len(), 5, "{} is not a five-column row", row.sound);
+    }
+    let ya = rows.iter().find(|row| row.sound == "ya").expect("the や row");
+    assert_eq!(ya.cells, vec![Some("ヤ".into()), None, Some("ユ".into()), None, Some("ヨ".into())]);
+    assert_eq!(
+        serde_json::to_value(ya).expect("serialises")["cells"],
+        json!(["ヤ", null, "ユ", null, "ヨ"])
+    );
+
+    let group = chart
+        .off_grid
+        .iter()
+        .find(|group| group.key == "katakana-v")
+        .expect("the v-series is off the grid");
+    assert_eq!(keys(&serde_json::to_value(group).expect("serialises")), vec![
+        "kana", "key", "title"
+    ]);
+    assert_eq!(group.kana, vec!["ヷ", "ヸ", "ヹ", "ヺ"]);
+    assert!(group.title.contains("ヷ ヸ ヹ ヺ"), "{} names its kana", group.title);
+
+    // The other script is a different chart, and says which one it is: a screen
+    // switching the toggle can tell an answer about katakana from one about the
+    // hiragana it just left.
+    let hiragana = state().chart(nihongo_core::Script::Hiragana);
+    assert_eq!(hiragana.script, "hiragana");
+    assert!(hiragana.off_grid.iter().all(|group| !group.key.contains("katakana")));
 }
 
 #[test]
@@ -303,7 +466,7 @@ fn the_drill_answer_the_interface_posts_is_read_the_way_the_command_reads_it() {
         serde_json::from_value(payload).expect("the payload the interface posts deserialises");
 
     let tally = state
-        .record_drill_answer(&args.pair, args.target, args.picked)
+        .record_drill_answer(&args.pair, &args.target, &args.picked)
         .expect("records");
     assert_eq!(tally.pair, "シ|ツ");
     assert_eq!(tally.asked, 1);
@@ -320,7 +483,7 @@ fn the_drill_answer_the_interface_posts_is_read_the_way_the_command_reads_it() {
     let answered = json!({ "pair": "ツ|シ", "target": "ツ", "picked": "ツ" });
     let args: RecordDrillAnswer = serde_json::from_value(answered).expect("deserialises");
     let tally = state
-        .record_drill_answer(&args.pair, args.target, args.picked)
+        .record_drill_answer(&args.pair, &args.target, &args.picked)
         .expect("records");
     assert_eq!(tally.pair, "シ|ツ", "one pair, whichever way it is named");
     assert_eq!(tally.asked, 2);
@@ -334,9 +497,9 @@ fn an_answer_about_a_key_that_is_not_a_pair_is_refused_with_a_message() {
     let payload = json!({ "pair": "あ|い", "target": "あ", "picked": "い" });
     let args: RecordDrillAnswer = serde_json::from_value(payload).expect("deserialises");
     let err = state
-        .record_drill_answer(&args.pair, args.target, args.picked)
+        .record_drill_answer(&args.pair, &args.target, &args.picked)
         .unwrap_err();
-    assert!(err.contains("not one of the confusion pairs"), "{err}");
+    assert!(err.contains("not one of the pairs this drill asks about"), "{err}");
     assert!(state.log().is_empty(), "nothing was written");
 }
 
@@ -346,16 +509,16 @@ fn what_the_drill_remembers_survives_a_restart() {
     let missed = {
         let state = AppState::load_at(dir.path());
         let question = state
-            .next_drill_question_with_rolls(0.0, 0.0)
+            .next_drill_question_with_rolls(DrillKind::Confusion, 0.0, 0.0)
             .expect("a question");
         let wrong = question
             .options
             .iter()
-            .copied()
-            .find(|ch| *ch != question.ch)
-            .expect("the other half of the pair");
+            .find(|option| **option != question.ch)
+            .expect("the other half of the pair")
+            .clone();
         state
-            .record_drill_answer(&question.pair, question.ch, wrong)
+            .record_drill_answer(&question.pair, &question.ch, &wrong)
             .expect("records");
         question.pair
     };

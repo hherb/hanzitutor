@@ -11,7 +11,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
   BandView,
+  ChartView,
   DatasetStats,
+  DrillKind,
   DrillQuestion,
   DrillTally,
   GradedAttempt,
@@ -55,6 +57,18 @@ export function datasetStats(): Promise<DatasetStats> {
 
 export function lessons(script: ScriptName): Promise<LessonView[]> {
   return invoke<LessonView[]>("lessons", { script });
+}
+
+/**
+ * The whole kana chart for one script: the gojūon grid and the characters that
+ * are not on it.
+ *
+ * One call rather than two, because the grid and the off-grid groups are one
+ * screen's answer and asking separately would let the two halves describe
+ * different scripts. Every kana it offers can be opened on the board.
+ */
+export function kanaChart(script: ScriptName): Promise<ChartView> {
+  return invoke<ChartView>("kana_chart", { script });
 }
 
 export function kana(ch: string): Promise<Kana> {
@@ -116,16 +130,22 @@ export function romajiToKana(input: string, script?: ScriptName): Promise<string
  * the rule is in `nihongo_core::drill` — rather than drawn here from a pool. That
  * is not a layering preference: only the asker knows which pair it asked, and the
  * answer has to be remembered against that pair.
+ *
+ * `kind` picks the exercise: the classic confusions, or the yōon contrasts of one
+ * script. The association matters — `kya` names きゃ in hiragana and キャ in
+ * katakana — which is why the script is part of the kind rather than a second
+ * argument.
  */
-export function nextDrillQuestion(): Promise<DrillQuestion | null> {
-  return invoke<DrillQuestion | null>("next_drill_question");
+export function nextDrillQuestion(kind: DrillKind = "confusion"): Promise<DrillQuestion | null> {
+  return invoke<DrillQuestion | null>("next_drill_question", { kind });
 }
 
 /**
  * Record what the learner answered, and get the pair's record back.
  *
- * `target` is the kana the question asked for and `picked` is the one that was
- * chosen. There is deliberately no way to say whether it was right: correctness is
+ * `target` is the spelling the question asked for and `picked` is the one that
+ * was chosen — spellings, not kana, because a yōon answer is two characters.
+ * There is deliberately no way to say whether it was right: correctness is
  * decided in Rust from those two, against the pair the question named.
  */
 export function recordDrillAnswer(

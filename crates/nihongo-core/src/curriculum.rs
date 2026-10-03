@@ -49,6 +49,17 @@ pub fn to_hiragana(ch: char) -> Option<char> {
     }
 }
 
+/// Convert a hiragana to the same kana in `script`, where the script has one.
+fn in_script(ch: char, script: Script) -> Option<char> {
+    match script {
+        Script::Hiragana => Some(ch),
+        Script::Katakana => to_katakana(ch),
+    }
+}
+
+/// The five columns of the gojūon grid, in order. The index is the column.
+pub const VOWEL_COLUMNS: [char; 5] = ['a', 'i', 'u', 'e', 'o'];
+
 /// One row of the gojūon grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -56,29 +67,40 @@ pub struct Row {
     pub head: char,
     /// The row's Hepburn label — `a`, `ka`, `sha`-less `sa`, and so on.
     pub sound: &'static str,
-    /// The row's kana in gojūon order (a, i, u, e, o), in hiragana.
-    pub hiragana: &'static [char],
+    /// The row's five **slots** — a, i, u, e, o — in hiragana, with `None` where
+    /// the row has no kana.
+    ///
+    /// The slots are the grid rather than a short list, because a row's kana are
+    /// not contiguous: や's three sit in the a, u and o columns, so drawing them
+    /// left-aligned would put ゆ under い and teach the wrong vowel. The holes are
+    /// therefore data, and `every_cell_sits_in_the_column_its_vowel_names` checks
+    /// each filled slot against the kana's own reading rather than trusting the
+    /// table above to have been typed correctly.
+    pub cells: [Option<char>; 5],
     /// True for a row that is the voiced or semi-voiced form of another row.
     /// These are taught after the plain rows, not beside them.
     pub voiced: bool,
 }
 
 impl Row {
-    /// The row's kana in the given script, in gojūon order.
+    /// The row's kana in the given script, in gojūon order, holes skipped.
     pub fn kana(&self, script: Script) -> impl Iterator<Item = char> + '_ {
-        self.hiragana.iter().copied().filter_map(move |ch| match script {
-            Script::Hiragana => Some(ch),
-            Script::Katakana => to_katakana(ch),
-        })
+        self.cells.iter().flatten().copied().filter_map(move |ch| in_script(ch, script))
+    }
+
+    /// The row's five slots in the given script, `None` where the row has no
+    /// kana — the row as a chart draws it.
+    pub fn scripted_cells(&self, script: Script) -> [Option<char>; 5] {
+        self.cells.map(|cell| cell.and_then(|ch| in_script(ch, script)))
     }
 
     /// How many kana the row has.
     pub fn len(&self) -> usize {
-        self.hiragana.len()
+        self.cells.iter().flatten().count()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.hiragana.is_empty()
+        self.cells.iter().all(Option::is_none)
     }
 
     /// A stable key for the row, e.g. `"ka"`, for use as a DOM key or a test id.
@@ -89,27 +111,32 @@ impl Row {
 
 /// The gojūon grid: eleven plain rows (46 kana) then the five voiced rows
 /// (25 kana — 20 dakuten and 5 handakuten).
+///
+/// Each row is written as its five slots, so the holes are visible in the table
+/// itself: や has none in the i and e columns, わ has none but a and o, and ん is
+/// a row of one. Nine of the eighty slots are holes.
 pub const ROWS: &[Row] = &[
     // The plain rows: the 46 kana of the gojūon proper.
-    Row { head: 'あ', sound: "a", hiragana: &['あ', 'い', 'う', 'え', 'お'], voiced: false },
-    Row { head: 'か', sound: "ka", hiragana: &['か', 'き', 'く', 'け', 'こ'], voiced: false },
-    Row { head: 'さ', sound: "sa", hiragana: &['さ', 'し', 'す', 'せ', 'そ'], voiced: false },
-    Row { head: 'た', sound: "ta", hiragana: &['た', 'ち', 'つ', 'て', 'と'], voiced: false },
-    Row { head: 'な', sound: "na", hiragana: &['な', 'に', 'ぬ', 'ね', 'の'], voiced: false },
-    Row { head: 'は', sound: "ha", hiragana: &['は', 'ひ', 'ふ', 'へ', 'ほ'], voiced: false },
-    Row { head: 'ま', sound: "ma", hiragana: &['ま', 'み', 'む', 'め', 'も'], voiced: false },
+    Row { head: 'あ', sound: "a", cells: [Some('あ'), Some('い'), Some('う'), Some('え'), Some('お')], voiced: false },
+    Row { head: 'か', sound: "ka", cells: [Some('か'), Some('き'), Some('く'), Some('け'), Some('こ')], voiced: false },
+    Row { head: 'さ', sound: "sa", cells: [Some('さ'), Some('し'), Some('す'), Some('せ'), Some('そ')], voiced: false },
+    Row { head: 'た', sound: "ta", cells: [Some('た'), Some('ち'), Some('つ'), Some('て'), Some('と')], voiced: false },
+    Row { head: 'な', sound: "na", cells: [Some('な'), Some('に'), Some('ぬ'), Some('ね'), Some('の')], voiced: false },
+    Row { head: 'は', sound: "ha", cells: [Some('は'), Some('ひ'), Some('ふ'), Some('へ'), Some('ほ')], voiced: false },
+    Row { head: 'ま', sound: "ma", cells: [Some('ま'), Some('み'), Some('む'), Some('め'), Some('も')], voiced: false },
     // や has three: the i and e positions were never filled.
-    Row { head: 'や', sound: "ya", hiragana: &['や', 'ゆ', 'よ'], voiced: false },
-    Row { head: 'ら', sound: "ra", hiragana: &['ら', 'り', 'る', 'れ', 'ろ'], voiced: false },
-    // を is the particle; ゐ and ゑ are obsolete and are taught separately.
-    Row { head: 'わ', sound: "wa", hiragana: &['わ', 'を'], voiced: false },
-    Row { head: 'ん', sound: "n", hiragana: &['ん'], voiced: false },
+    Row { head: 'や', sound: "ya", cells: [Some('や'), None, Some('ゆ'), None, Some('よ')], voiced: false },
+    Row { head: 'ら', sound: "ra", cells: [Some('ら'), Some('り'), Some('る'), Some('れ'), Some('ろ')], voiced: false },
+    // を is the particle, and it is the row's o column; ゐ and ゑ are obsolete and
+    // are taught separately.
+    Row { head: 'わ', sound: "wa", cells: [Some('わ'), None, None, None, Some('を')], voiced: false },
+    Row { head: 'ん', sound: "n", cells: [Some('ん'), None, None, None, None], voiced: false },
     // The voiced rows.
-    Row { head: 'が', sound: "ga", hiragana: &['が', 'ぎ', 'ぐ', 'げ', 'ご'], voiced: true },
-    Row { head: 'ざ', sound: "za", hiragana: &['ざ', 'じ', 'ず', 'ぜ', 'ぞ'], voiced: true },
-    Row { head: 'だ', sound: "da", hiragana: &['だ', 'ぢ', 'づ', 'で', 'ど'], voiced: true },
-    Row { head: 'ば', sound: "ba", hiragana: &['ば', 'び', 'ぶ', 'べ', 'ぼ'], voiced: true },
-    Row { head: 'ぱ', sound: "pa", hiragana: &['ぱ', 'ぴ', 'ぷ', 'ぺ', 'ぽ'], voiced: true },
+    Row { head: 'が', sound: "ga", cells: [Some('が'), Some('ぎ'), Some('ぐ'), Some('げ'), Some('ご')], voiced: true },
+    Row { head: 'ざ', sound: "za", cells: [Some('ざ'), Some('じ'), Some('ず'), Some('ぜ'), Some('ぞ')], voiced: true },
+    Row { head: 'だ', sound: "da", cells: [Some('だ'), Some('ぢ'), Some('づ'), Some('で'), Some('ど')], voiced: true },
+    Row { head: 'ば', sound: "ba", cells: [Some('ば'), Some('び'), Some('ぶ'), Some('べ'), Some('ぼ')], voiced: true },
+    Row { head: 'ぱ', sound: "pa", cells: [Some('ぱ'), Some('ぴ'), Some('ぷ'), Some('ぺ'), Some('ぽ')], voiced: true },
 ];
 
 /// The small kana that modify the kana before them rather than standing alone.
@@ -154,91 +181,73 @@ impl Lesson {
 /// Only kana present in `dataset` are included, so a lesson can never ask for
 /// something the board cannot draw or grade.
 pub fn lessons(dataset: &KanaDataset, script: Script) -> Vec<Lesson> {
-    let mut out = Vec::new();
-    let prefix = script.name();
+    let mut out: Vec<Lesson> = ROWS
+        .iter()
+        .filter_map(|row| {
+            let kana: Vec<char> = row.kana(script).filter(|ch| dataset.get(*ch).is_some()).collect();
+            if kana.is_empty() {
+                return None;
+            }
+            let drawn = draw(&kana);
+            Some(Lesson {
+                key: format!("{}-{}", script.name(), row.sound),
+                title: format!("{drawn} — {}", row.sound),
+                kana,
+                voiced: row.voiced,
+            })
+        })
+        .collect();
+    out.extend(off_grid(dataset, script));
+    out
+}
 
-    for row in ROWS {
-        let kana: Vec<char> = row
-            .kana(script)
-            .filter(|ch| dataset.get(*ch).is_some())
-            .collect();
-        if kana.is_empty() {
-            continue;
-        }
-        let drawn: String = kana
-            .iter()
-            .map(|&ch| ch.to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        out.push(Lesson {
-            key: format!("{prefix}-{}", row.sound),
-            title: format!("{drawn} — {}", row.sound),
-            kana,
-            voiced: row.voiced,
-        });
-    }
-
-    // A group whose members are written in hiragana and converted, for the two
-    // sets that exist in both scripts.
-    let group = |members: &[char], key: &str, title: &str| -> Option<Lesson> {
+/// The kana a chart shows **outside** the grid proper, as lessons: the small
+/// kana, the rare ones, and — in katakana only — the v-series and the prolonged
+/// sound mark.
+///
+/// This is what makes the course and the chart one answer rather than two:
+/// [`lessons`] is the grid plus this, and the chart draws the grid and this side
+/// by side, so neither can teach a kana the other has never heard of.
+pub fn off_grid(dataset: &KanaDataset, script: Script) -> Vec<Lesson> {
+    let mut out: Vec<Lesson> = Vec::new();
+    let mut push = |key: &str, label: &str, members: &[char], mirror: bool| {
         let kana: Vec<char> = members
             .iter()
             .copied()
-            .filter_map(|ch| match script {
-                Script::Hiragana => Some(ch),
-                Script::Katakana => to_katakana(ch),
-            })
+            .filter_map(|ch| if mirror { in_script(ch, script) } else { Some(ch) })
             .filter(|ch| dataset.get(*ch).is_some())
             .collect();
         if kana.is_empty() {
-            return None;
+            return;
         }
-        Some(Lesson {
-            key: format!("{prefix}-{key}"),
-            title: title.to_string(),
+        // The title is drawn from the kana themselves rather than written out,
+        // which is what keeps the katakana course from listing the hiragana
+        // small kana beside the katakana ones.
+        out.push(Lesson {
+            key: format!("{}-{key}", script.name()),
+            title: format!("{label} — {}", draw(&kana)),
             kana,
             voiced: false,
-        })
+        });
     };
 
-    if let Some(lesson) = group(SMALL_KANA, "small", "Small kana — ゃ ゅ ょ っ") {
-        out.push(lesson);
-    }
-    if let Some(lesson) = group(RARE_KANA, "rare", "Rare kana — ゐ ゑ ゔ ゕ ゖ") {
-        out.push(lesson);
-    }
-
+    push("small", "Small kana", SMALL_KANA, true);
+    push("rare", "Rare kana", RARE_KANA, true);
     // Katakana has five characters hiragana does not: the v-series, which exists
     // only for foreign words, and the prolonged sound mark, which is not a sound
     // at all but lengthens the vowel before it. Without these the katakana course
     // would teach 86 of its 91 kana and quietly omit ヷ ヸ ヹ ヺ ー.
     if script == Script::Katakana {
-        let katakana_only = |members: &[char], key: &str, title: &str| -> Option<Lesson> {
-            let kana: Vec<char> = members
-                .iter()
-                .copied()
-                .filter(|ch| dataset.get(*ch).is_some())
-                .collect();
-            if kana.is_empty() {
-                return None;
-            }
-            Some(Lesson {
-                key: format!("{prefix}-{key}"),
-                title: title.to_string(),
-                kana,
-                voiced: false,
-            })
-        };
-
-        if let Some(lesson) = katakana_only(KATAKANA_ONLY, "v", "V-series — ヷ ヸ ヹ ヺ") {
-            out.push(lesson);
-        }
-        if let Some(lesson) = katakana_only(&[CHOONPU], "choonpu", "Prolonged sound mark — ー") {
-            out.push(lesson);
-        }
+        push("v", "V-series", KATAKANA_ONLY, false);
+        push("choonpu", "Prolonged sound mark", &[CHOONPU], false);
     }
 
     out
+}
+
+/// A lesson's or a row's kana, written out for a title: `"あ い う え お"`.
+fn draw(kana: &[char]) -> String {
+    kana.iter().map(|ch| ch.to_string()).collect::<Vec<_>>().join(" ")
 }
 
 /// How many characters a kanji lesson holds.
@@ -341,6 +350,16 @@ pub struct Yoon {
     pub kunrei: String,
     /// The two characters, base first, in the requested script.
     pub kana: Vec<char>,
+    /// The same consonant and vowel written with **full-size** kana: きゃ → きや.
+    ///
+    /// This is the contrast the yōon drill teaches — one mora against two — and
+    /// it belongs to the yōon rather than to the drill, so it is derived here
+    /// beside the digraph it is derived from.
+    pub plain: Vec<char>,
+    /// Its reading: きや is `kiya`.
+    pub plain_hepburn: String,
+    /// Its Kunrei-shiki reading: しや is `siya`.
+    pub plain_kunrei: String,
 }
 
 /// The i-column kana that take a small ゃ ゅ ょ, with the consonant each
@@ -361,35 +380,55 @@ const YOON_BASES: &[(char, &str, &str)] = &[
     ('ぴ', "py", "py"),
 ];
 
-/// The three small kana that form a yōon, with the vowel each contributes in
-/// Hepburn and in Kunrei (the same, except that Kunrei keeps the vowel letter).
-const YOON_SMALL: &[(char, &str, &str)] = &[('ゃ', "a", "a"), ('ゅ', "u", "u"), ('ょ', "o", "o")];
+/// The three small kana that form a yōon, each with the **full-size** kana it
+/// stands for and the vowel it contributes.
+///
+/// The full-size form is what makes the contrast a learner has to hear: きゃ is
+/// one mora, きや is two, and they are written with the same two code points in
+/// different sizes. Hepburn and Kunrei both spell the small kana's vowel the same
+/// way — the two systems differ over the consonant (し is `shi`/`si`) and never
+/// over this — so one vowel per row is enough.
+const YOON_SMALL: &[(char, char, &str)] = &[('ゃ', 'や', "a"), ('ゅ', 'ゆ', "u"), ('ょ', 'よ', "o")];
 
 /// Every yōon for one script: eleven bases × three small kana = 33 digraphs.
 pub fn yoon(script: Script) -> Vec<Yoon> {
     let mut out = Vec::new();
     for &(base, hepburn_stem, kunrei_stem) in YOON_BASES {
-        for &(small, hepburn_vowel, kunrei_vowel) in YOON_SMALL {
-            let (Some(base), Some(small)) = (
-                match script {
-                    Script::Hiragana => Some(base),
-                    Script::Katakana => to_katakana(base),
-                },
-                match script {
-                    Script::Hiragana => Some(small),
-                    Script::Katakana => to_katakana(small),
-                },
+        for &(small, full, vowel) in YOON_SMALL {
+            let (Some(base), Some(small), Some(full)) = (
+                in_script(base, script),
+                in_script(small, script),
+                in_script(full, script),
             ) else {
                 continue;
             };
-            let hepburn = format!("{hepburn_stem}{hepburn_vowel}");
-            let kunrei = format!("{kunrei_stem}{kunrei_vowel}");
+            // The two-mora counterpart's reading is composed from the two kana
+            // that spell it — き ("ki") and や ("ya") make きや — from the same
+            // table the rest of the app reads, rather than written out a second
+            // time. `the_plain_counter_of_every_yoon_is_what_the_input_engine_types`
+            // is the check on that composition.
+            let (Some(base_reading), Some(full_reading)) =
+                (crate::reading(base), crate::reading(full))
+            else {
+                continue;
+            };
+            let (Some(base_hepburn), Some(full_hepburn)) =
+                (base_reading.hepburn.first(), full_reading.hepburn.first())
+            else {
+                continue;
+            };
+            let base_kunrei = base_reading.kunrei.first().copied().unwrap_or(base_hepburn);
+            let full_kunrei = full_reading.kunrei.first().copied().unwrap_or(full_hepburn);
+            let hepburn = format!("{hepburn_stem}{vowel}");
             out.push(Yoon {
-                key: format!("{}-{}", script.name(), hepburn),
+                key: format!("{}-{hepburn}", script.name()),
                 display: format!("{base}{small}"),
+                kunrei: format!("{kunrei_stem}{vowel}"),
                 hepburn,
-                kunrei,
                 kana: vec![base, small],
+                plain: vec![base, full],
+                plain_hepburn: format!("{base_hepburn}{full_hepburn}"),
+                plain_kunrei: format!("{base_kunrei}{full_kunrei}"),
             });
         }
     }
@@ -466,7 +505,7 @@ mod tests {
         let dataset = dataset();
         let mut covered: Vec<char> = ROWS
             .iter()
-            .flat_map(|r| r.hiragana.iter().copied())
+            .flat_map(|r| r.cells.iter().flatten().copied())
             .chain(SMALL_KANA.iter().copied())
             .chain(RARE_KANA.iter().copied())
             .collect();
@@ -499,6 +538,99 @@ mod tests {
             for (h, k) in hira.iter().zip(&kata) {
                 assert_eq!(to_hiragana(*k), Some(*h), "{k} should mirror {h}");
             }
+        }
+    }
+
+    #[test]
+    fn every_row_has_five_slots_and_the_holes_are_nine() {
+        // The grid is sixteen rows of five slots, and the language leaves nine of
+        // them empty: や's i and e, わ's i, u and e, and ん's four.
+        let mut holes = 0;
+        for row in ROWS {
+            assert_eq!(row.cells.len(), 5, "{} is not a five-column row", row.sound);
+            holes += row.cells.iter().filter(|cell| cell.is_none()).count();
+        }
+        assert_eq!(holes, 9);
+        assert_eq!(ROWS.iter().map(Row::len).sum::<usize>(), 71, "46 plain + 25 voiced");
+    }
+
+    /// The layout above is stated rather than derived, so it is checked against
+    /// something independent: a kana's own reading says which vowel it has, and
+    /// the column it sits in has to be that vowel. This is what would catch ゆ
+    /// drifting under い, which is the mistake a chart makes when it draws a short
+    /// row left-aligned.
+    #[test]
+    fn every_cell_sits_in_the_column_its_vowel_names() {
+        for row in ROWS {
+            for (column, cell) in row.cells.iter().enumerate() {
+                let Some(ch) = cell else { continue };
+                // ん is the one kana with no vowel, and a chart puts it in the
+                // first slot because its row holds nothing else.
+                if *ch == 'ん' {
+                    assert_eq!(column, 0, "ん is a row of one");
+                    continue;
+                }
+                let reading = crate::reading(*ch)
+                    .unwrap_or_else(|| panic!("{ch} in {} has no reading", row.sound));
+                let vowel = reading.hepburn[0]
+                    .chars()
+                    .last()
+                    .expect("every reading has letters");
+                assert_eq!(
+                    vowel, VOWEL_COLUMNS[column],
+                    "{ch} is in the {} column of row {}, but it is read {}",
+                    VOWEL_COLUMNS[column], row.sound, reading.hepburn[0]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_off_grid_groups_are_the_ones_the_course_adds_to_the_grid() {
+        // The course *is* the grid plus the off-grid groups, so the chart can
+        // draw one and the course teach the other without either inventing a kana.
+        let dataset = dataset();
+        for script in [Script::Hiragana, Script::Katakana] {
+            let course = lessons(&dataset, script);
+            let grid: Vec<char> = ROWS
+                .iter()
+                .flat_map(|row| row.kana(script).collect::<Vec<_>>())
+                .collect();
+            let off: Vec<char> = off_grid(&dataset, script)
+                .iter()
+                .flat_map(|lesson| lesson.kana.clone())
+                .collect();
+            let mut together: Vec<char> = grid.iter().copied().chain(off.iter().copied()).collect();
+            let total = together.len();
+            together.sort_unstable();
+            together.dedup();
+            assert_eq!(total, together.len(), "{script:?} lists a kana twice");
+
+            let taught: Vec<char> = course.iter().flat_map(|l| l.kana.iter().copied()).collect();
+            assert_eq!(together, {
+                let mut taught = taught;
+                taught.sort_unstable();
+                taught
+            });
+        }
+    }
+
+    #[test]
+    fn a_katakana_lesson_names_katakana_kana() {
+        // The small and rare lessons are built from hiragana and converted, so a
+        // title written out by hand would list ゃ ゅ ょ っ in the katakana course.
+        let dataset = dataset();
+        for (key, kana) in [
+            ("katakana-small", vec!['ァ', 'ィ', 'ゥ', 'ェ', 'ォ', 'ャ', 'ュ', 'ョ', 'ッ', 'ヮ']),
+            ("katakana-rare", vec!['ヰ', 'ヱ', 'ヴ', 'ヵ', 'ヶ']),
+        ] {
+            let lesson = off_grid(&dataset, Script::Katakana)
+                .into_iter()
+                .find(|l| l.key == key)
+                .unwrap_or_else(|| panic!("{key} is an off-grid lesson"));
+            assert_eq!(lesson.kana, kana);
+            let drawn = kana.iter().map(|ch| ch.to_string()).collect::<Vec<_>>().join(" ");
+            assert!(lesson.title.contains(&drawn), "{} names the wrong kana", lesson.title);
         }
     }
 
@@ -663,13 +795,83 @@ mod tests {
         for script in [Script::Hiragana, Script::Katakana] {
             for y in yoon(script) {
                 assert_eq!(y.kana.len(), 2);
-                for ch in &y.kana {
+                for ch in y.kana.iter().chain(&y.plain) {
                     assert!(
                         dataset.get(*ch).is_some(),
                         "{} names {ch}, which the app cannot draw",
                         y.key
                     );
                 }
+            }
+        }
+    }
+
+    /// The two-mora counterpart is composed from the base's reading and the
+    /// full-size kana's, so it has to come out as what the input engine produces
+    /// for that spelling. Two independent paths to the same string: a composition
+    /// that drifted would type something else.
+    #[test]
+    fn the_plain_counter_of_every_yoon_is_what_the_input_engine_types() {
+        for script in [Script::Hiragana, Script::Katakana] {
+            for y in yoon(script) {
+                let plain: String = y.plain.iter().collect();
+                assert_eq!(
+                    crate::to_kana_in(script, &y.plain_hepburn).ok(),
+                    Some(plain.clone()),
+                    "{} is read {}, which types as something else",
+                    plain,
+                    y.plain_hepburn
+                );
+                assert_eq!(
+                    crate::to_kana_in(script, &y.hepburn).ok(),
+                    Some(y.display.clone()),
+                    "{} is read {}",
+                    y.display,
+                    y.hepburn
+                );
+                // And the plain spelling is not the digraph: that difference is
+                // the whole exercise.
+                assert_ne!(plain, y.display);
+            }
+        }
+    }
+
+    #[test]
+    fn the_plain_counter_is_full_size_kana_of_the_same_row() {
+        let all = yoon(Script::Hiragana);
+        let kya = all.iter().find(|y| y.hepburn == "kya").expect("きゃ is generated");
+        assert_eq!(kya.plain, vec!['き', 'や']);
+        assert_eq!(kya.plain_hepburn, "kiya");
+        assert_eq!(kya.plain_kunrei, "kiya");
+
+        // Kunrei differs over the consonant, not the vowel: しゃ is `sha`/`sya`
+        // and its counter is `shiya`/`siya`.
+        let sha = all.iter().find(|y| y.hepburn == "sha").expect("しゃ is generated");
+        assert_eq!(sha.plain, vec!['し', 'や']);
+        assert_eq!(sha.plain_hepburn, "shiya");
+        assert_eq!(sha.plain_kunrei, "siya");
+
+        let katakana = yoon(Script::Katakana);
+        let kya = katakana.iter().find(|y| y.hepburn == "kya").expect("キャ is generated");
+        assert_eq!(kya.display, "キャ");
+        assert_eq!(kya.plain, vec!['キ', 'ヤ']);
+        assert_eq!(kya.plain_hepburn, "kiya");
+    }
+
+    /// Every yōon has one counterpart and the counterparts are their own set, so
+    /// the drill cannot ask the same question twice under two keys.
+    #[test]
+    fn every_yoon_has_exactly_one_plain_counterpart() {
+        for script in [Script::Hiragana, Script::Katakana] {
+            let all = yoon(script);
+            let mut plains: Vec<String> = all.iter().map(|y| y.plain.iter().collect()).collect();
+            let total = plains.len();
+            plains.sort();
+            plains.dedup();
+            assert_eq!(total, plains.len(), "{script:?} repeats a two-mora spelling");
+            for y in &all {
+                assert_eq!(y.plain.len(), 2);
+                assert_eq!(y.plain[0], y.kana[0], "{} changes its base", y.display);
             }
         }
     }

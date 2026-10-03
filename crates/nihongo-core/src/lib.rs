@@ -45,12 +45,13 @@ pub mod review;
 pub mod words;
 
 pub use curriculum::{
-    confusions_for, grade_name, kanji_lessons, lessons, to_hiragana, to_katakana, yoon, Confusable,
-    KanjiLesson, Lesson, Row, Yoon, CHOONPU, CONFUSABLE, KANJI_LESSON_SIZE, KATAKANA_ONLY,
-    RARE_KANA, ROWS, SMALL_KANA,
+    confusions_for, grade_name, kanji_lessons, lessons, off_grid, to_hiragana, to_katakana, yoon,
+    Confusable, KanjiLesson, Lesson, Row, Yoon, CHOONPU, CONFUSABLE, KANJI_LESSON_SIZE,
+    KATAKANA_ONLY, RARE_KANA, ROWS, SMALL_KANA, VOWEL_COLUMNS,
 };
 pub use drill::{
-    find_pair, pair_key, ConfusionLog, PairTally, CORRECT_WEIGHT, MIN_WEIGHT, START_WEIGHT,
+    confusion_pairs, find_pair, key_of, pair_key, split_key, voicing_pairs, yoon_pairs, ConfusionLog,
+    DrillKind, DrillPair, DrillSide, PairTally, CORRECT_WEIGHT, MIN_WEIGHT, START_WEIGHT,
     WRONG_WEIGHT,
 };
 pub use hanzi_core::{
