@@ -110,3 +110,29 @@ export function findFamilies(
       family.characters.includes(text),
   );
 }
+
+/**
+ * A reading as the synthesiser should say it.
+ *
+ * KANJIDIC2 marks its readings rather than writing them as prose, and the two
+ * marks mean different things:
+ *
+ * * a **`.`** separates the stem from its okurigana and is always in the middle —
+ *   `た.べる` is 食べる, spoken たべる;
+ * * a **`-`** marks an affix that is not used on its own and is always at one end
+ *   — `ひと-` trails, and 259 kun readings plus four on-readings lead with it
+ *   (`-ノウ` on 応 and 王, `-ネン` on 縁, `-ノン` on 音).
+ *
+ * Both come off for speech and **neither comes off in the artifact**: the marks
+ * are what tell a learner that 食べる is written with kana attached, which is why
+ * `kanji_artifact.rs` keeps them and pins their exact shapes.
+ *
+ * Measured over all 9,364 readings — pinned by
+ * `every_reading_is_kana_once_its_markers_are_stripped` in that file — the marks
+ * are the *only* characters that are not kana, so this is the whole of the
+ * transformation: strip them and what is left is a reading a Japanese voice can
+ * say, with nothing guessed at and nothing spelled out.
+ */
+export function spokenReading(reading: string): string {
+  return reading.replace(/[.-]/g, "");
+}

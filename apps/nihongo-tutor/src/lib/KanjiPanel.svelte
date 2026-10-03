@@ -27,9 +27,11 @@
    * the board measures the two identically.
    */
   import KanaCanvas from "./KanaCanvas.svelte";
+  import SpeakButton from "./SpeakButton.svelte";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
   import { scheduleNote } from "./review";
-  import { gradeTabs, lessonHolding, lessonsIn } from "./kanji";
+  import { canHear, voiceNote, type VoiceStatus } from "./speech";
+  import { gradeTabs, lessonHolding, lessonsIn, spokenReading } from "./kanji";
   import * as api from "./api";
   import type {
     Drawable,
@@ -50,9 +52,11 @@
     pick?: KanjiPick | null;
     /** Open the radicals panel at one of the 214. */
     onradical?: (number: number) => void;
+    /** What the `voice` command answered, asked once by `App.svelte`. */
+    voice?: VoiceStatus;
   }
 
-  let { pick = $bindable(null), onradical }: Props = $props();
+  let { pick = $bindable(null), onradical, voice }: Props = $props();
 
   let lessons = $state<KanjiLessonView[]>([]);
   let grade = $state(1);
@@ -306,18 +310,55 @@
 
         {#if kanji}
           <div class="card">
+            <!--
+              The hearing half of the card, beside the board that is its writing
+              half. A learner may want either, and the two are offered together
+              rather than one being assumed: `h` speaks what is on the board on
+              Practice, and here every reading the card lists can be tapped.
+
+              What is spoken is the *reading*, never the character: `た.べる` is
+              handed to the voice as `たべる`, and 生 is never handed over at all,
+              because it has twenty readings and the app does not choose between
+              them. See `HANDOVER_NIHONGO.md` invariant 27.
+            -->
+            <p class="hint">
+              {#if canHear(voice)}
+                Write {kanji.ch} on the board above, or tap any reading to hear it.
+              {:else}
+                {voiceNote(voice)}
+              {/if}
+            </p>
+
+            {#snippet readingRow(list: string[])}
+              {#each list as reading, index (reading)}
+                <!-- The separator belongs to the reading *before* it, so a line
+                     that wraps ends with a "·" rather than beginning with one —
+                     which is what a row of twelve nanori does at this width. -->
+                <span class="reading">
+                  <SpeakButton
+                    text={spokenReading(reading)}
+                    {voice}
+                    label={reading}
+                    note={false}
+                    appearance="link"
+                  />
+                  {#if index < list.length - 1}<span class="sep">·</span>{/if}
+                </span>
+              {/each}
+            {/snippet}
+
             <dl class="readings">
               {#if kanji.on.length}
-                <div><dt>on</dt><dd lang="ja">{kanji.on.join(" · ")}</dd></div>
+                <div><dt>on</dt><dd lang="ja">{@render readingRow(kanji.on)}</dd></div>
               {/if}
               {#if kanji.kun.length}
-                <div><dt>kun</dt><dd lang="ja">{kanji.kun.join(" · ")}</dd></div>
+                <div><dt>kun</dt><dd lang="ja">{@render readingRow(kanji.kun)}</dd></div>
               {/if}
               {#if kanji.meanings.length}
                 <div><dt>meaning</dt><dd>{kanji.meanings.join("; ")}</dd></div>
               {/if}
               {#if kanji.nanori.length}
-                <div><dt>nanori</dt><dd lang="ja">{kanji.nanori.join(" · ")}</dd></div>
+                <div><dt>nanori</dt><dd lang="ja">{@render readingRow(kanji.nanori)}</dd></div>
               {/if}
             </dl>
 
@@ -505,6 +546,25 @@
   .readings dd {
     margin: 0;
     overflow-wrap: anywhere;
+  }
+
+  /* The separator between two readings, now that each reading is its own control
+     rather than one joined string. */
+  .readings .reading {
+    /* Reading and separator wrap together, so the "·" never opens a line. */
+    display: inline-block;
+    white-space: nowrap;
+  }
+
+  .readings .sep {
+    margin: 0 0.35rem;
+    color: var(--muted);
+  }
+
+  .card .hint {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--muted);
   }
 
   .structure {

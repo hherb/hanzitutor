@@ -99,7 +99,7 @@ nothing complains.
 Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **273
 tests** — every `#[test]` in the two suites (168 became 175 in `nihongo-core`, 76
 became 97 in `nihongo-tutor`), plus one doc-test; the frontend's are counted
-separately below. `pnpm run test:web` runs 125, of which **56** are this app's.
+separately below. `pnpm run test:web` runs 129, of which **60** are this app's.
 `cargo test -p hanzi-voice`, the shared crate the audio half lives in, is 29.
 
 | | |
@@ -121,9 +121,9 @@ separately below. `pnpm run test:web` runs 125, of which **56** are this app's.
 | Bands | 585 / 1,781 / 2,408 / 2,232 / 2,412 / 1,834 / 4,821 — this project's ladder, not the JLPT's (invariant 20) |
 | Furigana | 16,022 of 16,073 aligned (99.7%); the other 51 carry their reading and no ruby |
 | Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
-| Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button and the `h` key; nothing bundled, nothing downloaded (invariant 26) |
+| Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
 | Screens | Practice, Tell them apart, **Review**, **Kanji**, **Radicals**, Words, Read, Licences |
-| Tests | nihongo-core 175, nihongo-tutor 97, hanzi-voice 29, frontend 56 of the 125 |
+| Tests | nihongo-core 175, nihongo-tutor 97, hanzi-voice 29, frontend 60 of the 129 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | two files, `confusions.json` and `review.json`, in the app's own data directory |
@@ -137,11 +137,13 @@ been *used* — a character drawn on it was graded and rescheduled, which is not
 same thing as being seen.
 
 **And it has been heard.** N1 put the machine's own Japanese voice behind a button
-and the `h` key, and the check that mattered was listening: あ from Practice, ひとつ
-for 一つ from a word card, a due あ offering the control where a due 学 offered
-none. It was verified by probe first and then confirmed by ear by the maintainer,
-which is the only half of it a test cannot reach — `speak` returning `Ok(())` says
-the synthesiser accepted the utterance, not that anything came out of a speaker.
+and the `h` key, and behind **every reading on a kanji card** — so a character can
+be met by ear or by hand, and the learner chooses. The check that mattered was
+listening: あ from Practice, ひとつ for 一つ from a word card, た.べる read as
+*たべる* from 食's card, a due あ offering the control where a due 学 offered none.
+It was verified by probe first and then confirmed by ear by the maintainer, which
+is the only half of it a test cannot reach — `speak` returning `Ok(())` says the
+synthesiser accepted the utterance, not that anything came out of a speaker.
 
 **Everything the app embeds is on screen now.** **Words** browses the ladder band
 by band with furigana over every word and grades a typed reading; **Read** draws a
@@ -251,7 +253,7 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   which is what a person edits
   data/passages.bin.gz            COMMITTED, 502 bytes — the segmentation
   tests/kana_artifact.rs (261)    12 tests over the committed kana artifact
-  tests/kanji_artifact.rs(747)    25 tests over the committed kanji artifact: the
+  tests/kanji_artifact.rs(841)    26 tests over the committed kanji artifact: the
                                   whole grade reconciliation, the 214-radical
                                   table and the course
   tests/words_artifact.rs(399)    15 tests over the committed words artifact,
@@ -282,16 +284,18 @@ apps/nihongo-tutor/               the app
   src/lib/ConfusionDrill.svelte(225)  the drill: one pair, one answer, remembered
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
   src/lib/ReviewPanel.svelte(346) what is due, and a board to write it on — N2
-  src/lib/KanjiPanel.svelte(579)  the kanji course, the board and the card — N8
+  src/lib/KanjiPanel.svelte(639)  the kanji course, the board and the card — N8,
+                                  whose readings are each a control — N1
   src/lib/RadicalsPanel.svelte(501)   the 214 head forms and their families — N8
   src/lib/VocabularyPanel.svelte(309) the ladder, a band's words, the card — N7
   src/lib/PassagePanel.svelte(265)  a passage with furigana and a tap on any word — N7
   src/lib/WordCard.svelte(265)      one word: its furigana, its reading, its band
-  src/lib/SpeakButton.svelte(102)   the one "Hear it" control, for all three
-                                  screens that have something to say — N1
-  src/lib/kanji.ts       (112)    the course's and the radicals' arithmetic, as
-                                  pure functions — N8
-  src/lib/kanji.test.ts  (120)    run by the ROOT project's vitest
+  src/lib/SpeakButton.svelte(168)   the one "Hear it" control: a button for the
+                                  three standalone callers, and a link for a
+                                  reading on the kanji card — N1
+  src/lib/kanji.ts       (138)    the course's and the radicals' arithmetic, and
+                                  `spokenReading`, as pure functions — N8, N1
+  src/lib/kanji.test.ts  (170)    run by the ROOT project's vitest
   src/lib/words.ts       (101)    furigana and paging arithmetic, as pure functions
   src/lib/words.test.ts  (131)    run by the ROOT project's vitest
   src/lib/review.ts       (89)    "2 days overdue" and "in 2 days", as pure
@@ -919,23 +923,62 @@ that only speaks turns it off. Same instinct as refusing to bundle the analyser.
 
 ### 27. **Nothing is spoken that is not kana the app stored, and the shortcut is `h`.**
 
-What may be handed to `speak` is a **kana character** or a **word's own stored
-reading**, and the list is exhaustive rather than indicative:
+What may be handed to `speak` is a **kana character**, a **word's own stored
+reading**, or **one reading of a kanji**, and the list is exhaustive rather than
+indicative:
 
 * never a reading composed from a written form — 大人 is おとな, and invariant 21
   is the same rule one step out;
 * never a bare kanji. 生 has a dozen readings and the app does not choose between
-  them; it lists them on a card instead. This is why the **Review board offers the
-  button only for a `kind == "kana"` item**, and why a due 学 shows *Show stroke
-  order · Undo · Clear · Grade* and no "Hear it". That absence is the invariant
-  being visible;
+  them; it lists them and lets the learner choose, which is the difference between
+  this rule and a reading picker. **The Review board still offers the button only
+  for a `kind == "kana"` item**, which is why a due 学 shows *Show stroke order ·
+  Undo · Clear · Grade* and no "Hear it". That absence is the rule being visible;
 * never a gloss (the Review prompt for a kanji is English) and never a radical's
   Kangxi number.
 
-The word card is the one that shows the difference: it speaks `word.reading`, so
-一つ says **ひとつ** and not the written form. The live check's log recorded
-`speak "ひとつ"` and never `speak "一つ"`, which is the assertion in a form a log
-can carry.
+The word card is the one that shows the difference most plainly: it speaks
+`word.reading`, so 一つ says **ひとつ** and not the written form. The live check's
+log recorded `speak "ひとつ"` and never `speak "一つ"`, which is the assertion in a
+form a log can carry.
+
+**A kanji card offers hearing and writing together, and the learner picks.** Every
+reading it lists — on, kun and nanori — is its own control, and the board above it
+is the writing half; the card says so in one line. This is the maintainer's
+decision, made explicitly (*"offer both, the user can decide what he wants
+(hearing or writing)"*), and it is the one place the app puts the two ways of
+meeting a character side by side instead of choosing for the learner.
+
+**And the markers come off only for the voice.** KANJIDIC2 writes a reading with
+its okurigana attached, and both marks are **teaching information** — they say how
+the character is written — so they stay on screen and go only to the synthesiser:
+
+| on the card | handed to the voice | why |
+| --- | --- | --- |
+| `た.べる` | `たべる` | the dot ends the stem and starts the okurigana |
+| `ひと.つ` | `ひとつ` | the same, which is why the dot is always **medial** |
+| `ひと-` | `ひと` | the dash marks an affix that is not used on its own |
+| `-ノウ` `-ネン` `-ノン` | `ノウ` `ネン` `ノン` | the same mark, **leading**, and on *on*-readings |
+| `イチ` `ガク` | unchanged | katakana is what a Japanese voice reads |
+
+`spokenReading` in `src/lib/kanji.ts` is that table and nothing else. It is a
+one-liner because it was measured first: over all **9,364** readings there is no
+character outside hiragana, katakana, ー and the two marks, every reading keeps at
+least one kana once the marks come off, the dot is never at an end and never twice
+in one reading, and the dash is never medial.
+`every_reading_is_kana_once_its_markers_are_stripped` in `tests/kanji_artifact.rs`
+pins all of it, including the four marked on-readings (応 王 縁 音) — the case a
+"the dash is a kun thing" reading of the field misses. The control's own title
+names the spoken form, so `た.べる` on screen hovers as *"Say たべる …"*.
+
+Two smaller decisions belong to the same card. **The readings are drawn as text,
+not as buttons** — 生 has twenty readings, and twenty bordered boxes would bury
+the thing being read — so they borrow the passage's dotted-underline affordance,
+and a disabled one is *plain text*, which is what a machine with no voice should
+see. That last part hides a CSS trap: a disabled `<button>` is coloured grey by
+the user agent, so `opacity: 1` alone leaves a card of grey readings that reads as
+a card of failures. `color: inherit` is the other half, and it is why the no-voice
+card was captured rather than assumed.
 
 **The shortcut is a letter.** `h`, for "hear", and *not* Space — Space is what the
 Tone Trainer gives its microphone, but on a page it already means "activate the
@@ -1204,6 +1247,14 @@ speak), `h` inside the reading box and `⌘H` (neither may).
 returning success means it accepted the utterance; whether anything came out of a
 speaker is the maintainer's to confirm, and N1's was. Do not record "audio works"
 on the strength of a return value.
+
+**And the kanji card's readings are worth pressing after any change to the
+artifact.** They are the one place the app speaks a string it transformed rather
+than one it stored whole, so the marker stripping is what a probe should watch:
+tapping `ひと.つ` must log `speak "ひとつ"`, `ひと-` must log `speak "ひと"`, and
+日's `-び` must log `speak "び"`. The control's `title` is the other half of the
+check — it names the spoken form, so the DOM says what will be heard without
+pressing anything.
 
 **A due item on demand.** Anything that offers a control only for one kind of
 scheduled character needs two cards due at once, and grading cannot produce that —
@@ -1807,11 +1858,10 @@ first KANJIDIC2 data.
   those are the pre-2017 grades and KANJIDIC2's are the authority (invariant 18).
 * **Audio beyond the system voice.** N1 shipped the desktop half: a kana and a
   word's own reading are spoken with the machine's Japanese voice, by button and by
-  the `h` key (invariant 26). What is deliberately absent is **bundled clips** —
-  nothing needs them while the system voice works — and a **button on the kanji
-  card's readings**, which is a control per reading rather than wiring. The drill is
-  silent on purpose: hearing シ and ツ would answer the question the drill asks.
-  §7 has the clip position.
+  the `h` key, and every reading on a kanji card is a control of its own
+  (invariants 26 and 27). What is deliberately absent is **bundled clips** — nothing
+  needs them while the system voice works. The drill is silent on purpose: hearing
+  シ and ツ would answer the question the drill asks. §7 has the clip position.
 * **Spaced repetition for the vocabulary.** N2's schedule is over *characters* —
   what a board grades — and it ships. A word is checked by typing, so it has no
   handwritten attempt to schedule; a word queue would need its own attempt source

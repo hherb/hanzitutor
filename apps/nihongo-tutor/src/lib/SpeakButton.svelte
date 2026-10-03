@@ -28,18 +28,51 @@
   import { canHear, voiceNote, type VoiceStatus } from "./speech";
 
   let {
-    /** What to say. Kana: a character, or a word's stored reading. */
+    /** What to say. Kana: a character, a word's stored reading, a kanji reading. */
     text,
     /** What the `voice` command answered, asked once by the screen above. */
     voice,
-    /** What the button says. Practice names its shortcut; the others do not. */
+    /**
+     * What the control says.
+     *
+     * The kanji card passes the **reading itself**, so the thing the learner reads
+     * is the thing they press — `た.べる` with its okurigana mark, which is the
+     * teaching information, while `text` is the same reading with the mark off.
+     */
     label = "Hear it",
-  }: { text: string; voice: VoiceStatus; label?: string } = $props();
+    /**
+     * Whether to say why nothing can be heard.
+     *
+     * On for a control that stands alone — Practice, a word card, a due character
+     * — where the reason belongs next to the thing that does not work. Off for the
+     * kanji card's readings, which are twenty controls on one screen in the worst
+     * case (生): the panel says it once instead, and twenty copies of a settings
+     * path is not more helpful than one.
+     */
+    note = true,
+    /**
+     * How the control is drawn.
+     *
+     * `button` is the boxed control the three standalone callers use. `link` is a
+     * reading, drawn as the text it already was: on the kanji card the readings are
+     * a list to read, and a grid of bordered buttons would bury the readings
+     * themselves. In `link` form a disabled control is drawn as plain text rather
+     * than a greyed-out button, so a machine with no Japanese voice sees exactly
+     * the card it saw before any of this existed.
+     */
+    appearance = "button",
+  }: {
+    text: string;
+    voice: VoiceStatus;
+    label?: string;
+    note?: boolean;
+    appearance?: "button" | "link";
+  } = $props();
 
   let error = $state<string | null>(null);
   const available = $derived(canHear(voice));
-  const note = $derived(voiceNote(voice));
-  const title = $derived(note ?? `Say ${text} in the system's Japanese voice`);
+  const why = $derived(voiceNote(voice));
+  const title = $derived(why ?? `Say ${text} in the system's Japanese voice`);
 
   async function hear() {
     try {
@@ -55,11 +88,17 @@
 </script>
 
 <span class="speak">
-  <button type="button" onclick={() => void hear()} disabled={!available} {title}>
+  <button
+    type="button"
+    class={appearance}
+    onclick={() => void hear()}
+    disabled={!available}
+    {title}
+  >
     {label}
   </button>
-  {#if note}
-    <span class="note">{note}</span>
+  {#if note && why}
+    <span class="note">{why}</span>
   {/if}
   {#if error}
     <span class="error" role="alert">{error}</span>
@@ -86,6 +125,33 @@
   button:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  /* The reading itself, drawn as the text it is. The dotted underline is the same
+     affordance the passage uses for a tappable word, so "this can be pressed" reads
+     the same way in both places. */
+  button.link {
+    padding: 0;
+    border: 0;
+    border-bottom: 1px dotted var(--line, #dcdcd6);
+    border-radius: 0;
+    background: none;
+    line-height: 1.35;
+    cursor: pointer;
+  }
+
+  button.link:hover:not(:disabled) {
+    border-bottom-style: solid;
+  }
+
+  /* With no voice installed this is not a broken control, it is the reading the
+     card always showed. `color: inherit` is load-bearing: a disabled `<button>`
+     gets the user agent's grey `GrayText`, and a card of grey readings looks like
+     a card of failures rather than a card of readings. */
+  button.link:disabled {
+    opacity: 1;
+    color: inherit;
+    border-bottom: 0;
   }
 
   .note,

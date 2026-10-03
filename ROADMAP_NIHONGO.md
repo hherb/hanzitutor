@@ -274,11 +274,50 @@ AVFoundation spelling) and 10 frontend ones; `hanzi-voice` is 29.
 
 **What is deliberately not here.** Bundled clips — the criterion for them is met
 by shipping none, and the licence position for a set is unchanged (§7 of the
-handover). The kanji card's readings have no button yet: each is kana and each
-*could* be spoken, but that is a control per reading and a decision about which to
-offer first, not wiring. The discrimination drill is silent for a different
-reason: シ against ツ is an exercise in telling two shapes apart, and handing the
+handover). The discrimination drill is silent for a reason rather than for
+omission: シ against ツ is an exercise in telling two shapes apart, and handing the
 learner the sound would answer the question.
+
+### Shipped — the kanji card, which offers both
+
+**A reading the card lists can be heard, and the character on the board can still
+be written.** The two are offered together rather than one being assumed, at the
+maintainer's instruction: *"offer both, the user can decide what he wants (hearing
+or writing)"*. On the `Kanji` screen the board is the writing half and every
+reading — on, kun and nanori — is now its own control, so the choice is the
+learner's at the moment they make it. The card says so in one line: *"Write 日 on
+the board above, or tap any reading to hear it."*
+
+**The readings stay text.** They are drawn as the reading itself with the passage's
+own dotted-underline affordance, not as a grid of buttons: 生 has **twenty**
+readings, and twenty bordered boxes would bury the thing being read. With no
+Japanese voice installed they are drawn as the plain text they were before this
+existed, greyed out nowhere, with one note rather than one per reading.
+
+**And the markers come off only for the voice.** KANJIDIC2 writes a reading with
+its okurigana attached — `た.べる`, `ひと-`, and 応 and 王's `-ノウ` — and the dot and
+the dash are **teaching information**: they are what says 食べる is written with kana.
+They are stripped for speech (`spokenReading`: た.べる → たべる, ひと- → ひと,
+-ノウ → ノウ), so the card shows `た.べる` while the button's own title says
+*"Say たべる …"* — the teaching form on screen, the spoken form one hover away.
+
+**Measured before it was a one-liner.** Over all 9,364 on, kun and nanori readings
+there is **no** character outside the hiragana and katakana blocks, ー and the two
+marks, and every reading keeps at least one kana once the marks come off — so
+"strip the marks and hand it to the synthesiser" is the whole transformation, with
+nothing guessed at and nothing spelled out. The two marks also have different
+shapes, which a single rule would flatten: the dot is **always medial** (2,551 of
+them, never two in one reading) and the dash is **always at an end** (364 on kun
+readings, and exactly four on on-readings, which a "the dash is a kun thing"
+reading of the field would miss). `every_reading_is_kana_once_its_markers_are_stripped`
+in `tests/kanji_artifact.rs` pins all of it, including the four: 応 王 `-ノウ`,
+縁 `-ネン`, 音 `-ノン`.
+
+**Verified on a running window.** Lesson 1's 一 and 日 between them carry every
+shape: tapping `ひと.つ` logged `speak "ひとつ"`, `ひと-` logged `speak "ひと"`,
+`イチ` passed through as katakana untouched, and 日's leading-mark `-び` logged
+`speak "び"`. The meanings row stayed plain text, and the no-voice card was
+captured too — readings as plain text, one settings-path note, nothing greyed.
 
 ---
 

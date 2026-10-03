@@ -1,11 +1,12 @@
 /**
  * The kanji course's and the radicals panel's arithmetic, pinned.
  *
- * These five functions decide which tab a lesson is under, how big a grade is,
- * which lesson holds a character another screen asked for, and how 214 radicals
- * are ordered and found. All of it is invisible in a screenshot when it is
- * wrong — a character one lesson away from where it should be looks exactly like
- * a course — so each is asserted here rather than by watching a canvas.
+ * These six functions decide which tab a lesson is under, how big a grade is,
+ * which lesson holds a character another screen asked for, how 214 radicals are
+ * ordered and found, and what a reading sounds like when it is spoken. All of it
+ * is invisible in a screenshot when it is wrong — a character one lesson away from
+ * where it should be looks exactly like a course, and a spoken `た.べる` is not a
+ * word — so each is asserted here rather than by watching a canvas.
  */
 
 import { describe, expect, it } from "vitest";
@@ -15,6 +16,7 @@ import {
   lessonHolding,
   lessonsIn,
   sortFamilies,
+  spokenReading,
 } from "./kanji";
 import type { KanjiLessonView, RadicalFamilyView } from "./types";
 
@@ -116,5 +118,53 @@ describe("searching the radicals", () => {
   it("keeps everything for an empty query and nothing for a miss", () => {
     expect(findFamilies(families, "  ")).toHaveLength(3);
     expect(findFamilies(families, "鳩")).toEqual([]);
+  });
+});
+
+/**
+ * What a reading sounds like.
+ *
+ * The examples are the artifact's own, taken from `kanji_artifact.rs`'s fixtures
+ * rather than invented: 食's `た.べる`, 一's `ひと-` and `ひと.つ`, 学's `まな.ぶ`,
+ * and the four affix on-readings. A synthesiser handed the marks says them out
+ * loud — 「た、てん、べる」 — which is the failure this function exists to prevent.
+ */
+describe("speaking a reading", () => {
+  it("drops the okurigana mark so 食べる is said as one word", () => {
+    expect(spokenReading("た.べる")).toBe("たべる");
+    expect(spokenReading("まな.ぶ")).toBe("まなぶ");
+    expect(spokenReading("く.らう")).toBe("くらう");
+    // The dot is medial by definition — it is what separates the stem from the
+    // kana that follow it — so a stem that is one mora still keeps its kana.
+    expect(spokenReading("ひと.つ")).toBe("ひとつ");
+  });
+
+  it("drops the affix mark, from either end", () => {
+    // Trailing: 一's ひと-, which is not a word on its own.
+    expect(spokenReading("ひと-")).toBe("ひと");
+    // Leading: 応 and 王's のう, 縁's ねん, 音's のん.
+    expect(spokenReading("-ノウ")).toBe("ノウ");
+    expect(spokenReading("-ネン")).toBe("ネン");
+    expect(spokenReading("-ノン")).toBe("ノン");
+  });
+
+  it("leaves an unmarked reading exactly as it is", () => {
+    // On-readings are katakana and have no markers: a Japanese voice reads ガク
+    // as がく, so there is nothing to convert.
+    expect(spokenReading("ガク")).toBe("ガク");
+    expect(spokenReading("き")).toBe("き");
+    // Nanori, which the card shows too, are kana and never marked.
+    expect(spokenReading("たか")).toBe("たか");
+    // ー is kana for this purpose and must survive: コーヒー is not コヒ.
+    expect(spokenReading("コーヒー")).toBe("コーヒー");
+  });
+
+  it("never hands the synthesiser an empty string", () => {
+    // Every reading keeps at least one kana once the marks come off — asserted
+    // over all 9,364 of them by the artifact test — so the case cannot arise from
+    // the data. This is the shape check, not a case the card can hit.
+    for (const reading of ["た.べる", "ひと-", "-ノウ", "ガク"]) {
+      expect(spokenReading(reading)).not.toBe("");
+    }
   });
 });

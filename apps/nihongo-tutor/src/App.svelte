@@ -419,7 +419,7 @@
   {:else if view === "review"}
     <ReviewPanel {voice} />
   {:else if view === "kanji"}
-    <KanjiPanel bind:pick={kanjiPick} onradical={seeRadical} />
+    <KanjiPanel bind:pick={kanjiPick} onradical={seeRadical} {voice} />
   {:else if view === "radicals"}
     <RadicalsPanel bind:focus={selectedRadical} onopen={openKanji} onpractise={openRadical} />
   {:else if view === "words"}

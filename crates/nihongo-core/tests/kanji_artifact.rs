@@ -317,6 +317,100 @@ fn readings_carry_their_okurigana() {
     assert_eq!(affixes, 364, "kun readings that are affixes only");
 }
 
+/// Every reading is kana plus KANJIDIC2's two markers, and nothing else.
+///
+/// This is what makes the audio half's rule a one-liner: the app strips the marks
+/// and hands the rest to the synthesiser, and there is no reading whose
+/// pronunciation has to be guessed at or spelled out. Measured rather than
+/// assumed — over all 9,364 on, kun and nanori readings there is **no** character
+/// outside the hiragana and katakana blocks, the long-vowel mark ー and the two
+/// marks themselves, and every reading keeps at least one kana once the marks come
+/// off, so no reading speaks as nothing.
+///
+/// The two marks have different shapes and the difference is the whole point:
+///
+/// * `.` separates the stem from its okurigana and is therefore **always in the
+///   middle** — 2,551 of them, never two in one reading, never at either end.
+///   ひと.つ is 一つ, and stripping the dot leaves ひとつ.
+/// * `-` marks an affix that is not used on its own, so it is always at **one
+///   end**: ひと- (leading nowhere) trails, and 259 kun readings plus four
+///   on-readings lead with it. The four are named below, because they are the case
+///   a "the `-` is a kun thing" reading of the field would miss.
+#[test]
+fn every_reading_is_kana_once_its_markers_are_stripped() {
+    let kana = |c: char| {
+        ('\u{3041}'..='\u{3096}').contains(&c)
+            || ('\u{30a1}'..='\u{30fa}').contains(&c)
+            || c == '\u{30fc}'
+    };
+
+    let (mut dots, mut marks) = (0usize, 0usize);
+    let mut marked_on: Vec<(char, String)> = Vec::new();
+    let mut nanori = 0usize;
+    for k in dataset().kanji() {
+        for reading in k.on.iter().chain(k.kun.iter()).chain(k.nanori.iter()) {
+            assert!(
+                reading.chars().all(|c| kana(c) || c == '.' || c == '-'),
+                "{} has a reading that is neither kana nor a marker: {reading:?}",
+                k.ch
+            );
+            assert!(
+                reading.chars().any(kana),
+                "{} has a reading that would speak as nothing: {reading:?}",
+                k.ch
+            );
+            assert!(
+                reading.matches('.').count() <= 1,
+                "{} has a reading with more than one okurigana mark: {reading:?}",
+                k.ch
+            );
+            if reading.contains('.') {
+                dots += 1;
+                assert!(
+                    !reading.starts_with('.') && !reading.ends_with('.'),
+                    "{} has an okurigana mark at an end, which the format does not: {reading:?}",
+                    k.ch
+                );
+            }
+            if reading.contains('-') {
+                marks += 1;
+                assert!(
+                    reading.starts_with('-') ^ reading.ends_with('-'),
+                    "{} has an affix mark that is neither leading nor trailing: {reading:?}",
+                    k.ch
+                );
+            }
+            if k.nanori.contains(reading) {
+                assert!(
+                    !reading.contains(['.', '-']),
+                    "{} has a marked nanori: {reading:?}",
+                    k.ch
+                );
+            }
+        }
+        nanori += k.nanori.len();
+        for reading in &k.on {
+            if reading.starts_with('-') {
+                marked_on.push((k.ch, reading.clone()));
+            }
+        }
+    }
+
+    assert_eq!(dots, 2_551, "okurigana marks, every one of them medial");
+    assert_eq!(marks, 364 + 4, "affix marks: 364 kun readings and 4 on-readings");
+    assert_eq!(
+        marked_on,
+        vec![
+            ('応', "-ノウ".to_string()),
+            ('王', "-ノウ".to_string()),
+            ('縁', "-ネン".to_string()),
+            ('音', "-ノン".to_string()),
+        ],
+        "the affix on-readings, measured; the first is not のう twice over"
+    );
+    assert_eq!(nanori, 2_606, "name readings, none of them marked");
+}
+
 /// The glosses are KANJIDIC2's English senses and nothing else. The `-all`
 /// document also carries French, Spanish and Portuguese; an English-only check is
 /// the cheapest way to prove none of them leaked in, and the meanings are ASCII
