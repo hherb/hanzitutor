@@ -41,6 +41,7 @@ pub mod kana;
 pub mod kanji;
 pub mod passages;
 pub mod readings;
+pub mod review;
 pub mod words;
 
 pub use curriculum::{
@@ -54,8 +55,15 @@ pub use drill::{
 };
 pub use hanzi_core::{
     decompose::{parse as parse_decomposition, Component, Decomposition},
+    // The schedule, for the review queue. It is language-neutral — SM-2 counts
+    // attempts and multiplies intervals and never looks at the character — so it
+    // lives in `hanzi_core` and is re-exported here rather than reimplemented,
+    // exactly as the geometry engine is. What is Japanese is `review`'s own half:
+    // which characters the board can draw, and what to prompt with.
+    progress::{CardState, CardView, ProgressError, ProgressStore, Rating, Scheduler, Sm2},
     grade, grade_with_outlines, Grade, GradeOptions, GradeReport, Point, StrokeVerdict, Verdict,
 };
+pub use hanzi_core::time::now_iso8601;
 pub use kana::{
     merge_strokes, segment_to_stroke, Artifact, Kana, KanaDataset, MergeError, Script,
     ARTIFACT_MAGIC,
@@ -69,6 +77,7 @@ pub use input::{
     RomajiError,
 };
 pub use readings::{reading, Reading};
+pub use review::{due_items, kind_of, DueItem, ReviewKind};
 pub use words::{
     band_for, band_name, is_kanji, Ruby, Word, WordsArtifact, WordDataset, WordsSource, BANDS,
     REMAINDER_BAND, WORDS_ARTIFACT_MAGIC,

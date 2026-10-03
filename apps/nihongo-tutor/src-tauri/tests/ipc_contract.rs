@@ -218,8 +218,16 @@ fn grading_reads_the_attempt_the_interface_sends() {
     assert_eq!(options.ink_width, 36.0);
     assert_eq!(options.resample_k, GradeOptions::default().resample_k);
 
-    let report = state().grade(ch, &strokes, &options).expect("grades");
-    assert!(report.legible, "a level stroke across the middle is ー: {:.0}", report.overall);
+    // The command the interface actually calls, so the request half above is
+    // checked against the path that runs rather than against a sibling of it.
+    let graded = state()
+        .grade_and_schedule(ch, &strokes, &options)
+        .expect("grades");
+    assert!(
+        graded.report.legible,
+        "a level stroke across the middle is ー: {:.0}",
+        graded.report.overall
+    );
 }
 
 #[test]
@@ -719,4 +727,212 @@ fn the_radical_the_interface_asks_for_comes_back_with_its_geometry() {
         let err = state().radical(number).unwrap_err();
         assert!(err.contains("numbered 1 to 214"), "{err}");
     }
+}
+
+// ---- the review queue ------------------------------------------------------
+
+/// The response half of grading: the verdict the panel draws, and the two fields
+/// beside it that say what the review schedule did with the attempt.
+///
+/// This is the shape `src/lib/api.ts` unwraps, so a field renamed on one side is
+/// a failure here rather than `undefined` on the screen.
+#[test]
+fn a_graded_attempt_crosses_with_the_verdict_and_the_schedule() {
+    let state = state();
+    let kana = state.kana('あ').expect("あ");
+    let attempt = vec![kana.medians[0].clone()];
+    let graded = state
+        .grade_and_schedule('あ', &attempt, &GradeOptions::default())
+        .expect("grades");
+
+    let value = serde_json::to_value(&graded).expect("serialises");
+    assert_eq!(
+        keys(&value),
+        vec!["nextDue", "report", "scheduled", "warning"],
+        "the wrapper the interface unwraps"
+    );
+    assert!(value["report"]["overall"].is_number(), "the verdict is inside it");
+    assert!(value["report"]["strokes"].is_array());
+    assert_eq!(value["scheduled"], true, "a character with no card is a review");
+    assert!(value["nextDue"].is_string(), "and the attempt produced a due date");
+    assert!(value["warning"].is_null(), "nothing to report about the write");
+}
+
+/// The rule that keeps one sitting from stretching an interval by months: an
+/// attempt on a character that is not due is graded and does not reschedule it.
+#[test]
+fn a_second_attempt_inside_the_interval_does_not_reschedule() {
+    let state = state();
+    // The payload the interface posts, for the command that now schedules too.
+    let payload = json!({
+        "ch": "あ",
+        "strokes": [[{"x": 300.0, "y": 300.0}, {"x": 700.0, "y": 300.0}]],
+        "options": {"inkWidth": 36.0}
+    });
+    let ch: char = payload["ch"].as_str().expect("a string").chars().next().expect("one char");
+    let strokes: Vec<Vec<Point>> =
+        serde_json::from_value(payload["strokes"].clone()).expect("the strokes deserialise");
+    let options: GradeOptions =
+        serde_json::from_value(payload["options"].clone()).expect("the options deserialise");
+
+    let first = state.grade_and_schedule(ch, &strokes, &options).expect("grades");
+    assert!(first.scheduled, "the first attempt on a character is a review");
+
+    let again = state.grade_and_schedule(ch, &strokes, &options).expect("grades");
+    assert!(!again.scheduled, "the card is not due again yet");
+    assert_eq!(again.next_due, first.next_due, "and the due date did not move");
+    assert_eq!(again.report.overall, first.report.overall, "the verdict is still a verdict");
+    assert_eq!(state.review_queue(40).cards, 1, "one character, one card");
+}
+
+/// What the Review screen reads: the due characters with their prompts, most
+/// overdue first, and how much of the schedule stands behind them.
+///
+/// The schedule is written by hand here for two reasons that are really one: it
+/// is a plain file a person can edit, and putting a card *in the past* is the
+/// only way to have something due without waiting a day for the scheduler to
+/// produce it.
+#[test]
+fn the_review_queue_crosses_with_the_due_characters() {
+    let dir = TempDir::new("review-due");
+    fs::write(
+        dir.path().join("review.json"),
+        r#"{"version":1,"cards":{
+             "あ":{"attempts":2,"lapses":1,"due":"2020-01-01T00:00:00Z","intervalDays":0.0,"ease":2.5,"repetitions":0},
+             "学":{"attempts":1,"due":"2020-01-02T00:00:00Z","intervalDays":0.0,"ease":2.5,"repetitions":0},
+             "亅":{"attempts":1,"due":"2020-01-03T00:00:00Z","intervalDays":0.0,"ease":2.5,"repetitions":0}
+           }}"#,
+    )
+    .expect("writes a schedule");
+
+    let state = AppState::load_at(dir.path());
+    let queue = state.review_queue(40);
+    let value = serde_json::to_value(&queue).expect("serialises");
+    assert_eq!(
+        keys(&value),
+        vec!["cards", "due", "items", "nextDue", "warning"]
+    );
+    assert_eq!(value["cards"], 3, "every card, due or not");
+    assert_eq!(value["due"], 3);
+    assert!(value["nextDue"].is_null(), "something is due, so there is no next one");
+    assert!(value["warning"].is_null(), "the file parsed, so there is nothing to say");
+
+    let items = value["items"].as_array().expect("an array");
+    assert_eq!(items.len(), 3);
+    assert_eq!(
+        keys(&items[0]),
+        vec![
+            "attempts",
+            "ch",
+            "due",
+            "hint",
+            "intervalDays",
+            "kind",
+            "lapses",
+            "radical"
+        ]
+    );
+
+    // Most overdue first, each resolved to what the board will draw: a kana, a
+    // jōyō kanji, and a radical head form the character course cannot reach.
+    assert_eq!(items[0]["ch"], "あ");
+    assert_eq!(items[0]["kind"], "kana", "the tag the interface switches on");
+    assert_eq!(items[0]["hint"], "a", "the prompt comes from the readings");
+    assert_eq!(items[0]["attempts"], 2);
+    assert_eq!(items[0]["lapses"], 1);
+    assert!(items[0]["radical"].is_null());
+
+    assert_eq!(items[1]["ch"], "学");
+    assert_eq!(items[1]["kind"], "kanji");
+    assert!(
+        items[1]["hint"].as_str().is_some_and(|hint| !hint.is_empty()),
+        "a prompt is never empty: {}",
+        items[1]["hint"]
+    );
+
+    assert_eq!(items[2]["ch"], "亅");
+    assert_eq!(items[2]["kind"], "radical");
+    assert_eq!(items[2]["radical"], 6, "the number is how its geometry is fetched");
+    assert_eq!(items[2]["hint"], "radical 6 of 214");
+
+    // The limit caps what is *shown*, not what is counted.
+    let page = state.review_queue(2);
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.due, 3);
+    assert_eq!(page.items[0].ch, 'あ');
+}
+
+/// The request half of the review queue: `{ limit }`, as the page size the screen
+/// is asking for.
+///
+/// `src/lib/api.ts` always sends one, so the deserialisation is the part that can
+/// go wrong quietly — a renamed key would make the command fall back to its own
+/// page size and the screen would show twenty where it asked for two.
+#[test]
+fn the_page_the_interface_asks_for_is_read_the_way_the_command_reads_it() {
+    #[derive(Deserialize)]
+    struct ReviewQueueArgs {
+        limit: Option<usize>,
+    }
+
+    let args: ReviewQueueArgs =
+        serde_json::from_value(json!({ "limit": 2 })).expect("the payload the interface posts");
+    assert_eq!(args.limit, Some(2), "the screen's page size arrives");
+
+    // And a caller that sends nothing gets the command's own page rather than a
+    // rejection, which is what makes `limit` optional on the Rust side.
+    let args: ReviewQueueArgs = serde_json::from_value(json!({})).expect("an omitted limit");
+    assert_eq!(args.limit, None);
+}
+
+/// A character the board cannot draw cannot be graded, so it can never reach the
+/// schedule — the card the queue would have no geometry for is never created.
+#[test]
+fn a_character_the_board_cannot_draw_is_never_scheduled() {
+    let state = state();
+    let payload = json!({ "ch": "鳩", "strokes": [], "options": { "inkWidth": 36.0 } });
+    let ch: char = payload["ch"].as_str().expect("a string").chars().next().expect("one char");
+    let strokes: Vec<Vec<Point>> =
+        serde_json::from_value(payload["strokes"].clone()).expect("deserialises");
+
+    let err = state
+        .grade_and_schedule(ch, &strokes, &GradeOptions::default())
+        .unwrap_err();
+    assert!(err.contains("not a kana, a jōyō kanji, or a radical"), "{err}");
+    assert_eq!(state.review_queue(40).cards, 0, "nothing was scheduled");
+}
+
+/// The schedule is the app's own file, in the app's own directory, and it
+/// survives a restart — which is the whole point of writing it down.
+#[test]
+fn what_the_schedule_remembers_survives_a_restart() {
+    let dir = TempDir::new("review-restart");
+    let due = {
+        let state = AppState::load_at(dir.path());
+        let graded = state
+            .grade_and_schedule('あ', &[], &GradeOptions::default())
+            .expect("grades");
+        assert!(graded.scheduled);
+        graded.next_due.expect("a new card has a due date")
+    };
+
+    assert!(
+        dir.path().join("review.json").exists(),
+        "the attempt was written to the app's own schedule file"
+    );
+    assert!(
+        !dir.path().join("confusions.json").exists(),
+        "and the drill's file is a different file, not a shared one"
+    );
+
+    // A second AppState over the same directory is what a restart looks like.
+    let reopened = AppState::load_at(dir.path());
+    let queue = reopened.review_queue(40);
+    assert_eq!(queue.cards, 1, "the character was remembered");
+    assert_eq!(queue.due, 0, "a failed attempt comes back in a minute, not at once");
+    assert_eq!(
+        queue.next_due.as_deref(),
+        Some(due.as_str()),
+        "and it comes back when the schedule said it would"
+    );
 }

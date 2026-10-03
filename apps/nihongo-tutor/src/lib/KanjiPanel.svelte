@@ -28,6 +28,7 @@
    */
   import KanaCanvas from "./KanaCanvas.svelte";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
+  import { scheduleNote } from "./review";
   import { gradeTabs, lessonHolding, lessonsIn } from "./kanji";
   import * as api from "./api";
   import type {
@@ -63,6 +64,8 @@
   let kanji = $state<KanjiView | null>(null);
   let radical = $state<RadicalView | null>(null);
   let report = $state<GradeReport | null>(null);
+  /** What the review schedule did with the last attempt, if anything. */
+  let note = $state<{ tone: "ok" | "plain" | "bad"; text: string } | null>(null);
   let attempt = $state<Point[][]>([]);
   let board = $state<ReturnType<typeof KanaCanvas> | null>(null);
 
@@ -94,6 +97,7 @@
       kanji = await api.kanji(ch);
       radical = null;
       report = null;
+      note = null;
       attempt = [];
       const found = lessonHolding(lessons, ch);
       if (found) {
@@ -112,6 +116,7 @@
       radical = await api.radical(number);
       kanji = null;
       report = null;
+      note = null;
       attempt = [];
     } catch (e) {
       error = String(e);
@@ -128,6 +133,7 @@
     // A verdict belongs to the attempt it judged: the moment the attempt changes
     // it is stale, and leaving it up colours the new strokes with the old reading.
     report = null;
+    note = null;
   }
 
   async function askForAVerdict() {
@@ -135,7 +141,11 @@
     try {
       busy = true;
       error = null;
-      report = await api.gradeAttempt(drawn.ch, attempt);
+      // Grading and scheduling are one command: the report comes back with what
+      // the review schedule did with the attempt beside it.
+      const graded = await api.gradeAttempt(drawn.ch, attempt);
+      report = graded.report;
+      note = scheduleNote(graded, new Date().toISOString());
     } catch (e) {
       error = String(e);
     } finally {
@@ -286,6 +296,12 @@
               <p class="fine">Every stroke the right shape, in the right place, in order.</p>
             {/if}
           </div>
+        {/if}
+
+        {#if note}
+          <p class="note" class:ok={note.tone === "ok"} class:bad={note.tone === "bad"}>
+            {note.text}
+          </p>
         {/if}
 
         {#if kanji}

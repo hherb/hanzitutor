@@ -1,23 +1,29 @@
-//! The app's own study file.
+//! The app's own study files.
 //!
-//! Kana Tutor keeps exactly one thing about its learner: which confusion pairs
-//! they get wrong. It lives here — in a file of this app's own, under this app's
-//! data directory — and deliberately **not** in a shared store. The Japanese and
-//! Chinese apps are separate products and their learners' data is separate with
-//! them: what is shared between the apps is *code*, never user data. See
+//! Kana Tutor keeps exactly two things about its learner: which confusion pairs
+//! they get wrong, and when each character the board has taught comes back. Both
+//! live here — in files of this app's own, under this app's data directory — and
+//! deliberately **not** in a shared store. The Japanese and Chinese apps are
+//! separate products and their learners' data is separate with them: what is
+//! shared between the apps is *code*, never user data. See
 //! `HANDOVER_NIHONGO.md` invariant 15.
 //!
-//! The file is plain JSON, written whole and atomically, so that a person can
-//! read it, copy it as a backup, or delete it to start over.
+//! Both files are plain JSON, written whole and atomically, so that a person can
+//! read one, copy it as a backup, or delete it to start over. Both are written by
+//! Rust rather than by the webview, which is why the app still holds no
+//! filesystem permission in `capabilities/default.json`.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use nihongo_core::{ConfusionLog, PairTally};
+use nihongo_core::{now_iso8601, ConfusionLog, PairTally, ProgressError, ProgressStore};
 
 /// The file's name inside the app's data directory.
 pub const FILE_NAME: &str = "confusions.json";
+
+/// The review schedule's file name, in the same directory.
+pub const REVIEW_FILE_NAME: &str = "review.json";
 
 /// What the app knows about this learner's confusion pairs, and where it is kept.
 pub struct ConfusionStore {
@@ -78,6 +84,156 @@ impl ConfusionStore {
             Some(path) => write(path, &self.log),
             None => Ok(()),
         }
+    }
+}
+
+/// What one attempt did to the review schedule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttemptOutcome {
+    /// True when the attempt advanced the schedule, because the character was
+    /// new or due. A later attempt inside the interval is practice, not a review.
+    pub counted: bool,
+    /// When the character comes up next, ISO-8601 UTC.
+    pub due: String,
+    /// Set when the attempt was counted but the schedule could not be written.
+    /// The card is held in memory either way; this is how the learner is told.
+    pub warning: Option<String>,
+}
+
+/// The review schedule: one card per character the board has taught, kept in a
+/// file of this app's own.
+///
+/// The scheduling itself is **not** here. `hanzi_core::progress`'s SM-2, its
+/// intervals and its due-date arithmetic are reused unchanged, exactly as the
+/// geometry engine is, and the schedule it produces is what this type holds. What
+/// this type adds is the app's half: *where* the schedule lives, that a file which
+/// will not parse is kept rather than overwritten, and the rule that makes a
+/// review a review.
+///
+/// ## A review is an attempt on a character that is new or due
+///
+/// Recording every grade would be wrong in a way that is easy to miss: a learner
+/// who writes あ five times in a row would advance SM-2's interval five times and
+/// not see あ again for a year, on the strength of one sitting. So an attempt
+/// advances the schedule only when the card is new or its due date has passed.
+/// Writing it again before then is practice, it still gets graded, and the
+/// schedule is left exactly as it was.
+pub struct ReviewStore {
+    store: ProgressStore,
+    /// Something the learner should be told: the schedule could not be read and
+    /// was kept aside, or there is nowhere to write and this session will not be
+    /// remembered. Never a reason not to start.
+    warning: Option<String>,
+}
+
+impl ReviewStore {
+    /// A schedule that keeps its cards in memory and writes nothing.
+    pub fn in_memory() -> Self {
+        Self {
+            store: ProgressStore::in_memory(),
+            warning: None,
+        }
+    }
+
+    /// Load `review.json` from `dir`, or start a fresh schedule.
+    ///
+    /// A missing file is the first run. A file that will not parse is moved
+    /// aside — it is the learner's history, and this app should not be the thing
+    /// that deletes it — and a file written by a *newer* build is left untouched
+    /// and this session runs in memory, because overwriting a schedule this build
+    /// does not understand is the one way to lose one for good.
+    pub fn at_dir(dir: impl AsRef<Path>) -> Self {
+        let path = dir.as_ref().join(REVIEW_FILE_NAME);
+        match ProgressStore::open(&path) {
+            Ok(store) => Self {
+                store,
+                warning: None,
+            },
+            Err(ProgressError::Malformed(why)) => {
+                let aside = corrupt_path(&path);
+                eprintln!(
+                    "{}: {why}; moving it aside and starting a fresh schedule",
+                    path.display()
+                );
+                match fs::rename(&path, &aside) {
+                    // The unreadable file is out of the way, so a fresh schedule
+                    // can take its place and be written to from here on.
+                    Ok(()) => match ProgressStore::open(&path) {
+                        Ok(store) => Self {
+                            store,
+                            warning: Some(format!(
+                                "the review schedule could not be read ({why}); it was kept as {} \
+                                 and a fresh one started",
+                                aside.display()
+                            )),
+                        },
+                        Err(err) => Self::unusable(format!(
+                            "the review schedule could not be read ({why}) and, once kept as {}, a \
+                             fresh one could not be started ({err})",
+                            aside.display()
+                        )),
+                    },
+                    Err(err) => Self::unusable(format!(
+                        "the review schedule could not be read ({why}) and could not be kept aside \
+                         ({err})"
+                    )),
+                }
+            }
+            // An unreadable file, or one from the future: do not write over it.
+            Err(err) => Self::unusable(format!("the review schedule could not be opened ({err})")),
+        }
+    }
+
+    /// A schedule that will not be written to, with the reason.
+    fn unusable(why: String) -> Self {
+        eprintln!("{why}; this session will not be remembered");
+        Self {
+            store: ProgressStore::in_memory(),
+            warning: Some(format!("{why}; this session will not be remembered")),
+        }
+    }
+
+    /// Whether anything is written to disk at all.
+    pub fn is_persistent(&self) -> bool {
+        !self.store.path().as_os_str().is_empty()
+    }
+
+    /// The schedule itself, for a caller that wants to show or assert on it.
+    pub fn store(&self) -> &ProgressStore {
+        &self.store
+    }
+
+    /// Why this session may not be remembered, when there is a reason.
+    pub fn warning(&self) -> Option<&str> {
+        self.warning.as_deref()
+    }
+
+    /// Offer a graded attempt to the schedule and say what it did.
+    ///
+    /// The card is kept **even if the write fails** — the attempt happened — and
+    /// the failure comes back on the outcome rather than being swallowed, because
+    /// a learner whose progress is not being saved should be told rather than
+    /// discover it later.
+    pub fn record_attempt(&mut self, ch: char, score: f32) -> Result<AttemptOutcome, String> {
+        let now = now_iso8601();
+        if let Some(card) = self.store.card(ch) {
+            if !card.is_due(&now) {
+                return Ok(AttemptOutcome {
+                    counted: false,
+                    due: card.due.clone(),
+                    warning: None,
+                });
+            }
+        }
+        let card = self.store.record(ch, score).map_err(|err| err.to_string())?;
+        let warning = self.store.save().err().map(|err| {
+            format!("the attempt was counted but could not be saved: {err}")
+        });
+        Ok(AttemptOutcome {
+            counted: true,
+            due: card.due,
+            warning,
+        })
     }
 }
 
@@ -275,6 +431,152 @@ mod tests {
             store.log().tally(&shi_tsu()).wrong,
             1,
             "and the answer is still counted in memory"
+        );
+    }
+
+    // ---- the review schedule ----------------------------------------------
+
+    #[test]
+    fn a_first_run_has_an_empty_schedule_and_the_first_attempt_makes_the_file() {
+        let dir = TempDir::new("review-first-run");
+        let mut store = ReviewStore::at_dir(dir.path());
+        assert!(store.is_persistent());
+        assert!(store.store().cards().is_empty());
+        assert!(store.warning().is_none(), "a first run is not a problem");
+        assert!(!dir.path().join(REVIEW_FILE_NAME).exists(), "nothing written yet");
+
+        let outcome = store.record_attempt('あ', 20.0).expect("saves");
+        assert!(outcome.counted, "a new character is a review");
+        assert!(
+            outcome.due.as_str() > now_iso8601().as_str(),
+            "a failed attempt comes back later, not never: {}",
+            outcome.due
+        );
+        assert!(dir.path().join(REVIEW_FILE_NAME).exists(), "the attempt was written");
+    }
+
+    #[test]
+    fn an_attempt_inside_the_interval_is_practice_and_not_a_review() {
+        // The rule that stops five grades in one sitting becoming a year's
+        // interval: once the card is scheduled, writing it again does not move it.
+        let dir = TempDir::new("review-not-due");
+        let mut store = ReviewStore::at_dir(dir.path());
+        let first = store.record_attempt('あ', 90.0).expect("saves");
+        assert!(first.counted);
+
+        let again = store.record_attempt('あ', 90.0).expect("nothing to write");
+        assert!(!again.counted, "the card was not due");
+        assert_eq!(again.due, first.due, "and the schedule did not move");
+        assert_eq!(
+            store.store().card('あ').expect("a card").attempts,
+            1,
+            "the second attempt is not even an attempt as far as the schedule is concerned"
+        );
+    }
+
+    #[test]
+    fn the_schedule_survives_a_restart() {
+        let dir = TempDir::new("review-restart");
+        let due = {
+            let mut store = ReviewStore::at_dir(dir.path());
+            store.record_attempt('あ', 90.0).expect("saves");
+            let due = store.store().card('あ').expect("a card").due.clone();
+            assert_eq!(store.store().cards().len(), 1);
+            due
+        };
+        let reopened = ReviewStore::at_dir(dir.path());
+        let card = reopened.store().card('あ').expect("the card is still there");
+        assert_eq!(card.due, due);
+        assert_eq!(card.attempts, 1);
+    }
+
+    #[test]
+    fn the_review_file_is_readable_json_of_the_shape_the_docs_promise() {
+        let dir = TempDir::new("review-shape");
+        let mut store = ReviewStore::at_dir(dir.path());
+        store.record_attempt('あ', 90.0).expect("saves");
+
+        let text = fs::read_to_string(dir.path().join(REVIEW_FILE_NAME)).expect("the file");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["cards"]["あ"]["attempts"], 1);
+        assert_eq!(value["cards"]["あ"]["repetitions"], 1);
+        assert!(value["cards"]["あ"]["due"].is_string());
+    }
+
+    #[test]
+    fn a_schedule_that_will_not_parse_is_kept_aside_and_not_overwritten() {
+        let dir = TempDir::new("review-corrupt");
+        let path = dir.path().join(REVIEW_FILE_NAME);
+        fs::write(&path, "{ this is not json").expect("writes");
+
+        let mut store = ReviewStore::at_dir(dir.path());
+        assert!(store.store().cards().is_empty(), "a corrupt file is not a crash");
+        assert!(
+            store.warning().is_some_and(|why| why.contains("kept as")),
+            "and the learner is told what happened: {:?}",
+            store.warning()
+        );
+        let aside = dir.path().join("review.json.corrupt");
+        assert_eq!(
+            fs::read_to_string(&aside).expect("still there"),
+            "{ this is not json",
+            "kept as it was, not as an empty file"
+        );
+
+        // And the app carries on: the next attempt writes a valid schedule.
+        store.record_attempt('あ', 20.0).expect("saves");
+        let reread = ReviewStore::at_dir(dir.path());
+        assert_eq!(reread.store().card('あ').expect("a card").attempts, 1);
+    }
+
+    #[test]
+    fn a_schedule_from_a_newer_build_is_left_alone_and_the_session_runs_in_memory() {
+        let dir = TempDir::new("review-future");
+        let path = dir.path().join(REVIEW_FILE_NAME);
+        let future = r#"{"version":99,"cards":{}}"#;
+        fs::write(&path, future).expect("writes");
+
+        let mut store = ReviewStore::at_dir(dir.path());
+        assert!(!store.is_persistent(), "nothing may be written over it");
+        assert!(
+            store.warning().is_some_and(|why| why.contains("not be remembered")),
+            "{:?}",
+            store.warning()
+        );
+        store.record_attempt('あ', 20.0).expect("nothing to write");
+        assert_eq!(
+            fs::read_to_string(&path).expect("still there"),
+            future,
+            "the file this build does not understand was not touched"
+        );
+    }
+
+    #[test]
+    fn an_in_memory_schedule_records_without_writing_anything() {
+        let mut store = ReviewStore::in_memory();
+        assert!(!store.is_persistent());
+        store.record_attempt('あ', 20.0).expect("nothing to write");
+        assert_eq!(store.store().card('あ').expect("a card").attempts, 1);
+    }
+
+    #[test]
+    fn a_failed_write_is_reported_and_the_attempt_is_still_counted() {
+        // The temporary file the atomic write needs is a directory, so the write
+        // fails on every platform. The failure must surface — and the attempt must
+        // survive it in memory rather than being dropped.
+        let dir = TempDir::new("review-unwritable");
+        fs::create_dir_all(dir.path().join("review.json.tmp")).expect("a directory in the way");
+        let mut store = ReviewStore::at_dir(dir.path());
+
+        let outcome = store.record_attempt('あ', 20.0).expect("the attempt itself is recorded");
+        assert!(outcome.counted);
+        let warning = outcome.warning.expect("the failed write is reported");
+        assert!(warning.contains("could not be saved"), "{warning}");
+        assert_eq!(
+            store.store().card('あ').expect("a card").attempts,
+            1,
+            "the attempt happened, and the schedule holds it until it can be written"
         );
     }
 }

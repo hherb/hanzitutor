@@ -376,6 +376,22 @@ button {
   margin: 8px 0 0;
 }
 
+/* The line under a verdict that says what the review schedule did with the
+   attempt. Every board that grades shows the same three-shaped answer. */
+.note {
+  margin: 10px 0 0;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+.note.ok {
+  color: var(--ok);
+}
+
+.note.bad {
+  color: var(--bad);
+}
+
 .typing {
   margin-top: 14px;
   border-top: 1px solid var(--line);

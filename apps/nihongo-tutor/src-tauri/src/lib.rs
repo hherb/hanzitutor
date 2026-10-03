@@ -18,9 +18,10 @@ pub mod store;
 
 use licences::{AppInfo, LicenceNotice};
 use nihongo_core::{
-    band_name, confusions_for, find_pair, grade_name, kanji_lessons as build_kanji_lessons,
-    lessons as build_lessons, normalise_to_hiragana, pair_key, parse_decomposition, reading,
-    to_kana, to_kana_in, yoon as build_yoon, Confusable, ConfusionLog, Decomposition, GradeOptions,
+    band_name, confusions_for, due_items, find_pair, grade_name,
+    kanji_lessons as build_kanji_lessons, lessons as build_lessons, normalise_to_hiragana,
+    now_iso8601, pair_key, parse_decomposition, reading, to_kana, to_kana_in,
+    yoon as build_yoon, Confusable, ConfusionLog, Decomposition, DueItem, GradeOptions,
     GradeReport, KanaDataset, Kanji, KanjiDataset, Passage, PassageDataset, PassageToken, Point,
     Ruby, Script, Word, WordDataset, CONFUSABLE, KANJI_LESSON_SIZE,
 };
@@ -28,11 +29,11 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::ConfusionStore;
+use store::{ConfusionStore, ReviewStore};
 use tauri::{Manager, State};
 
-/// The datasets, loaded once and shared by every command, and the drill's memory
-/// of what this learner gets wrong.
+/// The datasets, loaded once and shared by every command, the drill's memory of
+/// what this learner gets wrong, and the schedule of what comes back.
 ///
 /// All four artifacts are **embedded** — `include_bytes!`, not read from a path —
 /// so there is no data directory to find, no file to go missing, and no filesystem
@@ -48,23 +49,30 @@ pub struct AppState {
     /// and recording an answer is a write. Contention is nil: one learner, one
     /// window, and a lock held for the microseconds a JSON write takes.
     drill: Mutex<ConfusionStore>,
+    /// The review schedule, in this app's own file beside the drill's — never a
+    /// shared one. See [`store`] and `HANDOVER_NIHONGO.md` invariant 15.
+    review: Mutex<ReviewStore>,
 }
 
 impl AppState {
-    /// Load the committed artifact, with the drill's record kept in memory only.
+    /// Load the committed artifact, with the learner's own records kept in memory.
     ///
     /// This is what a test wants and what the app falls back to when the platform
     /// will not name a data directory.
     pub fn load() -> Self {
-        Self::with_store(ConfusionStore::in_memory())
+        Self::with_stores(ConfusionStore::in_memory(), ReviewStore::in_memory())
     }
 
-    /// Load the committed artifact and the learner's record from `dir`.
+    /// Load the committed artifact and the learner's records from `dir`.
     pub fn load_at(dir: impl Into<PathBuf>) -> Self {
-        Self::with_store(ConfusionStore::at_dir(dir.into()))
+        let dir = dir.into();
+        Self::with_stores(
+            ConfusionStore::at_dir(&dir),
+            ReviewStore::at_dir(&dir),
+        )
     }
 
-    fn with_store(drill: ConfusionStore) -> Self {
+    fn with_stores(drill: ConfusionStore, review: ReviewStore) -> Self {
         macro_rules! artifact {
             ($name:literal) => {
                 include_bytes!(concat!(
@@ -84,6 +92,7 @@ impl AppState {
             passages: PassageDataset::from_gzip_bytes(artifact!("passages.bin.gz"))
                 .expect("the committed passages artifact decodes"),
             drill: Mutex::new(drill),
+            review: Mutex::new(review),
         }
     }
 
@@ -225,6 +234,84 @@ impl AppState {
              order to grade against",
             ch as u32
         ))
+    }
+
+    /// Grade a handwritten attempt **and offer it to the review schedule**.
+    ///
+    /// This is what the interface calls. Grading alone is [`Self::grade`], which
+    /// stays pure so a test can grade without a learner's file being involved.
+    ///
+    /// The schedule is only advanced when the attempt is a *review*: the character
+    /// is new, or its due date has passed. Writing あ five times in one sitting
+    /// must not multiply SM-2's interval five times, so a later attempt inside the
+    /// interval is graded and not rescheduled — see [`store::ReviewStore`].
+    pub fn grade_and_schedule(
+        &self,
+        ch: char,
+        strokes: &[Vec<Point>],
+        options: &GradeOptions,
+    ) -> Result<GradedAttempt, String> {
+        let report = self.grade(ch, strokes, options)?;
+        let mut store = self
+            .review
+            .lock()
+            .expect("the review store is not poisoned");
+        // A schedule that will not be written is a standing condition, not a
+        // per-attempt one; it is said once and repeated on every grade rather than
+        // hidden, because the learner is losing work either way.
+        let session = store.warning().map(str::to_string);
+        let (scheduled, next_due, warning) = match store.record_attempt(ch, report.overall) {
+            Ok(outcome) => (
+                outcome.counted,
+                Some(outcome.due),
+                outcome.warning.or(session),
+            ),
+            // The attempt could not be counted at all. The grade still stands: a
+            // verdict the learner can read is worth more than an error that hides
+            // it, and the score they just earned did happen.
+            Err(err) => (false, None, Some(err).or(session)),
+        };
+        Ok(GradedAttempt {
+            report,
+            scheduled,
+            next_due,
+            warning,
+        })
+    }
+
+    /// What the board has taught and what is due, most overdue first.
+    ///
+    /// `limit` caps the items returned, not the count: a learner with two hundred
+    /// due characters is told there are two hundred, and shown the most overdue
+    /// ones. Taking only the first few is a decision for the screen, so the full
+    /// number travels beside them.
+    pub fn review_queue(&self, limit: usize) -> ReviewQueueView {
+        let store = self
+            .review
+            .lock()
+            .expect("the review store is not poisoned");
+        let now = now_iso8601();
+        let items = due_items(store.store(), &self.kana, &self.kanji, &now);
+        let due = items.len();
+        // Nothing due: the soonest card is worth naming, so the screen can say
+        // when the next one is rather than only that the queue is empty.
+        let next_due = if due == 0 {
+            store
+                .store()
+                .cards()
+                .values()
+                .map(|card| card.due.clone())
+                .min()
+        } else {
+            None
+        };
+        ReviewQueueView {
+            items: items.into_iter().take(limit).collect(),
+            cards: store.store().cards().len(),
+            due,
+            next_due,
+            warning: store.warning().map(str::to_string),
+        }
     }
 
     /// The kana a given kana is confused with, from the classic set.
@@ -910,6 +997,48 @@ pub struct ReadingCheck {
     pub produced: String,
 }
 
+/// The verdict on an attempt, and what the review schedule did with it.
+///
+/// Grading and scheduling are one command because they are one action to the
+/// learner: they wrote a character and pressed Grade. The report is unchanged —
+/// the same four scores the engine has always returned — and the two fields
+/// beside it are what the screen needs to say what happens next.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GradedAttempt {
+    pub report: GradeReport,
+    /// True when this attempt advanced the schedule: the character was new, or its
+    /// due date had passed. A later attempt inside the interval is practice — it
+    /// is still graded, and the schedule does not move.
+    pub scheduled: bool,
+    /// When the character comes up next, ISO-8601 UTC. Present whenever a card
+    /// exists for the character, whether or not this attempt changed it.
+    #[serde(default)]
+    pub next_due: Option<String>,
+    /// Set when the attempt was counted but could not be written to the learner's
+    /// file, or when the schedule could not be opened at all. The screen says so
+    /// rather than losing it quietly — see `store.rs`.
+    #[serde(default)]
+    pub warning: Option<String>,
+}
+
+/// The review queue, as the Review screen draws it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewQueueView {
+    /// Due characters, most overdue first, capped at the caller's limit.
+    pub items: Vec<DueItem>,
+    /// How many characters the schedule holds at all, due or not.
+    pub cards: usize,
+    /// How many are due, which is the length of the *uncapped* queue.
+    pub due: usize,
+    /// When the next character comes back, when nothing is due now.
+    #[serde(default)]
+    pub next_due: Option<String>,
+    #[serde(default)]
+    pub warning: Option<String>,
+}
+
 fn script_of(name: &str) -> Result<Script, String> {
     Script::from_name(name).ok_or_else(|| format!("unknown script {name:?}; expected hiragana or katakana"))
 }
@@ -946,14 +1075,22 @@ fn kana(state: State<'_, AppState>, ch: char) -> Result<KanaView, String> {
     state.kana(ch)
 }
 
+/// Grade a handwritten attempt against whatever the app can draw, and schedule
+/// when it comes back.
+///
+/// The report is the same shape it has always been; what changed is that the
+/// attempt is also offered to the review schedule, and the response says what
+/// that did. `scheduled` is false for a second attempt inside a character's
+/// interval, which is the rule that keeps one sitting from stretching an interval
+/// by months.
 #[tauri::command]
 fn grade_attempt(
     state: State<'_, AppState>,
     ch: char,
     strokes: Vec<Vec<Point>>,
     options: Option<GradeOptions>,
-) -> Result<GradeReport, String> {
-    state.grade(ch, &strokes, &options.unwrap_or_default())
+) -> Result<GradedAttempt, String> {
+    state.grade_and_schedule(ch, &strokes, &options.unwrap_or_default())
 }
 
 /// The next question for the discrimination drill, weighted towards the pairs
@@ -962,6 +1099,22 @@ fn grade_attempt(
 fn next_drill_question(state: State<'_, AppState>) -> Option<DrillQuestion> {
     state.next_drill_question()
 }
+
+/// What the board has taught this learner, and what is due.
+///
+/// `limit` caps the items returned, not the count: a learner with two hundred due
+/// characters is shown the most overdue ones and told how many there are.
+#[tauri::command]
+fn review_queue(state: State<'_, AppState>, limit: Option<usize>) -> ReviewQueueView {
+    state.review_queue(limit.unwrap_or(REVIEW_PAGE))
+}
+
+/// How many due characters one page of the review queue carries.
+///
+/// The queue is a list of single characters, so a page is cheap; a learner with a
+/// backlog wants to work through the top of it rather than scroll all of it, and
+/// the screen can ask for more.
+const REVIEW_PAGE: usize = 40;
 
 /// Record what the learner answered, and return the pair's record now.
 #[tauri::command]
@@ -1138,6 +1291,7 @@ pub fn run() {
             lessons,
             kana,
             grade_attempt,
+            review_queue,
             next_drill_question,
             record_drill_answer,
             check_reading,
@@ -1753,5 +1907,52 @@ mod tests {
         let all = yoon("katakana".into()).expect("known script");
         assert!(all.iter().any(|y| y.display == "キュ" && y.hepburn == "kyu"));
         assert!(yoon("kanji".into()).is_err());
+    }
+
+    /// A brand-new learner has written nothing, so nothing is due and there is no
+    /// next date to name. The screen has to be able to say that rather than show
+    /// an empty list with no explanation.
+    #[test]
+    fn a_learner_who_has_written_nothing_has_an_empty_queue_and_no_next_date() {
+        let queue = state().review_queue(40);
+        assert_eq!(queue.cards, 0);
+        assert_eq!(queue.due, 0);
+        assert!(queue.items.is_empty());
+        assert!(queue.next_due.is_none());
+        assert!(queue.warning.is_none(), "an in-memory schedule is not a problem");
+    }
+
+    /// When nothing is due, the queue still names when the next character comes
+    /// back — the answer to "what now?" after a clean attempt.
+    #[test]
+    fn a_character_that_is_not_due_yet_says_when_it_comes_back() {
+        let state = state();
+        let said = state.kana('あ').expect("あ");
+        let graded = state
+            .grade_and_schedule('あ', &said.medians, &GradeOptions::default())
+            .expect("grades");
+        assert!(graded.scheduled, "score {:.0}", graded.report.overall);
+        let due = graded.next_due.clone().expect("a new card has a due date");
+
+        let queue = state.review_queue(40);
+        assert_eq!(queue.cards, 1);
+        assert_eq!(queue.due, 0, "a clean attempt is not due for a day");
+        assert!(queue.items.is_empty());
+        assert_eq!(queue.next_due.as_deref(), Some(due.as_str()));
+    }
+
+    /// The board writes a head form the character course cannot reach — 92 of the
+    /// 214 are not jōyō characters — and writing one is scheduled like anything
+    /// else the board can draw.
+    #[test]
+    fn a_radical_head_form_can_be_written_and_scheduled() {
+        let state = state();
+        let radical = state.radical(6).expect("亅 is radical 6");
+        let graded = state
+            .grade_and_schedule(radical.ch, &[], &GradeOptions::default())
+            .expect("the board can write a head form the character course cannot");
+        assert!(graded.scheduled);
+        assert!(graded.next_due.is_some());
+        assert_eq!(state.review_queue(40).cards, 1);
     }
 }

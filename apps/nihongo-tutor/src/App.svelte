@@ -14,7 +14,9 @@
   import PassagePanel from "./lib/PassagePanel.svelte";
   import KanjiPanel from "./lib/KanjiPanel.svelte";
   import RadicalsPanel from "./lib/RadicalsPanel.svelte";
+  import ReviewPanel from "./lib/ReviewPanel.svelte";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./lib/render";
+  import { scheduleNote } from "./lib/review";
   import * as api from "./lib/api";
   import type {
     AppInfo,
@@ -30,7 +32,7 @@
   let info = $state<AppInfo | null>(null);
   let stats = $state<DatasetStats | null>(null);
   let view = $state<
-    "practice" | "drill" | "kanji" | "radicals" | "words" | "read" | "licences"
+    "practice" | "drill" | "review" | "kanji" | "radicals" | "words" | "read" | "licences"
   >("practice");
   let script = $state<ScriptName>("hiragana");
   let course = $state<LessonView[]>([]);
@@ -75,6 +77,13 @@
 
   let typed = $state("");
   let check = $state<ReadingCheck | null>(null);
+  /**
+   * What the review schedule did with the last attempt.
+   *
+   * Grading and scheduling are one command, so the verdict and the next due date
+   * arrive together; this is the half the panel did not have before.
+   */
+  let note = $state<{ tone: "ok" | "plain" | "bad"; text: string } | null>(null);
 
   let board = $state<ReturnType<typeof KanaCanvas> | null>(null);
   /**
@@ -116,6 +125,7 @@
       error = null;
       selected = ch;
       report = null;
+      note = null;
       check = null;
       typed = "";
       attempt = [];
@@ -131,6 +141,7 @@
     // it is stale, and leaving it up would colour the new strokes with the old
     // reading.
     report = null;
+    note = null;
   }
 
   async function grade() {
@@ -138,7 +149,11 @@
     try {
       busy = true;
       error = null;
-      report = await api.gradeAttempt(selected, attempt);
+      // The command grades *and* offers the attempt to the review schedule, so
+      // what comes back is the verdict plus the schedule's answer to it.
+      const graded = await api.gradeAttempt(selected, attempt);
+      report = graded.report;
+      note = scheduleNote(graded, new Date().toISOString());
     } catch (e) {
       error = String(e);
     } finally {
@@ -185,7 +200,7 @@
   {/if}
 
   <div class="views" role="tablist">
-    {#each [["practice", "Practice"], ["drill", "Tell them apart"], ["kanji", "Kanji"], ["radicals", "Radicals"], ["words", "Words"], ["read", "Read"], ["licences", "Licences"]] as const as [id, label] (id)}
+    {#each [["practice", "Practice"], ["drill", "Tell them apart"], ["review", "Review"], ["kanji", "Kanji"], ["radicals", "Radicals"], ["words", "Words"], ["read", "Read"], ["licences", "Licences"]] as const as [id, label] (id)}
       <button
         role="tab"
         aria-selected={view === id}
@@ -291,6 +306,12 @@
           </div>
         {/if}
 
+        {#if note}
+          <p class="note" class:ok={note.tone === "ok"} class:bad={note.tone === "bad"}>
+            {note.text}
+          </p>
+        {/if}
+
         <div class="typing">
           <label for="typed">Type the reading</label>
           <div class="row">
@@ -339,6 +360,8 @@
 
   {:else if view === "drill"}
     <ConfusionDrill />
+  {:else if view === "review"}
+    <ReviewPanel />
   {:else if view === "kanji"}
     <KanjiPanel bind:pick={kanjiPick} onradical={seeRadical} />
   {:else if view === "radicals"}

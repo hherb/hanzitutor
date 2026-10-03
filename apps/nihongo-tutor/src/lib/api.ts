@@ -14,7 +14,7 @@ import type {
   DatasetStats,
   DrillQuestion,
   DrillTally,
-  GradeReport,
+  GradedAttempt,
   Kana,
   KanjiLessonView,
   KanjiView,
@@ -26,6 +26,7 @@ import type {
   RadicalFamilyView,
   RadicalView,
   ReadingCheck,
+  ReviewQueueView,
   ScriptName,
   Word,
   WordPage,
@@ -60,7 +61,14 @@ export function kana(ch: string): Promise<Kana> {
 }
 
 /**
- * Grade a handwritten attempt.
+ * Grade a handwritten attempt, and let the schedule decide when it comes back.
+ *
+ * The response wraps the report rather than being it: `scheduled` says whether
+ * this attempt counted as a review (the character was new or due), `nextDue` when
+ * it comes back, and `warning` when the attempt could not be written to the
+ * learner's own file. Grading and scheduling are one command because they are one
+ * action — the learner wrote a character and pressed Grade — and separating them
+ * would let the two disagree about what was graded.
  *
  * Only the pen width is sent; the other three tunables are left to the Rust
  * default, because those defaults are the ones the whole tolerance study was
@@ -69,12 +77,24 @@ export function kana(ch: string): Promise<Kana> {
  * sends some fields and not others must not be rejected for the ones it left
  * out.
  */
-export function gradeAttempt(ch: string, strokes: Point[][]): Promise<GradeReport> {
-  return invoke<GradeReport>("grade_attempt", {
+export function gradeAttempt(ch: string, strokes: Point[][]): Promise<GradedAttempt> {
+  return invoke<GradedAttempt>("grade_attempt", {
     ch,
     strokes,
     options: { inkWidth: INK_WIDTH },
   });
+}
+
+/**
+ * What the board has taught and what is due, most overdue first.
+ *
+ * `limit` caps the items returned, not the count: the screen shows the top of a
+ * backlog and says how big the backlog is. It is paged rather than whole because
+ * a learner working through the kanji course can have hundreds of characters due
+ * at once, and none of the rest of the app ships that much JSON to draw a list.
+ */
+export function reviewQueue(limit = 40): Promise<ReviewQueueView> {
+  return invoke<ReviewQueueView>("review_queue", { limit });
 }
 
 /** Check a typed reading, accepting either romanisation. */

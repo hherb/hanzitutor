@@ -38,7 +38,7 @@ references for no gain.
 | **N0** | *(shipped)* the kana foundation | Done. Treat it as the gateway it is and do not gold-plate it. |
 | **N3** | *(shipped)* per-learner confusability | Done, and it was as cheap as predicted: the drill weighs the 13 pairs by what this learner gets wrong and remembers it in the app's own file. See the milestone for the rule, and for what is deliberately not there. |
 | **N1** | Audio | Early, because audio is the one thing both halves need: a kana wants a sound and so does every kanji word. The system voices already work, so the desktop is wiring. |
-| **N2** | A review queue | Early, for the same reason — kanji study without spaced repetition is not study. The store is this app's own (invariant 15); the scheduler's code is shared. |
+| **N2** | **A review queue** | **Shipped.** The schedule the boards' attempts feed, in the app's own file, with the scheduler's code shared and the data never shared (invariant 15). See the milestone for the question it was asked to answer first. |
 | **N6** | **The kanji data layer** | **Shipped.** The artifact is committed and verified; see the milestone for the three things the measurement corrected. Vocabulary moved to N7, where it belongs. |
 | **N7** | Kanji through vocabulary | **Shipped.** Words with their own readings and furigana, a derived ladder, and two screens — Words and Read. The kanji artifact it embedded unread is now the character course's, at N8. |
 | **N8** | **The kanji course and screens** | **Shipped.** The course, the 214-radical table and the components screen, all served from the artifact the vocabulary already needed. See the milestone for what the measurement added — and for the one thing it decided that was open. |
@@ -255,6 +255,75 @@ question and they ship; a scheduler has to earn its screen against them.
 **Deliberately not done.** Cross-device sync. `hanzi-sync` would give it, and it
 is the same kind of shared-data mistake as `hanzi-store` for two separate apps;
 sync is also the wrong thing to add to an app nobody is yet studying with.
+
+### Shipped
+
+**The question this milestone said to answer before building anything, answered:
+yes — but not because the kana need it.** An SRS over the 177 kana alone would not
+earn a screen against N3's drill. The kana are a week's work and the drill already
+weights the thirteen pairs that are actually confusable; a due-date list of
+あいうえお would be ceremony. What earns the screen is the other half of the app:
+**kanji study without spaced repetition is not study** is this roadmap's own
+sentence, and the board that grades a kanji is the board that grades a kana. So
+the schedule is over the characters the board can draw — kana, jōyō kanji and
+radical head forms — and the kana ride along because they are the same unit rather
+than because 179 characters need a scheduler.
+
+**SM-2, reused rather than reimplemented.** `hanzi_core::progress` carries the
+scheduler behind a `Scheduler` trait, the due-date arithmetic and the attempt log,
+and language-neutral is exactly what those are: they count attempts and multiply
+intervals and never look at the character. `nihongo-core` re-exports them the way
+it already re-exports `grade`, and its `review.rs` adds only the Japanese half —
+what a character the board can draw *is*, and what to prompt the learner with when
+it comes back. **FSRS is deliberately not used**: it is the better algorithm, but
+its pretrained weights are not openly licensed, fitting them on-device needs far
+more attempts than one learner produces quickly, and `hanzi_core`'s own note says
+the same. `Scheduler` is the seam it would arrive through.
+
+**The data is the app's own file, and that is invariant 15.** The schedule is
+`review.json` in this app's own data directory, beside `confusions.json`, written
+by Rust rather than by the webview, which still holds no filesystem permission.
+`hanzi-store` is not used: the two apps share code and never learner data. The
+failure paths are the drill's, made again — a file that will not parse is kept
+aside rather than overwritten, a file written by a newer build is left untouched
+and the session runs in memory, and a write that fails is reported to the learner
+while the attempt stays counted.
+
+**And one rule that is not obvious, which is why it is written down.** An attempt
+advances the schedule only when the character is **new or due**. Recording every
+Grade press would be wrong in a way that is easy to miss: a learner who writes あ
+five times in one sitting would advance SM-2's interval five times and not see あ
+again for a year, on the strength of one minute's practice. A second attempt
+inside the interval is still graded, and the schedule is left exactly as it was.
+The three outcomes — counted, not counted, and counted-but-not-saved — are told
+apart on screen rather than collapsed into a score.
+
+**What is on screen.** A **Review** view in the sidebar lists what is due, most
+overdue first, with each character resolved to what the board will draw and a
+prompt beside it: a kana's reading, a kanji's gloss, or a radical's Kangxi number,
+which is also how the panel fetches the geometry of a head form the character
+course cannot reach. Choosing one puts it on a board; Grade grades it and
+reschedules it. The queue is paged — `due` counts the whole backlog, `items` are
+the most overdue page of it — and when nothing is due the screen names when the
+next character comes back rather than only saying "nothing". `grade_attempt` now
+returns `{ report, scheduled, nextDue, warning }` instead of a bare report, so all
+three boards — Practice, Kanji and Review — say what the schedule did with the
+attempt. That is the shape a request/response contract test pins, both halves
+(`HANDOVER_NIHONGO.md` invariant 14).
+
+**Verified on a display, and by writing on it.** The Review screen was captured on
+a running window; characters drawn on the board were graded — 学 at 87/100 and あ
+at 100/100 — and both appeared in `review.json` under `com.hanzitutor.kana` with
+SM-2's own fields (学 rescheduled six days out, あ two), and a cold restart read
+them back. Looking at it also found two interface bugs that every test and
+`svelte-check` were happy with: "1 characters are scheduled", and an interval
+label that floored 1.9997 days to "in 1 day" beside the two-day interval the same
+screen was showing. Both are fixed and both now have a test.
+
+**24 new Rust tests and 11 new frontend ones.** `nihongo-core` 175 (was 168) and
+`nihongo-tutor` 93 (was 76); the frontend's 35 became 46. The scheduler's own
+arithmetic is `hanzi_core`'s and already tested there — what is new here is the
+Japanese half, the store's failure paths, and the IPC shapes.
 
 ---
 
@@ -654,8 +723,12 @@ band from the kanji artifact, so the label and the derivation cannot drift.
 
 The screens are covered by 32 unit tests, 6 new IPC-contract tests (including the
 *request* halves, which is the shape of invariant 14), and 12 frontend tests over the
-furigana and paging arithmetic. What N7 does **not** have is a review queue: that is
-N2, and the words artifact is what it would schedule from.
+furigana and paging arithmetic. What N7 does **not** have is a review queue, and
+N2 has shipped one since — but it schedules **characters**, not words, because a
+word is checked by typing rather than written on a board and so has no handwritten
+attempt to schedule. Scheduling the vocabulary is a separate decision with its own
+attempt source; the words artifact and `words::of_kanji` are what it would use,
+and this milestone does not claim them.
 
 ---
 
@@ -817,7 +890,12 @@ Recorded here rather than as milestones because none of them is a feature.
   the Chinese app's learner data, and invariant 15 keeps the two apps' data
   separate: shared crates carry code, never user data. So "the measurement says
   they are reusable" was true of the *types* and beside the point for the store.
-  `nihongo-tutor`'s own `store.rs` is the precedent for N2.
+  `nihongo-tutor`'s own `store.rs` is the precedent N2 followed — and the review
+  schedule is a second store in that same file and that same directory.
+* **Scheduling the vocabulary is not built.** N2's queue is over characters,
+  because a word has no handwritten attempt to schedule: it is checked by typing.
+  A word queue would need its own attempt source and its own decision about what a
+  wrong reading costs, and the words artifact is the thing it would read.
 * **The kanji milestones are plans, not measurements.** The kana estimates in the
   feasibility report were good, but the kanji data sizes are from upstream
   listings rather than from a build, and the artifact size is unknown. *(N8 made

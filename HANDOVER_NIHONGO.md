@@ -96,10 +96,10 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **244
-tests** — every `#[test]` in the two suites, plus one doc-test; the frontend's are
-counted separately below. `pnpm run test:web` runs 104, of which **35** are this
-app's.
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **268
+tests** — every `#[test]` in the two suites (168 became 175 in `nihongo-core`, 76
+became 93 in `nihongo-tutor`), plus one doc-test; the frontend's are counted
+separately below. `pnpm run test:web` runs 115, of which **46** are this app's.
 
 | | |
 | --- | --- |
@@ -120,17 +120,19 @@ app's.
 | Bands | 585 / 1,781 / 2,408 / 2,232 / 2,412 / 1,834 / 4,821 — this project's ladder, not the JLPT's (invariant 20) |
 | Furigana | 16,022 of 16,073 aligned (99.7%); the other 51 carry their reading and no ruby |
 | Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
-| Screens | Practice, Tell them apart, **Kanji**, **Radicals**, Words, Read, Licences |
-| Tests | nihongo-core 168, nihongo-tutor 76, frontend 35 of the 104 |
+| Screens | Practice, Tell them apart, **Review**, **Kanji**, **Radicals**, Words, Read, Licences |
+| Tests | nihongo-core 175, nihongo-tutor 93, frontend 46 of the 115 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
-| Learner data | one file, `confusions.json`, in the app's own data directory |
+| Learner data | two files, `confusions.json` and `review.json`, in the app's own data directory |
 | Version | both crates 0.1.0, and the app's to match |
 
 The app runs and has been looked at, all of it: the course, the board, stroke-order
 animation, handwriting grading, the discrimination drill, the typing box, the
-katakana tab and the Licences panel have each been seen working on a display, and
-so have the two kanji screens (below).
+katakana tab, the Licences panel and the review queue have each been seen working
+on a display, and so have the two kanji screens (below). The review queue has also
+been *used* — a character drawn on it was graded and rescheduled, which is not the
+same thing as being seen.
 
 **Everything the app embeds is on screen now.** **Words** browses the ladder band
 by band with furigana over every word and grades a typed reading; **Read** draws a
@@ -143,12 +145,19 @@ The kanji artifact was embedded and read by nothing for a whole milestone; N8 is
 what read it, and the radical table it now carries is what makes the second screen
 possible. Each milestone's own record says what its measurement corrected.
 
-**The drill is the one part that learns anything about its learner** (roadmap N3).
-It used to draw a kana from a pool and throw the answer away; it now draws a *pair*,
-weighted by how often this learner has missed it, and records what was answered in
-`confusions.json` under the app's own data directory. The rule, the record and the
-reason it is not a scheduler are in `nihongo_core::drill`, and invariant 15 is the
-part that must not be undone: the file is this app's, and no other app reads it.
+**Two parts of the app learn about their learner now.** The drill is **N3**'s: it
+used to draw a kana from a pool and throw the answer away, and it now draws a
+*pair*, weighted by how often this learner has missed it, and records what was
+answered in `confusions.json`. The rule, the record and the reason it is not a
+scheduler are in `nihongo_core::drill`.
+
+**And N2 added the schedule, which is the other half and the reason the app is a
+tutor rather than a drill.** Every character graded on a board is offered to
+`review.json` — SM-2 from `hanzi_core::progress`, the same code the Chinese app
+runs — and **Review** lists what is due, most overdue first. An attempt is a review
+only when the character is new or due (invariant 25); the kana ride along on a
+schedule the kanji course is what actually needs. Both files are this app's own,
+and invariant 15 is the part that must not be undone: no other app reads either.
 
 **Three of the surfaces were watched for the first time in the session before this
 one, and two of them were broken.** The test suite was green for both, which is the
@@ -212,8 +221,11 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   and the grade-ordered kanji course — N8
   src/input.rs           (523)    romaji → kana, and the one-kana and whole-word checks
   src/drill.rs           (377)    the pair weights, the tally, and the draw — N3
-  src/lib.rs              (79)    re-exports, including hanzi-core's grade and
-                                  decomposition parser
+  src/review.rs          (322)    what a scheduled character is, the prompt beside
+                                  it and the due queue — N2. The schedule itself is
+                                  hanzi-core's; this is the Japanese half
+  src/lib.rs              (88)    re-exports, including hanzi-core's grade, its
+                                  decomposition parser and its SM-2 schedule
   src/bin/prepare_kana.rs(246)    AnimCJK + KanjiVG → the artifact
   src/bin/prepare_kanji.rs(821)   AnimCJK + KANJIDIC2 + KanjiVG → the artifact,
                                   including the one written oracle exception, the
@@ -243,19 +255,23 @@ scripts/fetch-unidic.sh           fetches and builds the UniDic dictionary into
                                   built, and the only thing that needs either
 
 apps/nihongo-tutor/               the app
-  src-tauri/src/lib.rs  (1757)    AppState and the 22 commands, all thin
-  src-tauri/src/store.rs (280)    confusions.json: load, record, atomic write — N3
+  src-tauri/src/lib.rs  (1958)    AppState and the 23 commands, all thin
+  src-tauri/src/store.rs (582)    the two files of this app's own: confusions.json
+                                  (load, record, atomic write — N3) and review.json
+                                  (the SM-2 schedule, and the rule for when an
+                                  attempt is a review — N2)
   src-tauri/src/licences.rs(157)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (722)  27 tests locking the JSON the webview
+  src-tauri/tests/ipc_contract.rs (938)  33 tests locking the JSON the webview
                                   reads *and the arguments it posts* (invariant 14)
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
-  src/App.svelte         (360)    the seven views, the course, the board wiring
+  src/App.svelte         (383)    the eight views, the course, the board wiring
   src/lib/KanaCanvas.svelte(248)  pointer capture and the animation frame. Draws
                                   any `Drawable`, so a kana, a kanji and a radical
                                   all come through it
   src/lib/ConfusionDrill.svelte(225)  the drill: one pair, one answer, remembered
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
+  src/lib/ReviewPanel.svelte(331) what is due, and a board to write it on — N2
   src/lib/KanjiPanel.svelte(563)  the kanji course, the board and the card — N8
   src/lib/RadicalsPanel.svelte(501)   the 214 head forms and their families — N8
   src/lib/VocabularyPanel.svelte(298) the ladder, a band's words, the card — N7
@@ -266,15 +282,18 @@ apps/nihongo-tutor/               the app
   src/lib/kanji.test.ts  (120)    run by the ROOT project's vitest
   src/lib/words.ts       (101)    furigana and paging arithmetic, as pure functions
   src/lib/words.test.ts  (131)    run by the ROOT project's vitest
+  src/lib/review.ts       (89)    "2 days overdue" and "in 2 days", as pure
+                                  functions — N2
+  src/lib/review.test.ts (131)    run by the ROOT project's vitest
   src/lib/board.ts        (97)    the board's arithmetic, as pure functions
   src/lib/board.test.ts   (99)    run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
-  src/lib/types.ts       (403)    the IPC shapes, and `Character = Drawable`
-  src/lib/api.ts         (211)    one wrapper per command
+  src/lib/types.ts       (466)    the IPC shapes, and `Character = Drawable`
+  src/lib/api.ts         (231)    one wrapper per command
 ```
 
 The line counts are the current tree's, and they were last checked while writing
-invariant 24; a few of the earlier numbers in this table were stale by then, which
+invariant 25; a few of the earlier numbers in this table were stale by then, which
 is worth knowing before treating one as a measurement.
 
 `src-tauri/gen/schemas/` is committed, as it is for the other two apps.
@@ -788,6 +807,44 @@ readily as a character**: `grade_attempt` resolves kana, jōyō kanji and radica
 form, in that order, which is what makes "Write 水 on the board" work for the 92
 head forms that are not jōyō characters.
 
+### 25. **A graded attempt is a review only when the character is new or due.**
+
+The rule N2 added, the one that is not obvious, and the one most likely to be
+"simplified" away. `ReviewStore::record_attempt` looks at the card *before* it
+records: if the character has one and its `due` is still ahead, the attempt is
+graded and the schedule is left exactly as it was.
+
+The reason is SM-2's own arithmetic. A learner who writes あ five times in one
+sitting and gets it right each time would otherwise advance the interval five
+times — 1 day, 6 days, ~39, ~253, 365 — and not meet あ again for a year on the
+strength of a minute's practice. Nothing would fail; the schedule would simply be
+wrong, and wrong in the direction that looks like success. A failed attempt is
+different and does come straight back: SM-2 schedules `Again` sixty seconds out,
+which is a review again by the time the learner has drawn it twice.
+
+Three things follow, and each is pinned:
+
+* **`grade_attempt` returns a wrapper** — `{ report, scheduled, nextDue, warning }`
+  — not a bare `GradeReport`. `scheduled` is what tells the three screens a counted
+  attempt from a practice one, and the contract test asserts the response keys
+  *and* the request payload, which is the half invariant 14 exists for.
+* **A write that fails still counts.** The card is updated in memory, the failure
+  travels as `warning`, and the verdict is still returned: a learner asked for a
+  grade and the grade happened. Under the harness's file sandbox this is the
+  *normal* result (trap 5), and it is what the live check shows.
+* **A schedule this build cannot read is never overwritten.** A file that will not
+  parse is moved aside as `review.json.corrupt` and a fresh one started; a file
+  from a newer build is left untouched and the session runs in memory with a
+  warning. This is `hanzi_core::progress`'s own rule, applied in the app for the
+  one file where guessing would lose real work — and it is the same refusal
+  `ConfusionStore` already made.
+
+The other half of the milestone is a **decision, not a mechanism**, and it is
+recorded in `ROADMAP_NIHONGO.md` N2's Shipped section: the schedule exists because
+kanji study needs it, and the kana ride along on the same unit; FSRS is the better
+algorithm and is deliberately not in, because its pretrained weights are not
+openly licensed and one learner cannot fit them. `Scheduler` is the seam.
+
 ## 5. The verification loop
 
 Four layers, cheapest first. All of them are worth running before a commit that
@@ -955,6 +1012,21 @@ any screen:
   and **stub `canvas.setPointerCapture` first**, because a synthetic pointer was
   never really down and the real call throws, which would abandon `down()` before
   it records the stroke.
+
+* **And a read of the DOM need not go over the dev server at all.** N2's live check
+  collected the facts — the active tab, the header counts, every due item's text,
+  the character on the board, the note under it — into a JSON string and appended a
+  `position: fixed` `<pre>` with it to `document.body`, then captured the window.
+  If the report is in the image, the image is *current*, which is the one thing a
+  `-l` capture cannot tell you on its own; and it needs no Vite middleware, because
+  the probe's output *is* the screen.
+* **A surprising capture is not automatically a stale one.** One from N2's check
+  showed more due characters than the file held, a grade nobody had recorded, and
+  a hand-drawn character — and it read as the stale backing store above. It was
+  real: the maintainer had been drawing on the window while the check ran. Ask the
+  DOM what it holds, then ask the person, and only then call an image an artefact.
+  (The repository's own history has both cases: the N8 captures *were* stale, and
+  this one was not.)
 
 ### When the window is blank
 
@@ -1313,17 +1385,19 @@ The clean route is to **generate** accent patterns — `tdmelodic` is BSD-3-Clau
 weights** and the training labels. `docs/research/JAPANESE_TUTOR_FEASIBILITY.md`
 §6.1 has the full working.
 
-### Whether kana want spaced repetition at all
+### Whether kana want spaced repetition at all — decided, and shipped
 
-179 kana and 33 digraphs is small enough to learn by exposure, and the Chinese
-app's scheduler (`hanzi-core::progress`, SM-2) is reusable **as code** — it is
-language-neutral types and arithmetic, which is the kind of thing the two apps
-share. `hanzi-store` is not: it is a store, and a store holds a learner's data,
-which invariant 15 keeps app-local. But "reuse the SRS because it is there" is not
-an argument either way, and the honest question is whether a review queue helps
-kana or just adds a screen. The drill has now answered a smaller version of it —
-per-pair weights, no schedule, no due dates, no queue — and that is the thing to
-weigh a real scheduler against.
+**Decided: yes, but not because the kana want it, and the reasoning is invariant
+25's and `ROADMAP_NIHONGO.md` N2's Shipped section.** An SRS over 179 kana would
+not earn a screen against the drill's per-pair weights; what earns it is the kanji
+course, which is where the years go and which has no other memory at all. So the
+schedule is over every character a board can grade and the kana ride along.
+
+The reusable *code* was real: `hanzi-core::progress`'s SM-2, its due-date
+arithmetic and its attempt log are language-neutral and are used unchanged through
+`Scheduler`. `hanzi-store` remains the answer to nothing here — invariant 15 — and
+`fsrs-rs` remains the better algorithm that is not in, for the licence-and-weights
+reason that section records.
 
 ### Where kana audio comes from
 
@@ -1476,7 +1550,11 @@ first KANJIDIC2 data.
   `dictionaryJa.txt`'s own grade sets" is the trap rather than the answer, since
   those are the pre-2017 grades and KANJIDIC2's are the authority (invariant 18).
 * **Audio.** §7.
-* **Spaced repetition.** §7.
+* **Spaced repetition for the vocabulary.** N2's schedule is over *characters* —
+  what a board grades — and it ships. A word is checked by typing, so it has no
+  handwritten attempt to schedule; a word queue would need its own attempt source
+  and its own decision about what a wrong reading costs. §7 and
+  `ROADMAP_NIHONGO.md`'s known weak spots record it.
 * **A per-learner confusability *matrix*.** The drill does now learn which of the
   13 pairs *this* learner gets wrong, and weights them (invariant 15, roadmap N3).
   What is not built is a matrix: pairs beyond the fixed 13, or a screen that shows

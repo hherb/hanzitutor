@@ -401,3 +401,66 @@ export interface RadicalView extends Drawable {
 export type KanjiPick =
   | { kind: "kanji"; ch: string }
   | { kind: "radical"; number: number };
+
+/**
+ * The verdict on an attempt, and what the review schedule did with it.
+ *
+ * Grading and scheduling are one command because they are one action: the learner
+ * wrote a character and pressed Grade. `scheduled` is false for a second attempt
+ * inside the character's interval — that attempt is still graded, and the
+ * schedule is deliberately left alone, because five attempts in one sitting must
+ * not stretch an interval by months.
+ */
+export interface GradedAttempt {
+  report: GradeReport;
+  /** True when the character was new or due, so the attempt advanced the schedule. */
+  scheduled: boolean;
+  /** When the character comes back, ISO-8601 UTC. */
+  nextDue: string | null;
+  /**
+   * Set when the attempt was counted but could not be written to the learner's
+   * own file, or when the schedule could not be opened at all. The screen says so
+   * rather than losing it quietly.
+   */
+  warning: string | null;
+}
+
+/** What kind of thing a due character is, which says how to fetch its geometry. */
+export type ReviewKind = "kana" | "kanji" | "radical";
+
+/**
+ * One character the review queue is offering.
+ *
+ * A card is about a character, not a word: the board grades one character at a
+ * time, and that is the unit `hanzi_core::progress` schedules.
+ */
+export interface DueItem {
+  ch: string;
+  kind: ReviewKind;
+  /** The prompt beside it: a kana's reading, a kanji's gloss, or the radical's number. */
+  hint: string;
+  /**
+   * The Kangxi number, for a head form the character course cannot reach — 92 of
+   * the 214 are not jōyō characters, so this is the only way to ask for its
+   * geometry. Null for a kana or a kanji.
+   */
+  radical: number | null;
+  /** When it came due, ISO-8601 UTC. The queue is ordered by this. */
+  due: string;
+  intervalDays: number;
+  attempts: number;
+  lapses: number;
+}
+
+/** The review queue, plus how much of the schedule stands behind it. */
+export interface ReviewQueueView {
+  /** Due characters, most overdue first, capped at the caller's limit. */
+  items: DueItem[];
+  /** Every character the schedule holds at all, due or not. */
+  cards: number;
+  /** How many are due, which is the length of the *uncapped* queue. */
+  due: number;
+  /** When the next character comes back, when nothing is due now. */
+  nextDue: string | null;
+  warning: string | null;
+}
