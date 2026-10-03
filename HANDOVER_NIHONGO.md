@@ -38,9 +38,10 @@ pnpm --dir apps/nihongo-tutor run dev      # dev server on :1422, and the window
 
 There is no data step. `crates/nihongo-core/data/kana.bin.gz` is committed
 (70,917 bytes, 177 kana) precisely so that it does not need one — see invariant 1
-— and so is `crates/nihongo-core/data/kanji.bin.gz` (3,073,516 bytes, 2,136 jōyō
-kanji), which is the same decision made again for a much larger file (invariant
-16).
+— and so are `kanji.bin.gz` (3,073,516 bytes, 2,136 jōyō kanji) and `words.bin.gz`
+(833,858 bytes, 21,902 words), which are the same decision made again for much
+larger files (invariants 16 and 20). The vocabulary inputs are 118 MB of JSON,
+63 MB of XML and 33 MB of furigana; none of it is needed to build or to test.
 
 If you *do* need to regenerate them, that is the one path that fetches:
 
@@ -48,6 +49,7 @@ If you *do* need to regenerate them, that is the one path that fetches:
 ./scripts/fetch-data.sh        # also fetches the Chinese data; all are skipped if present
 pnpm run prepare-kana
 pnpm run prepare-kanji
+pnpm run prepare-words         # needs the kanji artifact first — it decides what is teachable
 ```
 
 `fetch-data.sh` pulls three things for the Japanese part, into `data/raw/`
@@ -66,6 +68,14 @@ AnimCJK splits a kana stroke that crosses itself but not a kanji one, so the kan
 pipeline has no element ids to regroup anything, and that is measured rather than
 assumed (invariant 17).
 
+For the vocabulary it pulls three more: `jmdict-eng.json` (EDRDG's dictionary as
+JSON, pinned with KANJIDIC2 by the same release tag) and `JMdict_e.gz` — the *same
+dictionary* as XML, fetched because the JSON reformatting drops the `nf01`–`nf48`
+priority tags outright (invariant 21) — plus `JmdictFurigana.json`, which aligns
+each reading to the characters it belongs to. The kanji artifact `prepare-words`
+also reads is a **committed** file rather than an upstream one, because it is what
+decides which words are teachable.
+
 ### The root `Cargo.toml` is the only place the workspace is declared
 
 `crates/nihongo-core` and `apps/nihongo-tutor/src-tauri` are members. Removing
@@ -77,7 +87,7 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **164
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **187
 tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
 
 | | |
@@ -93,8 +103,11 @@ tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
 | Kanji readings | 2,854 on, 3,904 kun — 2,551 of them carrying okurigana and 364 affixes |
 | Kanji structure | 198 of the 214 radicals in use, 2,134 IDS decompositions, 2,037 frequency ranks |
 | Kanji oracle | 2,135 of 2,136 agree with KanjiVG; 衷 is the one written exception (invariant 19) |
-| Tests | nihongo-core 114, nihongo-tutor 50, frontend 11 of the 80 |
-| Artifact | kana 70,917 bytes and kanji 3,073,516, both gzip + magic + postcard |
+| Vocabulary | 21,902 words — every one with a kanji the board can draw, from EDRDG's ranked vocabulary |
+| Bands | 655 / 2,284 / 3,284 / 3,072 / 3,408 / 2,705 / 6,494 — this project's ladder, not the JLPT's (invariant 20) |
+| Furigana | 21,836 of 21,902 aligned (99.7%); the other 66 carry their reading and no ruby |
+| Tests | nihongo-core 137, nihongo-tutor 50, frontend 11 of the 80 |
+| Artifact | kana 70,917, kanji 3,073,516 and words 833,858 bytes — all gzip + magic + postcard |
 | Learner data | one file, `confusions.json`, in the app's own data directory |
 | Version | both crates 0.1.0, and the app's to match |
 
@@ -102,10 +115,12 @@ The app runs and has been looked at, all of it: the course, the board, stroke-or
 animation, handwriting grading, the discrimination drill, the typing box, the
 katakana tab and the Licences panel have each been seen working on a display.
 
-**The kanji half is data only so far.** The artifact is committed, tested and
-documented, and nothing in the app reads it yet: no course, no screen, no command.
-That is `ROADMAP_NIHONGO.md` N7 and N8, and N6's own record is the milestone's
-"Shipped" section — including the three things its measurement corrected.
+**The kanji and vocabulary halves are data only so far.** Three artifacts are
+committed, tested and documented, and nothing in the app reads the kanji or words
+ones yet: no course, no screen, no command, and no tokeniser. That is
+`ROADMAP_NIHONGO.md` N7 (whose vocabulary half has shipped: see its "Shipped — the
+words artifact") and N8, and each milestone's own record includes what its
+measurement corrected.
 
 **The drill is the one part that learns anything about its learner** (roadmap N3).
 It used to draw a kana from a pool and throw the answer away; it now draws a *pair*,
@@ -156,20 +171,27 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
   src/kanji.rs           (464)    Kanji, KanjiDataset, KanjiSource, parse_radical,
                                   and the modules' account of the grade
                                   reconciliation — the kanji half, N6
+  src/words.rs           (472)    Word, Ruby, WordDataset, the ladder's band_for
+                                  and band_name — the vocabulary half, N7
   src/readings.rs        (386)    Hepburn and Kunrei-shiki, and the enumeration
                                   hiragana_with_readings the input table is built from
   src/curriculum.rs      (606)    the gojūon rows, lessons, yōon, and the confusions
   src/input.rs           (523)    romaji → kana, and the one-kana and whole-word checks
   src/drill.rs           (377)    the pair weights, the tally, and the draw — N3
-  src/lib.rs              (67)    re-exports, including hanzi-core's grade
+  src/lib.rs              (72)    re-exports, including hanzi-core's grade
   src/bin/prepare_kana.rs(246)    AnimCJK + KanjiVG → the artifact
   src/bin/prepare_kanji.rs(646)   AnimCJK + KANJIDIC2 + KanjiVG → the artifact,
                                   including the one written oracle exception
+  src/bin/prepare_words.rs(478)   JMdict (JSON and XML) + JmdictFurigana + the
+                                  committed kanji artifact → the words artifact
   data/kana.bin.gz                COMMITTED, 70,917 bytes
   data/kanji.bin.gz               COMMITTED, 3,073,516 bytes
+  data/words.bin.gz               COMMITTED, 833,858 bytes
   tests/kana_artifact.rs (261)    12 tests over the committed kana artifact
   tests/kanji_artifact.rs(513)    21 tests over the committed kanji artifact,
                                   including the whole grade reconciliation
+  tests/words_artifact.rs(337)    13 tests over the committed words artifact,
+                                  recomputing every band from the kanji one
 
 apps/nihongo-tutor/               the app
   src-tauri/src/lib.rs   (836)    AppState and the eleven commands, all thin
@@ -545,6 +567,59 @@ the first is not the taught one, so comparing against "the" count invented nine
 disagreements and hid the one that exists. `kanji.rs`'s module docs carry the
 account and the artifact test pins all ten characters.
 
+### 20. **The vocabulary's level ladder is this project's, derived, and has to say so.**
+
+Each word carries a `band`, and the rule is: **the highest kyōiku grade among the
+word's kanji**, 1–6, with band 7 for a word containing a jōyō-remainder kanji;
+EDRDG's `nf` rank (a block of 500 words, 1–48) orders the words *within* a band.
+Measured sizes: 655 / 2,284 / 3,284 / 3,072 / 3,408 / 2,705 / 6,494.
+
+**It is not the JLPT's and the interface may not imply that it is.** There has been
+no official JLPT kanji or vocabulary list since 2010, and the best-licensed
+community list chains to a source that asserts no licence, so the ladder is derived
+instead. `words::band_name` returns the names a screen should use
+("kyōiku 3", "jōyō beyond the school grades") and the artifact test asserts none of
+them says JLPT — a small test for a real obligation.
+
+**The stored band is not trusted.** `tests/words_artifact.rs` recomputes every
+word's band from `kanji.bin.gz`, so if a KANJIDIC2 snapshot regrades a character the
+words artifact fails rather than leaving the course quietly wrong. The alternative
+ladder — frequency quantiles of roughly equal size — was rejected on record because
+it mixes grade-1 and grade-6 kanji in one band, putting 秘密 before 六.
+
+### 21. **A word's reading is the dictionary's, and furigana is joined, never invented.**
+
+Two different refusals, and both matter.
+
+**The reading is never composed from the characters.** It is chosen from JMdict's
+own kana forms — the ones whose `appliesToKanji` covers the written form, common
+first — which is the whole reason `Word::reading` exists as a field. 大人 is
+おとな and not だいじん; 今日 is きょう; 一人 is ひとり; 明日 is あした. Those four are
+asserted, because they are exactly what a "reading per character" design gets
+wrong, and a course that composes readings teaches them wrong.
+
+**The furigana is joined from JmdictFurigana on `(text, reading)` and never
+filled in.** 21,836 of 21,902 words are aligned; the other **66** keep their reading
+and carry no ruby. Do not derive an alignment to close that gap — inventing one is
+the same mistake as composing a reading, one step further out. The alignment has two
+properties the artifact test asserts over the whole set: the `ruby` parts concatenate
+to the text, and the readings concatenate to the reading *after folding katakana to
+hiragana*. That fold is load-bearing for exactly two words — 生ゴミ (read なまごみ,
+written なま**ゴミ**) and タンパク質 — where the written form's kana and the
+dictionary's reading differ in type. `Word::furigana_spells_reading` is the check,
+and the test names both words so a third is noticed rather than tolerated.
+
+**And the membership rule is the committed kanji artifact, not a second opinion.** A
+word is carried only when every one of its kanji is in `kanji.bin.gz`, so the
+vocabulary course can never offer a word the board cannot draw. That is also what
+keeps jinmeiyō and hyōgai vocabulary out (513 ranked entries) until those sets
+exist — not a filter to loosen without them.
+
+One trap inside that rule: **"has a kanji form" is not "contains a kanji".** JMdict
+lists full-width numerals such as `１０００` under `kanji`, so 15 words have no kanji
+character at all; without an explicit `is_kanji` check they are kept and land in band
+1, because an empty grade list falls back to band 1.
+
 ## 5. The verification loop
 
 Four layers, cheapest first. All of them are worth running before a commit that
@@ -610,8 +685,18 @@ the tests need updating in the same commit.
 Both artifacts should be **byte-identical** to the committed ones. If one is not,
 something upstream moved, and the artifact test will say what changed.
 
+`prepare-words` prints its own, and they are the numbers `tests/words_artifact.rs`
+pins: **JMdict 3.6.2 (2026-09-28), the nf ranking from a JMdict_e created
+2026-10-02, furigana 2.3.1+2026-09-25, 22,430 ranked entries of 218,840, 21,902
+words in bands b1:655 b2:2284 b3:3284 b4:3072 b5:3408 b6:2705 b7:6494, 15 left out
+for having no kanji in the written form and 513 for a kanji the kanji artifact does
+not hold, 21,836 with furigana, artifact 834 KB from 1,893 KB**. It reads 118 MB of
+JSON and 63 MB of XML to do it, which takes a few seconds and is why the result is
+committed.
+
 `fetch-data.sh` fetches the kanji oracle with `xargs -P 4` and every download
-carries `--retry 4`, which is not decoration — see trap 11.
+carries `--retry 4`, which is not decoration — see trap 11. `JmdictFurigana.json`
+arrives with a UTF-8 BOM — see trap 12.
 
 ### Seeing the interface
 
@@ -866,6 +951,45 @@ warning text. One hand-fetch of one character showed it immediately. When a bulk
 fetch fails *completely*, suspect the URL you built before the upstream you
 blame.
 
+### 12. A UTF-8 BOM is not a syntax error, but `serde_json` reports it as one
+
+JmdictFurigana's `JmdictFurigana.json` begins with a byte-order mark, and
+`serde_json` answers with:
+
+```
+expected value at line 1 column 1
+```
+
+which says nothing about a BOM and sends the reader looking for a syntax error that
+is not there. `prepare_words.rs` reads it through `read_json_stripping_bom`, which
+strips `EF BB BF` before parsing. One line, and the difference between a confusing
+half-hour and none.
+
+Two related facts about the vocabulary inputs, worth knowing before touching the
+fetch: `jmdict-eng.json` is **118 MB** uncompressed and `JMdict_e.xml` is **63 MB**
+(10.6 MB gzipped), so `prepare-words` reads a great deal to produce 834 KB. That is
+why the artifacts are committed and why no test ever touches `data/raw/`.
+
+### 13. A word's okurigana is not an ungraded kanji — filter by `is_kanji` first
+
+The vocabulary's membership rule is "every kanji is in the committed artifact", and
+the obvious implementation — look up every character of the word in the kanji set
+and reject the word if any is missing — is wrong in a way that produces a
+*plausible* number rather than an error. Kana are not in the kanji set, so that
+version rejects every word written with any kana: 食べる, 大きい, お金, all of them.
+It reported **17,366** words where the answer is **21,902**, and nothing failed: the
+pipeline ran, the artifact was written, and the count was a third too small.
+
+Filter by `is_kanji` first, then check membership — and check the arithmetic against
+a second, independent measurement, which is how this was found. The general shape:
+**a filter that silently matches nothing looks exactly like a filter that found
+nothing to exclude.**
+
+The same trap has a second face in the same file: JMdict lists full-width numerals
+such as `１０００` under `kanji`, so "has a kanji form" is not "contains a kanji".
+Those 15 words have no kanji character at all and would land in band 1, because an
+empty grade list falls back to it.
+
 ---
 
 ## 7. Open decisions
@@ -914,13 +1038,24 @@ is settled**: the two apps' learner data is separate and stays separate
 store. The shared *code* is what makes that cheap, and it is already shared. What
 remains open is the shell, not the storage.
 
-### The kanji level ladder
+### The kanji level ladder — decided
 
 The Japanese feasibility report §6.4: the JLPT publishes **no official kanji or
 vocabulary list**, and the best-licensed community list chains to tanos.co.uk,
-which asserts no licence. The recommendation is to derive bands from
-`dictionaryJa.txt`'s kyōiku grades and JMdict's `nf01`–`nf48`, and to say so in
-the UI. Not yet decided, and it shapes the kanji course.
+which asserts no licence, so bands are derived instead and the UI must say so.
+
+**Decided, and shipped for the vocabulary in `words.bin.gz` (invariant 20):** a
+word's band is the highest kyōiku grade among its kanji, 1–6, with band 7 for the
+jōyō remainder, and EDRDG's `nf` rank orders the words within a band. The
+alternative — frequency quantiles of roughly equal size — was rejected because a
+band would mix grade-1 and grade-6 kanji.
+
+**Still open is whether the *kanji course* uses the same ladder or a different one.**
+N8 orders characters by kyōiku grade, which is what `dictionaryJa.txt` supplies and
+what Japanese children actually learn in; the words ladder above is the same idea
+one level up, so the two should probably be the same ladder with the vocabulary
+arriving inside each band. Worth confirming before N8, because it decides whether a
+learner meets 大人 in the grade-1 band or the remainder.
 
 ### What the app should say to a learner who already reads Chinese
 
@@ -1016,10 +1151,12 @@ first KANJIDIC2 data.
 ## 9. What is deliberately not built
 
 * **Kanji beyond the data layer.** The data layer is built and committed (N6,
-  `kanji.bin.gz`, 2,136 jōyō, 21 tests over the artifact), but **nothing reads it
-  yet**: no course, no screen, no command, no vocabulary. That is N7 (vocabulary,
-  a chosen and documented level ladder, furigana, okurigana — and JMdict, which
-  N6 deliberately did not take) and N8 (the course and the panels). The
+  `kanji.bin.gz`, 2,136 jōyō) and so is the vocabulary it is taught through (N7's
+  `words.bin.gz`, 21,902 words with their own readings and furigana), but **nothing
+  reads either yet**: no course, no screen, no command. Still to build for N7 are
+  the **morphological analyser** — settled as a real one, `vibrato`/`lindera` +
+  UniDic under its BSD option, run at build time so the app keeps its no-download
+  promise — and the **passage-reading screen**; then N8's course and panels. The
   feasibility work is in `docs/research/JAPANESE_TUTOR_FEASIBILITY.md`.
   **Two corrections to what this bullet used to say**: the KanjiVG-as-oracle trick
   *does* transfer for stroke counts — 2,135 of 2,136 agree and 衷 is the written

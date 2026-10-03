@@ -535,6 +535,57 @@ exactly the shape Japanese needs.
 * The level bands are derived from licensed data, the derivation is reproducible,
   and the UI says they are ours rather than the JLPT's.
 
+### Shipped — the words artifact
+
+`crates/nihongo-core/data/words.bin.gz` — **21,902 words, 833,858 bytes**,
+committed, byte-identical on a rebuild, and held by 13 tests in
+`crates/nihongo-core/tests/words_artifact.rs` that need none of the 118 MB of JSON,
+63 MB of XML or 33 MB of furigana the pipeline reads. `prepare-words` joins three
+upstreams with the committed kanji artifact, which is what decides membership: a
+word is carried only when **every one of its kanji is a character the board can
+draw**, so the course can never offer a word it cannot teach.
+
+**The ladder is decided, and it is ours.** A word's band is the **highest kyōiku
+grade among its kanji** (1–6), with band 7 for a word containing a jōyō-remainder
+kanji; EDRDG's `nf` rank orders the words *within* a band. Measured band sizes:
+**655 / 2,284 / 3,284 / 3,072 / 3,408 / 2,705 / 6,494**. The alternative —
+frequency-quantile bands of roughly equal size — was rejected because it mixes
+grade-1 and grade-6 kanji in one band, so a learner meets 秘密 before 六. The UI must
+present these as our approximation, not the JLPT's; there has been no official JLPT
+list since 2010. `word::band_name` exists so that it can, and
+`tests/words_artifact.rs` recomputes every band from the kanji artifact rather than
+trusting the stored number.
+
+**Readings are the dictionary's, never composed.** 大人 is おとな and not だいじん,
+今日 is きょう, 一人 is ひとり, 明日 is あした — the test asserts those four, because
+they are what a "reading per character" design gets wrong. Furigana comes from
+JmdictFurigana and puts each reading over the characters it belongs to: 21,836 of
+21,902 words are aligned (99.7%), and the 66 that are not keep their reading and
+carry no ruby — **gathered, never invented**.
+
+**Three things measuring changed.**
+
+* **The JSON has no `nf` tags at all**, so the frequency half of the ladder has no
+  home in the reformatting this pipeline otherwise reads: the full document carries
+  eleven tags total, all spelling-variant markers. EDRDG's own XML is therefore
+  fetched as well and read for that one field, joined on `ent_seq` (22,430 of
+  22,430 ids matched).
+* **"Has a kanji form" is not "contains a kanji."** JMdict lists full-width
+  numerals such as `１０００` under `kanji`, so 15 words arrived with no kanji
+  character at all and were landing in band 1 before the rule was tightened.
+* **The earlier figures for this milestone were wrong, and the error was this
+  author's**: an intermediate measurement tested *every* character of a word —
+  including its okurigana — against KANJIDIC2's grades, which silently excluded
+  every word written with any kana and reported 17,366 where the answer is 21,902.
+  The pipeline and an independent re-measurement now agree exactly.
+
+**Still to do for N7**, and both are real work rather than wiring: the
+**morphological analyser** (settled: a real one — `vibrato`/`lindera` + UniDic under
+its BSD option — rather than longest-match against this word list, so arbitrary
+text can be tokenised, and run at build time so the app keeps its no-download
+promise), and the **passage-reading screen** that taps a word and opens it. The
+vocabulary data they need is what shipped here.
+
 ---
 
 ## N8 — The kanji course and screens

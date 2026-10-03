@@ -609,6 +609,91 @@ committed. One character's count differs from KanjiVG's (衷: 10 against 9) and
 that exception is written into `prepare-kanji` with both numbers, so the check is
 two-sided rather than a silent pass.
 
+## The Japanese vocabulary data — committed, and not yet in any bundle
+
+`crates/nihongo-core/data/words.bin.gz` is the vocabulary the kanji course teaches
+*through*: **21,902 words**, each with its written form, its own reading, the
+furigana that puts that reading over the right characters, an English gloss, EDRDG's
+frequency block and this project's ladder band. **833,858 bytes**, committed for the
+same reason the other two artifacts are.
+
+Three sources, and the first two are the same dictionary twice:
+
+| Source | What is taken | Licence |
+| --- | --- | --- |
+| [JMdict](https://www.edrdg.org/jmdict/j_jmdict.html) via [`scriptin/jmdict-simplified`](https://github.com/scriptin/jmdict-simplified) (`jmdict-eng-…`) | The written form, the reading, and the English glosses. **Redistributed**, compacted into the artifact | **CC BY-SA 4.0** (EDRDG) |
+| [JMdict_e](http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz) — EDRDG's own XML | **One field**: the `nf01`–`nf48` priority rank. Nothing else is parsed, and no text from it is redistributed | **CC BY-SA 4.0** (EDRDG) |
+| [JmdictFurigana](https://github.com/Doublevil/JmdictFurigana) | The alignment of each reading to the characters it belongs to. **Redistributed**, compacted into the artifact | **MIT**, Copyright (c) 2025 Doublevil |
+
+EDRDG's licence statement names both dictionaries in its scope — it applies to
+"JMDICT … the Japanese and English components" as well as to KANJIDIC2 — and it
+applies to "any data files which are derived from them", which is exactly what this
+artifact is. So everything the KANJIDIC2 section above says about attribution,
+share-alike and the update obligation holds here too, and the two are refreshed
+together.
+
+### The same dictionary, fetched twice — and why that is not redundancy
+
+`scriptin/jmdict-simplified`'s JSON reformatting **drops the `nf01`–`nf48` priority
+tags entirely**. That was measured rather than assumed: the full `jmdict-eng`
+document — 118 MB, 218,840 entries — carries eleven distinct tags in total
+(`sK rK sk ok ateji io iK oK ik gikun rk`), all spelling-variant markers, and not one
+`nf`, `news1`, `ichi1`, `spec1` or `gai1`. EDRDG's own XML has them: 22,430 entries
+carry an nf rank. So the fetch takes both files, and `prepare-words` joins them on
+`ent_seq` — 22,430 of 22,430 ids matched — scanning the XML for `<ent_seq>` and the
+`nf` tokens in `<ke_pri>`/`<re_pri>` and nothing else. Reading two fields out of a
+63 MB document with a targeted scan is deliberate; an XML parser for this would be
+the tail wagging the dog, and the assumption it rests on (ASCII tokens, no nesting)
+is one the pipeline fails loudly on rather than silently mis-reading.
+
+### English only, twice over
+
+The `-eng` documents are used rather than `-all`, and the gloss filter keeps only
+`lang == "eng"`, for two reasons that happen to agree. A screen that mixed four
+languages in one gloss list would be unusable; and **EDRDG's statement says the
+translational equivalents in other languages "are covered by separate copyright held
+by the compilers of that material"** — so they are not this project's to
+redistribute under the Group's grant in the first place. The same reasoning applies
+to the French, Spanish and Portuguese meanings that `kanjidic2-all.json` also
+carries, which is why `prepare-kanji` filters them out too.
+
+### The ladder is this project's, and the app has to say so
+
+Each word carries a **band**, and the band is *not* the JLPT's. There has been no
+official JLPT kanji or vocabulary list since 2010, and the best-licensed community
+list chains to a source that asserts no licence, so a band is derived instead: **the
+highest kyōiku grade among the word's kanji**, 1–6, with band 7 for a word
+containing a kanji from the jōyō remainder, and EDRDG's `nf` ranking ordering the
+words *within* a band. `crates/nihongo-core/src/words.rs` documents the rule and
+`tests/words_artifact.rs` recomputes every band from the kanji artifact, so the two
+committed artifacts cannot drift apart. A future screen must present the bands as
+this project's approximation — `word::band_name` exists so that it can.
+
+### MIT, and where its notice goes
+
+JmdictFurigana is MIT, Copyright (c) 2025 Doublevil. MIT asks for its notice to
+accompany copies and substantial portions, and 21,836 aligned words is a substantial
+portion, so the attribution is recorded here and the licence text is fetched with
+the rest of this app's notices. **It joins them in
+`apps/nihongo-tutor/src-tauri/licences/` on the commit that embeds this artifact**
+(`ROADMAP_NIHONGO.md` N8), not before: a notice for data an app does not contain is
+the mistake `HANDOVER_NIHONGO.md` invariant 12 warns about, and the shared
+`licences/` directory is catalogued by the *Chinese* app, which contains none of
+this.
+
+### Refreshing it
+
+The procedure in the KANJIDIC2 section above is the same one, with two changes:
+`pnpm run prepare-words` joins step 2, and step 4's pinned version and date are the
+ones in `tests/words_artifact.rs`. Both dictionaries come from the same
+`scriptin/jmdict-simplified` release tag, so a single pin moves them together.
+`JMdict_e.gz` is the exception: EDRDG rebuilds it daily and does not version it, so
+there is nothing to pin — `prepare-words` records that file's own `JMdict created`
+date in the artifact, and the counts the test pins are what catch it moving.
+JmdictFurigana is released monthly and **is** pinned, in two places that must agree:
+`JMDICT_FURIGANA` in `scripts/fetch-data.sh` and `FURIGANA_RELEASE` in
+`prepare_words.rs`.
+
 ## Before you distribute
 
 1. **Nothing has to be gathered by hand.** The notices are in `licences/`, are

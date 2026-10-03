@@ -34,3 +34,11 @@ required-features = ["prepare"]
 name = "prepare-kanji"
 path = "src/bin/prepare_kanji.rs"
 required-features = ["prepare"]
+
+# The vocabulary, for the course that teaches characters through words. It reads
+# the committed kanji artifact to decide what is teachable, so `prepare-kanji`
+# runs first. See `words.rs` and ROADMAP_NIHONGO.md N7.
+[[bin]]
+name = "prepare-words"
+path = "src/bin/prepare_words.rs"
+required-features = ["prepare"]

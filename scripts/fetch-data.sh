@@ -40,6 +40,19 @@ GOOGLEFONTS="https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc"
 ANIMCJK="https://raw.githubusercontent.com/parsimonhi/animCJK/master"
 KANJIVG="https://raw.githubusercontent.com/KanjiVG/kanjivg/master"
 
+# The pinned Japanese dictionary snapshots, used by both the kanji and the
+# vocabulary sections below. Pinned rather than `latest` because the artifacts
+# they produce are committed and a rebuild has to be reproducible; moving either
+# is a deliberate commit, and LICENSES.md's EDRDG section is the procedure.
+#
+# `scriptin/jmdict-simplified` republishes EDRDG's dictionaries as JSON documents,
+# one release tag covering both. JmdictFurigana is pinned to match the constant of
+# the same name in `crates/nihongo-core/src/bin/prepare_words.rs`, because half a
+# pin is worse than none: the fetch would take one release and the artifact would
+# claim another.
+JMDICT_SIMPLIFIED="3.6.2+20260928191014"
+JMDICT_FURIGANA="2.3.1+2026-09-25"
+
 # How every download here retries. `raw.githubusercontent.com` resets the
 # connection (`curl: (56)`) rather than answering when it is asked for hundreds of
 # files at once — which is exactly what the kanji cross-check does — and a retry
@@ -188,11 +201,6 @@ echo "  KanjiVG SVGs     $(ls "$KVG_SVG" | wc -l | tr -d ' ') in $KVG_SVG (the c
 #                       independent second opinion a kanji stroke count is
 #                       checked against, exactly as for the kana.
 #
-# The KANJIDIC2 snapshot is **pinned**, not `latest`. The artifact it produces is
-# committed, so a rebuild has to be reproducible, and moving to a newer EDRDG
-# snapshot should be a deliberate act with its own commit — that commit is the
-# refresh procedure, and LICENSES.md's EDRDG section is where it is written down.
-JMDICT_SIMPLIFIED="3.6.2+20260928191014"
 KD2_TGZ="$RAW/kanjidic2-all-$JMDICT_SIMPLIFIED.json.tgz"
 KD2_JSON="$RAW/kanjidic2-all.json"
 
@@ -241,5 +249,45 @@ export KANJIVG KVG_SVG
 export -f fetch_quiet
 printf '%s\n' "$JOYO" | xargs -P 4 -n 1 bash -c 'fetch_quiet "$KANJIVG/kanji/$0.svg" "$KVG_SVG/$0.svg"'
 echo "  KanjiVG SVGs     $(ls "$KVG_SVG" | wc -l | tr -d ' ') in $KVG_SVG (the cross-check, not shipped)"
+
+# ---------------------------------------------------------------------------
+# Japanese vocabulary, for `pnpm run prepare-words`.
+#
+# Three sources, and the first two are the same dictionary twice — which needs
+# saying, because it is not redundancy but a hole in the reformatting:
+#
+#   jmdict-eng.json     EDRDG's JMdict (CC BY-SA 4.0), republished as one JSON
+#                       document by `scriptin/jmdict-simplified`. The written
+#                       forms, the readings, the English glosses.
+#   JMdict_e.gz         EDRDG's own XML, from edrdg.org. Read for **one field**:
+#                       the `nf01`-`nf48` priority rank. The JSON above drops
+#                       those tags completely — measured, not assumed — so the
+#                       ladder's frequency component has no other home.
+#   JmdictFurigana.json JmdictFurigana (MIT), which aligns each reading to the
+#                       characters it belongs to. Committed into the artifact;
+#                       the release is pinned to match FURIGANA_RELEASE in
+#                       prepare_words.rs.
+#
+# JMdict is pinned like KANJIDIC2 and for the same reason. `JMdict_e.gz` is not
+# pinned because EDRDG does not version it — it is rebuilt daily — so the artifact
+# records that file's own `JMdict created` date instead, and the counts the words
+# artifact test pins are what catch it moving.
+JD_TGZ="$RAW/jmdict-eng-$JMDICT_SIMPLIFIED.json.tgz"
+JD_JSON="$RAW/jmdict-eng.json"
+
+echo "fetching the vocabulary material into $RAW"
+fetch "https://github.com/scriptin/jmdict-simplified/releases/download/${JMDICT_SIMPLIFIED//+/%2B}/jmdict-eng-$JMDICT_SIMPLIFIED.json.tgz" "$JD_TGZ"
+if [ ! -s "$JD_JSON" ]; then
+  echo "  unpack jmdict-eng.json"
+  tar -xzf "$JD_TGZ" -C "$RAW"
+  mv "$RAW/jmdict-eng-${JMDICT_SIMPLIFIED%%+*}.json" "$JD_JSON"
+fi
+fetch "http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz" "$RAW/JMdict_e.gz"
+# The release URL percent-encodes the `+`, as the jmdict-simplified ones do.
+fetch "https://github.com/Doublevil/JmdictFurigana/releases/download/${JMDICT_FURIGANA//+/%2B}/JmdictFurigana.json.tar.gz" "$RAW/JmdictFurigana.json.tar.gz"
+if [ ! -s "$RAW/JmdictFurigana.json" ]; then
+  echo "  unpack JmdictFurigana.json  (it starts with a UTF-8 BOM — see prepare_words.rs)"
+  tar -xzf "$RAW/JmdictFurigana.json.tar.gz" -C "$RAW"
+fi
 
 echo "done"

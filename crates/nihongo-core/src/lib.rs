@@ -40,6 +40,7 @@ pub mod input;
 pub mod kana;
 pub mod kanji;
 pub mod readings;
+pub mod words;
 
 pub use curriculum::{
     confusions_for, lessons, to_hiragana, to_katakana, yoon, Confusable, Lesson, Row, Yoon,
@@ -65,3 +66,7 @@ pub use input::{
     RomajiError,
 };
 pub use readings::{reading, Reading};
+pub use words::{
+    band_for, band_name, is_kanji, Ruby, Word, WordsArtifact, WordDataset, WordsSource, BANDS,
+    REMAINDER_BAND, WORDS_ARTIFACT_MAGIC,
+};
