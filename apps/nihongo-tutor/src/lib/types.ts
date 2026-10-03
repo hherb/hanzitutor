@@ -494,6 +494,16 @@ export type KanjiPick =
  */
 export interface GradedAttempt {
   report: GradeReport;
+  /**
+   * For a kana drawn with adjacent strokes joined, the taught strokes the hand
+   * drew as one, 1-based and in taught order — `[[1, 2]]` for さ written in two
+   * strokes. Empty for the taught form, and always empty for a kanji or a radical,
+   * which the shared grader reads directly.
+   *
+   * The report's stroke numbers are the *drawn* strokes, so the verdict panel
+   * needs this to say why a "four strokes" prompt was written in three.
+   */
+  joined: number[][];
   /** True when the character was new or due, so the attempt advanced the schedule. */
   scheduled: boolean;
   /** When the character comes back, ISO-8601 UTC. */

@@ -1137,6 +1137,19 @@ invariant 28 is the part that must not be undone.
 
 Recorded here rather than as milestones because none of them is a feature.
 
+* **The kana grader was measured, and one of the two weak spots above was real.**
+  `crates/nihongo-core/examples/selfcheck.rs` now exists — the kana counterpart of
+  `hanzi-core`'s, printing rather than asserting — and running it settled both open
+  questions with numbers rather than instinct. The tolerances carry over; the
+  *stroke-count gate* did not, because it refuses a connected hand before shape is
+  looked at. `nihongo_core::variants` is the fix, invariant 30 is the rule, and the
+  safety property (a dropped stroke must not pass as a join) is the part with the
+  most measurement behind it. Two claims in this file were corrected by the run:
+  き is taught in **four** strokes and not three, and the nine "KanjiVG exceptions"
+  of an earlier draft were already known to be a stroke-count-list mistake. The
+  general lesson is the one the watched surfaces taught: **a green suite said
+  nothing about this either** — 302 tests, clippy and `svelte-check` were all happy
+  while the app refused the commonest way to write さ.
 * **The three surfaces nobody had watched — done, and two of the three were
   broken.** The grading verdict, the Licences panel and the katakana tab have now
   been seen running, and watching them was worth more than the fifteen minutes it
@@ -1172,16 +1185,35 @@ Recorded here rather than as milestones because none of them is a feature.
 
 ## Known weak spots
 
-* **The grading tolerances were fitted on Chinese characters.** `grade.rs`'s
-  constants were tuned against the real hanzi dataset and carried over
-  unchanged. Kana are simpler and fewer-stroked, which makes them *noisier* to
-  score, not easier: わ/ね/れ, る/ろ, シ/ツ and ソ/ン differ by stroke direction
-  and a couple of degrees. `selfcheck` should be re-run against kana, and the
-  confusable pairs are the obvious test set.
-* **Kana handwriting has legitimate variants the app may reject.** き and さ are
-  taught as three strokes but are very commonly handwritten connected as two,
-  and ふ, そ, な and む have well-known variants. A kana tutor that rejects a
-  legitimate hand is worse than no tutor, and nothing has tested this.
+* **The grading tolerances were fitted on Chinese characters — and the
+  measurement says they carry over.** `grade.rs`'s constants were tuned against
+  the real hanzi dataset and carried over unchanged, and the worry was that kana
+  are simpler and fewer-stroked, which makes them *noisier* to score. The kana
+  `selfcheck` (`crates/nihongo-core/examples/selfcheck.rs`, the counterpart of
+  `hanzi-core`'s) answers it: **100.0%** of kana legible at 15/1024 jitter,
+  **98.9%** at 30 and **90.4%** at 50, with the worst kana named and all of them
+  voiced (が, ぐ, づ, ブ — the mark is small ink); self-consistency perfect for all
+  177; the shortest kana stroke 157 units against a 12-unit stray threshold; 0.12
+  ms per grade. **The one thing that did not carry over is discrimination**: 12 of
+  the 26 classic-pair directions are legible as the wrong kana (れ/わ at 92, ぬ/め
+  at 89). That is recorded rather than fixed, and the reason is product rather than
+  technical — the board draws the character being copied, and tightening the
+  tolerance enough to tell れ from わ would refuse the wobbly hands the tolerance
+  exists for. `HANDOVER_NIHONGO.md` §5 is the run and what each row means.
+* **Kana handwriting has legitimate variants the app may reject — shipped, and
+  the measurement corrected the claim.** さ is taught in three strokes and very
+  commonly written in two, but **き is taught in four, not the three this bullet
+  used to say**; ふ, そ, な and む have variants too. Nothing had tested any of it,
+  and the measurement was blunt: `legible` requires the attempt's stroke count to
+  equal the reference's, so **0 of 339** adjacent joins passed and every named
+  variant failed. `nihongo_core::variants` now puts the reference into the hand's
+  grouping, and **331 of 339** hand-drawn joins are legible at 15/1024 jitter,
+  with the eight refusals named (all dakuten joins: ぎ 5+6, ぜ 4+5, ぶ 5+6, ぷ 3+4,
+  ズ 3+4, バ 3+4, ポ 2+3, ヹ 1+2). The half that matters is the safety property, and
+  it is measured: **0 of 497** single omissions are accepted as joins and **0 of
+  95** mid-stroke splits are legible. `HANDOVER_NIHONGO.md` invariant 30 is the
+  rule that must not be undone. **Kanji is deliberately not covered** — the same
+  rule is unmeasured there, so it would be a measurement first.
 * **No grammar, and that is the largest gap in the product.** Particles, the
   copula and every inflectional ending are kana, so a learner who finishes the
   kana course has unlocked grammar and been given nothing to use it on. This is

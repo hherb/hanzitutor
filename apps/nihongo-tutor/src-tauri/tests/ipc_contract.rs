@@ -179,9 +179,10 @@ fn a_grade_report_crosses_with_the_four_headline_scores() {
     let state = state();
     let view = state.kana('ー').expect("ー");
     let attempt = vec![view.medians[0].clone()];
-    let report = state
+    let graded = state
         .grade('ー', &attempt, &GradeOptions::default())
         .expect("grades");
+    let report = graded.report;
     let value = serde_json::to_value(report).expect("serialises");
 
     // The scores the interface turns into the four verdict colours.
@@ -194,6 +195,7 @@ fn a_grade_report_crosses_with_the_four_headline_scores() {
     assert!(value.get("strokes").is_some());
     assert!(value.get("assignment").is_some());
     assert_eq!(value["expectedStrokes"], 1);
+    assert!(graded.joined.is_empty(), "ー is one stroke and nothing was joined");
 }
 
 #[test]
@@ -945,8 +947,9 @@ fn the_radical_the_interface_asks_for_comes_back_with_its_geometry() {
 
 // ---- the review queue ------------------------------------------------------
 
-/// The response half of grading: the verdict the panel draws, and the two fields
-/// beside it that say what the review schedule did with the attempt.
+/// The response half of grading: the verdict the panel draws, and the fields
+/// beside it that say which form it was read as and what the review schedule did
+/// with the attempt.
 ///
 /// This is the shape `src/lib/api.ts` unwraps, so a field renamed on one side is
 /// a failure here rather than `undefined` on the screen.
@@ -962,14 +965,54 @@ fn a_graded_attempt_crosses_with_the_verdict_and_the_schedule() {
     let value = serde_json::to_value(&graded).expect("serialises");
     assert_eq!(
         keys(&value),
-        vec!["nextDue", "report", "scheduled", "warning"],
+        vec!["joined", "nextDue", "report", "scheduled", "warning"],
         "the wrapper the interface unwraps"
     );
     assert!(value["report"]["overall"].is_number(), "the verdict is inside it");
     assert!(value["report"]["strokes"].is_array());
+    assert_eq!(
+        value["joined"],
+        json!([]),
+        "one stroke of あ drawn alone joins nothing"
+    );
     assert_eq!(value["scheduled"], true, "a character with no card is a review");
     assert!(value["nextDue"].is_string(), "and the attempt produced a due date");
     assert!(value["warning"].is_null(), "nothing to report about the write");
+}
+
+/// A joined attempt crosses with the grouping it was read as — the request half
+/// (`{ ch, strokes, options }`, the shape `src/lib/api.ts` posts) and the
+/// response half (the wrapper above), through the command the interface calls.
+#[test]
+fn a_joined_kana_crosses_with_the_strokes_it_was_read_as() {
+    let state = state();
+    let kana = state.kana('さ').expect("さ");
+    // さ taught in three strokes, written as two: the first two drawn as one.
+    let mut strokes = kana.medians.clone();
+    let second = strokes.remove(1);
+    strokes[0].extend(second);
+
+    let payload = json!({
+        "ch": "さ",
+        "strokes": strokes,
+        "options": {"inkWidth": 36.0}
+    });
+    let ch: char = payload["ch"].as_str().expect("a string").chars().next().expect("one char");
+    let strokes: Vec<Vec<Point>> =
+        serde_json::from_value(payload["strokes"].clone()).expect("the strokes deserialise");
+    let options: GradeOptions =
+        serde_json::from_value(payload["options"].clone()).expect("the options deserialise");
+
+    let graded = state
+        .grade_and_schedule(ch, &strokes, &options)
+        .expect("grades");
+    let value = serde_json::to_value(&graded).expect("serialises");
+    assert_eq!(value["joined"], json!([[1, 2]]), "the taught strokes drawn as one");
+    assert_eq!(value["report"]["legible"], true);
+    assert_eq!(
+        value["report"]["expectedStrokes"], 2,
+        "the report is about the form the hand wrote"
+    );
 }
 
 /// The rule that keeps one sitting from stretching an interval by months: an

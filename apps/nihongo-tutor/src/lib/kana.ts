@@ -69,3 +69,18 @@ export function chartColumns(view: ChartView): number {
 export function isSingleKana(spelling: string): boolean {
   return [...spelling].length === 1;
 }
+
+/**
+ * The taught strokes the grader read as drawn joined, as a label — `"1+2"` for a
+ * さ written in two strokes — or `null` when the attempt was written the way it
+ * is taught.
+ *
+ * The verdict panel lists the **drawn** strokes by number, so without this line
+ * "stroke 3" of a き written joined would name taught strokes 3 and 4. `null`
+ * rather than an empty string, so a caller leaves the line out rather than
+ * drawing an empty one.
+ */
+export function joinedLabel(joined: number[][]): string | null {
+  if (joined.length === 0) return null;
+  return joined.map((group) => group.join("+")).join(", ");
+}

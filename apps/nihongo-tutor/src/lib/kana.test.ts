@@ -1,15 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { chartColumns, focusFor, isSingleKana, lessonKeyOf } from "./kana";
+import { chartColumns, focusFor, isSingleKana, joinedLabel, lessonKeyOf } from "./kana";
 import type { ChartView, LessonView } from "./types";
 
 /**
  * The kana screens' arithmetic.
  *
- * These three rules are what make "a kana offered anywhere can be opened on the
- * board" true rather than nearly true: which lesson a kana opened from elsewhere
- * belongs to, how wide the chart's grid is, and whether a drill answer is a kana
- * the board can draw at all.
+ * Four rules. Three of them are what make "a kana offered anywhere can be opened
+ * on the board" true rather than nearly true: which lesson a kana opened from
+ * elsewhere belongs to, how wide the chart's grid is, and whether a drill answer
+ * is a kana the board can draw at all. The fourth is how a verdict says which
+ * taught strokes a hand drew joined — the line that makes the per-stroke list's
+ * numbers honest.
  */
 
 const lesson = (key: string, kana: string[]): LessonView => ({
@@ -124,5 +126,24 @@ describe("isSingleKana", () => {
     // call it a digraph and take the board away from a kana the course teaches.
     expect(isSingleKana("き")).toBe(true);
     expect(isSingleKana("")).toBe(false);
+  });
+});
+
+describe("joinedLabel", () => {
+  it("is null when the attempt was written the way it is taught", () => {
+    // Null rather than an empty string: a caller leaves the line out rather than
+    // drawing an empty one under the verdict.
+    expect(joinedLabel([])).toBeNull();
+  });
+
+  it("names the taught strokes a hand drew as one", () => {
+    // さ in two strokes: taught strokes 1 and 2 written together.
+    expect(joinedLabel([[1, 2]])).toBe("1+2");
+    // き in three: the last two together.
+    expect(joinedLabel([[3, 4]])).toBe("3+4");
+  });
+
+  it("names every join when a hand joined in more than one place", () => {
+    expect(joinedLabel([[1, 2], [4, 5]])).toBe("1+2, 4+5");
   });
 });

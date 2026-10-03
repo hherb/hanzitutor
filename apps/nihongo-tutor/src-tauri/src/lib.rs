@@ -21,12 +21,13 @@ pub mod store;
 use hanzi_voice::{Language, Speaker};
 use licences::{AppInfo, LicenceNotice};
 use nihongo_core::{
-    band_name, confusions_for, due_items, grade_name, kanji_lessons as build_kanji_lessons,
-    key_of, lessons as build_lessons, normalise_to_hiragana, now_iso8601, off_grid,
-    parse_decomposition, reading, split_key, to_kana, to_kana_in, yoon as build_yoon, Confusable,
-    ConfusionLog, Decomposition, DrillKind, DrillPair, DueItem, GradeOptions, GradeReport,
-    KanaDataset, Kanji, KanjiDataset, Passage, PassageDataset, PassageToken, Point, Row, Ruby,
-    Script, Word, WordDataset, KANJI_LESSON_SIZE, ROWS, VOWEL_COLUMNS,
+    band_name, confusions_for, due_items, grade_kana, grade_name,
+    kanji_lessons as build_kanji_lessons, key_of, lessons as build_lessons,
+    normalise_to_hiragana, now_iso8601, off_grid, parse_decomposition, reading, split_key, to_kana,
+    to_kana_in, yoon as build_yoon, Confusable, ConfusionLog, Decomposition, DrillKind, DrillPair,
+    DueItem, GradeOptions, GradeReport, KanaDataset, Kanji, KanjiDataset, Passage, PassageDataset,
+    PassageToken, Point, Row, Ruby, Script, Word, WordDataset, KANJI_LESSON_SIZE, ROWS,
+    VOWEL_COLUMNS,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -276,44 +277,56 @@ impl AppState {
     /// should be able to write it. The lookup is in that order and the geometry
     /// comes from whichever holds the character; `hanzi-core`'s grader never looks
     /// at what the character *is*, which is why one command can serve all three.
+    ///
+    /// **A kana goes through [`nihongo_core::grade_kana`]**, which accepts a hand
+    /// that joined adjacent strokes — さ drawn in two, き in three — and the
+    /// answer says which strokes were joined (see [`GradedCharacter::joined`]).
+    /// A kanji and a radical are graded by the shared engine directly: that rule
+    /// rests on a measurement of the kana set, and the kanji half of the same
+    /// question has not been measured. See `nihongo_core::variants`.
     pub fn grade(
         &self,
         ch: char,
         strokes: &[Vec<Point>],
         options: &GradeOptions,
-    ) -> Result<GradeReport, String> {
+    ) -> Result<GradedCharacter, String> {
         if let Some(kana) = self.kana.get(ch) {
             if !kana.is_practisable() {
                 return Err(format!("{ch} has no stroke geometry to grade against"));
             }
-            return Ok(nihongo_core::grade_with_outlines(
-                kana.reference_medians(),
-                &kana.outlines,
-                strokes,
-                options,
-            ));
+            let graded = grade_kana(kana, strokes, options);
+            return Ok(GradedCharacter {
+                report: graded.report,
+                joined: graded.joined,
+            });
         }
         if let Some(kanji) = self.kanji.get(ch) {
             if !kanji.is_practisable() {
                 return Err(format!("{ch} has no stroke geometry to grade against"));
             }
-            return Ok(nihongo_core::grade_with_outlines(
-                kanji.reference_medians(),
-                &kanji.outlines,
-                strokes,
-                options,
-            ));
+            return Ok(GradedCharacter {
+                report: nihongo_core::grade_with_outlines(
+                    kanji.reference_medians(),
+                    &kanji.outlines,
+                    strokes,
+                    options,
+                ),
+                joined: Vec::new(),
+            });
         }
         if let Some(radical) = self.kanji.radicals().iter().find(|r| r.ch == ch) {
             if !radical.is_practisable() {
                 return Err(format!("{ch} has no stroke geometry to grade against"));
             }
-            return Ok(nihongo_core::grade_with_outlines(
-                &radical.medians,
-                &radical.outlines,
-                strokes,
-                options,
-            ));
+            return Ok(GradedCharacter {
+                report: nihongo_core::grade_with_outlines(
+                    &radical.medians,
+                    &radical.outlines,
+                    strokes,
+                    options,
+                ),
+                joined: Vec::new(),
+            });
         }
         Err(format!(
             "{ch} (U+{:04X}) is not a kana, a jōyō kanji, or a radical, so there is no stroke \
@@ -337,7 +350,7 @@ impl AppState {
         strokes: &[Vec<Point>],
         options: &GradeOptions,
     ) -> Result<GradedAttempt, String> {
-        let report = self.grade(ch, strokes, options)?;
+        let GradedCharacter { report, joined } = self.grade(ch, strokes, options)?;
         let mut store = self
             .review
             .lock()
@@ -359,6 +372,7 @@ impl AppState {
         };
         Ok(GradedAttempt {
             report,
+            joined,
             scheduled,
             next_due,
             warning,
@@ -1218,16 +1232,41 @@ pub struct ReadingCheck {
     pub produced: String,
 }
 
+/// The verdict on one handwritten character, and the form it was read as.
+///
+/// `report` is what the engine has always returned. `joined` is the Japanese
+/// half: a kana drawn with adjacent strokes joined — さ in two strokes, き in
+/// three — is graded against a reference put into the same grouping, and this
+/// names the taught strokes the hand drew as one, 1-based and in taught order
+/// (`vec![vec![3, 4]]`). Empty for the taught form, and always empty for a kanji
+/// or a radical, which the shared engine grades directly.
+///
+/// The screen needs it for two reasons rather than one. It is the honest answer
+/// to "the prompt says four strokes and you drew three", and `report`'s own
+/// `refIndex` numbers the *drawn* strokes, so a per-stroke list would otherwise
+/// label the third drawn stroke "3" when it is taught strokes 3 and 4.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GradedCharacter {
+    pub report: GradeReport,
+    #[serde(default)]
+    pub joined: Vec<Vec<u8>>,
+}
+
 /// The verdict on an attempt, and what the review schedule did with it.
 ///
 /// Grading and scheduling are one command because they are one action to the
 /// learner: they wrote a character and pressed Grade. The report is unchanged —
-/// the same four scores the engine has always returned — and the two fields
-/// beside it are what the screen needs to say what happens next.
+/// the same four scores the engine has always returned — and the fields beside
+/// it are what the screen needs to say what happened and what happens next.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GradedAttempt {
     pub report: GradeReport,
+    /// For a kana drawn with strokes joined, the taught strokes the hand drew as
+    /// one — see [`GradedCharacter::joined`]. Empty otherwise.
+    #[serde(default)]
+    pub joined: Vec<Vec<u8>>,
     /// True when this attempt advanced the schedule: the character was new, or its
     /// due date had passed. A later attempt inside the interval is practice — it
     /// is still graded, and the schedule does not move.
@@ -1766,10 +1805,14 @@ mod tests {
         assert_eq!(radical.characters.len(), 95);
 
         // The board can grade it with the same engine that grades a kana.
-        let report = state
+        let graded = state
             .grade('手', &[radical.medians[0].clone()], &GradeOptions::default())
             .expect("grades");
-        assert_eq!(report.expected_strokes, 4);
+        assert_eq!(graded.report.expected_strokes, 4);
+        assert!(
+            graded.joined.is_empty(),
+            "a radical is graded by the shared engine, not the kana rule"
+        );
 
         // A number that is not a radical is a message rather than a panic.
         for number in [0u8, 215] {
@@ -1845,11 +1888,13 @@ mod tests {
         let state = state();
         let view = state.kana('ー').expect("ー is in the set");
         let attempt = vec![view.medians[0].clone()];
-        let report = state
+        let graded = state
             .grade('ー', &attempt, &GradeOptions::default())
             .expect("grades");
+        let report = graded.report;
         assert!(report.legible, "tracing the guide must be legible: {:.0}", report.overall);
         assert_eq!(report.expected_strokes, 1);
+        assert!(graded.joined.is_empty(), "nothing was joined");
     }
 
     #[test]
@@ -1867,10 +1912,68 @@ mod tests {
         let state = state();
         let view = state.kana('あ').expect("あ is in the set");
         assert_eq!(view.stroke_count, 3);
-        let report = state
+        let graded = state
             .grade('あ', &[], &GradeOptions::default())
             .expect("grades");
-        assert_eq!(report.expected_strokes, 3);
+        assert_eq!(graded.report.expected_strokes, 3);
+    }
+
+    #[test]
+    fn a_joined_kana_is_graded_as_that_kana_and_names_the_join() {
+        // さ is taught in three strokes and commonly written in two, the first
+        // two drawn as one. The board must call it legible, and say which taught
+        // strokes were joined, because the report's own stroke numbers are the
+        // *drawn* strokes and the screen lists them by number.
+        let state = state();
+        let view = state.kana('さ').expect("さ is in the set");
+        let mut attempt = view.medians.clone();
+        let second = attempt.remove(1);
+        attempt[0].extend(second);
+
+        let graded = state
+            .grade('さ', &attempt, &GradeOptions::default())
+            .expect("grades");
+        assert!(graded.report.legible, "{:.0}/100", graded.report.overall);
+        assert_eq!(graded.joined, vec![vec![1, 2]]);
+        assert_eq!(
+            graded.report.expected_strokes, 2,
+            "the report is about the form the hand wrote"
+        );
+    }
+
+    #[test]
+    fn a_kana_with_a_stroke_missing_is_not_read_as_a_join() {
+        // The rule accepts a *joined* hand, never a dropped stroke: with the
+        // third stroke of さ absent, no regrouping of the reference clears the
+        // per-stroke bars, so the taught verdict is what comes back.
+        let state = state();
+        let view = state.kana('さ').expect("さ is in the set");
+        let attempt = vec![view.medians[0].clone(), view.medians[1].clone()];
+
+        let graded = state
+            .grade('さ', &attempt, &GradeOptions::default())
+            .expect("grades");
+        assert!(!graded.report.legible);
+        assert!(graded.joined.is_empty());
+        assert_eq!(graded.report.expected_strokes, 3, "three strokes are taught");
+    }
+
+    #[test]
+    fn a_kanji_is_still_graded_by_the_shared_engine_alone() {
+        // The joined-stroke rule is a measured kana rule; the kanji half of the
+        // same question has not been measured, so a kanji with two strokes drawn
+        // as one is still graded by the taught reference and `joined` stays empty.
+        let state = state();
+        let kanji = state.kanji('日').expect("日 is jōyō");
+        let mut attempt = kanji.medians.clone();
+        let second = attempt.remove(1);
+        attempt[0].extend(second);
+
+        let graded = state
+            .grade('日', &attempt, &GradeOptions::default())
+            .expect("grades");
+        assert!(graded.joined.is_empty());
+        assert_eq!(graded.report.expected_strokes, 4);
     }
 
     #[test]

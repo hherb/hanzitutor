@@ -96,16 +96,18 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **302
-tests** — every `#[test]` in the two suites (193 in `nihongo-core`, 109 in
-`nihongo-tutor`), plus one doc-test; the frontend's are counted separately below.
-`pnpm run test:web` runs 142, of which **73** are this app's.
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **313
+tests** — every `#[test]` in the two suites (200 in `nihongo-core`, 113 in
+`nihongo-tutor`), plus two doc-tests (`lib.rs`'s and `variants.rs`'s);
+the frontend's are counted separately below.
+`pnpm run test:web` runs 145, of which **76** are this app's.
 `cargo test -p hanzi-voice`, the shared crate the audio half lives in, is 29.
 
 | | |
 | --- | --- |
 | Kana | 177 — 86 hiragana (U+3041–3096), 91 katakana (U+30A1–30FA plus ー) |
 | Strokes | 516, average 2.92; あ is 3, not the 4 upstream stores (§4.2) |
+| Joined hands | 331 of 339 single adjacent joins legible at 15/1024 jitter, 0 of 497 single omissions accepted (§4.30) |
 | Course | 18 hiragana lessons, 20 katakana, 38 in all |
 | Chart | 16 rows × 5 columns: 71 kana on the grid and **9 holes** the language leaves; 15 kana off it in hiragana, 20 in katakana (invariant 29) |
 | Yōon | 33 digraphs per script, 11 bases × 3 — each one drilled against its own two-mora spelling, so きゃ is set against きや |
@@ -126,7 +128,7 @@ tests** — every `#[test]` in the two suites (193 in `nihongo-core`, 109 in
 | Words on a card | 16,073 words over 2,136 characters — 一 in 223, 人 in 218, and **57 characters in none**; a page of 12, in course order (invariant 28) |
 | Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
 | Screens | Practice, **Kana chart**, Tell them apart, **Review**, **Kanji**, **Radicals**, Words, Read, Licences |
-| Tests | nihongo-core 193, nihongo-tutor 109, hanzi-voice 29, frontend 73 of the 142 |
+| Tests | nihongo-core 200, nihongo-tutor 113, hanzi-voice 29, frontend 76 of the 145 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | two files, `confusions.json` and `review.json`, in the app's own data directory |
@@ -211,6 +213,32 @@ only when the character is new or due (invariant 25); the kana ride along on a
 schedule the kanji course is what actually needs. Both files are this app's own,
 and invariant 15 is the part that must not be undone: no other app reads either.
 
+**And the board accepts a hand that joins strokes, which it did not before.** さ is
+taught in three strokes and is very commonly written in two, き in three of its
+four, and `ROADMAP_NIHONGO.md` had carried the worry in the maintainer's words —
+*a kana tutor that rejects a legitimate hand is worse than no tutor*. The
+measurement was blunt: `GradeReport::legible` requires the attempt's stroke count
+to equal the reference's, so **0 of 339** adjacent joins of the 177 kana were
+legible and every one of the six named variants failed. `nihongo_core::variants`
+now grades a joined hand against a reference put into the same grouping, and
+**331 of 339** hand-drawn joins are legible at 15/1024 jitter (259 at 30), every
+named variant scoring 94–98. The eight it still refuses are the joins of a dakuten
+stroke to the one beside it, named rather than tolerated. The risk it carries — a
+dropped stroke arriving as "one fewer stroke" and being waved through as a join —
+is measured too: **0 of 497** single omissions across every kana are accepted, and
+**0 of 95** mid-stroke splits. The verdict panel says which taught strokes were
+joined, because the per-stroke list under it numbers the *drawn* strokes. Invariant
+30 is the part that must not be undone, and `crates/nihongo-core/examples/selfcheck.rs`
+is where to re-measure it.
+
+Both screens that grade were then watched, by probe rather than by eye because there
+was no display (§5). The Practice board opened さ from the chart, drew the taught
+three strokes as two with synthetic pointers and pressed Grade, and its verdict came
+back `100 /100 legible … stroke 1: Correct stroke 2: Correct Taught strokes 1+2 were
+drawn as one`; the Review panel repeated it from a hand-written due card, and with
+`HOME` inside the workspace the schedule answered `Saved for review — next in 2 days`,
+which is the half a sandboxed session normally reports as a failed write (trap 5).
+
 **Three of the surfaces were watched for the first time in the session before this
 one, and two of them were broken.** The test suite was green for both, which is the
 point of watching:
@@ -282,8 +310,17 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
   src/review.rs          (322)    what a scheduled character is, the prompt beside
                                   it and the due queue — N2. The schedule itself is
                                   hanzi-core's; this is the Japanese half
-  src/lib.rs              (88)    re-exports, including hanzi-core's grade, its
+  src/variants.rs        (480)    a hand that joins strokes, and grading one: the
+                                  regrouping, the per-stroke guard that tells a join
+                                  from a dropped stroke, and the measurements
+                                  invariant 30 pins. Kana only
+  src/lib.rs              (89)    re-exports, including hanzi-core's grade, its
                                   decomposition parser and its SM-2 schedule
+  examples/selfcheck.rs  (785)    the kana self-check: self-consistency, the jitter
+                                  tolerance table, the classic pairs graded against
+                                  each other, the joined-stroke and omission
+                                  measurements, sampling, ink and cost. Prints; it
+                                  asserts nothing — the tests pin what it finds
   src/bin/prepare_kana.rs(246)    AnimCJK + KanjiVG → the artifact
   src/bin/prepare_kanji.rs(821)   AnimCJK + KANJIDIC2 + KanjiVG → the artifact,
                                   including the one written oracle exception, the
@@ -313,18 +350,22 @@ scripts/fetch-unidic.sh           fetches and builds the UniDic dictionary into
                                   built, and the only thing that needs either
 
 apps/nihongo-tutor/               the app
-  src-tauri/src/lib.rs  (2591)    AppState, the speaker, the chart and the 28
-                                  commands, all thin
+  src-tauri/src/lib.rs  (2695)    AppState, the speaker, the chart and the 28
+                                  commands, all thin — and the one place a kana is
+                                  graded through `nihongo_core::grade_kana` rather
+                                  than the shared engine — invariant 30
   src-tauri/src/store.rs (582)    the two files of this app's own: confusions.json
                                   (load, record, atomic write — N3) and review.json
                                   (the SM-2 schedule, and the rule for when an
                                   attempt is a review — N2)
   src-tauri/src/licences.rs(157)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (1220)  41 tests locking the JSON the webview
-                                  reads *and the arguments it posts* (invariant 14)
+  src-tauri/tests/ipc_contract.rs (1263)  42 tests locking the JSON the webview
+                                  reads *and the arguments it posts* (invariant 14),
+                                  including the `joined` field a joined kana crosses
+                                  with — invariant 30
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
-  src/App.svelte         (539)    the nine views, the course, the board wiring, the
+  src/App.svelte         (552)    the nine views, the course, the board wiring, the
                                   one place the voice status is asked for — N1 —
                                   and the one `openKana` a screen calls to put a
                                   kana on the board — N4
@@ -336,7 +377,9 @@ apps/nihongo-tutor/               the app
   src/lib/KanaChart.svelte(234)   the gojūon grid with its holes, and the characters
                                   off it — N4
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
-  src/lib/ReviewPanel.svelte(346) what is due, and a board to write it on — N2
+  src/lib/ReviewPanel.svelte(360) what is due, and a board to write it on — N2,
+                                  with the joined-stroke line its verdict owes a
+                                  hand that joined — invariant 30
   src/lib/KanjiPanel.svelte(869)  the kanji course, the board and the card — N8,
                                   whose readings are each a control — N1, and which
                                   lists the words the character is written in — 28
@@ -350,10 +393,12 @@ apps/nihongo-tutor/               the app
   src/lib/kanji.ts       (138)    the course's and the radicals' arithmetic, and
                                   `spokenReading`, as pure functions — N8, N1
   src/lib/kanji.test.ts  (170)    run by the ROOT project's vitest
-  src/lib/kana.ts         (71)    which lesson a kana belongs to, which kana a
+  src/lib/kana.ts         (86)    which lesson a kana belongs to, which kana a
                                   loaded course should open on, how wide the chart's
-                                  grid is, and whether a drill answer is one kana — N4
-  src/lib/kana.test.ts   (128)    run by the ROOT project's vitest
+                                  grid is, whether a drill answer is one kana — N4 —
+                                  and `joinedLabel`, the one line that renders which
+                                  taught strokes were joined — invariant 30
+  src/lib/kana.test.ts   (147)    run by the ROOT project's vitest
   src/lib/words.ts       (101)    furigana and paging arithmetic, as pure functions
   src/lib/words.test.ts  (131)    run by the ROOT project's vitest
   src/lib/review.ts       (89)    "2 days overdue" and "in 2 days", as pure
@@ -1155,6 +1200,65 @@ app's own directory (invariant 15), the classic pairs are still the classic thir
 with the flat list's discovery gap standing, and nothing about the yōon or voicing
 exercises touches the kanji or the schedule.
 
+---
+
+### 30. **A hand that joins strokes is graded as the kana it drew, and a hand that drops one is not.**
+
+The measurement that produced this is the kana `selfcheck` (§5), and the rule lives
+in `nihongo_core::variants`. It is here because it is the one place this app does
+**not** hand a character straight to the shared engine, and because the failure it
+fixes was invisible to every test the app had.
+
+**What was wrong.** `GradeReport::legible` requires the attempt's stroke count to
+equal the reference's, so a connected hand was refused before shape was looked at.
+Measured over all 177 kana: **0 of 339** single adjacent joins were legible against
+the taught reference, and every one of the six variants `ROADMAP_NIHONGO.md` named
+failed — さ written in two strokes scored 52, き's last two joined scored 60. さ is
+taught in three strokes and two is the form most hands use; that is the maintainer's
+own product rule, *a kana tutor that rejects a legitimate hand is worse than no
+tutor*.
+
+**The rule.** When an attempt arrives with **fewer** strokes than the kana is taught
+with, every way of drawing the taught strokes as that many by joining adjacent ones
+is graded, and the best accepted one is the verdict. Five parts of it are decisions
+rather than implementation:
+
+* **A regrouped form counts only when every drawn stroke clears the shared
+  per-stroke bars** — `SHAPE_OK`, `POSITION_OK` and `INK_OK`, the same bars the
+  grader uses to call one stroke faulty. Mean-based legibility *cannot* make this
+  call, which is the trap: a missing stroke costs only its share of the average, and
+  the omission measured **legible in 339 of 339** candidate groupings. With the bars,
+  **0 of 497** single omissions across every kana are accepted, and **331 of 339**
+  hand-drawn joins are, at 15/1024 jitter (259 at 30). `every_group_is_solid` is the
+  function and the measurement is its doc comment.
+* **The joins it refuses are named, not tolerated** — ぎ 5+6, ぜ 4+5, ぶ 5+6, ぷ 3+4,
+  ズ 3+4, バ 3+4, ポ 2+3 and ヹ 1+2 — and every one joins a dakuten or handakuten
+  stroke to the stroke beside it, which is not a form anyone teaches. A refused join
+  falls back to the taught reference's verdict rather than being accepted as
+  something it is not, and `variants`' test pins the list so a ninth is noticed.
+* **An attempt with *more* strokes than the reference gets no regroup at all.** There
+  is no honest way to split a taught stroke, so a hand that lifts mid-stroke is still
+  told its count is wrong: **0 of 95** such splits are legible, in the selfcheck and
+  in a test over the whole set. (An offcut below `min_stroke_len` is a stray tap, not
+  a second stroke, and that case is accepted — the remaining piece covers the stroke.)
+* **The grouping travels to the screen**, because the report's own stroke numbers are
+  the *drawn* strokes: without it a per-stroke list would label the third drawn stroke
+  of a joined き "3" when it is taught strokes 3 and 4. `grade_attempt`'s response
+  gained `joined` (1-based, e.g. `[[3, 4]]`), `ipc_contract.rs` pins the request and
+  the response — invariant 14's request half included — and `joinedLabel` in
+  `src/lib/kana.ts` is the one line that renders it.
+* **It is a kana rule, deliberately.** The measurement is over the kana set; the
+  kanji half of the same question has not been measured, so a kanji and a radical are
+  still graded by the shared engine directly and their `joined` is always empty. The
+  app's `grade` does the kana branch itself for exactly that reason. Extending it is a
+  measurement first, not a flag.
+
+**Nothing in the shared engine changed.** The count gate, the bars and the Chinese
+app's grading are what they were, which is why its numbers did not move — the rule is
+built *around* `grade_with_outlines`, not inside it. And `ROADMAP_NIHONGO.md`'s
+record that き is taught in three strokes was wrong: the artifact says four, and the
+selfcheck prints what the artifact says.
+
 ## 5. The verification loop
 
 Four layers, cheapest first. All of them are worth running before a commit that
@@ -1200,6 +1304,43 @@ vitest, through the `include` list in `vitest.config.ts`. The app itself install
 no test runner, deliberately — the same arrangement the tone trainer uses. A test
 added under `apps/nihongo-tutor/src/**` and not named `*.test.ts` will silently
 never run.
+
+### The kana selfcheck
+
+The Japanese counterpart of `hanzi-core`'s, and the measurement the tolerances are
+supposed to stand on. It **prints** rather than asserts — what it finds is pinned by
+`nihongo_core::variants`' tests, which is why the two must be read together.
+
+```bash
+./scripts/with-cargo-env.sh cargo run --release -p nihongo-core --example selfcheck
+```
+
+What it reports, and what a healthy run looks like:
+
+* **self-consistency** — every one of the 177 kana grades 100.00 against its own
+  strokes, with 0 below the ink bar and 0 Faint strokes. Anything else is a bug in
+  resampling or normalisation, not in the data.
+* **stroke lengths against `min_stroke_len`** — the shortest kana stroke is 157
+  design units against a threshold of 12, so the Chinese-fitted constant discards
+  nothing here. This is the row that would have caught a kana being eaten as a stray
+  tap, and the reason it is first.
+* **the jitter tolerance table** — legible 100.0% at sigma 5 and 15, 98.9% at 30,
+  90.4% at 50, with the worst kana named (the voiced ones: が, ぐ, づ, ブ). The
+  tolerances are the Chinese ones, and this is the number that says they carry over.
+* **discrimination** — each classic pair member written against the other. **12 of
+  26 directions are legible as the wrong kana**, and that is *recorded rather than
+  fixed*: the board shows the character being drawn, so the learner is copying a
+  visible shape, and tightening the tolerance enough to tell れ from わ would refuse
+  the wobbly hands the tolerance exists for. It is here because it is the honest
+  limit of geometric grading, not because it is a bug.
+* **connected-stroke variants and the safety property** — invariant 30's numbers:
+  331 of 339 joins legible at sigma 15, the 8 refusals named, 0 of 497 omissions
+  accepted, 0 of 95 mid-stroke splits legible.
+* **sampling robustness** — 0 verdict changes when the geometry is unchanged and
+  only the sample density differs. This is the failure a jitter test cannot find.
+* **ink** — a correct trace reaches 1.000 everywhere, and a third-width pen makes all
+  177 not legible.
+* **cost** — 0.12 ms per grade on the widest kana, against a 20 ms target.
 
 ### Regenerating the artifacts
 

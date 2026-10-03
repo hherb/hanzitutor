@@ -18,7 +18,7 @@
   import KanjiPanel from "./lib/KanjiPanel.svelte";
   import RadicalsPanel from "./lib/RadicalsPanel.svelte";
   import ReviewPanel from "./lib/ReviewPanel.svelte";
-  import { focusFor, lessonKeyOf } from "./lib/kana";
+  import { focusFor, joinedLabel, lessonKeyOf } from "./lib/kana";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./lib/render";
   import { scheduleNote } from "./lib/review";
   import { canHear, isHearItKey, type VoiceStatus } from "./lib/speech";
@@ -53,6 +53,12 @@
   let selected = $state<string | null>(null);
   let kana = $state<Kana | null>(null);
   let report = $state<GradeReport | null>(null);
+  /**
+   * The taught strokes the last verdict read as drawn joined, 1-based — `[[1, 2]]`
+   * for a さ written in two strokes. It travels with `report`, and is what makes
+   * the per-stroke list below honest: its numbers are the *drawn* strokes.
+   */
+  let joined = $state<number[][]>([]);
   let error = $state<string | null>(null);
   let busy = $state(false);
 
@@ -267,6 +273,7 @@
       error = null;
       selected = ch;
       report = null;
+      joined = [];
       note = null;
       check = null;
       typed = "";
@@ -283,6 +290,7 @@
     // it is stale, and leaving it up would colour the new strokes with the old
     // reading.
     report = null;
+    joined = [];
     note = null;
   }
 
@@ -295,6 +303,7 @@
       // what comes back is the verdict plus the schedule's answer to it.
       const graded = await api.gradeAttempt(selected, attempt);
       report = graded.report;
+      joined = graded.joined;
       note = scheduleNote(graded, new Date().toISOString());
     } catch (e) {
       error = String(e);
@@ -424,6 +433,7 @@
         </div>
 
         {#if report && summary}
+          {@const drawnJoined = joinedLabel(joined)}
           <div class="verdict" class:ok={report.legible}>
             <p class="overall">
               {report.overall.toFixed(0)}<span>/100</span>
@@ -443,6 +453,9 @@
                 </li>
               {/each}
             </ul>
+            {#if drawnJoined}
+              <p class="fine">Taught strokes {drawnJoined} were drawn as one.</p>
+            {/if}
             {#if summary.wrong.length === 0}
               <p class="fine">Every stroke the right shape, in the right place, in order.</p>
             {/if}
