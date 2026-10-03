@@ -683,9 +683,59 @@ fn the_kanji_the_interface_asks_for_is_looked_up_by_its_character() {
     assert!(state().kanji('鳩').is_err());
 }
 
+/// The response half of the character card's vocabulary list: the page shape
+/// `types.ts` declares, and the word fields the card underneath draws.
 #[test]
-fn a_radical_family_crosses_with_its_head_form_and_its_members() {
-    let radicals = state().radicals();
+fn the_words_of_a_character_cross_with_what_its_card_lists() {
+    let page = state().words_of_kanji('学', 0, 5).expect("学 is jōyō");
+    let value = serde_json::to_value(&page).expect("serialises");
+    assert_eq!(keys(&value), vec!["ch", "offset", "total", "words"]);
+    assert_eq!(value["ch"], "学", "the character the answer is about, echoed back");
+    assert_eq!(value["offset"], 0);
+    assert!(value["total"].as_u64().expect("a number") > 5, "{value}");
+
+    let words = value["words"].as_array().expect("an array");
+    assert_eq!(words.len(), 5);
+    for key in ["text", "reading", "meaning", "band", "bandName", "nf", "furigana"] {
+        assert!(words[0].get(key).is_some(), "a word is missing {key}: {}", words[0]);
+    }
+    for word in words {
+        assert!(
+            word["text"].as_str().expect("a string").contains('学'),
+            "{word} is not written with 学"
+        );
+    }
+}
+
+/// The request half, driven exactly as `api.ts` builds it: `{ ch, offset, limit }`.
+#[test]
+fn the_page_of_a_characters_words_is_read_the_way_the_command_reads_it() {
+    let payload = json!({ "ch": "学", "offset": 2, "limit": 3 });
+    let ch: char = payload["ch"]
+        .as_str()
+        .expect("a string")
+        .chars()
+        .next()
+        .expect("one character");
+    let offset = payload["offset"].as_u64().expect("a number") as usize;
+    let limit = payload["limit"].as_u64().expect("a number") as usize;
+
+    let page = state().words_of_kanji(ch, offset, limit).expect("学 is jōyō");
+    assert_eq!(page.ch, '学');
+    assert_eq!(page.offset, 2);
+    assert_eq!(page.words.len(), 3);
+    assert!(page.total > 5, "学 is written in more than one page: {}", page.total);
+
+    // A jōyō character in no word is an empty page, and one outside the set is a
+    // message — the card says the first and shows the second.
+    let none = state().words_of_kanji('且', 0, 3).expect("且 is jōyō");
+    assert_eq!(none.total, 0);
+    assert!(none.words.is_empty());
+    assert!(state().words_of_kanji('鳩', 0, 3).is_err());
+}
+
+#[test]
+fn a_radical_family_crosses_with_its_head_form_and_its_members() {    let radicals = state().radicals();
     assert_eq!(radicals.len(), 214);
 
     let family = radicals.iter().find(|r| r.number == 64).expect("64 is 手");

@@ -271,6 +271,22 @@ export interface WordPage {
   words: Word[];
 }
 
+/**
+ * One page of the words a character is written in, for its card.
+ *
+ * `ch` is the character the answer is about, echoed back so the card can tell it
+ * from an answer about the character that was up a moment ago. The order is the
+ * course's — band, then EDRDG's frequency — so the first page is the vocabulary a
+ * learner can already read; `total` is what the vocabulary holds in all, which is
+ * 223 for 一 and zero for the 57 jōyō characters no word uses.
+ */
+export interface WordsOfKanji {
+  ch: string;
+  total: number;
+  offset: number;
+  words: Word[];
+}
+
 /** One passage, as the list offers it. */
 export interface PassageSummary {
   key: string;

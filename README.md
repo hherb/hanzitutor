@@ -1595,9 +1595,10 @@ kanji tutor (`crates/nihongo-core`, `apps/nihongo-tutor`) that reuses `geom`,
 that judges 一 — and so is a kanji. It teaches the 177 kana, the 2,136 jōyō kanji
 in kyōiku-grade order with the 214 Kangxi radicals and their IDS components, and
 16,073 words with their own readings and furigana, all from committed artifacts
-with nothing downloaded. It keeps its own learner data — the confusion tallies and
-an SM-2 review schedule, in its own files, never a shared store. It versions
-itself at 0.1.0 and has its own handover and roadmap —
+with nothing downloaded. A character's card also lists the words it is written in,
+each opening the word's own card. It keeps its own learner data — the confusion
+tallies and an SM-2 review schedule, in its own files, never a shared store. It
+versions itself at 0.1.0 and has its own handover and roadmap —
 **[HANDOVER_NIHONGO.md](HANDOVER_NIHONGO.md)** and
 **[ROADMAP_NIHONGO.md](ROADMAP_NIHONGO.md)**. Nothing else in this README,
 `ROADMAP.md` or `HANDOVER.md` covers it.

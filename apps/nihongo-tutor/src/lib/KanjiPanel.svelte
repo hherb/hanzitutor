@@ -25,13 +25,25 @@
    * 92 of the 214 are not jōyō characters, so the board would have no way to draw
    * them otherwise. Both are `Drawable`, both are graded by the same command, and
    * the board measures the two identically.
+   *
+   * ## And the words the character is used in
+   *
+   * A character is not met on its own: it arrives through the words written with
+   * it, which is why a word carries its own reading rather than one composed from
+   * its characters. So a jōyō character's card lists the vocabulary this course
+   * teaches that uses it — `WordDataset::of_kanji`, in the course's own order and
+   * paged — and tapping one opens the word's own card, exactly as a tapped passage
+   * token does. A character no word uses says so in words: 57 of the 2,136 are in
+   * that position, and an empty list would read as a screen that had not loaded.
    */
   import KanaCanvas from "./KanaCanvas.svelte";
   import SpeakButton from "./SpeakButton.svelte";
+  import WordCard from "./WordCard.svelte";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
   import { scheduleNote } from "./review";
   import { canHear, voiceNote, type VoiceStatus } from "./speech";
   import { gradeTabs, lessonHolding, lessonsIn, spokenReading } from "./kanji";
+  import { pageWindow } from "./words";
   import * as api from "./api";
   import type {
     Drawable,
@@ -41,6 +53,7 @@
     KanjiView,
     Point,
     RadicalView,
+    Word,
   } from "./types";
 
   interface Props {
@@ -73,11 +86,30 @@
   let attempt = $state<Point[][]>([]);
   let board = $state<ReturnType<typeof KanaCanvas> | null>(null);
 
+  /**
+   * The vocabulary written with the character on the board, one page of it.
+   *
+   * Paged rather than whole because the count is the character's, not the card's:
+   * 一 opens 223 words. The page is loaded when a character is selected and when
+   * the pager is pressed — not from an effect — so the fetch cannot depend on the
+   * state it writes (the shape `HANDOVER_NIHONGO.md` trap 9 is about).
+   */
+  let words = $state<Word[]>([]);
+  let wordTotal = $state(0);
+  let wordPage = $state(1);
+  let wordsBusy = $state(false);
+  /** The word whose own card is open under the list, if one is. */
+  let openedWord = $state<Word | null>(null);
+
+  /** How many words the card lists at once; the command is asked for the same. */
+  const WORD_PAGE = 12;
+
   const tabs = $derived(gradeTabs(lessons));
   const inGrade = $derived(lessonsIn(lessons, grade));
   const activeLesson = $derived(inGrade.find((l) => l.key === lessonKey) ?? null);
   /** What the board draws and the grader is asked about. */
   const drawn = $derived<Drawable | null>(kanji ?? radical);
+  const wordWindow = $derived(pageWindow(wordTotal, WORD_PAGE, wordPage));
 
   async function loadLessons() {
     try {
@@ -108,9 +140,45 @@
         grade = found.grade;
         lessonKey = found.key;
       }
+      await loadWords(ch, 1);
     } catch (e) {
       error = String(e);
     }
+  }
+
+  /**
+   * One page of the words written with `ch`, and the count they are a page of.
+   *
+   * The page is clamped through the same `pageWindow` the vocabulary screen uses,
+   * so a page the command would not serve is never asked for. Opening a page also
+   * puts away any word card that was open: it belongs to another page's word.
+   */
+  async function loadWords(ch: string, page: number) {
+    try {
+      error = null;
+      wordsBusy = true;
+      openedWord = null;
+      const window_ = pageWindow(wordTotal, WORD_PAGE, page);
+      const found = await api.wordsOfKanji(ch, window_.offset, window_.limit);
+      words = found.words;
+      wordTotal = found.total;
+      wordPage = window_.page;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      wordsBusy = false;
+    }
+  }
+
+  /** Whether this word is the one whose card is open. */
+  function isOpen(word: Word): boolean {
+    return openedWord?.text === word.text && openedWord?.reading === word.reading;
+  }
+
+  /** Turn a page of the current character's words, by `delta`. */
+  function turnWordPage(delta: number) {
+    if (!kanji) return;
+    void loadWords(kanji.ch, wordWindow.page + delta);
   }
 
   /** Put a radical head form on the board, which the character course cannot. */
@@ -122,6 +190,10 @@
       report = null;
       note = null;
       attempt = [];
+      words = [];
+      wordTotal = 0;
+      wordPage = 1;
+      openedWord = null;
     } catch (e) {
       error = String(e);
     }
@@ -416,6 +488,88 @@
                 </p>
               {/if}
             </div>
+
+            <!--
+              The words the character is written in, which is the half of "a
+              character arrives through the words that use it" the card was
+              missing. They arrive in the course's own order, so the first page is
+              the vocabulary whose other characters have been taught first, and
+              each is a control that opens that word's own card — the same
+              affordance a tapped passage token has.
+            -->
+            <div class="words">
+              <!--
+                The count waits for the page it belongs to rather than drawing the
+                previous character's: `wordsBusy` is the state between asking and
+                knowing, and a heading that spanned it would state something false
+                about the character on the board for a frame.
+              -->
+              {#if wordsBusy}
+                <p class="hint">Loading…</p>
+              {:else}
+                <p class="structure-line">
+                  {#if wordTotal === 0}
+                    <span class="aside">
+                      No word this course teaches is written with {kanji.ch}.
+                    </span>
+                  {:else}
+                    <strong>{wordTotal.toLocaleString()}</strong>
+                    {wordTotal === 1 ? "word" : "words"} this course teaches
+                    {wordTotal === 1 ? "is" : "are"} written with {kanji.ch}
+                    {#if wordWindow.pages > 1}
+                      <span class="aside">
+                        page {wordWindow.page} of {wordWindow.pages}
+                      </span>
+                    {/if}
+                  {/if}
+                </p>
+
+                {#if words.length > 0}
+                  <ul class="word-list" aria-label="Words written with {kanji.ch}">
+                    {#each words as entry (entry.text + entry.reading)}
+                      <li>
+                        <button
+                          class="word-row"
+                          class:active={isOpen(entry)}
+                          title={isOpen(entry)
+                            ? "Put this word's card away"
+                            : "Open this word's own card"}
+                          onclick={() => (openedWord = isOpen(entry) ? null : entry)}
+                        >
+                          <span class="word-text">{entry.text}</span>
+                          <span class="word-reading">{entry.reading}</span>
+                          <span class="word-gloss">{entry.meaning}</span>
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+
+                  {#if wordWindow.pages > 1}
+                    <nav class="pager" aria-label="Word pages">
+                      <button
+                        disabled={wordWindow.page <= 1}
+                        onclick={() => turnWordPage(-1)}
+                      >
+                        Previous
+                      </button>
+                      <span>page {wordWindow.page} of {wordWindow.pages}</span>
+                      <button
+                        disabled={wordWindow.page >= wordWindow.pages}
+                        onclick={() => turnWordPage(1)}
+                      >
+                        Next
+                      </button>
+                    </nav>
+                  {/if}
+                {/if}
+              {/if}
+
+              {#if openedWord}
+                <div class="word-slot">
+                  <WordCard word={openedWord} {voice} />
+                </div>
+              {/if}
+            </div>
           </div>
         {:else if radical}
           <div class="card">
@@ -634,6 +788,92 @@
     border-radius: var(--radius);
     background: none;
     color: var(--muted);
+    cursor: default;
+  }
+
+  /* The vocabulary half of the card, set off from the structure above it because
+     it is a different kind of fact: the structure is what the character *is*, and
+     these are the words it is *used in*. */
+  .words {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border-top: 1px dashed var(--line);
+    padding-top: 10px;
+  }
+
+  .word-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  /* The same row the vocabulary screen draws — word, reading, gloss — because it
+     is the same list seen from the other end. */
+  .word-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(3.5rem, auto) minmax(3.5rem, auto) 1fr;
+    gap: 0.6rem;
+    align-items: baseline;
+    text-align: left;
+    font: inherit;
+    padding: 0.3rem 0.45rem;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: none;
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .word-row:hover {
+    background: var(--hover, #f4f4f1);
+  }
+
+  .word-row.active {
+    border-color: var(--accent);
+    background: var(--accent-soft, #eaf3ed);
+  }
+
+  .word-text {
+    font-size: 1.1rem;
+  }
+
+  .word-reading {
+    color: var(--muted);
+    font-size: 0.88rem;
+  }
+
+  .word-gloss {
+    color: var(--muted);
+    font-size: 0.82rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pager {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+
+  .pager button {
+    font: inherit;
+    padding: 0.25rem 0.55rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .pager button:disabled {
+    opacity: 0.5;
     cursor: default;
   }
 </style>

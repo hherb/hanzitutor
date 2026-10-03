@@ -648,6 +648,48 @@ impl AppState {
         }
     }
 
+    /// One page of the words a character is written in, in course order.
+    ///
+    /// What a character's card lists, and the other half of "a character arrives
+    /// through the words that use it": the vocabulary is ordered by band and then
+    /// by EDRDG's frequency, so the first page is the words whose other characters
+    /// the course teaches first. Paged for a measured reason — 一 is written in
+    /// 223 of the 16,073 words and 人 in 218 — where a card that shipped them all
+    /// would draw a list nobody scrolls.
+    ///
+    /// A jōyō character no word uses — 57 of the 2,136 — answers with an empty
+    /// list and a total of nothing, which the card states in words: that is a fact
+    /// about the vocabulary, not a hole in the screen. A character **outside** the
+    /// jōyō set is an error, because the artifact holds no word it could appear in
+    /// (invariant 21), and an empty list there would make a typo look like a gap in
+    /// the data.
+    pub fn words_of_kanji(
+        &self,
+        ch: char,
+        offset: usize,
+        limit: usize,
+    ) -> Result<WordsOfKanji, String> {
+        if self.kanji.get(ch).is_none() {
+            return Err(format!(
+                "{ch} (U+{:04X}) is not one of the jōyō kanji",
+                ch as u32
+            ));
+        }
+        let words = self
+            .words
+            .of_kanji(ch)
+            .skip(offset)
+            .take(limit.clamp(1, MAX_WORD_PAGE))
+            .map(word_view)
+            .collect();
+        Ok(WordsOfKanji {
+            ch,
+            total: self.words.of_kanji(ch).count(),
+            offset,
+            words,
+        })
+    }
+
     /// One word, by its text and its reading.
     pub fn word(&self, text: &str, reading: &str) -> Result<WordView, String> {
         self.words
@@ -983,6 +1025,21 @@ pub struct WordPage {
     pub words: Vec<WordView>,
 }
 
+/// One page of the words a character is written in, for its card.
+///
+/// The same page shape as a band's, with the character in place of the band: `ch`
+/// is echoed back so a screen can tell an answer about the character it asked for
+/// from one about the character that was up a moment ago.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WordsOfKanji {
+    pub ch: char,
+    /// How many words this course teaches that use the character, in all.
+    pub total: usize,
+    pub offset: usize,
+    pub words: Vec<WordView>,
+}
+
 /// One word, as the vocabulary screen draws it: the word, its own reading, the
 /// furigana that puts that reading over the right characters, and its band.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1244,6 +1301,21 @@ fn words_in_band(state: State<'_, AppState>, band: u8, offset: usize, limit: usi
     state.words_in_band(band, offset, limit)
 }
 
+/// One page of the words a character is written in, in course order — what its
+/// card lists beside the readings and the radical.
+///
+/// A jōyō character no word uses answers with an empty page; a character outside
+/// the jōyō set is a message, because the vocabulary holds no word it could be in.
+#[tauri::command]
+fn words_of_kanji(
+    state: State<'_, AppState>,
+    ch: char,
+    offset: usize,
+    limit: usize,
+) -> Result<WordsOfKanji, String> {
+    state.words_of_kanji(ch, offset, limit)
+}
+
 /// One word, by its text and its reading.
 #[tauri::command]
 fn word(state: State<'_, AppState>, text: String, reading: String) -> Result<WordView, String> {
@@ -1410,6 +1482,7 @@ pub fn run() {
             radical,
             word_bands,
             words_in_band,
+            words_of_kanji,
             word,
             word_of_text,
             check_word,
@@ -1881,6 +1954,60 @@ mod tests {
         // interface should not have asked for is clamped.
         assert!(state.words_in_band(1, page.total, 10).words.is_empty());
         assert!(state.words_in_band(1, 0, 10_000).words.len() <= 200);
+    }
+
+    /// **The character card's vocabulary list.** A page of what
+    /// `WordDataset::of_kanji` holds, with the character echoed back, paged for a
+    /// measured reason: 一 is written in 223 words.
+    #[test]
+    fn a_page_of_a_characters_words_arrives_in_course_order() {
+        let state = state();
+        let first = state.words_of_kanji('一', 0, 12).expect("一 is jōyō");
+        assert_eq!(first.ch, '一');
+        assert_eq!(first.total, 223, "一 is the busiest character in the vocabulary");
+        assert_eq!(first.offset, 0);
+        assert_eq!(first.words.len(), 12);
+        for word in &first.words {
+            assert!(word.text.contains('一'), "{} does not use 一", word.text);
+        }
+        let mut band = 0;
+        for word in &first.words {
+            assert!(
+                word.band >= band,
+                "{} arrives in band {} after band {band}, which is not the course's order",
+                word.text,
+                word.band
+            );
+            band = word.band;
+        }
+
+        // The second page continues rather than repeating, a page past the end is
+        // empty, and a limit the interface should not have asked for is clamped.
+        let second = state.words_of_kanji('一', 12, 12).expect("一 is jōyō");
+        assert_eq!(second.offset, 12);
+        assert!(
+            !second
+                .words
+                .iter()
+                .any(|w| w.text == first.words[0].text && w.reading == first.words[0].reading),
+            "the second page repeats the first"
+        );
+        assert!(state.words_of_kanji('一', first.total, 12).expect("一").words.is_empty());
+        assert!(state.words_of_kanji('一', 0, 10_000).expect("一").words.len() <= MAX_WORD_PAGE);
+    }
+
+    /// A jōyō character in no word is a fact to state; a character outside the set
+    /// is a message, because the vocabulary holds no word it could be in.
+    #[test]
+    fn a_character_in_no_word_is_empty_and_one_outside_the_set_is_an_error() {
+        let state = state();
+        let none = state.words_of_kanji('且', 0, 12).expect("且 is jōyō");
+        assert_eq!(none.ch, '且');
+        assert_eq!(none.total, 0);
+        assert!(none.words.is_empty(), "no word of this course uses 且");
+
+        let err = state.words_of_kanji('鳩', 0, 12).unwrap_err();
+        assert!(err.contains("not one of the jōyō kanji"), "{err}");
     }
 
     #[test]

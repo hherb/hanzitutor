@@ -397,3 +397,77 @@ fn every_band_has_words_and_the_first_is_the_smallest() {
         "a band holds only its own words"
     );
 }
+
+/// **The words a character is used in, which is what its card lists.**
+///
+/// `WordDataset::of_kanji` is a filter over the set the artifact already holds, so
+/// this is two claims and both are measured rather than assumed: the order it
+/// yields is the course's (band, then EDRDG's frequency, then the text) and not a
+/// second sort by the query — a page ordered by frequency alone would put a
+/// remainder-grade word above a grade-1 one; and a jōyō character no word uses is
+/// a real case — 57 of them — rather than something a screen can assume away.
+#[test]
+fn the_words_a_character_is_used_in_are_in_course_order() {
+    let dataset = dataset();
+
+    // The busiest characters, pinned: 一 opens 223 words and 人 218, which is why
+    // the card pages rather than listing them.
+    assert_eq!(dataset.of_kanji('一').count(), 223);
+    assert_eq!(dataset.of_kanji('人').count(), 218);
+
+    for ch in ['一', '人', '日', '水', '生'] {
+        let words: Vec<&nihongo_core::Word> = dataset.of_kanji(ch).collect();
+        assert!(!words.is_empty(), "{ch} is used in words");
+        let mut previous: Option<(u8, bool, u8, &str)> = None;
+        for word in words {
+            assert!(
+                word.kanji().contains(&ch),
+                "{} does not contain {ch}, so it does not belong in the list",
+                word.text
+            );
+            let key = (word.band, word.nf.is_none(), word.nf.unwrap_or(0), word.text.as_str());
+            if let Some(last) = previous {
+                assert!(
+                    last <= key,
+                    "{ch}: {} (band {}, nf {:?}) arrives after {} (band {}, nf {:?}), \
+                     which is not the course's order",
+                    word.text,
+                    word.band,
+                    word.nf,
+                    last.3,
+                    last.0,
+                    last.2
+                );
+            }
+            previous = Some(key);
+        }
+    }
+}
+
+/// **And the characters no word reaches.**
+///
+/// 57 of the 2,136 jōyō characters are in no word of this vocabulary — taught
+/// because they are jōyō, never met in the course's vocabulary — and the count is
+/// the measurement rather than an estimate. A card for one of them has a fact to
+/// state, not a hole to draw.
+#[test]
+fn fifty_seven_joyo_characters_are_in_no_word() {
+    let dataset = dataset();
+    let wordless: Vec<char> = kanji()
+        .kanji()
+        .iter()
+        .map(|k| k.ch)
+        .filter(|ch| dataset.of_kanji(*ch).next().is_none())
+        .collect();
+    assert_eq!(
+        wordless.len(),
+        57,
+        "the jōyō characters no word is written with: {wordless:?}"
+    );
+    for ch in ['且', '貞', '隻'] {
+        assert!(
+            wordless.contains(&ch),
+            "{ch} is jōyō, in the artifact, and in no word here"
+        );
+    }
+}

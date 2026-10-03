@@ -96,10 +96,10 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **273
-tests** — every `#[test]` in the two suites (168 became 175 in `nihongo-core`, 76
-became 97 in `nihongo-tutor`), plus one doc-test; the frontend's are counted
-separately below. `pnpm run test:web` runs 129, of which **60** are this app's.
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **280
+tests** — every `#[test]` in the two suites (178 in `nihongo-core`, 101 in
+`nihongo-tutor`), plus one doc-test; the frontend's are counted separately below.
+`pnpm run test:web` runs 129, of which **60** are this app's.
 `cargo test -p hanzi-voice`, the shared crate the audio half lives in, is 29.
 
 | | |
@@ -121,9 +121,10 @@ separately below. `pnpm run test:web` runs 129, of which **60** are this app's.
 | Bands | 585 / 1,781 / 2,408 / 2,232 / 2,412 / 1,834 / 4,821 — this project's ladder, not the JLPT's (invariant 20) |
 | Furigana | 16,022 of 16,073 aligned (99.7%); the other 51 carry their reading and no ruby |
 | Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
+| Words on a card | 16,073 words over 2,136 characters — 一 in 223, 人 in 218, and **57 characters in none**; a page of 12, in course order (invariant 28) |
 | Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
 | Screens | Practice, Tell them apart, **Review**, **Kanji**, **Radicals**, Words, Read, Licences |
-| Tests | nihongo-core 175, nihongo-tutor 97, hanzi-voice 29, frontend 60 of the 129 |
+| Tests | nihongo-core 178, nihongo-tutor 101, hanzi-voice 29, frontend 60 of the 129 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | two files, `confusions.json` and `review.json`, in the app's own data directory |
@@ -149,12 +150,29 @@ synthesiser accepted the utterance, not that anything came out of a speaker.
 by band with furigana over every word and grades a typed reading; **Read** draws a
 passage with a reading over each kanji and opens a word card when one is tapped;
 **Kanji** is the character course — grades, lessons of ten, a grid, the board, and
-a card carrying the readings, the glosses, the radical in both of its shapes and
-the IDS components; and **Radicals** shows all 214 head forms, each with the jōyō
+a card carrying the readings, the glosses, the radical in both of its shapes, the
+IDS components **and the words the character is written in**, each opening its own
+word card; and **Radicals** shows all 214 head forms, each with the jōyō
 characters classified under it, searchable and ordered by what a radical unlocks.
 The kanji artifact was embedded and read by nothing for a whole milestone; N8 is
 what read it, and the radical table it now carries is what makes the second screen
 possible. Each milestone's own record says what its measurement corrected.
+
+**And the last of it is the vocabulary on the character's card**, which §9 below had
+called the obvious next thing after N8 — the thing `words::of_kanji` had been
+waiting for. The card lists the words the course
+teaches that use the character, in the course's own order — band, then EDRDG's
+frequency — a page of twelve at a time, and tapping one opens the **word's own
+card**, the same one `Words` and `Read` show, so the reading is the dictionary's
+and never composed here. The numbers are measured: **一 is written in 223 of the
+16,073 words and 人 in 218**, and **57 jōyō characters are in no word at all**,
+which the card states in words rather than drawing an empty list. Invariant 28 is
+the part that must not be broken. The live check drove it through a DOM probe,
+because there was no display to capture: the Kanji tab came up on 日 with
+`140 words this course teaches are written with 日 page 1 of 12`, twelve rows
+beginning 日本人 にほんじん, a tap on that row opened the word card with its own
+reading and band, `Next` turned to page 2 of 12, and 且 — found through the
+course's own lesson list — read `No word this course teaches is written with 且.`
 
 **Two parts of the app learn about their learner now.** The drill is **N3**'s: it
 used to draw a kana from a pool and throw the answer away, and it now draws a
@@ -222,8 +240,9 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   Radical and RadicalFamily, and the modules'
                                   account of the grade reconciliation — the kanji
                                   half, N6, plus the 214-radical table, N8
-  src/words.rs           (506)    Word, Ruby, WordDataset, the ladder's band_for
-                                  and band_name — the vocabulary half, N7
+  src/words.rs           (526)    Word, Ruby, WordDataset, the ladder's band_for
+                                  and band_name, and `of_kanji` — the vocabulary
+                                  half, N7, and the character card's list, invariant 28
   src/passages.rs        (387)    Passage, PassageToken, PassageDataset and the
                                   source-file parser — the reading half, N7
   src/readings.rs        (386)    Hepburn and Kunrei-shiki, and the enumeration
@@ -256,7 +275,7 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
   tests/kanji_artifact.rs(841)    26 tests over the committed kanji artifact: the
                                   whole grade reconciliation, the 214-radical
                                   table and the course
-  tests/words_artifact.rs(399)    15 tests over the committed words artifact,
+  tests/words_artifact.rs(473)    17 tests over the committed words artifact,
                                   recomputing every band from the kanji one
   tests/passages_artifact.rs(247) 9 tests over the committed passages, including
                                   that they still match data/passages/*.txt
@@ -266,13 +285,13 @@ scripts/fetch-unidic.sh           fetches and builds the UniDic dictionary into
                                   built, and the only thing that needs either
 
 apps/nihongo-tutor/               the app
-  src-tauri/src/lib.rs  (2116)    AppState, the speaker and the 26 commands, all thin
+  src-tauri/src/lib.rs  (2243)    AppState, the speaker and the 27 commands, all thin
   src-tauri/src/store.rs (582)    the two files of this app's own: confusions.json
                                   (load, record, atomic write — N3) and review.json
                                   (the SM-2 schedule, and the rule for when an
                                   attempt is a review — N2)
   src-tauri/src/licences.rs(157)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (1007)  35 tests locking the JSON the webview
+  src-tauri/tests/ipc_contract.rs (1057)  37 tests locking the JSON the webview
                                   reads *and the arguments it posts* (invariant 14)
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
@@ -284,8 +303,9 @@ apps/nihongo-tutor/               the app
   src/lib/ConfusionDrill.svelte(225)  the drill: one pair, one answer, remembered
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
   src/lib/ReviewPanel.svelte(346) what is due, and a board to write it on — N2
-  src/lib/KanjiPanel.svelte(639)  the kanji course, the board and the card — N8,
-                                  whose readings are each a control — N1
+  src/lib/KanjiPanel.svelte(869)  the kanji course, the board and the card — N8,
+                                  whose readings are each a control — N1, and which
+                                  lists the words the character is written in — 28
   src/lib/RadicalsPanel.svelte(501)   the 214 head forms and their families — N8
   src/lib/VocabularyPanel.svelte(309) the ladder, a band's words, the card — N7
   src/lib/PassagePanel.svelte(265)  a passage with furigana and a tap on any word — N7
@@ -307,8 +327,8 @@ apps/nihongo-tutor/               the app
   src/lib/board.ts        (97)    the board's arithmetic, as pure functions
   src/lib/board.test.ts   (99)    run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
-  src/lib/types.ts       (466)    the IPC shapes, and `Character = Drawable`
-  src/lib/api.ts         (269)    one wrapper per command
+  src/lib/types.ts       (482)    the IPC shapes, and `Character = Drawable`
+  src/lib/api.ts         (283)    one wrapper per command
 
 crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
                                   part's data layer
@@ -989,6 +1009,39 @@ feature. The rule — a repeat does not count, `⌘`/`Ctrl`/`Alt` do not count (
 hides the window), `h` in an `INPUT`/`TEXTAREA`/`SELECT`/contenteditable does not
 count — is `isHearItKey` in `src/lib/speech.ts`, a pure function with ten tests,
 because the reading box is exactly where `は` is typed as `ha`.
+
+### 28. **A character's card lists the words the course teaches, in the course's order — and says so when there are none.**
+
+`WordDataset::of_kanji` is a filter over the set the artifact already holds, in the
+order `from_words` put it in, and `words_of_kanji` pages it. Three things about
+that are decisions rather than implementation:
+
+* **The order is the course's** — band, then EDRDG's frequency — so the first page
+  is the vocabulary whose *other* characters have been taught first. It is a filter
+  over the order the artifact is already stored in, not a second sort: ordering the
+  page by frequency alone would put a word written with a remainder-grade character
+  at the top of a grade-1 card. `tests/words_artifact.rs` walks five characters and
+  asserts the key never goes backwards, which is the property the screen's promise
+  rests on.
+* **The count is the character's and the page is twelve**, because it is measured:
+  **一 is written in 223 of the 16,073 words, 人 in 218**, and 86 characters are in
+  more than sixty. A card that shipped them all would be a megabyte of JSON to draw
+  a list — the same reason a band is paged (`MAX_WORD_PAGE`, the same clamp).
+* **A jōyō character in no word is a state the card states**, not an empty list:
+  **57 of the 2,136** are in that position (且, 貞, 隻 …). And a character **outside**
+  the jōyō set is an *error* from the command, not an empty page — the vocabulary
+  holds no word such a character could be in (invariant 21), so an empty list there
+  would make a typo look like a gap in the data. That is invariant 13's rule, one
+  command over: a message, not a panic, and not a silent nothing.
+
+Two smaller halves of the same contract. The response is a **page shape with `ch`
+echoed back** — `{ ch, total, offset, words }` — so a screen can tell an answer
+about the character it asked for from one about the character that was up a moment
+ago, and `ipc_contract.rs` pins both that shape and the `{ ch, offset, limit }`
+payload the interface posts (invariant 14's request half). And **the readings are
+still the dictionary's**: the card links to `WordCard`, which speaks
+`word.reading` and grades against it, so nothing here composes a reading or hands a
+bare kanji to the voice (invariants 21 and 27).
 
 ## 5. The verification loop
 
@@ -1839,11 +1892,12 @@ first KANJIDIC2 data.
 
 ## 9. What is deliberately not built
 
-* **The words a character is used in, on the character's card.** The kanji screen
-  shows the readings, the glosses, the radical and the components; it does not yet
-  list the vocabulary built on the character, though `words::of_kanji` exists for
-  exactly that and the course's ladder now matches the vocabulary's. A screen, not
-  a derivation — and the obvious next thing after N8.
+* **The words a character is used in, on the character's card — built.** It was
+  the obvious next thing after N8 and it is now shipped: the card lists them in
+  the course's order, a page of twelve, and each opens the word's own card
+  (invariant 28). Recorded here because the bullet that *was* here is what the
+  reader of an older copy remembers; `ROADMAP_NIHONGO.md`'s known weak spots had
+  the same line and now records it shipped.
 * **Kanji beyond the jōyō set.** 2,136 characters, their radical table and their
   course are shipped (N6, N8), and so is the vocabulary they are taught through
   (N7's `words.bin.gz`, 16,073 words with their own readings and furigana) and the

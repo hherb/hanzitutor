@@ -345,7 +345,17 @@ impl WordDataset {
             .collect()
     }
 
-    /// Every word that uses `ch` among its kanji.
+    /// Every word that uses `ch` among its kanji, in course order.
+    ///
+    /// What a character's card lists: a learner who has met 学 can be shown the
+    /// words it is written in, and the order they arrive in is the course's — band,
+    /// then EDRDG's frequency, then the text — so the first page is the vocabulary
+    /// whose other characters have been taught first. That is the same order
+    /// [`WordDataset::from_words`] put the set in, filtered rather than re-sorted.
+    ///
+    /// A character no word of this course uses comes back empty rather than
+    /// missing: 57 of the 2,136 jōyō characters are in no word here, which is a
+    /// fact about the vocabulary and not a hole in the screen.
     pub fn of_kanji(&self, ch: char) -> impl Iterator<Item = &Word> {
         self.words.iter().filter(move |word| word.kanji().contains(&ch))
     }
@@ -476,15 +486,25 @@ mod tests {
     }
 
     #[test]
-    fn the_words_using_a_kanji_can_be_listed() {
+    fn the_words_using_a_kanji_can_be_listed_in_course_order() {
         let dataset = WordDataset::from_words(
-            vec![word("食べる", "たべる", 2, 5), word("飲む", "のむ", 3, 6)],
+            vec![
+                word("食品", "しょくひん", 3, 1),
+                word("食べる", "たべる", 2, 5),
+                word("飲む", "のむ", 3, 6),
+                word("食事", "しょくじ", 2, 3),
+            ],
             WordsSource::default(),
         );
+        // Band first, then frequency — the course's order, which is what a card
+        // that says "the words this character is used in" has to list them in.
+        // Handed in shuffled, so the order asserted is the dataset's own.
         let with_food: Vec<&str> = dataset.of_kanji('食').map(|w| w.text.as_str()).collect();
-        assert_eq!(with_food, vec!["食べる"]);
+        assert_eq!(with_food, vec!["食事", "食べる", "食品"]);
         assert_eq!(dataset.of_kanji('飲').count(), 1);
+        // A character no word uses is an empty list, not an error.
         assert_eq!(dataset.of_kanji('水').count(), 0);
+        assert_eq!(dataset.of_kanji('食').count(), 3);
     }
 
     #[test]

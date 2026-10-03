@@ -30,6 +30,7 @@ import type {
   ScriptName,
   Word,
   WordPage,
+  WordsOfKanji,
   YoonView,
 } from "./types";
 
@@ -190,6 +191,19 @@ export function wordBands(): Promise<BandView[]> {
  */
 export function wordsInBand(band: number, offset = 0, limit = 60): Promise<WordPage> {
   return invoke<WordPage>("words_in_band", { band, offset, limit });
+}
+
+/**
+ * One page of the words this course teaches that are written with `ch`, in course
+ * order — what a character's card lists beside its readings and its radical.
+ *
+ * Paged for the same reason a band is, measured: 一 is written in 223 of the
+ * 16,073 words. A jōyō character no word uses answers with an empty page and a
+ * total of zero, which a card says in words; a character outside the jōyō set is
+ * an error, because the vocabulary holds no word it could appear in.
+ */
+export function wordsOfKanji(ch: string, offset = 0, limit = 12): Promise<WordsOfKanji> {
+  return invoke<WordsOfKanji>("words_of_kanji", { ch, offset, limit });
 }
 
 /** One word, by its text and its reading. */

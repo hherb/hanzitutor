@@ -915,6 +915,19 @@ the shared `.tabs` rule capitalises its labels for `hiragana`/`katakana`, so the
 grade tabs rendered as *Jōyō Beyond The School Grades* — the ladder's own names,
 title-cased into proper nouns. The panel now overrides it and wraps.
 
+**And the one thing the card was still missing, added after the milestone.** The
+card showed what a character *is* — its readings, its radical, its components — and
+not the words it is *used in*, which is the half of "a character arrives through the
+words that use it" the course is built on. It now lists them, from
+`WordDataset::of_kanji`, in the course's own order — band, then EDRDG's frequency —
+a page of twelve, and each opens that word's own card, the same one `Words` and
+`Read` show. Three measurements decided the shape: **一 is written in 223 of the
+16,073 words and 人 in 218** (so it pages, like a band), **57 jōyō characters are in
+no word at all** (so the card says that rather than drawing an empty list), and a
+character outside the jōyō set is an error rather than an empty list, because the
+vocabulary holds no word such a character could be in. `HANDOVER_NIHONGO.md`
+invariant 28 is the part that must not be undone.
+
 ---
 
 ## N9 — Distribution
@@ -1014,10 +1027,13 @@ Recorded here rather than as milestones because none of them is a feature.
   because that is the classification and it is the one the artifact is keyed by,
   and `tests/kanji_artifact.rs` names all 18 so the other 2,118 are not assumed to
   agree. A panel that grouped by the note instead would need a second, mixed rule.
-* **The kanji course has no words attached to a character yet.** A card shows the
-  readings, the glosses, the radical and the components, but not the vocabulary
-  built on it — the words artifact is keyed by text, and `words::of_kanji` exists
-  for exactly this, so it is a screen rather than a derivation.
+* **The kanji course has words attached to a character now — shipped.** A card
+  showed the readings, the glosses, the radical and the components, and it now
+  also lists the vocabulary the course teaches that uses the character, each
+  opening its own word card (N8's Shipped section, `HANDOVER_NIHONGO.md`
+  invariant 28). This bullet stood here while `words::of_kanji` went unused; it is
+  recorded rather than deleted so a reader of the earlier version can see it was
+  answered.
 * **The nine jōyō where KanjiVG and KANJIDIC2 were said to disagree are not
   real.** The measurement was corrected while building the data layer: 謎 賭 葛 餌
   遜 僅 遡 餅 and 牙 are the characters where KANJIDIC2 lists **two** stroke counts
