@@ -66,12 +66,14 @@ fn dataset_stats_crosses_as_camel_case() {
     let stats = serde_json::to_value(state().stats()).expect("serialises");
     assert_eq!(
         keys(&stats),
-        vec!["hiragana", "kana", "katakana", "lessons", "strokes"]
+        vec!["hiragana", "kana", "katakana", "lessons", "passages", "strokes", "words"]
     );
     assert_eq!(stats["kana"], 177);
     assert_eq!(stats["hiragana"], 86);
     assert_eq!(stats["katakana"], 91);
     assert_eq!(stats["strokes"], 516);
+    assert_eq!(stats["words"], 16_073, "the vocabulary the app embeds");
+    assert_eq!(stats["passages"], 3);
 }
 
 #[test]
@@ -365,4 +367,161 @@ fn app_info_names_the_app_the_bundle_config_names() {
     assert_eq!(config["identifier"], "com.hanzitutor.kana");
     assert_eq!(config["productName"], "Kana Tutor");
     assert_eq!(config["version"], env!("CARGO_PKG_VERSION"));
+}
+
+// ---------------------------------------------------------------------------
+// The vocabulary and the passages.
+//
+// These are the request halves as much as the response halves. Invariant 14 of
+// HANDOVER_NIHONGO.md exists because this app shipped a Grade button that could
+// not grade: the interface posted `{ inkWidth }`, the command deserialised a
+// struct with more required fields, and every attempt came back "missing field
+// `resampleK`" while 110 tests passed. So every command that takes arguments is
+// driven here with the payload `api.ts` actually builds — and every response is
+// read with the keys `types.ts` declares.
+
+#[test]
+fn the_ladder_crosses_with_our_names_and_each_bands_size() {
+    let bands = state().word_bands();
+    assert_eq!(bands.len(), 7);
+
+    let value = serde_json::to_value(&bands).expect("serialises");
+    let first = &value[0];
+    // camelCase like every other payload, and the three keys the screen reads.
+    for key in ["band", "name", "words"] {
+        assert!(first.get(key).is_some(), "band is missing {key}: {first}");
+    }
+    assert_eq!(first["band"], 1);
+    assert_eq!(first["name"], "kyōiku 1");
+    assert!(first["words"].as_u64().expect("a count") > 0);
+    assert_eq!(
+        value.as_array().expect("an array").len(),
+        7,
+        "six grades and the remainder"
+    );
+}
+
+#[test]
+fn a_word_page_crosses_with_the_text_a_card_draws() {
+    let page = state().words_in_band(1, 2, 5);
+    let value = serde_json::to_value(&page).expect("serialises");
+    for key in ["band", "total", "offset", "words"] {
+        assert!(value.get(key).is_some(), "the page is missing {key}: {value}");
+    }
+    assert_eq!(value["band"], 1);
+    assert_eq!(value["offset"], 2);
+
+    let words = value["words"].as_array().expect("an array");
+    assert_eq!(words.len(), 5);
+    let word = &words[0];
+    for key in ["text", "reading", "meaning", "band", "bandName", "nf", "furigana"] {
+        assert!(word.get(key).is_some(), "a word is missing {key}: {word}");
+    }
+    // The furigana is the segment shape the card renders: ruby, and rt when the
+    // segment has a kanji in it.
+    let with_ruby = words
+        .iter()
+        .find(|w| !w["furigana"].as_array().expect("an array").is_empty())
+        .expect("a band-1 word with furigana");
+    let segment = &with_ruby["furigana"][0];
+    assert!(segment.get("ruby").is_some(), "{segment}");
+    assert!(segment.get("rt").is_some(), "rt is present even when null: {segment}");
+}
+
+#[test]
+fn a_word_crosses_with_its_own_reading_and_never_a_composed_one() {
+    let word = state().word("大人", "おとな").expect("大人 is in the vocabulary");
+    let value = serde_json::to_value(&word).expect("serialises");
+    assert_eq!(value["text"], "大人");
+    assert_eq!(
+        value["reading"], "おとな",
+        "the word's own reading: だいじん is what composing it from the characters \
+         would give"
+    );
+    assert_eq!(value["furigana"][0]["ruby"], "大人");
+    assert_eq!(value["furigana"][0]["rt"], "おとな");
+
+    // A word that is not in the vocabulary is a message rather than a panic, and
+    // the message is what the screen shows.
+    assert!(state().word("大人", "だいじん").is_err());
+}
+
+/// The request half, driven exactly as `api.ts` builds it: `{ text, reading,
+/// typed }`, with the answer read back by the keys `types.ts` declares.
+#[test]
+fn the_word_the_interface_posts_is_checked_the_way_the_command_reads_it() {
+    let payload = json!({
+        "text": "学生",
+        "reading": "がくせい",
+        "typed": "gakusei",
+    });
+    let text = payload["text"].as_str().expect("a string");
+    let reading = payload["reading"].as_str().expect("a string");
+    let typed = payload["typed"].as_str().expect("a string");
+
+    let check = state().check_word(text, reading, typed).expect("checks");
+    assert!(check.correct);
+    let value = serde_json::to_value(&check).expect("serialises");
+    for key in ["correct", "produced"] {
+        assert!(value.get(key).is_some(), "the check is missing {key}: {value}");
+    }
+    assert_eq!(value["correct"], true);
+    assert_eq!(value["produced"], "がくせい");
+
+    // And a wrong answer still says what it produced, in kana, for the message.
+    let wrong = state().check_word(text, reading, "sensei").expect("checks");
+    assert!(!wrong.correct);
+    assert_eq!(wrong.produced, "せんせい");
+}
+
+#[test]
+fn the_passage_list_crosses_with_what_the_reading_screen_offers() {
+    let summaries = state().passages();
+    assert_eq!(summaries.len(), 3);
+    let value = serde_json::to_value(&summaries).expect("serialises");
+    for key in ["key", "title", "gloss", "lines", "tokens"] {
+        assert!(value[0].get(key).is_some(), "a summary is missing {key}: {}", value[0]);
+    }
+    assert_eq!(value[0]["key"], "asa");
+}
+
+/// The passage itself, and the token shape a tap depends on: `surface`, `rt` (null
+/// for kana) and `word` (the dictionary form a card opens, null when there is
+/// none).
+#[test]
+fn a_passage_crosses_with_its_tokens_and_their_links() {
+    let passage = state().passage("gakko").expect("gakko is a passage");
+    let value = serde_json::to_value(&passage).expect("serialises");
+    for key in ["key", "title", "gloss", "lines"] {
+        assert!(value.get(key).is_some(), "a passage is missing {key}: {value}");
+    }
+
+    let lines = value["lines"].as_array().expect("an array of lines");
+    let tokens: Vec<&Value> = lines
+        .iter()
+        .flat_map(|line| line.as_array().expect("an array of tokens"))
+        .collect();
+
+    let verb = tokens
+        .iter()
+        .find(|t| t["surface"] == "行き")
+        .expect("行きます is in the passage");
+    assert_eq!(verb["rt"], "いき");
+    assert_eq!(
+        verb["word"], "行く",
+        "the link is the dictionary form, so a tap opens the entry the course teaches"
+    );
+
+    let particle = tokens
+        .iter()
+        .find(|t| t["surface"] == "は")
+        .expect("は is in the passage");
+    assert_eq!(particle["rt"], Value::Null, "kana needs no ruby");
+
+    // Every token has all three keys, so the screen never reads `undefined`.
+    for token in &tokens {
+        for key in ["surface", "rt", "word"] {
+            assert!(token.get(key).is_some(), "a token is missing {key}: {token}");
+        }
+    }
 }

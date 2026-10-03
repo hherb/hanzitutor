@@ -40,7 +40,7 @@ references for no gain.
 | **N1** | Audio | Early, because audio is the one thing both halves need: a kana wants a sound and so does every kanji word. The system voices already work, so the desktop is wiring. |
 | **N2** | A review queue | Early, for the same reason — kanji study without spaced repetition is not study. The store is this app's own (invariant 15); the scheduler's code is shared. |
 | **N6** | **The kanji data layer** | **Shipped.** The artifact is committed and verified; see the milestone for the three things the measurement corrected. Vocabulary moved to N7, where it belongs. |
-| **N7** | Kanji through vocabulary | Reading, furigana, okurigana. This is where a Japanese tutor becomes one, and where the "near identical with the hanzi" instinct has to be resisted most: the *characters* overlap, the *readings and meanings do not*. |
+| **N7** | Kanji through vocabulary | **Shipped.** Words with their own readings and furigana, a derived ladder, and two screens — Words and Read. The kanji artifact is embedded and unread: the character course is N8's. |
 | **N8** | The kanji course and screens | After the data. Mostly reuse of `RadicalsPanel` and the decomposition machinery. |
 | **N9** | Distribution | Notices into the bundle, a listing, and the mobile shells. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
@@ -629,10 +629,33 @@ opens 行く and 食べ opens 食べる — and where a token is written exactly
 writes it, the course's own reading wins, so a passage saying 私 and the card behind
 it cannot disagree about わたし and わたくし.
 
-**Still to do for N7**: the reading screen itself — the view that draws the passage
-with furigana over every kanji, opens a word card when one is tapped, and grades a
-word as a word. The three artifacts it needs are committed; the app reads none of
-them yet, which is also N8's first half.
+### Shipped — the screens
+
+The two views the acceptance criteria name, and both were **driven and looked at**
+rather than assumed (the recipe is `HANDOVER_NIHONGO.md` §5):
+
+* **Words** — the ladder as seven band chips with their measured sizes
+  (585 / 1,781 / 2,408 / 2,232 / 2,412 / 1,834 / 4,821), a paged list of the band's
+  words with their readings and glosses, and a card for the selected word: its
+  **per-character furigana** — 一方 comes out with いっ over 一 and ぽう over 方 — its
+  meaning, its band and EDRDG's frequency block, and a box to type the reading.
+  Typing いっぽう for 一方 answers *"Correct — 一方 is いっぽう."*; typing だいじん for
+  大人 answers with what it produced, だいじん, and what the word is, おとな.
+* **Read** — the passages with a reading over every kanji and every kanji-bearing
+  word underlined and tappable, so tapping 私 in 私は学生です。 opens the card for
+  私 read **わたし** — the course's reading, not the analyser's わたくし — and the
+  gloss for the passage below it.
+
+**The ladder is presented as ours, in two places**: the panel's own paragraph and
+every word card say the bands come from the school grades of a word's kanji and
+EDRDG's frequency ranking, "not from the JLPT, which publishes no list". A test
+asserts that no band name says JLPT, and `tests/words_artifact.rs` recomputes every
+band from the kanji artifact, so the label and the derivation cannot drift.
+
+The screens are covered by 32 unit tests, 6 new IPC-contract tests (including the
+*request* halves, which is the shape of invariant 14), and 12 frontend tests over the
+furigana and paging arithmetic. What N7 does **not** have is a review queue: that is
+N2, and the words artifact is what it would schedule from.
 
 ---
 

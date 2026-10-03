@@ -115,6 +115,10 @@ export interface DatasetStats {
   hiragana: number;
   katakana: number;
   lessons: number;
+  /** How many words the vocabulary holds. */
+  words: number;
+  /** How many reading passages are shipped. */
+  passages: number;
   strokes: number;
 }
 
@@ -195,4 +199,76 @@ export interface LicenceNotice {
   bundlePath: string;
   /** The notice text itself, compiled into the binary and sent over IPC. */
   text: string;
+}
+
+/**
+ * One segment of a word's furigana: the text it covers, and the reading over it.
+ *
+ * `rt` is null for a segment that is already kana, which needs no ruby — and it is
+ * *present* rather than absent, so the renderer can tell "no reading" from "field
+ * renamed".
+ */
+export interface Ruby {
+  ruby: string;
+  rt: string | null;
+}
+
+/** One band of the vocabulary ladder. */
+export interface BandView {
+  band: number;
+  /**
+   * What the band is called, from `nihongo_core::band_name` — "kyōiku 3", "jōyō
+   * beyond the school grades". The ladder is this project's derivation from the
+   * kyōiku grades and EDRDG's frequency ranking, not the JLPT's, and these names
+   * are how the interface says so.
+   */
+  name: string;
+  words: number;
+}
+
+/** One word, as the vocabulary screen draws it. */
+export interface Word {
+  text: string;
+  /** The whole word's reading, from the dictionary — never composed from its characters. */
+  reading: string;
+  meaning: string;
+  band: number;
+  bandName: string;
+  /** EDRDG's frequency block, 1–48, or null for a word it marks common without ranking. */
+  nf: number | null;
+  furigana: Ruby[];
+}
+
+/** A page of one band's words. */
+export interface WordPage {
+  band: number;
+  total: number;
+  offset: number;
+  words: Word[];
+}
+
+/** One passage, as the list offers it. */
+export interface PassageSummary {
+  key: string;
+  title: string;
+  gloss: string | null;
+  lines: number;
+  tokens: number;
+}
+
+/** One word of a passage. */
+export interface PassageToken {
+  surface: string;
+  /** The reading to draw over it; null for kana. */
+  rt: string | null;
+  /** The vocabulary word this token is, so a tap can open its card. */
+  word: string | null;
+}
+
+/** One passage, segmented. */
+export interface PassageView {
+  key: string;
+  title: string;
+  gloss: string | null;
+  lines: PassageToken[][];
 }

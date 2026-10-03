@@ -18,9 +18,10 @@ pub mod store;
 
 use licences::{AppInfo, LicenceNotice};
 use nihongo_core::{
-    confusions_for, find_pair, lessons as build_lessons, pair_key, reading, to_kana, to_kana_in,
-    yoon as build_yoon, Confusable, ConfusionLog, GradeOptions, GradeReport, KanaDataset, Point,
-    Script, CONFUSABLE,
+    band_name, confusions_for, find_pair, lessons as build_lessons, normalise_to_hiragana,
+    pair_key, reading, to_kana, to_kana_in, yoon as build_yoon, Confusable, ConfusionLog,
+    GradeOptions, GradeReport, KanaDataset, Passage, PassageDataset, PassageToken, Point, Ruby,
+    Script, Word, WordDataset, CONFUSABLE,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -29,10 +30,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use store::ConfusionStore;
 use tauri::{Manager, State};
 
-/// The kana dataset, loaded once and shared by every command, and the drill's
-/// memory of what this learner gets wrong.
+/// The datasets, loaded once and shared by every command, and the drill's memory
+/// of what this learner gets wrong.
+///
+/// All four artifacts are **embedded** — `include_bytes!`, not read from a path —
+/// so there is no data directory to find, no file to go missing, and no filesystem
+/// permission for the webview to hold. The kanji artifact is the largest at 3 MB
+/// and is not served by any command yet; it is here because the vocabulary needs
+/// the characters it holds to be gradeable, which is N8's first half.
 pub struct AppState {
     kana: KanaDataset,
+    words: WordDataset,
+    passages: PassageDataset,
     /// Behind a `Mutex` because Tauri hands every command a shared `&AppState`
     /// and recording an answer is a write. Contention is nil: one learner, one
     /// window, and a lock held for the microseconds a JSON write takes.
@@ -54,13 +63,22 @@ impl AppState {
     }
 
     fn with_store(drill: ConfusionStore) -> Self {
-        const ARTIFACT: &[u8] = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../crates/nihongo-core/data/kana.bin.gz"
-        ));
+        macro_rules! artifact {
+            ($name:literal) => {
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../crates/nihongo-core/data/",
+                    $name
+                ))
+            };
+        }
         Self {
-            kana: KanaDataset::from_gzip_bytes(ARTIFACT)
+            kana: KanaDataset::from_gzip_bytes(artifact!("kana.bin.gz"))
                 .expect("the committed kana artifact decodes"),
+            words: WordDataset::from_gzip_bytes(artifact!("words.bin.gz"))
+                .expect("the committed words artifact decodes"),
+            passages: PassageDataset::from_gzip_bytes(artifact!("passages.bin.gz"))
+                .expect("the committed passages artifact decodes"),
             drill: Mutex::new(drill),
         }
     }
@@ -89,6 +107,8 @@ impl AppState {
             hiragana,
             katakana,
             lessons: lesson_count,
+            words: self.words.len(),
+            passages: self.passages.len(),
             strokes: self
                 .kana
                 .kana()
@@ -293,6 +313,161 @@ impl AppState {
             })
             .collect()
     }
+
+    /// The ladder, one entry per band, with the counts a screen shows.
+    ///
+    /// The names come from `nihongo_core::band_name` rather than from this
+    /// interface, because the ladder is *this project's* derivation and the
+    /// interface has to say so: there has been no official JLPT list since 2010,
+    /// and a band labelled as one would be a lie about the data.
+    pub fn word_bands(&self) -> Vec<BandView> {
+        self.words
+            .band_counts()
+            .into_iter()
+            .map(|(band, words)| BandView {
+                band,
+                name: band_name(band).to_string(),
+                words,
+            })
+            .collect()
+    }
+
+    /// One page of a band's words, in course order.
+    ///
+    /// Paged rather than whole because band 7 holds nearly five thousand words and
+    /// the interface shows a list: a single payload would be a megabyte of JSON to
+    /// draw sixty rows.
+    pub fn words_in_band(&self, band: u8, offset: usize, limit: usize) -> WordPage {
+        let total = self.words.of_band(band).count();
+        let words = self
+            .words
+            .of_band(band)
+            .skip(offset)
+            .take(limit.clamp(1, MAX_WORD_PAGE))
+            .map(word_view)
+            .collect();
+        WordPage {
+            band,
+            total,
+            offset,
+            words,
+        }
+    }
+
+    /// One word, by its text and its reading.
+    pub fn word(&self, text: &str, reading: &str) -> Result<WordView, String> {
+        self.words
+            .find(text, reading)
+            .map(word_view)
+            .ok_or_else(|| format!("{text} ({reading}) is not in the vocabulary"))
+    }
+
+    /// One word, by its text alone.
+    ///
+    /// What a tapped passage token has: the token carries the word's text, because
+    /// that is what the sentence shows, and the token's own reading is the
+    /// *surface's* — 行き is read いき while the word is 行く, read いく — so it
+    /// cannot identify the entry. Six texts in the vocabulary are read two ways;
+    /// this returns the one the course reaches first, which is the earlier band and
+    /// the more frequent.
+    pub fn word_of_text(&self, text: &str) -> Result<WordView, String> {
+        self.words
+            .of_text(text)
+            .map(word_view)
+            .ok_or_else(|| format!("{text} is not in the vocabulary"))
+    }
+
+    /// Check a typed reading against a word.
+    ///
+    /// The word is graded **as a word**: its own reading, taken from the
+    /// dictionary, and never assembled from its characters — which is the whole
+    /// reason 大人 is おとな and not だいじん. Romaji is accepted, and so is kana
+    /// typed directly, because a learner who can already read kana should not have
+    /// to transliterate to answer.
+    pub fn check_word(&self, text: &str, reading: &str, typed: &str) -> Result<ReadingCheck, String> {
+        let word = self
+            .words
+            .find(text, reading)
+            .ok_or_else(|| format!("{text} ({reading}) is not in the vocabulary"))?;
+
+        let typed = typed.trim();
+        let produced = if typed.chars().any(is_kana) {
+            typed.to_string()
+        } else {
+            to_kana(typed).unwrap_or_default()
+        };
+        let correct = !produced.is_empty()
+            && normalise_to_hiragana(&produced) == normalise_to_hiragana(&word.reading);
+        Ok(ReadingCheck { correct, produced })
+    }
+
+    /// The passages, as a list a screen can offer.
+    pub fn passages(&self) -> Vec<PassageSummary> {
+        self.passages
+            .passages()
+            .iter()
+            .map(|passage| PassageSummary {
+                key: passage.key.clone(),
+                title: passage.title.clone(),
+                gloss: passage.gloss.clone(),
+                lines: passage.lines.len(),
+                tokens: passage.tokens().count(),
+            })
+            .collect()
+    }
+
+    /// One passage, segmented, with the reading over every kanji.
+    pub fn passage(&self, key: &str) -> Result<PassageView, String> {
+        self.passages
+            .get(key)
+            .map(passage_view)
+            .ok_or_else(|| format!("{key} is not one of the passages"))
+    }
+}
+
+/// The largest page a caller may ask for.
+///
+/// Bounded here rather than trusted from the interface: `limit` crosses the IPC
+/// boundary, and an unbounded one would let a stray number build a payload the
+/// window cannot draw.
+const MAX_WORD_PAGE: usize = 200;
+
+/// Whether a string is kana, for telling a typed reading from typed romaji.
+fn is_kana(ch: char) -> bool {
+    matches!(ch as u32, 0x3041..=0x309F | 0x30A1..=0x30FA | 0x30FC)
+}
+
+fn word_view(word: &Word) -> WordView {
+    WordView {
+        text: word.text.clone(),
+        reading: word.reading.clone(),
+        meaning: word.meaning.clone(),
+        band: word.band,
+        band_name: band_name(word.band).to_string(),
+        nf: word.nf,
+        furigana: word.furigana.clone(),
+    }
+}
+
+fn passage_view(passage: &Passage) -> PassageView {
+    PassageView {
+        key: passage.key.clone(),
+        title: passage.title.clone(),
+        gloss: passage.gloss.clone(),
+        lines: passage
+            .lines
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .map(|token: &PassageToken| PassageTokenView {
+                        surface: token.surface.clone(),
+                        rt: token.rt.clone(),
+                        word: token.word.clone(),
+                    })
+                    .collect()
+            })
+            .collect(),
+    }
 }
 
 /// What the course contains.
@@ -303,6 +478,11 @@ pub struct DatasetStats {
     pub hiragana: usize,
     pub katakana: usize,
     pub lessons: usize,
+    /// How many words the vocabulary holds, so the header can say so without a
+    /// second call.
+    pub words: usize,
+    /// How many reading passages are shipped.
+    pub passages: usize,
     pub strokes: usize,
 }
 
@@ -389,6 +569,85 @@ pub struct YoonView {
     pub hepburn: String,
     pub kunrei: String,
     pub kana: Vec<char>,
+}
+
+/// One band of the vocabulary ladder.
+///
+/// `name` is the label a screen shows, and it is deliberately not "JLPT n": the
+/// bands are derived from the kyōiku grades and EDRDG's frequency ranking, and
+/// `nihongo_core::band_name` is where the words a learner sees come from.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BandView {
+    pub band: u8,
+    pub name: String,
+    pub words: usize,
+}
+
+/// A page of one band's words.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WordPage {
+    pub band: u8,
+    /// How many words the band holds in all, so a screen can page without
+    /// guessing.
+    pub total: usize,
+    pub offset: usize,
+    pub words: Vec<WordView>,
+}
+
+/// One word, as the vocabulary screen draws it: the word, its own reading, the
+/// furigana that puts that reading over the right characters, and its band.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WordView {
+    pub text: String,
+    /// The whole word's reading, from the dictionary — never composed from the
+    /// characters.
+    pub reading: String,
+    pub meaning: String,
+    pub band: u8,
+    /// The band's name, so the screen never has to map a number to a claim.
+    pub band_name: String,
+    /// EDRDG's frequency block, 1–48, or `null` for a word it marks common
+    /// without ranking.
+    pub nf: Option<u8>,
+    /// The furigana, in order. Empty for the words JmdictFurigana does not align.
+    pub furigana: Vec<Ruby>,
+}
+
+/// One passage, as the reading screen offers it.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PassageSummary {
+    pub key: String,
+    pub title: String,
+    pub gloss: Option<String>,
+    pub lines: usize,
+    pub tokens: usize,
+}
+
+/// One passage, segmented, with a reading over every kanji.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PassageView {
+    pub key: String,
+    pub title: String,
+    pub gloss: Option<String>,
+    pub lines: Vec<Vec<PassageTokenView>>,
+}
+
+/// One word of a passage.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PassageTokenView {
+    pub surface: String,
+    /// The reading to draw over it, in hiragana; `null` for kana, which needs no
+    /// ruby.
+    pub rt: Option<String>,
+    /// The vocabulary word this token is, when it is one, so a tap can open its
+    /// card. The dictionary form: 行き links to 行く.
+    pub word: Option<String>,
 }
 
 /// The result of checking a typed romaji answer.
@@ -496,6 +755,54 @@ fn yoon(script: String) -> Result<Vec<YoonSummary>, String> {
         .collect())
 }
 
+/// The vocabulary ladder, one entry per band, with each band's size.
+#[tauri::command]
+fn word_bands(state: State<'_, AppState>) -> Vec<BandView> {
+    state.word_bands()
+}
+
+/// One page of a band's words, in course order.
+#[tauri::command]
+fn words_in_band(state: State<'_, AppState>, band: u8, offset: usize, limit: usize) -> WordPage {
+    state.words_in_band(band, offset, limit)
+}
+
+/// One word, by its text and its reading.
+#[tauri::command]
+fn word(state: State<'_, AppState>, text: String, reading: String) -> Result<WordView, String> {
+    state.word(&text, &reading)
+}
+
+/// One word, by its text alone — what a tapped passage token has.
+#[tauri::command]
+fn word_of_text(state: State<'_, AppState>, text: String) -> Result<WordView, String> {
+    state.word_of_text(&text)
+}
+
+/// Check a typed reading against a word. The word is graded as a word — its own
+/// reading, which is never composed from its characters.
+#[tauri::command]
+fn check_word(
+    state: State<'_, AppState>,
+    text: String,
+    reading: String,
+    typed: String,
+) -> Result<ReadingCheck, String> {
+    state.check_word(&text, &reading, &typed)
+}
+
+/// The passages a learner can read.
+#[tauri::command]
+fn passages(state: State<'_, AppState>) -> Vec<PassageSummary> {
+    state.passages()
+}
+
+/// One passage, segmented, with the reading over every kanji.
+#[tauri::command]
+fn passage(state: State<'_, AppState>, key: String) -> Result<PassageView, String> {
+    state.passage(&key)
+}
+
 /// A yōon digraph in the cut-down form the input helper needs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -562,6 +869,13 @@ pub fn run() {
             check_reading,
             romaji_to_kana,
             yoon,
+            word_bands,
+            words_in_band,
+            word,
+            word_of_text,
+            check_word,
+            passages,
+            passage,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the kana tutor");
@@ -824,6 +1138,186 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_ladder_comes_back_with_our_names_and_its_sizes() {
+        let state = state();
+        let bands = state.word_bands();
+        assert_eq!(bands.len(), 7, "six kyōiku grades and the remainder");
+        assert_eq!(
+            bands.iter().map(|b| b.words).sum::<usize>(),
+            state.words.len()
+        );
+        assert_eq!(bands[0].band, 1);
+        assert_eq!(bands[0].name, "kyōiku 1");
+        assert_eq!(bands[6].name, "jōyō beyond the school grades");
+        for band in &bands {
+            assert!(
+                !band.name.to_ascii_uppercase().contains("JLPT"),
+                "the ladder is derived, not the JLPT's: {:?}",
+                band.name
+            );
+        }
+        // No band is empty, and band 1 is the smallest — a fact about Japanese
+        // rather than a hole in the data.
+        assert!(bands.iter().all(|b| b.words > 0));
+        assert!(bands[0].words < bands[6].words);
+    }
+
+    #[test]
+    fn a_page_of_words_carries_what_a_word_card_draws() {
+        let state = state();
+        let page = state.words_in_band(1, 0, 10);
+        assert_eq!(page.band, 1);
+        assert_eq!(page.offset, 0);
+        assert_eq!(page.words.len(), 10);
+        assert!(
+            page.total > page.words.len(),
+            "band 1 holds more than one page: {} words",
+            page.total
+        );
+
+        let first = &page.words[0];
+        assert!(!first.text.is_empty());
+        assert!(!first.reading.is_empty());
+        assert!(!first.meaning.is_empty());
+        assert_eq!(first.band, 1);
+        assert_eq!(first.band_name, "kyōiku 1");
+        assert!(first.nf.is_none_or(|rank| (1..=48).contains(&rank)));
+
+        // A page past the end is empty rather than an error, and a limit the
+        // interface should not have asked for is clamped.
+        assert!(state.words_in_band(1, page.total, 10).words.is_empty());
+        assert!(state.words_in_band(1, 0, 10_000).words.len() <= 200);
+    }
+
+    #[test]
+    fn a_word_is_graded_as_a_word_and_never_from_its_characters() {
+        let state = state();
+        // 大人 is おとな. A reading composed from the characters would be
+        // だいじん, and the point of carrying the word's own reading is that it is
+        // not.
+        assert!(state.check_word("大人", "おとな", "otona").expect("a word").correct);
+        assert!(!state.check_word("大人", "おとな", "daijin").expect("a word").correct);
+        // The wrong answer says what it produced, so a screen can show it.
+        assert_eq!(
+            state.check_word("大人", "おとな", "daijin").expect("a word").produced,
+            "だいじん"
+        );
+        // A word that is not one is an error rather than a silent `false`.
+        assert!(state.check_word("大人", "だいじん", "otona").is_err());
+    }
+
+    #[test]
+    fn a_kana_answer_is_accepted_as_well_as_romaji() {
+        let state = state();
+        assert!(state.check_word("学生", "がくせい", "gakusei").expect("a word").correct);
+        assert!(
+            state.check_word("学生", "がくせい", "がくせい").expect("a word").correct,
+            "a learner who can read kana should not have to transliterate"
+        );
+        assert!(
+            state.check_word("学生", "がくせい", "ガクセイ").expect("a word").correct,
+            "the kana type should not decide the answer"
+        );
+    }
+
+    #[test]
+    fn a_word_can_be_fetched_by_its_text_and_reading() {
+        let state = state();
+        let word = state.word("食べる", "たべる").expect("食べる is in the vocabulary");
+        assert_eq!(word.text, "食べる");
+        assert_eq!(word.reading, "たべる");
+        assert_eq!(word.meaning, "to eat");
+        assert_eq!(word.furigana.len(), 2);
+        assert_eq!(word.furigana[0].ruby, "食");
+        assert_eq!(word.furigana[0].rt.as_deref(), Some("た"));
+        assert!(state.word("食べる", "くう").is_err(), "that is a different word");
+    }
+
+    #[test]
+    fn a_word_a_passage_links_to_is_found_by_its_text_alone() {
+        // The token carries the word's text, not its reading, so a tap has to be
+        // able to open an entry from that alone — 行き's own reading is いき and the
+        // word it links to is 行く, read いく.
+        let state = state();
+        let word = state.word_of_text("行く").expect("行く is in the vocabulary");
+        assert_eq!(word.text, "行く");
+        assert_eq!(word.reading, "いく");
+
+        // 行き is an entry in its own right — a noun — so this finds that one, and
+        // the two are different words rather than one answer to two questions.
+        let noun = state.word_of_text("行き").expect("行き is a noun entry");
+        assert_eq!(noun.text, "行き");
+        assert_ne!(noun.reading, word.reading);
+
+        // Anything the course does not teach is a message rather than a panic.
+        assert!(state.word_of_text("あいうえお").is_err());
+    }
+
+    #[test]
+    fn the_passages_come_back_segmented_with_their_readings() {
+        let state = state();
+        let summaries = state.passages();
+        assert_eq!(summaries.len(), 3);
+        assert!(summaries.iter().all(|p| p.lines > 0 && p.tokens > 0));
+        assert!(summaries.iter().all(|p| p.gloss.is_some()));
+
+        let asa = state.passage("asa").expect("asa is a passage");
+        assert_eq!(asa.title, "あさ");
+        // 学生 is one token, carries its reading, and links to the vocabulary word.
+        let student = asa
+            .lines
+            .iter()
+            .flatten()
+            .find(|token| token.surface == "学生")
+            .expect("学生 is in the passage");
+        assert_eq!(student.rt.as_deref(), Some("がくせい"));
+        assert_eq!(student.word.as_deref(), Some("学生"));
+        // A particle is a token too, and needs no ruby.
+        let particle = asa
+            .lines
+            .iter()
+            .flatten()
+            .find(|token| token.surface == "は")
+            .expect("は is in the passage");
+        assert_eq!(particle.rt, None);
+
+        assert!(state.passage("nope").is_err());
+    }
+
+    #[test]
+    fn every_token_of_every_passage_that_has_a_word_can_be_opened() {
+        // What a tap does, as a test: the link a passage carries has to resolve to
+        // a word the vocabulary screen can actually show.
+        let state = state();
+        let mut opened = 0;
+        for summary in state.passages() {
+            for line in state.passage(&summary.key).expect("a passage").lines {
+                for token in line {
+                    let Some(text) = &token.word else { continue };
+                    // The link is the word's text; the reading is whatever the
+                    // vocabulary holds for it, which is what the card will show.
+                    let held = state
+                        .words
+                        .of_text(text)
+                        .unwrap_or_else(|| panic!("{text} is linked but not held"));
+                    let word = state
+                        .word(&held.text, &held.reading)
+                        .unwrap_or_else(|e| panic!("{text} does not open: {e}"));
+                    assert_eq!(word.text, *text);
+                    if token.surface.chars().any(nihongo_core::is_kanji) {
+                        assert!(
+                            token.rt.is_some(),
+                            "{text}: a kanji token with no reading cannot be drawn"
+                        );
+                    }
+                    opened += 1;
+                }
+            }
+        }
+        assert!(opened >= 10, "the passages link to {opened} words in all");
     }
 
     #[test]

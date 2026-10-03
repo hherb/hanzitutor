@@ -10,6 +10,8 @@
   import KanaCanvas from "./lib/KanaCanvas.svelte";
   import ConfusionDrill from "./lib/ConfusionDrill.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
+  import VocabularyPanel from "./lib/VocabularyPanel.svelte";
+  import PassagePanel from "./lib/PassagePanel.svelte";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./lib/render";
   import * as api from "./lib/api";
   import type {
@@ -24,7 +26,7 @@
 
   let info = $state<AppInfo | null>(null);
   let stats = $state<DatasetStats | null>(null);
-  let view = $state<"practice" | "drill" | "licences">("practice");
+  let view = $state<"practice" | "drill" | "words" | "read" | "licences">("practice");
   let script = $state<ScriptName>("hiragana");
   let course = $state<LessonView[]>([]);
   let lessonKey = $state<string | null>(null);
@@ -135,7 +137,7 @@
     {#if stats}
       <p class="sub">
         {stats.kana} kana · {stats.hiragana} hiragana · {stats.katakana} katakana ·
-        {stats.lessons} lessons
+        {stats.lessons} lessons · {stats.words.toLocaleString()} words
       </p>
     {/if}
   </header>
@@ -145,7 +147,7 @@
   {/if}
 
   <div class="views" role="tablist">
-    {#each [["practice", "Practice"], ["drill", "Tell them apart"], ["licences", "Licences"]] as const as [id, label] (id)}
+    {#each [["practice", "Practice"], ["drill", "Tell them apart"], ["words", "Words"], ["read", "Read"], ["licences", "Licences"]] as const as [id, label] (id)}
       <button
         role="tab"
         aria-selected={view === id}
@@ -299,6 +301,10 @@
 
   {:else if view === "drill"}
     <ConfusionDrill />
+  {:else if view === "words"}
+    <VocabularyPanel />
+  {:else if view === "read"}
+    <PassagePanel />
   {:else}
     <LicencesPanel />
   {/if}

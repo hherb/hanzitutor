@@ -10,6 +10,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
+  BandView,
   DatasetStats,
   DrillQuestion,
   DrillTally,
@@ -17,9 +18,13 @@ import type {
   Kana,
   LessonView,
   LicenceNotice,
+  PassageSummary,
+  PassageView,
   Point,
   ReadingCheck,
   ScriptName,
+  Word,
+  WordPage,
   YoonView,
 } from "./types";
 
@@ -114,4 +119,57 @@ export function licences(): Promise<LicenceNotice[]> {
 /** The yōon digraphs for a script, for an input helper. */
 export function yoon(script: ScriptName): Promise<YoonView[]> {
   return invoke<YoonView[]>("yoon", { script });
+}
+
+/** The vocabulary ladder: each band's name and how many words it holds. */
+export function wordBands(): Promise<BandView[]> {
+  return invoke<BandView[]>("word_bands");
+}
+
+/**
+ * One page of a band's words, in course order.
+ *
+ * Paged because band 7 holds nearly five thousand words: the screen draws a list,
+ * and the whole band as JSON would be a megabyte to show sixty rows.
+ */
+export function wordsInBand(band: number, offset = 0, limit = 60): Promise<WordPage> {
+  return invoke<WordPage>("words_in_band", { band, offset, limit });
+}
+
+/** One word, by its text and its reading. */
+export function word(text: string, reading: string): Promise<Word> {
+  return invoke<Word>("word", { text, reading });
+}
+
+/**
+ * One word, by its text alone.
+ *
+ * What a tapped passage token has: the token carries the word's *text*, and its
+ * own reading is the surface's (行き is read いき while the word is 行く, read
+ * いく), so the reading cannot identify the entry. Where a text is read two ways
+ * this returns the one the course reaches first.
+ */
+export function wordOfText(text: string): Promise<Word> {
+  return invoke<Word>("word_of_text", { text });
+}
+
+/**
+ * Check a typed reading against a word.
+ *
+ * The word is graded *as a word*: its own reading, taken from the dictionary and
+ * never composed from its characters. Romaji and kana are both accepted — a
+ * learner who can read kana should not have to transliterate to answer.
+ */
+export function checkWord(text: string, reading: string, typed: string): Promise<ReadingCheck> {
+  return invoke<ReadingCheck>("check_word", { text, reading, typed });
+}
+
+/** The passages a learner can read. */
+export function passages(): Promise<PassageSummary[]> {
+  return invoke<PassageSummary[]>("passages");
+}
+
+/** One passage, segmented, with a reading over every kanji. */
+export function passage(key: string): Promise<PassageView> {
+  return invoke<PassageView>("passage", { key });
 }

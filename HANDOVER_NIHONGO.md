@@ -115,8 +115,9 @@ tests**; adding `pnpm run test:web` brings in 11 more over the board arithmetic.
 | Bands | 585 / 1,781 / 2,408 / 2,232 / 2,412 / 1,834 / 4,821 — this project's ladder, not the JLPT's (invariant 20) |
 | Furigana | 16,022 of 16,073 aligned (99.7%); the other 51 carry their reading and no ruby |
 | Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
-| Tests | nihongo-core 156, nihongo-tutor 50, frontend 11 of the 80 |
-| Artifact | kana 70,917, kanji 3,073,516, words 601,816 and passages 502 bytes — all gzip + magic + postcard |
+| Screens | Practice, Tell them apart, **Words**, **Read**, Licences |
+| Tests | nihongo-core 156, nihongo-tutor 64, frontend 23 of the 92 |
+| Artifact | kana 70,917, kanji 3,073,516, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Learner data | one file, `confusions.json`, in the app's own data directory |
 | Version | both crates 0.1.0, and the app's to match |
 
@@ -124,11 +125,14 @@ The app runs and has been looked at, all of it: the course, the board, stroke-or
 animation, handwriting grading, the discrimination drill, the typing box, the
 katakana tab and the Licences panel have each been seen working on a display.
 
-**The kanji, vocabulary and passage halves are data only so far.** Four artifacts
-are committed, tested and documented, and **nothing in the app reads any of them**:
-no course, no screen, no command. That is `ROADMAP_NIHONGO.md` N7 (whose data half
-has shipped: see its two "Shipped" sections) and N8, and each milestone's own record
-includes what its measurement corrected.
+**The vocabulary and the passages are on screen; the kanji are not.** The app embeds
+all four artifacts and serves three of them: **Words** browses the ladder band by
+band with furigana over every word and grades a typed reading, and **Read** draws a
+passage with a reading over each kanji and opens a word card when one is tapped. The
+**kanji** artifact is embedded and read by nothing — the character course, the board
+showing a word's characters, the radicals panel and the decomposition panel are
+`ROADMAP_NIHONGO.md` N8. Each milestone's own record says what its measurement
+corrected.
 
 **The drill is the one part that learns anything about its learner** (roadmap N3).
 It used to draw a kana from a pool and throw the answer away; it now draws a *pair*,
@@ -223,10 +227,15 @@ apps/nihongo-tutor/               the app
                                   reads *and the arguments it posts* (invariant 14)
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
-  src/App.svelte         (312)    the three views, the course, the board wiring
+  src/App.svelte         (317)    the five views, the course, the board wiring
   src/lib/KanaCanvas.svelte(243)  pointer capture and the animation frame
   src/lib/ConfusionDrill.svelte(225)  the drill: one pair, one answer, remembered
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
+  src/lib/VocabularyPanel.svelte(332) the ladder, a band's words, the card — N7
+  src/lib/PassagePanel.svelte(306)  a passage with furigana and a tap on any word — N7
+  src/lib/WordCard.svelte(283)      one word: its furigana, its reading, its band
+  src/lib/words.ts        (137)     furigana and paging arithmetic, as pure functions
+  src/lib/words.test.ts   (137)     run by the ROOT project's vitest
   src/lib/board.ts        (97)    the board's arithmetic, as pure functions
   src/lib/board.test.ts   (99)    run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
@@ -859,6 +868,19 @@ Two things to know about reading that log: WebKit serves already-fetched modules
 a cold app start is the honest measurement; and give each beacon a `?t=<now>` so
 its own fetches are not cached either.
 
+**Two things about reading a capture.** A window captured with `-l` while it is not
+frontmost can come back as a **stale backing store** — blank, or showing a scroll
+position that the DOM does not have — and the DOM is the truth: a probe that reports
+`scrollY=0` and the header at y36 while the image shows neither is a capture
+artefact, not a layout bug. Capture twice, and give the window a moment after a
+reload before believing what it shows.
+
+And when a window is blank, the harness above is the way in — but note that the
+window will also be blank if the page never ran at all. A probe log with *nothing*
+in it, not even a load line, means the script never executed: suspect the file you
+just edited (and check whether `svelte-check` sees it) before suspecting the
+webview.
+
 **And a false lead worth not repeating.** Vite binds loopback as **IPv6 only** here:
 `lsof` shows `[::1]:1422 (LISTEN)`, `curl http://[::1]:1422/` answers 200 and
 `curl http://127.0.0.1:1422/` gets connection refused. That looks exactly like "the
@@ -1133,6 +1155,30 @@ directory called `unidic`, found nothing, and the pipeline reported a missing
 dictionary that was sitting right there. Look for the name the producer chose, and
 check for `metadata.json` so a half-written directory is not mistaken for a built
 one.
+
+### 16. The interface is driven from `index.html`, and a patch script that writes the wrong file looks exactly like a broken app
+
+The recipe in §5 works and was used to verify every screen of N7: a temporary
+`<script>` in `index.html` that clicks, types and reports over `fetch("/__probe?m=…")`,
+plus a Vite middleware that appends each request to a log file. It is the only way to
+answer "does tapping a word open the card?" from here — System Events is blocked
+(trap 6) and Tauri does not forward the console.
+
+Two ways it cost time.
+
+**A blank window with an empty probe log is not a webview problem.** When the log has
+*nothing* in it — not even the load line — the page never ran, which means the file
+that builds it is broken. That is worth knowing because the symptom is identical to
+trap 9's effect cycle and to a stale capture, and the fastest discriminator is
+`svelte-check`: it named the broken file immediately. (The break, in this session,
+was a patch script that read `index.html` and wrote the result to `App.svelte` —
+`App.svelte` became an HTML document. `git show HEAD:…/App.svelte` plus re-applying
+the edits fixed it in a minute, and the lesson is to have the script name both the
+file it reads and the file it writes.)
+
+**Captures lie when the window is not frontmost.** See §5: a `-l` capture can be a
+stale backing store, and the DOM is the truth. A probe that reports `scrollY=0` with
+the header at y36 while the image shows neither is a capture artefact.
 
 ---
 
