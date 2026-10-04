@@ -36,11 +36,11 @@
       "dmg"
     ],
     "icon": [
-      "../../../src-tauri/icons/32x32.png",
-      "../../../src-tauri/icons/128x128.png",
-      "../../../src-tauri/icons/128x128@2x.png",
-      "../../../src-tauri/icons/icon.icns",
-      "../../../src-tauri/icons/icon.ico"
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
     ],
     "category": "Education",
     "shortDescription": "Learn to read and write Japanese kana",
@@ -50,6 +50,11 @@
       "../../../LICENSE": "licences/AGPL-3.0.txt",
       "../../../LICENSES.md": "licences/PROVENANCE.md",
       "licences/AnimCJK-COPYING.txt": "licences/AnimCJK-COPYING.txt",
+      "licences/EDRDG-JMdict-KANJIDIC2.txt": "licences/EDRDG-JMdict-KANJIDIC2.txt",
+      "../../../licences/CC-BY-SA-4.0.txt": "licences/CC-BY-SA-4.0.txt",
+      "licences/PROVENANCE-JmdictFurigana.txt": "licences/PROVENANCE-JmdictFurigana.txt",
+      "licences/MIT-JmdictFurigana.txt": "licences/MIT-JmdictFurigana.txt",
+      "licences/ANALYSER-UniDic-lindera.txt": "licences/ANALYSER-UniDic-lindera.txt",
       "../../../licences/LGPL-3.0.txt": "licences/LGPL-3.0.txt",
       "../../../licences/Arphic-Public-License.txt": "licences/Arphic-Public-License.txt"
     },

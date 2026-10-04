@@ -42,7 +42,7 @@ references for no gain.
 | **N6** | **The kanji data layer** | **Shipped.** The artifact is committed and verified; see the milestone for the three things the measurement corrected. Vocabulary moved to N7, where it belongs. |
 | **N7** | Kanji through vocabulary | **Shipped.** Words with their own readings and furigana, a derived ladder, and two screens — Words and Read. The kanji artifact it embedded unread is now the character course's, at N8. |
 | **N8** | **The kanji course and screens** | **Shipped.** The course, the 214-radical table and the components screen, all served from the artifact the vocabulary already needed. See the milestone for what the measurement added — and for the one thing it decided that was open. |
-| **N9** | Distribution | Notices into the bundle, a listing, and the mobile shells. |
+| **N9** | Distribution | **Shipped.** The notices that were missing now ship, and a signed `.app` bundles — which it could not before, because the app's own lockfile pinned Tauri's JS at 2.11 against the workspace's 2.12. See the milestone for the three licence obligations that had been unmet since N6 and N7. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -1130,6 +1130,136 @@ invariant 28 is the part that must not be undone.
   data brings that obligation with it.
 * The listing copy is written, and the screenshots are the ones in
   `assets/showcase/` — see `assets/README.md`.
+
+### Shipped
+
+**Two of the four criteria were already met and one of those was not as met as it
+looked.** The three-way bundle check was in place and green — but it only ever
+compared the *catalogue* against the bundle config, and its sibling that reads the
+notice texts named five ids in a hardcoded table. So the app had been shipping
+EDRDG's dictionary text since N6 and JmdictFurigana's alignments and UniDic's
+segmentation since N7 with **no notice for any of the three**, and the one test
+that could have read them skipped them by construction. A catalogue that is
+checked against three places is still wrong if it never listed what it ships.
+
+**What was actually missing, and it is a licence question rather than a tidiness
+one.** `LICENSES.md` had recorded all three obligations and satisfied none of them
+in the bundle:
+
+* **EDRDG's terms ask a software package for four things**, and the app met one.
+  Acknowledging usage and source on a screen reached from a menu: `PROVENANCE.md`
+  had a bullet, not a screen entry. Copies of the documentation and licence files:
+  **no CC BY-SA text shipped at all**, though the *Chinese* app had shipped the
+  identical legal code for two milestones and the file was already in `licences/`.
+  Links: the bullet carried none. Keeping the data updated: documented, and the
+  pinned snapshot recorded in the artifact — the one limb that was met.
+* **JmdictFurigana's MIT text** was never fetched, let alone catalogued, although
+  `LICENSES.md` said in as many words that it "joins them in `licences/` on the
+  commit that embeds this artifact" — and the artifact was embedded at N7.
+* **UniDic's BSD-3-Clause notice** existed only inside `LICENSES.md`, which is
+  neither compiled into the app nor copied into its bundle, while the passages
+  artifact is a derived redistribution of its segmentation.
+
+Five notices now ship: `edrdg`, `ccbysa`, `jmdict-furigana`,
+`jmdict-furigana-mit` and `unidic`. The catalogue is ten entries, the bundle holds
+all ten files, and `the_texts_are_the_real_licences_and_not_placeholders` now
+**asserts that every catalogued id appears in its expectation table**, so the next
+notice cannot be added and forgotten. `the_share_alike_notices_say_what_was_selected_and_changed`
+reads the new texts and fails if they stop saying what was taken, changed and
+dropped — which is what CC BY-SA 4.0 §3(a)(1)(B) asks for and what the first draft
+of the EDRDG notice described without ever *stating*.
+
+**The build was broken, and that is why criterion 2 had never been exercised.**
+`pnpm --dir apps/nihongo-tutor run build` failed before compiling anything:
+
+```
+Error Found version mismatched Tauri packages:
+tauri (v2.12.0) : @tauri-apps/api (v2.11.1)
+```
+
+The app has its own `package.json` and its own lockfile, and they were pinned to
+the 2.11 line while the workspace's `Cargo.lock` had moved to `tauri` 2.12. So the
+app had **no signed bundle at all** — nothing to catch the version drift, because
+nothing had bundled it since the pin changed. `@tauri-apps/api` and
+`@tauri-apps/cli` are now `^2.12.0`, and the app bundles and signs:
+`Kana Tutor.app`, 15.35 MiB, `codesign --verify --deep --strict` clean,
+`Identifier=com.hanzitutor.kana`, `TeamIdentifier=X5DWXB4283`.
+
+**And one more that only a redistributor would have hit.** The bundle's licence
+texts were copied with the modes the source files happened to have, and five of
+them were `600` — unreadable by anyone but the machine that built it. The
+`chmod -R a+rX` that exists to prevent exactly this sat *inside* `build-release.sh`'s
+success branch, and `tauri build` writes and signs the `.app` **before** it attempts
+the `.dmg`; a disk-image failure — routine in a headless or sandboxed session and
+the normal outcome here — returns non-zero with a complete, signed `.app` already
+on disk and skips the branch. So the `.app` a reader is told to pick up was the one
+left unfixed. The `chmod` now runs whenever the bundle exists, and the licence
+directory is re-checked by name. This is `HANDOVER_NIHONGO.md` trap 19.
+
+**Guarded, and it was not a hypothetical.** The same mismatch was in
+`apps/tone-trainer`, whose Rust side also resolves to `tauri` 2.12 through the
+shared `Cargo.lock` — verified by building it, not by reading it. Fixed in the same
+commit, because a one-line pin that blocks a sibling app's release is worth the
+three minutes it takes to confirm rather than a note saying "probably affected".
+
+**The `.dmg` is built, and the reason `pnpm run build` cannot build it here is the
+sandbox rather than the app.** Tauri writes the `.dmg` by running a generated
+`bundle_dmg.sh`, which calls `hdiutil`; the agent harness's file sandbox refuses
+that with `Operation not permitted` and Tauri reports only "failed to run
+bundle_dmg.sh", hiding the cause. It is not this app's configuration — `hdiutil
+create` fails on a folder holding one text file — and it is not a regression
+against the Chinese app: the single `Hanzi.Tutor_0.6.0_aarch64.dmg` in the tree was
+built from the pre-2.12 release tree, and nothing in the current tree had produced
+an image at all. Running the same script outside the sandbox does, and the first
+run through produced **`Kana Tutor_0.1.0_aarch64.dmg`, 8,186,456 bytes** —
+`hdiutil verify` VALID, signed as `Kana Tutor_0.1.0_aarch64` under Team
+`X5DWXB4283`, mounting with the app and the `Applications` link, the app inside
+still passing `codesign --verify --deep --strict`, and all ten licence files present
+inside the image.
+
+**A second failure mode was found the hard way, and it is not the sandbox.** Later
+rebuilds ended at `hdiutil: couldn't unmount "disk36" - Resource busy` — the volume
+was in use, because the mounted intermediate image was open in Finder and had been
+launched from. Two attempts in a row left `dmg.DhcY23` and `dmg.zHi9AK` mounted and
+never wrote the compressed image, so the only artifacts were the 41 MB uncompressed
+intermediate `rw.<pid>.…dmg` and the two volumes. Finder automation is **not** a
+blocker here — with the sandbox widened the script reaches `Running AppleScript to
+make Finder stuff pretty` and `Done running the AppleScript`. Both causes are
+separated in `HANDOVER_NIHONGO.md` trap 21, which also records what the stale
+volumes look like and that a finished build leaves the small `.dmg` and nothing
+else. **A distributable image has not yet been produced from the icon-carrying
+build**; the app itself is installed and correct, and the remaining step is the
+three commands in that trap run without anything holding the volume.
+
+**The app has its own icon now, and it was the installer that made the lack of one
+obvious.** `Kana Tutor.app/Contents/Resources/icon.icns` had been byte-identical to
+Hanzi Tutor's — the same md5, `20415bd95287c636e545c5341c5828f0` — because all three
+apps' `tauri.conf.json` pointed at the one shared `src-tauri/icons/` set and no
+per-app icon had ever been made. Two apps with different names and different
+contents wore the same face in the Dock, in Applications and on the disk image.
+
+It is generated rather than drawn: あ in **Hiragino Kaku Gothic W6**, white on the
+same rounded square and the same red vertical gradient as the Chinese app's icon,
+sampled from `icon.png` and reused rather than reinvented — the squircle mask is
+reused too, and the glyph is scaled to the ink box 汉 occupies (`299 × 266` at
+`(267.5, 252)`), because dropping it in at the font's natural size made it a third
+larger than the character beside it. W6 was chosen by rendering W3, W6, AquaKana and
+AppleGothic at the matched size and comparing; W3 and AquaKana are visibly lighter
+than the original's strokes. The master is
+`apps/nihongo-tutor/app-icon.png`, the platform set comes from `tauri icon`
+(`apps/nihongo-tutor/src-tauri/icons/`), and the app's `tauri.conf.json` now points
+at its own copy instead of the shared directory.
+
+**Verified by installing it, not by inspection.** `/Applications/Kana Tutor.app` is
+the signed build — `icon.icns` md5 `130da45e414c92f6a83f2d618037a5bf`, distinct from
+Hanzi Tutor's, `Identifier=com.hanzitutor.kana`, Team `X5DWXB4283`, resources sealed
+— and the new icon is what the Dock shows.
+
+**Still deliberately not done.** The Play listing: there is no mobile shell for
+this app, and the criterion is conditional on wanting one. The listing copy: there
+is **no Japanese screenshot set** in `assets/showcase/` (every image there is Hanzi
+Tutor's), so writing store copy against screenshots that do not exist would be
+fiction. That is a capture session rather than a code change, and it stays open.
 
 ---
 

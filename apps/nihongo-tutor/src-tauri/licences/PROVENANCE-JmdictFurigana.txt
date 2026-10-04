@@ -1,0 +1,33 @@
+JmdictFurigana
+==============
+
+The furigana this app draws over a vocabulary word — which part of a word's
+reading belongs over which of its characters — is the alignment published by
+JmdictFurigana. It is not derived here: a word whose alignment the project does
+not publish keeps its reading and is drawn with no ruby at all, rather than being
+filled in by a rule written in this repository.
+
+Source
+------
+
+  https://github.com/Doublevil/JmdictFurigana
+  Copyright (c) 2025 Doublevil
+  Licence: MIT
+
+What this app did to the data
+-----------------------------
+
+  * Joined the alignment to this app's vocabulary on `(written form, reading)`,
+    which is the pair the project keys on, and kept the alignment only where the
+    two agree exactly.
+  * Kept the ruby parts verbatim; none is rewritten, merged or re-derived.
+  * Re-encoded the result into `crates/nihongo-core/data/words.bin.gz` beside the
+    readings and glosses from EDRDG's JMdict.
+
+The release this build was made from is pinned in two places that must agree —
+`JMDICT_FURIGANA` in `scripts/fetch-data.sh` and `FURIGANA_RELEASE` in
+`crates/nihongo-core/src/bin/prepare_words.rs` — and the release string is recorded
+in the artifact's own `furigana_release` field and asserted by
+`crates/nihongo-core/tests/words_artifact.rs`.
+
+The project's own licence file, which this notice accompanies, follows verbatim.

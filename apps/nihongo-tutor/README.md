@@ -62,40 +62,62 @@ Trainer lifted its pitch chart and its transcript rule the same way):
 If `render.ts` is ever changed here, change it in `src/lib/render.ts` too, or
 record why they diverge.
 
-## The dataset
+## The datasets
 
-`crates/nihongo-core/data/kana.bin.gz` — committed, 177 kana, gzip + magic +
-`postcard`. It is built by `pnpm run prepare-kana` from AnimCJK, and the build
-does not merely copy: AnimCJK stores a kana whose stroke crosses itself as several
-drawing segments, so **25 kana arrive with more "strokes" than are taught** and
-the pipeline folds them back. `prepare-kana` refuses to write an artifact whose
-stroke counts it could not check against KanjiVG.
+Four artifacts, all committed, all gzip + magic + `postcard`, and all embedded
+with `include_bytes!` — so a clone builds and a release runs with no data step.
+
+| Artifact | Size | What it holds |
+| --- | --- | --- |
+| `kana.bin.gz` | 70,917 | 177 kana — 86 hiragana, 91 katakana — with their outlines, centre-lines and course |
+| `kanji.bin.gz` | 3,236,713 | 2,136 jōyō kanji, their geometry, readings, glosses, grades and IDS decompositions, plus the 214 radical head forms |
+| `words.bin.gz` | 601,816 | 16,073 words with their own readings, furigana, glosses and ladder band |
+| `passages.bin.gz` | 502 | the three reading passages, segmented into tokens |
+
+`prepare-kana` does not merely copy: AnimCJK stores a kana whose stroke crosses
+itself as several drawing segments, so **25 kana arrive with more "strokes" than
+are taught** and the pipeline folds them back from the SVG element ids.
+`prepare-kana` refuses to write an artifact whose stroke counts it could not check
+against KanjiVG, and `prepare-kanji` refuses a jōyō set that is not exactly 2,136
+characters or a KanjiVG disagreement that is not written down.
 
 Provenance, licences and what was changed are recorded in
-[`../../LICENSES.md`](../../LICENSES.md).
+[`../../LICENSES.md`](../../LICENSES.md); the handover is
+[`../../HANDOVER_NIHONGO.md`](../../HANDOVER_NIHONGO.md) and what to build next is
+[`../../ROADMAP_NIHONGO.md`](../../ROADMAP_NIHONGO.md).
 
 ## Notices
 
-`src-tauri/src/licences.rs` is this app's catalogue, and
-`src-tauri/licences/AnimCJK-COPYING.txt` is the one notice specific to it. It is
-kept app-local rather than in the repository's shared `licences/` directory
-because that directory's own test requires every file in it to be catalogued by
-the **Chinese** app — adding a kana notice there would make that app ship and
-display a notice for data it does not contain. The two licence *texts* the
-AnimCJK statement points at are referenced out of the shared directory, because
-those genuinely are shared.
+`src-tauri/src/licences.rs` is this app's catalogue: ten notices, the text
+compiled in with `include_str!` and also copied into the bundle. Five of them are
+files in `src-tauri/licences/` — the AnimCJK statement, EDRDG's JMdict/KANJIDIC2
+attribution, the MIT text for JmdictFurigana and its provenance notice, and the
+UniDic/lindera analyser notice — and they are kept app-local rather than in the
+repository's shared `licences/` directory because that directory's own test
+requires every file in it to be catalogued by the **Chinese** app; a kana notice
+there would make that app ship and display a notice for data it does not contain.
+The licence *texts* the app references out of the shared directory — the AGPL,
+the LGPL, the Arphic Public License and the CC BY-SA legal code — genuinely are
+shared and stay there.
+
+The notices are not decoration: EDRDG's terms require a software package that uses
+its dictionaries to acknowledge them on a screen reached from a menu, to ship the
+licence files, and to keep the data updated. The Licences screen is the first,
+`bundle.resources` is the second, and `LICENSES.md` records the refresh procedure
+for the third.
 
 `tests/licences.rs` holds the same three-way correspondence the main app's does:
 every catalogued notice exists on disk and is the text compiled into the binary,
 every file in the app's notice directory is catalogued, and the bundle config
-copies exactly that set.
+copies exactly that set. It also reads the text of **every** catalogued notice, so
+a notice added to the catalogue and not to its table fails rather than passing as
+a placeholder.
+
+## Shipping it
 
 ## Not done yet
 
-- No audio. macOS ships Japanese system voices and `hanzi-voice` already drives
-  them, so this is wiring rather than research.
-- No spaced repetition. `hanzi-store` and `hanzi-core`'s scheduler are reusable
-  as-is, and a kana course wants a review queue.
-- Dakuten and yōon are taught as rows and digraphs; there is no drill that hunts
-  for a learner's *own* confusions yet, which is what `KanaDataset` and the
-  confusable set are there to support.
+That must hold all ten files the catalogue names. See `LICENSES.md`,
+"Before you distribute", for the EDRDG and CC BY-SA obligations a distributor
+keeps, and the repository `README.md`, "Shipping a build", for signing and
+notarisation.

@@ -127,6 +127,8 @@ the frontend's are counted separately below.
 | Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
 | Words on a card | 16,073 words over 2,136 characters — 一 in 223, 人 in 218, and **57 characters in none**; a page of 12, in course order (invariant 28) |
 | Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
+| Notices | 10 — five of them added at N9, when the EDRDG, JmdictFurigana and UniDic obligations that had been recorded in `LICENSES.md` since N6 and N7 were found to satisfy nothing in the bundle (§8) |
+| Bundle | `Kana Tutor.app`, 15.25 MiB, signed (`com.hanzitutor.kana`, Team `X5DWXB4283`), `codesign --verify --deep --strict` clean, and carrying **its own icon** rather than Hanzi Tutor's; the `.dmg` installer is 8,186,456 bytes, `hdiutil verify` VALID and signed, and it is built by running Tauri's own `bundle_dmg.sh` outside the sandbox (trap 21). Installing it is what proved the icon: `/Applications/Kana Tutor.app` carries `icon.icns` md5 `130da45e…`, and the Dock agrees |
 | Screens | Practice, **Kana chart**, Tell them apart, **Review**, **Kanji**, **Radicals**, Words, Read, Licences |
 | Tests | nihongo-core 200, nihongo-tutor 114, hanzi-voice 29, frontend 76 of the 145 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
@@ -374,7 +376,7 @@ apps/nihongo-tutor/               the app
                                   all come through it
   src/lib/ConfusionDrill.svelte(392)  the drill: five exercises, one question, one
                                   answer, remembered — N3, N4
-  src/lib/KanaChart.svelte(234)   the gojūon grid with its holes, and the characters
+  src/lib/KanaChart.svelte(253)   the gojūon grid with its holes, and the characters
                                   off it — N4
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
   src/lib/ReviewPanel.svelte(360) what is due, and a board to write it on — N2,
@@ -2122,12 +2124,284 @@ Linux-only**: `cargo tree -i glib` prints nothing for the host target or
 `aarch64-apple-darwin`. A fix needs gtk-rs 0.20, which needs a `muda`/`tao`/
 `tauri` that has not shipped it. Accepted, and revisited only if the Linux
 milestone happens.
+### 19. Tauri's two version numbers live in different files, and only a bundle notices
+
+`pnpm --dir apps/nihongo-tutor run build` failed before it compiled anything:
+
+```
+Error Found version mismatched Tauri packages. Make sure the NPM package and
+Rust crate versions are on the same major/minor releases:
+tauri (v2.12.0) : @tauri-apps/api (v2.11.1)
+```
+
+The app has its **own** `package.json` and its **own** `pnpm-lock.yaml`, so its
+`@tauri-apps/api` and `@tauri-apps/cli` are pinned independently of the repository
+root's — while the Rust side resolves through the workspace's shared `Cargo.lock`,
+where `tauri` had moved to 2.12. `cargo test`, `cargo clippy`, `svelte-check` and
+`vitest` are all silent about this: nothing but a `tauri build` compares the two
+numbers, so **the app had no signed bundle at all** from the day the pin drifted
+until N9 checked.
+
+`apps/tone-trainer` was in exactly the same state, for the same reason and through
+the same shared lockfile — so this is a property of the three-app layout, not of
+this app. When either the Rust `tauri` version or an app's lockfile moves, check
+the other side; `pnpm --dir apps/<app> run build` is the only cheap way to see it.
+
+**And a third one, found by asking the same question, which is why it is here.**
+`scripts/tauri-cli.sh` probes `"$ROOT/node_modules/@tauri-apps/cli/tauri.js"`
+before falling back to a `cargo-tauri` on the PATH, but `TAURI_ROOT` comes in
+**relative** — `apps/nihongo-tutor`'s own `package.json` sets `TAURI_ROOT="$PWD"`,
+which is the app directory, not the repository root — and `$ROOT` was still
+relative when the probe ran. So the check looked under
+`apps/nihongo-tutor/apps/nihongo-tutor/node_modules/…`, failed, and the fallback
+was used: a CLI reporting **2.11.1** against the app's own pinned **2.12.1**, which
+is a silent use of a different tool than the one the app names. `tauri info` shows
+it in one line when `TAURI_ROOT` is relative (no `@tauri-apps/cli` row at all) and
+does not when it is absolute. `ROOT` is now resolved once, before anything reads
+it, and the row is back. Nothing about this is DSH-specific; it is an ordering bug
+of the same shape as trap 8's "suspect the loop before the table".
+
+### 20. The bundle's file modes are the source files' modes, and the fix can be skipped
+
+Five of the ten licence texts in `Kana Tutor.app/Contents/Resources/licences/`
+were `-rw-------` — readable by the machine that built the bundle and by nobody
+else, which is a redistributor's problem with a licence-compliance flavour (a
+notice a recipient cannot read is not a notice they received). Tauri copies a
+resource with the modes it finds, and this checkout's files were `600`.
+
+`scripts/build-release.sh` already had a `chmod -R a+rX` for exactly this, and it
+did not run — because it sat **inside** the script's success branch, and `tauri
+build` writes and signs the `.app` *before* it attempts the `.dmg`. `.dmg` creation
+is refused by this harness (trap 21), so the build returned non-zero with a
+complete, freshly signed `.app` on disk and skipped the one line that makes it
+shippable. The `chmod` now runs whenever the bundle exists, not whenever the build
+succeeds, and the licence directory in particular is re-checked by name.
+
+The check that catches it costs one command, and it is worth keeping in the loop
+for a release:
+
+```bash
+ls -l ".cargo-target/release/bundle/macos/Kana Tutor.app/Contents/Resources/licences/"
+```
+
+Every line must be `-rw-r--r--`.
+
+### 21. Building the `.dmg` — two failures that look identical and are not
+
+`pnpm run build` ends with
+
+```
+Error failed to bundle project error running bundle_dmg.sh
+```
+
+while the line above it says `Signing with identity "Developer ID Application: …"`.
+The `.app` is complete and signed; only the disk image is missing. **Tauri swallows
+the script's output**, and with `RUST_LOG=tauri_bundler=trace` the real message
+appears. There are **two** different ways this ends, and an earlier draft of this
+trap collapsed them into one — do not repeat that.
+
+**Cause 1 — the agent harness's sandbox, and it is `hdiutil` rather than Finder.**
+This is what the trace shows first:
+
+```
+Running Command `…/bundle_dmg.sh … "Kana Tutor_0.1.0_aarch64.dmg" "Kana Tutor.app"`
+hdiutil: create failed - Operation not permitted
+```
+
+It fails on the first `hdiutil create` and for *any* source folder, so it is not
+about this app's size or configuration:
+
+```bash
+mkdir -p /tmp/probe/src && echo hi > /tmp/probe/src/hello.txt
+cd /tmp/probe && hdiutil create -srcfolder src -volname T -format UDRO rw.dmg
+# → hdiutil: create failed - Operation not permitted
+```
+
+Widening the sandbox makes that same command succeed, so this is the file sandbox
+and nothing else. **It is not the Finder-prettifying AppleScript** — with the
+sandbox widened the script reaches `Running AppleScript to make Finder stuff
+pretty`, `Done running the AppleScript` and `Fixing permissions`, so the automation
+is available and was never the obstacle.
+
+**Cause 2 — `Resource busy` on unmount, which is ordinary and self-inflicted.** The
+run gets all the way through the layout and then:
+
+```
+Unmounting disk image...
+hdiutil: couldn't unmount "disk36" - Resource busy
+The volume can’t be ejected because it’s currently in use.
+```
+
+**The commonest reason on this machine is that the volume is being used — a Finder
+window open on it, or the app launched from it.** That is not hypothetical: two
+attempts in a row left `dmg.DhcY23` and `dmg.zHi9AK` mounted for exactly this
+reason, and the operator was looking at and running the mounted copy at the time.
+Check first, then retry:
+
+```bash
+mount | grep -i /Volumes                           # what is left over
+hdiutil info | grep -E '/dev/disk'                 # the device names
+hdiutil detach -force "/Volumes/dmg.XXXXXX"        # or: diskutil eject
+```
+
+Only a *detach* is needed; the intermediate image is still there, so the run can be
+repeated without rebuilding the app.
+
+**Building it, which is what to do when someone needs the installer.** The script
+Tauri generated is self-contained, and running it outside the sandbox produces the
+image Tauri would have produced. Three steps, in order, from
+`.cargo-target/release/bundle/dmg/`:
+
+```bash
+# 1. Tauri's own script, with the arguments the trace log prints.
+./bundle_dmg.sh --volname "Kana Tutor" --icon "Kana Tutor.app" 180 170 \
+  --app-drop-link 480 170 --window-size 660 400 --hide-extension "Kana Tutor.app" \
+  --volicon "$PWD/icon.icns" "Kana Tutor_0.1.0_aarch64.dmg" "../macos/Kana Tutor.app"
+
+# 2. Hide the stray volume icon and sign the image — the helper only signs when the
+#    identity is set, and step 1 produced an unsigned image. Give it an ABSOLUTE
+#    path: `../../..` from this directory is `.cargo-target/`, not the repo root.
+APPLE_SIGNING_IDENTITY="Developer ID Application: Horst Herb (X5DWXB4283)" \
+  "$REPO/scripts/hide-dmg-volume-icon.sh" "Kana Tutor_0.1.0_aarch64.dmg"
+
+# 3. Verify.
+hdiutil verify "Kana Tutor_0.1.0_aarch64.dmg"    # checksum VALID
+codesign --verify "Kana Tutor_0.1.0_aarch64.dmg" # satisfies its Designated Requirement
+```
+
+Measured once through: 8,186,456 bytes, `hdiutil verify` VALID, image signed
+`Identifier=Kana Tutor_0.1.0_aarch64`, `TeamIdentifier=X5DWXB4283`, mounting with
+`Kana Tutor.app` and the `Applications` link, the app inside still passing
+`codesign --verify --deep --strict`, and all ten notices under
+`Contents/Resources/licences/`. **The `--bundles app` shortcut does not produce that
+app** — see trap 22 for why, because it is the trap that bites when you take the
+shortcut on purpose.
+
+**One more thing to know before starting.** `bundle_dmg.sh` leaves the *uncompressed*
+volume image (`rw.<pid>.<name>.dmg`, tens of MB) in that directory while it works.
+Its presence means a run started and did not finish; the finished artifact is the
+small `Kana Tutor_0.1.0_aarch64.dmg` and nothing else.
+
+**The Chinese app is not a precedent here, and it is worth knowing why.** The one
+`Hanzi.Tutor_0.6.0_aarch64.dmg` in this checkout was built on 27 September from the
+tree saved in `.tmp-release-060/`, before the `tauri` 2.12 upgrade — nothing in the
+current tree had produced a `.dmg` under this harness before this milestone. So this
+was never "the Japanese app cannot do what the Chinese one can"; it was the first
+attempt from either app since the toolchain moved.
+
+### 22. `tauri build --bundles app` writes an **ad-hoc, linker-signed** bundle that fails verification
+
+The obvious shortcut when only the `.app` is wanted — and the one
+`build-release.sh`'s own error message recommends — is:
+
+```bash
+TAURI_ROOT="$PWD/apps/nihongo-tutor" ./scripts/with-cargo-env.sh \
+  ./scripts/tauri-cli.sh build --bundles app
+```
+
+It exits 0 and prints `Finished 1 bundle at: … (15.25 MiB)`. **The bundle it leaves
+is not signed by Tauri.** `codesign -d` on it says:
+
+```
+Identifier=nihongo_tutor-f8564bfd63853d4c      ← the *binary's* name, not the app's
+flags=0x20002(adhoc,linker-signed)
+Sealed Resources=none
+```
+
+and there is **no `Contents/_CodeSignature` directory at all**, because what is
+there is the ad-hoc signature `rustc`'s linker put on the executable, carried into
+the bundle. `codesign --verify --deep --strict` exits **1**:
+
+```
+code has no resources but signature indicates they must be present
+```
+
+The full `pnpm run build` signs properly and the same commands then read
+`Identifier=com.hanzitutor.kana`, `TeamIdentifier=X5DWXB4283`,
+`Sealed Resources version=2 rules=13 files=11`, exit **0**. So the two paths differ
+in whether the app is signed at all, and **the failure is silent in the build log**:
+the only difference in the output is the absence of the
+`Signing with identity "Developer ID Application: …"` lines.
+
+What follows: after any `--bundles app` build, **re-run the full build before
+judging a signature**, and never hand that bundle to anyone. It is fine for a local
+smoke test and for checking that a resource landed.
+
+**And beware the exit code you read.** `codesign --verify … | tail -1` reports
+*tail*'s status, exactly as trap 10 says about `cargo test … | tail`. The bundle
+above "passed" for one round of checking because of that pipe.
+
+### 23. A class name in `app.css` reaches a component, and a probe cannot see a layout
+
+`app.css` is a plain stylesheet imported by `main.ts`, so its selectors are global.
+Svelte scoping adds a hash class to **this component's** selectors; it keeps nothing
+*out*. A name is therefore shared whether that was meant or not.
+
+`KanaChart.svelte` drew the chart into `<div class="grid">` with no rule of its own,
+and `app.css` owns `.grid` for the practice picker:
+
+```css
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: 6px; }
+```
+
+Applied to the chart's wrapper that made the sixteen **rows** the grid's items:
+fifteen of them on one line in 57px columns, two on the next. Each row's own grid —
+`2.6rem repeat(5, …)` — then had ~72px of content to fit into 57px, so its five cells
+measured **2px wide** and 24px kana glyphs drew on top of one another. The symptom
+was the whole chart "all squashed together", while the off-grid strip below it — the
+same `.cell` class, but *outside* `.grid` — was perfect, which is what sends a first
+look at the CSS in the wrong direction.
+
+**It survived a whole milestone because that milestone was checked by probe.** N4's
+verification read the chart over `/__probe` (§5) and found sixteen rows, the right
+kana in the right columns, every one of them openable. All of it was true —
+`innerText` is not layout. A screen that has only ever been *reported* has never been
+*seen*, and this is the general shape of that mistake rather than a chart bug.
+
+What finds it, cheapest first:
+
+* `getComputedStyle(box)` — the chart's wrapper answered `display: "grid"` and
+  `gridTemplateColumns: "57.45px 57.47px … ×15"`, neither of which appears in this
+  component's stylesheet. That one line is the whole diagnosis.
+* `getClientRects()` on the cells: 2×26 for a control whose own rule says
+  `aspect-ratio: 1 / 1`.
+* **The §5 HTTP probe is the right tool for "did the press reach Rust" and the wrong
+  one for "is this readable".** Layout needs an engine that lays it out.
+
+The recipe that did it needs no display: a temporary second Vite entry
+(`apps/nihongo-tutor/chart-harness.html`) that stubs the IPC, mounts the component on
+its own and writes `getBoundingClientRect` numbers into the page, so `--dump-dom`
+answers with measurements rather than an image. `window.__TAURI_INTERNALS__ = {
+invoke: (cmd) => Promise.resolve(FAKE[cmd]) }` is the entire stub — `invoke` from
+`@tauri-apps/api` is a call to that and nothing else. Two details:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+  --virtual-time-budget=5000 --dump-dom http://localhost:1423/chart-harness.html
+```
+
+* **Serve it with a config whose `server.hmr` is false, on its own port.** An open
+  HMR socket keeps `--virtual-time-budget` from ever expiring, so `--dump-dom` hangs
+  with no error and no output — which reads exactly like a broken harness.
+* **Delete the harness.** `frontendDist` is `../dist` and the release build embeds
+  it, so an entry left in the app's root is a file in the shipped bundle.
+
+And the second half of the fix is not optional. With the collision gone the row's
+`minmax(0, 1fr)` tracks stretched a cell to **173px** across a 980pt window — a 24px
+kana in a 173px box, sixteen rows of it, 2890px of scrolling. A chart is looked *up*.
+The tracks are capped at the off-grid strip's own `3rem` and the rows are
+`width: fit-content`; because a capped track is still `minmax(0, …)`, a narrow
+window shrinks the rows instead of overflowing them, and because the row's box now
+stops at its last cell, the voiced rows' accent band marks the row rather than
+running on across the empty half of the panel. **Check the rendered result and not
+only the corrected rule** — the first fix above was correct and still wrong.
+
 
 ---
 
 ## 8. The notices
 
-Five, in `apps/nihongo-tutor/src-tauri/src/licences.rs`, with the text compiled
+Ten, in `apps/nihongo-tutor/src-tauri/src/licences.rs`, with the text compiled
 in by `include_str!` and copied into the bundle as plain text:
 
 | id | What it covers |
@@ -2141,19 +2415,21 @@ in by `include_str!` and copied into the bundle as plain text:
 `tests/licences.rs` holds the three-way correspondence the main app's does:
 every catalogued notice exists on disk *and* is the text compiled into the
 binary, every file in the app's notice directory is catalogued, and
-`tauri.conf.json`'s `bundle.resources` copies exactly that set. Two further tests
-check that the AnimCJK notice actually **records the modification** — LGPL-3.0 §2
-requires it — and that none of the notice files is gitignored, since a
+`tauri.conf.json`'s `bundle.resources` copies exactly that set. Three further
+tests check that the AnimCJK notice actually **records the modification** —
+LGPL-3.0 §2 requires it — that the share-alike notices say what was selected and
+what was dropped, and that none of the notice files is gitignored, since a
 gitignored notice vanishes from a clone and the bundle.
 
 **N1 added none of them, and that is itself a licence decision**: the voice is the
 operating system's, so there are no audio files to attribute. A notice for the
 synthesiser would be a notice for something this app does not ship.
 
-The app currently ships only `LICENSE`, `LICENSES.md` and the three notice files
-above. **Before distributing it**, read `LICENSES.md`'s "Before you distribute":
-the same rules apply, including the EDRDG update obligation that arrives with the
-first KANJIDIC2 data.
+The app ships `LICENSE`, `LICENSES.md` and the five notice files above.
+**Before distributing it**, read `LICENSES.md`'s "Before you distribute": the
+same rules apply, and N9 is where the EDRDG update obligation — which its terms
+enforce, unlike a courtesy attribution — was checked against this app rather than
+assumed to be covered by the Chinese one.
 
 ---
 
@@ -2203,3 +2479,19 @@ first KANJIDIC2 data.
 * **Grammar and particles.** "Kanji won't teach you to read" is the defining
   Japanese failure mode, and a kana tutor with no grammar is a kana tutor only.
   Out of scope for now, and the largest thing missing from the product.
+| `edrdg` | EDRDG's JMdict and KANJIDIC2 — the readings, glosses, grades and ranks — **and the statement of what was selected, changed and dropped** |
+| `ccbysa` | the CC BY-SA 4.0 legal code those dictionaries are under |
+| `jmdict-furigana` | the furigana alignments, and that none is invented here |
+| `jmdict-furigana-mit` | the MIT text the notice above must accompany |
+| `unidic` | UniDic's segmentation of the passages, and that no dictionary entry is redistributed |
+**Five of the ten arrived at N9, and the reason is worth more than the list.**
+The app shipped EDRDG's dictionary text from N6 and JmdictFurigana's alignments
+and UniDic's segmentation from N7, and the only notice any of the three had was a
+bullet inside `PROVENANCE.md`. That is the failure mode this section exists to
+warn about, and it was invisible for two milestones because **the test that reads
+the notice texts named five ids in a hardcoded table** — so a sixth notice was
+never read by anything, and a stub would have passed. The table now ends by
+asserting that *every* catalogued id appears in it, so the next notice cannot be
+added and forgotten. `LICENSES.md`'s KANJIDIC2 section records each of EDRDG's
+four requirements against the place it is met, and the three that were unmet.
+

@@ -81,7 +81,7 @@
       handakuten — are set apart below the plain ones.
     </p>
 
-    <div class="grid" style="--columns:{columns}">
+    <div class="chart-grid" style="--columns:{columns}">
       <!-- The columns are the five vowels, so they are labelled: a chart whose
            columns are unlabelled hides the thing that makes ゆ sit under う. -->
       <div class="row head" aria-hidden="true">
@@ -160,11 +160,30 @@
     color: var(--muted);
     font-size: 0.9rem;
   }
+  /* The chart's own box, and deliberately not called `.grid`: `app.css` owns
+     that name for the practice picker's `auto-fill` grid, which is shared
+     rather than scoped, so it reaches this element too. Applied here it made
+     the sixteen rows *its* items — each row one 57px column, five kana crushed
+     into two pixels each — because a scoped rule only wins where this component
+     writes one, and this box had none. It holds rows, so it is a block. */
+  .chart-grid {
+    display: block;
+  }
   /* One row is a grid of its own, so the label sits outside the five vowel
-     columns and every row's cells line up under the same vowels. */
+     columns and every row's cells line up under the same vowels.
+     The tracks are capped at the size of a cell rather than left to share the
+     row: a chart is looked *up*, so the whole gojūon has to be readable at once
+     — stretched across this panel a `1fr` cell is a 170px box with a 24px kana
+     in it, and sixteen rows of those are 2900px of scrolling. The cap is the
+     off-grid strip's cell below, and on a narrow window the rows still shrink
+     to fit rather than overflow, because a capped track is `minmax(0, …)`. */
   .row {
     display: grid;
-    grid-template-columns: 2.6rem repeat(var(--columns, 5), minmax(0, 1fr));
+    grid-template-columns: 2.6rem repeat(var(--columns, 5), minmax(0, 3rem));
+    justify-content: start;
+    /* The row's own box stops at its last cell, so the voiced band behind a row
+       marks that row rather than running on across the empty half of the panel. */
+    width: fit-content;
     gap: 6px;
     align-items: center;
     margin-bottom: 6px;

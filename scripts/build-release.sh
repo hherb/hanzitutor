@@ -86,20 +86,37 @@ for dir in "$REPO/.cargo-target/release/bundle" "$APP_DIR/src-tauri/target/relea
   fi
 done
 
-if tauri build "$@"; then
-  # A file that is not world-readable on this machine — a local umask quirk,
-  # not something git tracks, since git only ever stores the executable bit —
-  # gets bundled exactly as restricted as it was found. Harmless for a build
-  # that only ever runs here, and a real "cannot verify the signature" fault
-  # for anyone else who receives the bundle, `scripts/build-appstore.sh` hit
-  # this from a licence text file at mode 600. `chmod` does not touch file
-  # content, so it cannot invalidate the signature Tauri just applied above.
-  if [ -n "$BUNDLE" ]; then
-    for app in "$BUNDLE"/macos/*.app; do
-      [ -d "$app" ] && chmod -R a+rX "$app"
-    done
-  fi
+# The bundle is made readable *whether or not the build as a whole succeeded*, and
+# that placement is the point rather than tidiness. A file that is not
+# world-readable on this machine — a local umask quirk, not something git tracks,
+# since git only ever stores the executable bit — gets bundled exactly as
+# restricted as it was found. Harmless for a build that only ever runs here, and a
+# real "cannot verify the signature" fault for anyone else who receives the
+# bundle: `scripts/build-appstore.sh` hit this from a licence text file at mode
+# 600, and the Kana Tutor bundle shipped its licence texts at mode 600 for the
+# same reason.
+#
+# It used to live inside the success branch below, which is the bug that let that
+# happen: `tauri build` writes and signs the `.app` *before* it attempts the
+# `.dmg`, and a disk-image failure — routine in a headless or sandboxed session —
+# returns non-zero with a complete, signed `.app` already on disk. The success
+# branch was skipped, so the `.app` that a reader is told to pick up kept whatever
+# modes the source files happened to have. `chmod` does not touch file content, so
+# it cannot invalidate the signature Tauri applied.
+if [ -n "$BUNDLE" ] && [ -d "$BUNDLE/macos" ]; then
+  for app in "$BUNDLE"/macos/*.app; do
+    [ -d "$app" ] || continue
+    chmod -R a+rX "$app"
+    # Called out separately because it is the failure this exists to prevent: a
+    # licence a redistributor cannot read is the one file in the bundle whose
+    # permissions are a licence-compliance question rather than a convenience.
+    if [ -d "$app/Contents/Resources/licences" ]; then
+      chmod a+r "$app/Contents/Resources/licences"/*
+    fi
+  done
+fi
 
+if tauri build "$@"; then
   # Tauri's disk-image script copies the app icon to `.VolumeIcon.icns` on the
   # volume but never marks that file invisible, so the mounted image shows a
   # large dimmed duplicate of the app icon as a stray file. Everything else in

@@ -129,6 +129,11 @@ fn the_bundle_copies_exactly_the_catalogued_notices() {
 
 /// A file that exists but is a stub would pass every check above, so check that
 /// each text is the licence it claims to be.
+///
+/// **Every catalogued id belongs in this table**, and the last assertion is what
+/// makes that true rather than aspirational: a notice added to the catalogue but
+/// forgotten here would otherwise be the one notice nothing ever read, which is
+/// the failure mode this whole file exists to prevent.
 #[test]
 fn the_texts_are_the_real_licences_and_not_placeholders() {
     let expectations: &[(&str, &[&str])] = &[
@@ -137,6 +142,20 @@ fn the_texts_are_the_real_licences_and_not_placeholders() {
         ("animcjk", &["AnimCJK", "Arphic Public License", "Lesser General Public License"]),
         ("arphic", &["Arphic"]),
         ("provenance", &["Data provenance and licences", "AnimCJK"]),
+        (
+            "edrdg",
+            &[
+                "Electronic Dictionary Research",
+                "Creative Commons",
+                "CC BY-SA 4.0",
+                "KANJIDIC2",
+                "JMdict",
+            ],
+        ),
+        ("ccbysa", &["Attribution-ShareAlike 4.0 International", "Creative Commons"]),
+        ("jmdict-furigana", &["JmdictFurigana", "Doublevil", "MIT"]),
+        ("jmdict-furigana-mit", &["MIT License", "Copyright (c) 2025 Doublevil"]),
+        ("unidic", &["UniDic Consortium", "lindera", "BSD"]),
     ];
 
     for (id, needles) in expectations {
@@ -156,6 +175,15 @@ fn the_texts_are_the_real_licences_and_not_placeholders() {
             );
         }
     }
+
+    for notice in notices() {
+        assert!(
+            expectations.iter().any(|(id, _)| *id == notice.id),
+            "{} is catalogued but this test never reads its text, so a placeholder \
+             would pass unnoticed — add it to `expectations`",
+            notice.id
+        );
+    }
 }
 
 /// The AnimCJK notice is the one obligation specific to this app, and the whole
@@ -174,6 +202,47 @@ fn the_animcjk_notice_records_the_modification() {
     assert!(
         notice.covers.contains("kana.bin.gz") || notice.covers.contains("graphicsJaKana"),
         "the notice must name what it covers"
+    );
+}
+
+/// The share-alike notices owe the same statement, and it is a different one:
+/// EDRDG and JmdictFurigana are redistributed as *derived* data, so what this
+/// app selected and left out has to be on the screen beside the attribution.
+#[test]
+fn the_share_alike_notices_say_what_was_selected_and_changed() {
+    let edrdg = notices().iter().find(|n| n.id == "edrdg").expect("an EDRDG notice");
+    for needle in ["modified", "kyōiku", "JLPT", "languages other than English"] {
+        assert!(
+            edrdg.text.contains(needle),
+            "the EDRDG notice must record what was changed and what was dropped \
+             (missing {needle:?}) — CC BY-SA 4.0 §3(a)(1)(B)"
+        );
+    }
+    // EDRDG's terms: an app must acknowledge the *source*, on a screen reached
+    // from a menu, and ship the licence. The screen is this catalogue and the
+    // licence is the `ccbysa` entry, so the source links have to be here.
+    for url in [
+        "edrdg.org/edrdg/licence.html",
+        "JMdict-EDICT_Dictionary_Project",
+        "KANJIDIC_Project",
+    ] {
+        assert!(edrdg.text.contains(url), "the EDRDG notice must name {url}");
+    }
+
+    let fg = notices()
+        .iter()
+        .find(|n| n.id == "jmdict-furigana")
+        .expect("a JmdictFurigana notice");
+    assert!(
+        fg.text.contains("not derived here") || fg.text.contains("no ruby"),
+        "the JmdictFurigana notice must say that no alignment is invented here"
+    );
+
+    let analyser = notices().iter().find(|n| n.id == "unidic").expect("a UniDic notice");
+    assert!(
+        analyser.text.contains("is redistributed"),
+        "the UniDic notice must say that no dictionary entry is redistributed, \
+         because only the segmentation is"
     );
 }
 

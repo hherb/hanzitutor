@@ -575,6 +575,29 @@ XML parser. The reformatting is a derivative under the same licence.
   must show the attribution on its **About and licences** screen — a start-up
   mention is explicitly not enough — which is the screen
   `apps/nihongo-tutor/src-tauri/src/licences.rs` already builds.
+* **What EDRDG actually asks a software package for, and where each part ships.**
+  The Group's statement is narrower than "attribute us" and has four limbs, so it
+  is worth checking against the app rather than assuming: the *usage and source* of
+  the files must be acknowledged in the documentation and on a screen reached from
+  a menu; *copies of the documentation and licence files* must be provided; *links*
+  to local copies or to EDRDG's own pages must be given; and the data must be kept
+  up to date. In this app:
+
+  | EDRDG's requirement | Where it is met |
+  | --- | --- |
+  | acknowledge usage and source, from a menu | the `edrdg` notice on the Licences screen, whose text names the Group, both dictionaries and both projects' pages at `edrdg.org` |
+  | provide copies of the licence files | `licences/CC-BY-SA-4.0.txt` ships in the bundle (`ccbysa` in the catalogue), as does the notice itself |
+  | provide links to local copies or to EDRDG | the same notice carries the licence statement's URL and the two project URLs; the screen renders them |
+  | keep the data updated | the refresh procedure below, with the pinned snapshot recorded in the artifact and asserted by its test |
+
+  Three of those four were **not** met before `ROADMAP_NIHONGO.md` N9 and are worth
+  naming as the shape of the mistake: the only EDRDG text that shipped was a bullet
+  inside `PROVENANCE.md`, no CC BY-SA text travelled with the app at all (though the
+  *Chinese* app has shipped the identical legal code for two milestones), and no
+  notice said that the data was a modified subset. `tests/licences.rs` now reads
+  every catalogued notice's text rather than only the five it used to name, and
+  `the_share_alike_notices_say_what_was_selected_and_changed` fails if the notice
+  stops stating what was taken and what was dropped.
 * **The snapshot is pinned and recorded.** `scripts/fetch-data.sh` pins the
   `scriptin/jmdict-simplified` release tag rather than following `latest`, and
   `prepare-kanji` copies that document's own `version` and `dictDate` into the
@@ -682,13 +705,24 @@ this project's approximation — `word::band_name` exists so that it can.
 
 JmdictFurigana is MIT, Copyright (c) 2025 Doublevil. MIT asks for its notice to
 accompany copies and substantial portions, and 21,836 aligned words is a substantial
-portion, so the attribution is recorded here and the licence text is fetched with
-the rest of this app's notices. **It joins them in
-`apps/nihongo-tutor/src-tauri/licences/` on the commit that embeds this artifact**
-(`ROADMAP_NIHONGO.md` N8), not before: a notice for data an app does not contain is
-the mistake `HANDOVER_NIHONGO.md` invariant 12 warns about, and the shared
-`licences/` directory is catalogued by the *Chinese* app, which contains none of
-this.
+portion, so the attribution is recorded here and the licence text travels with the
+app. **It lives in `apps/nihongo-tutor/src-tauri/licences/`** — the app's own notice
+directory, not the shared one — because the shared `licences/` directory is
+catalogued by the *Chinese* app, which contains none of this; that is
+`HANDOVER_NIHONGO.md` invariant 12's rule, and it is what the sentence that used to
+stand here ("it joins them on the commit that embeds this artifact") was waiting
+for. The artifact was embedded at N7 and the notice did **not** join it — the gap
+N9 closed. Two catalogue entries carry it, both app-local:
+`PROVENANCE-JmdictFurigana.txt` is the attribution and the statement of what was
+changed, and `MIT-JmdictFurigana.txt` is the project's own licence text, fetched
+verbatim from the **same pinned release** as the data
+(`fetch-data.sh`, from the `${JMDICT_FURIGANA}` tag) so the two cannot come from
+different releases.
+
+`the_texts_are_the_real_licences_and_not_placeholders` in `tests/licences.rs` now
+ends by asserting that **every** catalogued notice appears in its expectation table,
+so a notice added to the catalogue and forgotten there — which is how this one went
+unread — fails the suite rather than passing quietly.
 
 ### Refreshing it
 
@@ -762,6 +796,18 @@ own `build.rs` (repeated in that script so a change to it is visible in a diff):
 md5 f4502a563e1da44747f61dcd2b269e35  unidic-mecab-2.1.2.tar.gz
 ```
 
+**That the notice travels with the artifact is a correction N9 made.** BSD-3-Clause
+asks for the copyright notice, the conditions and the disclaimer to accompany a
+binary redistribution, and the passages artifact is a derived redistribution
+however small it is — but until N9 the only copy of that text was *this file*,
+which is neither compiled into the app nor copied into its bundle, and the
+catalogue named neither lindera nor UniDic at all. Both now ship:
+`apps/nihongo-tutor/src-tauri/licences/ANALYSER-UniDic-lindera.txt` holds the
+two licences verbatim and the statement that no dictionary entry is redistributed,
+and it is catalogued twice — as `unidic` (BSD-3-Clause, the dictionary) and as
+`lindera` (MIT, the analyser) — because the two are different works under
+different licences and a reader looking for either should find it.
+
 The dictionary is fetched from lindera's mirror, `https://Lindera.dev/`, rather
 than from NINJAL, and lindera verifies that hash before it will build anything.
 
@@ -781,23 +827,37 @@ makes, kept by moving the cost to the build.
    kind of thing that only breaks in the packaged app:
 
    ```bash
+   # The Chinese app — fifteen files named in its src-tauri/src/licences.rs.
    APP=".cargo-target/release/bundle/macos/Hanzi Tutor.app"   # or src-tauri/target/...
    ls "$APP/Contents/Resources/licences"
    ```
 
-   That directory must hold all fifteen files named in
-   `src-tauri/src/licences.rs`. The in-app screen works even if it does not — the
-   text is compiled in — but a redistributor who wants to read the notices out of
-   the bundle would be stuck.
+   Those directories must hold all fifteen files named in the main app's
+   `src-tauri/src/licences.rs` and all ten named in
+   `apps/nihongo-tutor/src-tauri/src/licences.rs` respectively. The in-app screen
+   works even if they do not — the text is compiled in — but a redistributor who
+   wants to read the notices out of the bundle would be stuck.
 3. Serve the CC-CEDICT definitions under CC BY-SA 4.0 if you redistribute them,
    and keep the statement of what was changed in `licences/CC-CEDICT.txt`
    accurate if you change the data pipeline.
-4. If you intend to distribute commercially, confirm the terms yourself. Nothing
+4. **The Japanese app owes EDRDG the same three things, and they are separate from
+   item 3.** `apps/nihongo-tutor` embeds KANJIDIC2 and JMdict text, so it must
+   acknowledge EDRDG's usage and source on a screen reached from a menu (the
+   `edrdg` notice on its Licences screen), ship copies of the documentation and
+   licence files (`licences/CC-BY-SA-4.0.txt`, `EDRDG-JMdict-KANJIDIC2.txt`), and
+   keep the data updated (the refresh procedure in the KANJIDIC2 section above,
+   which is the obligation EDRDG's terms actually enforce). All three were
+   completed at N9; the section above records what was missing before it. If the
+   vocabulary or kanji pipeline changes, the "what this app did to the data" list
+   in `EDRDG-JMdict-KANJIDIC2.txt` has to change with it, and
+   `the_share_alike_notices_say_what_was_selected_and_changed` in
+   `apps/nihongo-tutor/src-tauri/tests/licences.rs` is what notices.
+5. If you intend to distribute commercially, confirm the terms yourself. Nothing
    here is legal advice. The Arphic Public License is a permissive free-font
    licence rather than a copyleft one, but it does carry notice obligations; the
    LGPL has its own conditions on the derived `dictionary.txt`; and CC BY-SA is a
    share-alike licence, which is the one with real consequences for derived data.
-5. **Keep the espeak-ng pointer reachable if you ship a mobile build.** The Android
+6. **Keep the espeak-ng pointer reachable if you ship a mobile build.** The Android
    and iOS artifacts redistribute GPL-3.0-or-later code (see "espeak-ng is
    redistributed by the mobile builds" above), so the licence text and the route to
    its source have to travel with them — which they do, through the catalogue and
@@ -805,22 +865,23 @@ makes, kept by moving the cost to the build.
    source named there stays reachable, and that the vendored copy really is
    unmodified. If you patch anything under the GPL, that patch becomes yours to
    publish.
-6. **Re-check this set rather than trusting it.** A dependency added since the last
+7. **Re-check this set rather than trusting it.** A dependency added since the last
    release can bring a licence with it — that is exactly how the espeak-ng
-   obligation above went unnoticed for three milestones — so this project re-reads
+   obligation above went unnoticed for three milestones, and how the Japanese app's
+   three missing notices went unnoticed from N7 to N9 — so this project re-reads
    this file and
    [`docs/research/ANDROID_LICENCE_ATTRIBUTION.md`](docs/research/ANDROID_LICENCE_ATTRIBUTION.md)
    before every shippable release. What has to hold is narrower than completeness:
    **nothing shipped may be under a licence this project's AGPL-3.0-only cannot
-   live with.** At this commit nothing is: the set is Apache-2.0, MIT, the Arphic
-   Public License, CC BY-SA 4.0, the SIL OFL, public domain, and the
+   live with.** At this commit nothing is: the set is Apache-2.0, MIT, BSD-3-Clause,
+   the Arphic Public License, CC BY-SA 4.0, the SIL OFL, public domain, and the
    GPL-3.0-or-later that §13 permits.
-7. **Do not bundle the speech model without reading its terms.** This app fetches
+8. **Do not bundle the speech model without reading its terms.** This app fetches
    it for the learner rather than shipping it, which is why its licence is
    recorded above rather than satisfied here. An offline installer, a mirror or a
    pre-seeded cache changes that, and the FunASR model agreement is not a free
    licence in the sense the rest of this file uses.
-8. **No dependency's source is modified.** This is worth stating because it was not
+9. **No dependency's source is modified.** This is worth stating because it was not
    true for the 0.6.0 iOS resubmission: `vendor/tao` was the published `tao` 0.35.3
    (Apache-2.0) with upstream's one-line fix for the iOS launch crash applied, and
    Apache-2.0 §4(b) required the changed file to say so, which it did. That copy is

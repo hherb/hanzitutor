@@ -21,7 +21,16 @@
 # a second app cannot share this script by being pointed at a config file.
 set -euo pipefail
 
+# `TAURI_ROOT` is normally handed over as a path relative to the *invoking*
+# directory — `apps/nihongo-tutor`'s own script sets `TAURI_ROOT="$PWD"`, which is
+# that app's directory, not the repository root. The probes below are made with
+# paths built from `$ROOT`, so a relative value silently fails them and drops
+# through to the fallback CLI: `node_modules` is looked for under
+# `apps/nihongo-tutor/apps/nihongo-tutor/`, and the app ends up built by whatever
+# `cargo-tauri` happens to be on the PATH — which may be an older release than the
+# app's own pinned CLI. Resolving once, before anything reads it, is the fix.
 ROOT="${TAURI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+ROOT="$(cd "$ROOT" && pwd)"
 cd "$ROOT"
 
 # 1. A CLI installed into the project, if one has been (`pnpm run install:cli`).

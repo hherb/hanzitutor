@@ -24,9 +24,12 @@
 <section class="licences">
   <h2>Licences</h2>
   <p class="lede">
-    Kana Tutor's own code is AGPL-3.0. The kana data comes from AnimCJK under the
-    GNU Lesser General Public License, and was modified: see the AnimCJK notice for
-    what changed. Every notice below ships with the app.
+    Kana Tutor's own code is AGPL-3.0. The stroke data comes from AnimCJK, and the
+    readings, glosses, grades and frequency ranks from EDRDG's JMdict and KANJIDIC2
+    under CC BY-SA 4.0, with the furigana alignments from JmdictFurigana and the
+    passages' segmentation from UniDic through lindera. All of them are modified
+    for this course: each notice below says what was taken and what was changed,
+    and every one of them ships with the app.
   </p>
 
   {#if error}

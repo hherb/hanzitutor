@@ -118,6 +118,78 @@ pub const NOTICES: &[LicenceNotice] = &[
         text: include_str!("../licences/AnimCJK-COPYING.txt"),
     },
     LicenceNotice {
+        id: "edrdg",
+        title: "EDRDG — JMdict and KANJIDIC2",
+        licence: "CC BY-SA 4.0",
+        source: "https://www.edrdg.org/edrdg/licence.html",
+        covers: "The readings and their okurigana, the English glosses, the current \
+                 kyōiku grades, the frequency ranks and the stroke counts, from \
+                 KANJIDIC2 and JMdict, compacted into `kanji.bin.gz` and \
+                 `words.bin.gz`. EDRDG's terms require a software package that uses \
+                 the files to acknowledge them on a screen reached from a menu, to \
+                 ship the licence text, and to keep the data updated — this notice, \
+                 the `ccbysa` entry beside it and the refresh procedure in \
+                 LICENSES.md are those three things. The data is modified, and this \
+                 notice records how.",
+        file: "apps/nihongo-tutor/src-tauri/licences/EDRDG-JMdict-KANJIDIC2.txt",
+        bundle_path: "licences/EDRDG-JMdict-KANJIDIC2.txt",
+        text: include_str!("../licences/EDRDG-JMdict-KANJIDIC2.txt"),
+    },
+    LicenceNotice {
+        id: "ccbysa",
+        title: "Creative Commons Attribution-ShareAlike 4.0",
+        licence: "CC BY-SA 4.0",
+        source: "https://creativecommons.org/licenses/by-sa/4.0/legalcode",
+        covers: "The full legal text of the licence EDRDG's JMdict and KANJIDIC2 \
+                 are under, and of the derived artifacts that carry their readings, \
+                 glosses, grades and ranks. EDRDG asks for copies of the licence \
+                 files to travel with a software package, so the legal code does.",
+        file: "licences/CC-BY-SA-4.0.txt",
+        bundle_path: "licences/CC-BY-SA-4.0.txt",
+        text: include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../licences/CC-BY-SA-4.0.txt"
+        )),
+    },
+    LicenceNotice {
+        id: "jmdict-furigana",
+        title: "JmdictFurigana",
+        licence: "MIT",
+        source: "https://github.com/Doublevil/JmdictFurigana",
+        covers: "The alignment of a word's reading to the characters it belongs \
+                 over — the furigana the vocabulary screen and every word card \
+                 draw — compacted into `words.bin.gz`. Where the project publishes \
+                 no alignment the word keeps its reading and is drawn without ruby, \
+                 so no alignment is invented here.",
+        file: "apps/nihongo-tutor/src-tauri/licences/PROVENANCE-JmdictFurigana.txt",
+        bundle_path: "licences/PROVENANCE-JmdictFurigana.txt",
+        text: include_str!("../licences/PROVENANCE-JmdictFurigana.txt"),
+    },
+    LicenceNotice {
+        id: "jmdict-furigana-mit",
+        title: "MIT License — JmdictFurigana",
+        licence: "MIT",
+        source: "https://github.com/Doublevil/JmdictFurigana/blob/master/LICENSE",
+        covers: "The licence text the notice above is required to accompany, \
+                 Copyright (c) 2025 Doublevil, reproduced verbatim.",
+        file: "apps/nihongo-tutor/src-tauri/licences/MIT-JmdictFurigana.txt",
+        bundle_path: "licences/MIT-JmdictFurigana.txt",
+        text: include_str!("../licences/MIT-JmdictFurigana.txt"),
+    },
+    LicenceNotice {
+        id: "unidic",
+        title: "UniDic — the dictionary the passages were segmented with",
+        licence: "BSD-3-Clause",
+        source: "https://clrd.ninjal.ac.jp/unidic/ (via https://crates.io/crates/lindera-unidic)",
+        covers: "The word boundaries and readings the reading screen draws over its \
+                 passages, computed at build time through lindera. Only the \
+                 segmentation is redistributed — no dictionary entry is — and the \
+                 dictionary is not bundled with this app or fetched by it.",
+        file: "apps/nihongo-tutor/src-tauri/licences/ANALYSER-UniDic-lindera.txt",
+        bundle_path: "licences/ANALYSER-UniDic-lindera.txt",
+        text: include_str!("../licences/ANALYSER-UniDic-lindera.txt"),
+    },
+    LicenceNotice {
         id: "lgpl",
         title: "GNU Lesser General Public License",
         licence: "LGPL-3.0-or-later",

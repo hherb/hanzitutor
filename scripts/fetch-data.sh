@@ -290,4 +290,14 @@ if [ ! -s "$RAW/JmdictFurigana.json" ]; then
   tar -xzf "$RAW/JmdictFurigana.json.tar.gz" -C "$RAW"
 fi
 
+# JmdictFurigana's own licence text, which MIT requires to travel with a
+# substantial portion of the work and which the app therefore ships. It belongs to
+# the app rather than to the shared `licences/` directory, because that directory's
+# own test requires every file in it to be catalogued by the *Chinese* app — the
+# mistake HANDOVER_NIHONGO.md invariant 12 records. Fetched from the same pinned
+# release as the data, so the notice and the data cannot come from two releases.
+echo "fetching the Japanese app's own notices"
+fetch "https://raw.githubusercontent.com/Doublevil/JmdictFurigana/${JMDICT_FURIGANA}/LICENSE" \
+      "$ROOT/apps/nihongo-tutor/src-tauri/licences/MIT-JmdictFurigana.txt"
+
 echo "done"
