@@ -7,8 +7,8 @@
  * at a time, and this file is that structure as plain data so it can be asserted
  * on rather than read out of a template.
  *
- * The division is a partition with two deliberate exceptions, and both are stated
- * here rather than left to whoever edits the template next:
+ * The division is a partition with three deliberate exceptions, and all three are
+ * stated here rather than left to whoever edits the template next:
  *
  * - **Review is in both courses.** The queue is asked for one section at a time
  *   (see `api.reviewQueue`), because the schedule is one file of characters and a
@@ -16,6 +16,10 @@
  * - **Licences is in neither.** It is an obligation of the app rather than a thing
  *   the app teaches, so it hangs off the footer instead of taking a tab away from
  *   a course.
+ * - **Start here is in neither either.** It is about the language rather than
+ *   about a set of characters — it is the one screen a learner should meet before
+ *   choosing a course — so it hangs off the footer beside Licences, and its own
+ *   two buttons are how it hands the learner to whichever course they pick.
  */
 
 /** Which half of the app is open. Matches `nihongo_core::review::Section`. */
@@ -27,8 +31,8 @@ export type KanaView = "practice" | "chart" | "drill" | "review";
 /** The screens of the kanji course. */
 export type KanjiView = "kanji" | "radicals" | "words" | "read" | "review";
 
-/** Every screen, including the one that belongs to neither course. */
-export type View = KanaView | KanjiView | "licences";
+/** Every screen, including the two that belong to neither course. */
+export type View = KanaView | KanjiView | "licences" | "start";
 
 /** One tab, as the row under the course switch draws it. */
 export interface Tab {

@@ -1599,7 +1599,11 @@ their own readings and furigana, all from committed artifacts with nothing
 downloaded. A character's card also lists the words it is written in, each opening
 the word's own card, and the discrimination drill asks the classic confusions
 (シ against ツ), the yōon contrasts (きゃ against きや, one mora against two) and the
-voicing contrasts (か against が, は against ば and ぱ). It keeps its own learner data
+voicing contrasts (か against が, は against ば and ぱ). A **Start here** screen — in
+neither course, reachable from the footer — explains before the first lesson why the
+characters carry meaning and the kana carry the grammar, and demonstrates from the
+app's own vocabulary that one reading names several words (はし is 橋, 端 and 箸).
+It keeps its own learner data
 — a tally per pair and an SM-2 review schedule, in its own files, never a shared
 store. It versions itself at 0.1.0 and has its own handover and roadmap —
 **[HANDOVER_NIHONGO.md](HANDOVER_NIHONGO.md)** and

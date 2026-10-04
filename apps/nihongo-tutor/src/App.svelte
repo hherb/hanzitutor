@@ -17,6 +17,7 @@
   import KanaChart from "./lib/KanaChart.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import SpeakButton from "./lib/SpeakButton.svelte";
+  import StartPanel from "./lib/StartPanel.svelte";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import PassagePanel from "./lib/PassagePanel.svelte";
   import KanjiPanel from "./lib/KanjiPanel.svelte";
@@ -663,6 +664,15 @@
     <VocabularyPanel {voice} />
   {:else if view === "read"}
     <PassagePanel {voice} />
+  {:else if view === "start"}
+    <!--
+      Start here belongs to neither course: it is about the language rather than
+      about a set of characters, so it hangs off the footer beside Licences. Its
+      own two buttons are how it hands the learner to a course, which is why the
+      callback goes through `goTo` — the same guarded door every other screen
+      moves through, so a course and the screen it opens on cannot disagree.
+    -->
+    <StartPanel oncourse={(next) => goTo(next, defaultView(next))} />
   {:else}
     <LicencesPanel />
   {/if}
@@ -682,12 +692,19 @@
       {/if}
     </span>
     <!--
-      Licences belongs to neither course — it is a notice the app owes rather than
-      something it teaches — so it hangs off the footer instead of taking a tab
-      away from one of them. It stays reachable from either course, and the tab row
-      above is how the learner leaves again.
+      Licences and Start here belong to neither course — one is a notice the app
+      owes, the other is about the language rather than about a set of characters —
+      so both hang off the footer instead of taking a tab away from a course. They
+      stay reachable from either course, and the tab row above is how the learner
+      leaves again.
     -->
     <span class="utility">
+      <button
+        class="notice-link"
+        class:active={view === "start"}
+        aria-pressed={view === "start"}
+        onclick={() => (view = "start")}>Start here</button
+      >
       <button
         class="notice-link"
         class:active={view === "licences"}

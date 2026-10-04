@@ -32,7 +32,17 @@ const ALL_VIEWS: View[] = [
   "words",
   "read",
   "licences",
+  "start",
 ];
+
+/**
+ * The screens that hang off the footer instead of belonging to a course.
+ *
+ * Both are honest exceptions rather than gaps: Licences is an obligation the app
+ * owes, and Start here is about the language rather than about a set of
+ * characters. Written out so a third one has to be argued for here.
+ */
+const FOOTER_VIEWS: View[] = ["licences", "start"];
 
 /** The courses claiming a screen, read from the structure itself. */
 const claimants = (view: View): Section[] =>
@@ -92,15 +102,19 @@ describe("the courses", () => {
     expect(shared).toEqual(["review"]);
   });
 
-  it("give every taught screen a home, and leave only licences without one", () => {
-    const taught = ALL_VIEWS.filter((view) => view !== "licences");
+  it("give every taught screen a home, and leave the footer screens without one", () => {
+    const taught = ALL_VIEWS.filter((view) => !FOOTER_VIEWS.includes(view));
     for (const view of taught) {
       const owners = claimants(view);
       // Review is the one screen two courses may claim; everything else is one.
       const expected = view === "review" ? 2 : 1;
       expect(owners.length, `${view} is in ${owners.join(" and ")}`).toBe(expected);
     }
-    expect(claimants("licences")).toEqual([]);
+    // Licences and Start here are in neither course, and are reachable from both.
+    for (const view of FOOTER_VIEWS) {
+      expect(claimants(view), `${view} is in a course`).toEqual([]);
+    }
+    expect(FOOTER_VIEWS).toEqual(["licences", "start"]);
   });
 });
 
@@ -133,9 +147,11 @@ describe("covers", () => {
     // the view rather than derived from it.
     expect(covers("kana", "review")).toBe(true);
     expect(covers("kanji", "review")).toBe(true);
-    // And neither has Licences.
+    // And neither has Licences, nor Start here.
     expect(covers("kana", "licences")).toBe(false);
     expect(covers("kanji", "licences")).toBe(false);
+    expect(covers("kana", "start")).toBe(false);
+    expect(covers("kanji", "start")).toBe(false);
   });
 });
 
@@ -145,6 +161,7 @@ describe("isSection", () => {
     expect(isSection("kanji")).toBe(true);
     expect(isSection("Kana")).toBe(false);
     expect(isSection("licences")).toBe(false);
+    expect(isSection("start")).toBe(false);
     expect(isSection(null)).toBe(false);
     expect(isSection(undefined)).toBe(false);
     expect(isSection(7)).toBe(false);

@@ -546,11 +546,15 @@ footer {
   align-items: baseline;
 }
 
-/* Licences is a notice the app owes rather than a screen it teaches, so it is a
-   link in the footer rather than a tab in either course. `margin-left: auto`
-   pushes it to the end of the footer's line, away from the app's own claims. */
+/* Licences and Start here belong to neither course — one is an obligation the app
+   owes, the other is about the language rather than about a set of characters — so
+   both are links in the footer rather than tabs in a course. `margin-left: auto`
+   pushes them to the end of the footer's line, away from the app's own claims. */
 .utility {
   margin-left: auto;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
 }
 
 .notice-link {

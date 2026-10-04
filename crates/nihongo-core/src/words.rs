@@ -345,6 +345,26 @@ impl WordDataset {
             .collect()
     }
 
+    /// Every word of this course read `reading`, in course order.
+    ///
+    /// What the Start screen shows, and it is the one place the app argues *for*
+    /// the characters rather than teaching them: Japanese has few distinct sounds
+    /// and no tones, so a reading alone names several different words — はし is
+    /// 橋, 箸 and 端 — and the dictionary's own readings are the evidence. Nothing
+    /// is composed here (invariant 21); the query selects from readings the
+    /// artifact already stores.
+    ///
+    /// Compared after folding katakana to hiragana, exactly as
+    /// [`Word::furigana_spells_reading`] compares a word's furigana with its
+    /// reading: the dictionary writes its readings in hiragana, and a caller who
+    /// types ハシ means はし.
+    pub fn of_reading(&self, reading: &str) -> impl Iterator<Item = &Word> {
+        let wanted = crate::input::normalise_to_hiragana(reading);
+        self.words
+            .iter()
+            .filter(move |word| crate::input::normalise_to_hiragana(&word.reading) == wanted)
+    }
+
     /// Every word that uses `ch` among its kanji, in course order.
     ///
     /// What a character's card lists: a learner who has met 学 can be shown the
@@ -505,6 +525,30 @@ mod tests {
         // A character no word uses is an empty list, not an error.
         assert_eq!(dataset.of_kanji('水').count(), 0);
         assert_eq!(dataset.of_kanji('食').count(), 3);
+    }
+
+    /// The homophones the Start screen argues with: one reading, several words,
+    /// in the course's own order — and a katakana query finding the same words,
+    /// because a reading is the same reading in either kana.
+    #[test]
+    fn the_words_read_alike_are_found_by_their_reading() {
+        let dataset = WordDataset::from_words(
+            vec![
+                word("箸", "はし", 7, 19),
+                word("橋", "はし", 3, 5),
+                word("端", "はし", 7, 5),
+                word("花", "はな", 1, 1),
+            ],
+            WordsSource::default(),
+        );
+        // Course order — band, then frequency — not the order they were handed in.
+        let alike: Vec<&str> = dataset.of_reading("はし").map(|w| w.text.as_str()).collect();
+        assert_eq!(alike, vec!["橋", "端", "箸"]);
+        assert_eq!(dataset.of_reading("ハシ").count(), 3, "katakana is the same reading");
+        assert_eq!(dataset.of_reading("はな").count(), 1);
+        // A reading nothing in the course carries is an empty list, not a panic;
+        // a caller that wants to say so counts it.
+        assert_eq!(dataset.of_reading("ぬれ").count(), 0);
     }
 
     #[test]

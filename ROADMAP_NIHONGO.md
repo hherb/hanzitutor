@@ -44,6 +44,7 @@ references for no gain.
 | **N8** | **The kanji course and screens** | **Shipped.** The course, the 214-radical table and the components screen, all served from the artifact the vocabulary already needed. See the milestone for what the measurement added — and for the one thing it decided that was open. |
 | **N9** | Distribution | **Shipped.** The notices that were missing now ship, and a signed `.app` bundles — which it could not before, because the app's own lockfile pinned Tauri's JS at 2.11 against the workspace's 2.12. See the milestone for the three licence obligations that had been unmet since N6 and N7. |
 | **N10** | **Two courses, and the name to match** | **Shipped.** The app is now a kana course and a kanji course rather than nine flat tabs, Review is asked for one course at a time, the course last open is remembered, and the product is called *Nihongo Tutor*. Not a feature so much as the interface finally agreeing with the sentence at the top of this file. See the milestone for what is pinned by tests and what was deliberately left unbuilt. |
+| **N11** | **Start here: what the writing system is for** | **Shipped.** The one screen a learner should meet before choosing a course: the characters came from China and carry meaning, the kana carry the grammar, and romanisation therefore discards both — demonstrated with the app's own vocabulary, where はし is 橋, 端 and 箸. In neither course, hanging off the footer beside Licences. See the milestone for why the argument is data rather than prose. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -1363,7 +1364,9 @@ app excludes `cpal` on purpose. The device build is a **development** one
 driven by hand), and the mobile *layout* has not been addressed: on a phone the
 course screens still stack their three columns, so the lesson list comes before the
 board and a learner must scroll past it. That is the next thing to fix, not a
-bundling question.
+bundling question. (N11's Start screen is the one screen since measured at phone
+widths, and it was measured because it is new — the course screens above are still
+only reasoned about at 320px.)
 
 **What is deliberately not done.** The identifier decision above means there is no
 migration to write; if the app is ever split into two products, that is the day the
@@ -1372,6 +1375,74 @@ identifier changes and the migration is written with it. The mobile shell is
 be added, untracked in this change) and nobody has decided whether it is committed as Hanzi
 Tutor's is. No `Info.ios.plist`-style decision has been revisited for this app
 beyond the scene manifest, which is required to launch at all.
+
+---
+
+## N11 — Start here: what the writing system is for
+
+**The one screen a learner should meet before choosing a course**, and the only
+screen in the app that is about the language rather than about a set of characters.
+That is why it belongs to neither course: it hangs off the footer beside Licences,
+and its own two buttons hand the learner to whichever course they pick — the third
+exception to the division of invariant 31, asserted in `nav.test.ts` so a fourth
+would have to be argued for.
+
+**What it says, and why it is a screen rather than a paragraph in a README.** A
+new learner arrives believing that the writing is a transliteration of the sounds,
+and that romanisation is therefore a way in. That belief is what makes the
+characters look like memorisation for its own sake, and it is wrong in a way that is
+cheap to demonstrate:
+
+* the characters **came from China** and were kept for their *meaning* — 山 is
+  "mountain" whichever way it is read — so the shape carries the meaning and the
+  sound comes from the word it stands in;
+* the **kana carry the grammar**: Japanese inflects every verb and adjective and
+  marks the role of every part of a sentence with a particle, where Chinese needs
+  no such machinery to the same degree. Writing those endings is what the two
+  syllabaries were derived to do;
+* Japanese has **few distinct sounds and no tones**, so one reading names many
+  words, the context does the disambiguating in speech, and **romanisation throws
+  away both the meaning and the syntax**.
+
+**And the demonstration is the app's own vocabulary, not an example typed into the
+screen.** The panel asks the new `words_of_reading` command for two readings and
+draws what comes back: **はし** is 橋 (bridge), 端 (edge) and 箸 (chopsticks), and
+**かみ** is five words — 上, 紙, 神, 加味 and 髪. Every reading and every gloss is
+the dictionary's (invariant 21), so the argument cannot drift away from the data it
+rests on, and かみ's five are the evidence that はし is not one word's accident.
+Both sets are frozen: `tests/words_artifact.rs` pins them against the committed
+artifact and the app's own suite pins the page the command returns. The counts the
+screen prints ("3 words this course teaches are read はし") come from the artifact's
+own total, and `start.ts` is the one pure function that states them — including the
+empty case, which is a sentence rather than an empty list, invariant 28's rule one
+command over.
+
+**One rule about what the new command accepts.** `words_of_reading` takes kana and
+refuses anything else. Every reading in the artifact is kana, so a romaji query
+would come back empty for a reason that is not about the language, and a typo would
+read as a gap in the vocabulary — the same refusal `words_of_kanji` makes for a
+character outside the jōyō set (invariant 13). A kana reading the course does not
+carry is a legitimate empty page, and the screen says so in words.
+
+**Measured, because a probe cannot see a layout (trap 23).** The counts N10 recorded
+have moved with this work: `cargo test -p nihongo-core -p nihongo-tutor` is **331**
+tests (206 + 125, was 326) with two doc-tests, and `pnpm run test:web` is **162** of
+which this app's **93** are (was 156 and 87 — the six new ones are `start.test.ts`).
+This session had no active display either, so the screen was driven through §5's DOM
+probe: the footer link opens it, both readings arrive with their counts and the
+right words, the two buttons land on **Practice** and on **Kanji** with the correct
+tab active and no error of any kind. The layout was then measured with the headless-Chrome harness
+trap 23 documents, in a constrained container because Chrome will not open a window
+narrower than about 500px: **no horizontal overflow at 320, 360, 430, 500 or 980**,
+the gloss column never narrower than 120px, the longest glosses wrapping to two or
+three lines at 320px rather than being clipped, and at the app's own 980×728 the two
+footer links share one line (`utility` 146×24, one row) with the panel **1,388px**
+tall. A read-once screen, so its length is not the thing to optimise.
+
+**Deliberately not done.** It is **not** shown on a first run: a first start opens
+on **Kana**, which N10 pinned, and the introduction is a link rather than a gate. It
+is also not a tutorial with progress or a second copy of the course's content — it
+states why the writing is the way it is and hands the learner to a course.
 
 ---
 

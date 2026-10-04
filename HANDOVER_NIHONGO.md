@@ -96,11 +96,11 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **326
-tests** — every `#[test]` in the two suites (204 in `nihongo-core`, 122 in
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **331
+tests** — every `#[test]` in the two suites (206 in `nihongo-core`, 125 in
 `nihongo-tutor`), plus two doc-tests (`lib.rs`'s and `variants.rs`'s);
 the frontend's are counted separately below.
-`pnpm run test:web` runs 156, of which **87** are this app's.
+`pnpm run test:web` runs 162, of which **93** are this app's.
 `cargo test -p hanzi-voice`, the shared crate the audio half lives in, is 29.
 
 | | |
@@ -126,12 +126,13 @@ the frontend's are counted separately below.
 | Furigana | 16,022 of 16,073 aligned (99.7%); the other 51 carry their reading and no ruby |
 | Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
 | Words on a card | 16,073 words over 2,136 characters — 一 in 223, 人 in 218, and **57 characters in none**; a page of 12, in course order (invariant 28) |
+| One reading | **はし is 橋, 端 and 箸 and かみ is five words** (上 紙 神 加味 髪) — the homophones the **Start here** screen argues with, drawn from the artifact rather than typed into the interface (invariant 32) |
 | Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
 | Notices | 10 — five of them added at N9, when the EDRDG, JmdictFurigana and UniDic obligations that had been recorded in `LICENSES.md` since N6 and N7 were found to satisfy nothing in the bundle (§8) |
 | Bundle | built at N9 as `Kana Tutor.app`, 15.25 MiB, and **rebuilt after the N10 rename as `Nihongo Tutor.app`** — 15 MiB, `codesign --verify --deep --strict` clean, `Identifier=com.hanzitutor.kana`, Team `X5DWXB4283`, and all ten notices world-readable. The `.dmg` needs Tauri's own `bundle_dmg.sh` run outside the sandbox (trap 21); the N10 one is **7,957,111 bytes**, `hdiutil verify` checksum VALID, signed `Identifier=Nihongo Tutor_0.1.0_aarch64`, and mounting it shows `Nihongo Tutor.app` plus the `Applications` link with the inner app still passing `--deep --strict`. The N9 figures were 15.25 MiB and an 8,186,456-byte image; the icon work that milestone records is unchanged, and `/Applications/Kana Tutor.app` is still the N9 install — the N10 build has not been installed there |
 | Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review". See §5, "Building for iOS", for the two things `tauri ios init` does not provide |
-| Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Read, Review. Licences hangs off the footer, in neither course (invariant 31) |
-| Tests | nihongo-core 204, nihongo-tutor 122, hanzi-voice 29, frontend 87 of the 156 |
+| Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Read, Review. **Start here** and Licences hang off the footer, in neither course (invariant 31) |
+| Tests | nihongo-core 206, nihongo-tutor 125, hanzi-voice 29, frontend 93 of the 162 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | three files, `confusions.json`, `review.json` and `prefs.json`, in the app's own data directory |
@@ -149,6 +150,11 @@ switch's two-line budget were all measured through the DOM probe in §5 — the 
 that works when a capture cannot be believed. The screens listed in the paragraph
 above were seen on a display when they were built; the header compaction is the
 part that has only ever been measured, and it is recorded that way on purpose.
+**Start here (N11) is the next one that has only ever been measured**, for the same
+reason and with the same two tools: the §5 DOM probe drove the link, both readings
+and both buttons, and the headless-Chrome harness in trap 23 measured the layout at
+320, 360, 430, 500 and 980 px. It has not been seen on a display, and that is worth
+knowing before trusting its typography rather than its behaviour.
 
 **And it has been heard.** N1 put the machine's own Japanese voice behind a button
 and the `h` key, and behind **every reading on a kanji card** — so a character can
@@ -207,6 +213,15 @@ the holes, both scripts, all five exercises, the yōon tell (*ビョ is byo, not
 ビョ is one mora — the small ョ; ビヨ is two, ビ + ヨ*) and the voicing tell in both
 of its forms (*て is the plain kana; で is the same kana with the dakuten ゛* and
 *ホ is the plain kana; ポ is the same kana with the handakuten ゜*).
+
+**And a learner can now be told why the characters are worth learning before the
+first lesson.** **Start here** — in neither course, hanging off the footer beside
+Licences — says what the writing is for: the characters came from China and were
+kept for their meaning, the kana exist to write the grammar those characters cannot
+carry, and Japanese's few distinct sounds and absent tones mean a reading alone
+names several words. That last claim is shown rather than asserted, from the app's
+own vocabulary: **はし is 橋, 端 and 箸, and かみ is five words**. Invariant 32 is the
+rule; the measurements are in `ROADMAP_NIHONGO.md` N11.
 
 **Two parts of the app learn about their learner now.** The drill is **N3**'s: it
 used to draw a kana from a pool and throw the answer away, and it now draws a
@@ -300,9 +315,11 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   Radical and RadicalFamily, and the modules'
                                   account of the grade reconciliation — the kanji
                                   half, N6, plus the 214-radical table, N8
-  src/words.rs           (526)    Word, Ruby, WordDataset, the ladder's band_for
-                                  and band_name, and `of_kanji` — the vocabulary
-                                  half, N7, and the character card's list, invariant 28
+  src/words.rs           (570)    Word, Ruby, WordDataset, the ladder's band_for
+                                  and band_name, `of_kanji` — the vocabulary half,
+                                  N7, and the character card's list, invariant 28 —
+                                  plus `of_reading`, the homophones invariant 32's
+                                  screen argues with
   src/passages.rs        (387)    Passage, PassageToken, PassageDataset and the
                                   source-file parser — the reading half, N7
   src/readings.rs        (386)    Hepburn and Kunrei-shiki, and the enumeration
@@ -351,8 +368,9 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
   tests/kanji_artifact.rs(841)    26 tests over the committed kanji artifact: the
                                   whole grade reconciliation, the 214-radical
                                   table and the course
-  tests/words_artifact.rs(473)    17 tests over the committed words artifact,
-                                  recomputing every band from the kanji one
+  tests/words_artifact.rs(511)    18 tests over the committed words artifact,
+                                  recomputing every band from the kanji one, and
+                                  pinning the homophones はし and かみ (invariant 32)
   tests/passages_artifact.rs(247) 9 tests over the committed passages, including
                                   that they still match data/passages/*.txt
 
@@ -361,10 +379,12 @@ scripts/fetch-unidic.sh           fetches and builds the UniDic dictionary into
                                   built, and the only thing that needs either
 
 apps/nihongo-tutor/               the app
-  src-tauri/src/lib.rs  (2783)    AppState, the speaker, the chart and the 30
+  src-tauri/src/lib.rs  (2900)    AppState, the speaker, the chart and the 31
                                   commands, all thin — and the one place a kana is
                                   graded through `nihongo_core::grade_kana` rather
-                                  than the shared engine — invariant 30
+                                  than the shared engine — invariant 30 —
+                                  `words_of_reading` being the newest of them
+                                  (invariant 32)
   src-tauri/src/store.rs (754)    the three files of this app's own: confusions.json
                                   (load, record, atomic write — N3), review.json
                                   (the SM-2 schedule, and the rule for when an
@@ -373,24 +393,36 @@ apps/nihongo-tutor/               the app
                                   pair, because the ritual is the same for all
                                   three — invariant 15
   src-tauri/src/licences.rs(157)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (1355)  44 tests locking the JSON the webview
+  src-tauri/tests/ipc_contract.rs (1420)  46 tests locking the JSON the webview
                                   reads *and the arguments it posts* (invariant 14),
                                   including the `joined` field a joined kana crosses
                                   with — invariant 30 — its empty twin on a kanji,
-                                  and the `section` both queue halves are asked for
+                                  the `section` both queue halves are asked for, and
+                                  the `{ reading, offset, limit }` the Start screen
+                                  posts (invariant 32)
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
-  src/App.svelte         (698)    the two courses and the switch between them, the
+  src/App.svelte         (718)    the two courses and the switch between them, the
                                   course list, the board wiring, the one place the
                                   voice status and the remembered course are asked
-                                  for — N1, N10 — and the one `openKana` a screen
-                                  calls to put a kana on the board — N4
-  src/lib/nav.ts         (116)    **the division itself**: the two courses, their
+                                  for — N1, N10 — the one `openKana` a screen
+                                  calls to put a kana on the board — N4 — and the
+                                  two footer links, Licences and Start here (31, 32)
+  src/lib/nav.ts         (120)    **the division itself**: the two courses, their
                                   screens, their defaults, and the membership test
-                                  `goTo` is guarded by — N10
-  src/lib/nav.test.ts    (152)    run by the ROOT project's vitest; asserts every
+                                  `goTo` is guarded by — N10 — with Start here and
+                                  Licences the two screens in neither course (32)
+  src/lib/nav.test.ts    (169)    run by the ROOT project's vitest; asserts every
                                   screen has one home, Review is the only screen
-                                  two courses share, and Licences is in neither
+                                  two courses share, and the two footer screens are
+                                  in neither
+  src/lib/StartPanel.svelte(248)  **Start here** — what the writing system is for,
+                                  and the homophone demonstration built from the
+                                  app's own vocabulary — N11, invariant 32
+  src/lib/start.ts        (41)    the readings the demonstration asks about, a page's
+                                  size, and the one sentence that states a count —
+                                  invariant 32
+  src/lib/start.test.ts   (58)    run by the ROOT project's vitest
   src/lib/KanaCanvas.svelte(248)  pointer capture and the animation frame. Draws
                                   any `Drawable`, so a kana, a kanji and a radical
                                   all come through it
@@ -433,10 +465,11 @@ apps/nihongo-tutor/               the app
   src/lib/board.ts        (97)    the board's arithmetic, as pure functions
   src/lib/board.test.ts   (99)    run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
-  src/lib/types.ts       (577)    the IPC shapes, `Character = Drawable`, the
-                                  chart's slots as `(string | null)[]`, and the
-                                  `Prefs` the remembered course crosses in
-  src/lib/api.ts         (326)    one wrapper per command
+  src/lib/types.ts       (594)    the IPC shapes, `Character = Drawable`, the
+                                  chart's slots as `(string | null)[]`, the
+                                  `Prefs` the remembered course crosses in, and
+                                  `WordsOfReading` for the Start screen — invariant 32
+  src/lib/api.ts         (345)    one wrapper per command
 
 crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
                                   part's data layer
@@ -446,9 +479,12 @@ crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
                                   is a default feature this app turns off
 ```
 
-The line counts are the current tree's, and they were last checked while writing
-invariants 26 and 27; a few of the earlier numbers in this table were stale by
-then, which is worth knowing before treating one as a measurement.
+The line counts are the current tree's for the rows N11 touched — `words.rs`, the
+two artifacts' tests, the app's `lib.rs` and `ipc_contract.rs`, `App.svelte`,
+`nav.ts`, `nav.test.ts`, `types.ts`, `api.ts` and the three new `start*` files —
+and were last checked while writing invariants 26 and 27 for the rest; a few of the
+earlier numbers were stale even then, which is worth knowing before treating one as
+a measurement.
 
 `src-tauri/gen/schemas/` is committed, as it is for the other two apps.
 
@@ -1309,9 +1345,9 @@ description sold hiragana and katakana. The division is now explicit:
 * **`src/lib/nav.ts` is the authority**, as data: two courses, their screens, their
   labels, their blurbs, and the first screen each opens on. `nav.test.ts` asserts the
   properties that make it a division — **every screen has exactly one home, Review is
-  the only screen two courses share, and Licences is in neither.** A screen added to
-  one course's template and to neither tab list fails there rather than shipping as a
-  tab that shows nothing.
+  the only screen two courses share, and Licences and Start here are in neither.** A
+  screen added to one course's template and to neither tab list fails there rather
+  than shipping as a tab that shows nothing.
 * **The section is passed beside the view, never derived from it.** Review is a screen
   of both courses, so a function from view to section has no honest answer for it;
   `goTo` takes both and **checks them against `nav.ts`** rather than assuming they
@@ -1325,8 +1361,13 @@ description sold hiragana and katakana. The division is now explicit:
   `the_two_sections_partition_every_kind_of_character` pins that the two sections
   claim each kind exactly once, and `a_section_offers_only_what_it_teaches` that the
   two halves add up to the whole schedule.
-* **Licences is an obligation, not a course.** It does not get a tab in either course;
-  it is a link in the footer, reachable from both.
+* **Licences is an obligation, not a course, and Start here is about the language
+  rather than about a set of characters.** Neither gets a tab in either course; both
+  are links in the footer, reachable from both, and `nav.test.ts` names them as the
+  two exceptions so a third has to be argued for there. Start here is the one screen
+  a learner should meet before choosing a course, and its own two buttons are how it
+  hands them to one — through `goTo`, the same guarded door every other screen moves
+  through. Invariant 32 is what it says and how it proves it.
 * **The app's name is not on screen, and the switch is two lines.** The window title
   carries the name on the desktop and the footer carries it at the bottom, so the
   `<h1>` is `sr-only` — present for a reader, 1×1 px for the eye, measured — and the
@@ -1346,6 +1387,43 @@ description sold hiragana and katakana. The division is now explicit:
   app's data directory, so changing it would strand the learner's three files under the
   old name. A name a person reads and a key a file lives under are two decisions, and
   `app_info_names_the_app_the_bundle_config_names` pins both so neither drifts.
+
+---
+
+### 32. **The Start screen argues from the artifact, and a reading is kana.**
+
+The one screen in the app that is about the language rather than about a set of
+characters, and the only one that makes a claim *for* the writing system instead of
+teaching a piece of it. It is **N11**, and three things about it are decisions
+rather than prose:
+
+* **The evidence is the app's own vocabulary, never an example typed into the
+  interface.** `WordDataset::of_reading` selects from readings the artifact already
+  stores, and `words_of_reading` serves a page of them, so the demonstration cannot
+  drift away from the data it rests on: **はし is 橋, 端 and 箸 and かみ is five
+  words**, pinned by `tests/words_artifact.rs` against the committed artifact and by
+  the app's own suite against the page. A reading printed from a literal in a
+  component would be invariant 21's mistake — a reading the dictionary did not give
+  — one step further out. `src/lib/start.ts` is the only thing in the frontend that
+  knows anything, and it knows which readings to ask about and how to state a count.
+* **The command takes kana and refuses anything else.** Every reading in the
+  artifact is kana, so a romaji query matching nothing would be a typo dressed as a
+  gap in the data — the same refusal `words_of_kanji` makes for a character outside
+  the jōyō set (invariant 13, invariant 28). A **kana** reading the course does not
+  carry is a legitimate empty page and the screen states it in words.
+* **It is not the first-run screen, and it is not a gate.** A first run opens on
+  **Kana**, which invariant 31 pins; Start here is a link in the footer beside
+  Licences and is in neither course. Showing it on a first run would change a
+  recorded default, and a learner who wants it knows where it is.
+
+**Two smaller consequences.** The footer now carries two links, which is one more
+than the `.utility` span was drawn for: they share one line at 980×728 and wrap on
+a phone, which is what a footer is for, and `.utility` is a flex row for exactly
+that. And the claim it makes is **not** a licence to invent Japanese: the screen's
+prose is about the writing system and the evidence is drawn, so a hand-written
+sentence about 山 or 食べる is the only kind of claim in this app that no test
+pins — which is why the wording is short, and why the numbers in it (three words,
+five words) are the artifact's.
 
 ## 5. The verification loop
 
@@ -2391,6 +2469,18 @@ invoke: (cmd) => Promise.resolve(FAKE[cmd]) }` is the entire stub — `invoke` f
 * **Delete the harness.** `frontendDist` is `../dist` and the release build embeds
   it, so an entry left in the app's root is a file in the shipped bundle.
 
+**Three things the harness cost on its second use (N11), all of them this harness
+rather than this app.** Chrome must be given a profile **inside the workspace** —
+`--user-data-dir="$PWD/.tmp-chrome"` — or it dies on Crashpad's first write to
+`~/Library` under the file sandbox, and the failure looks like Chrome producing no
+output at all; the dev server is bound **IPv6-only** here, so the URL is
+`http://[::1]:1423/…` and `localhost` may resolve to the refused `127.0.0.1`; and
+**Chrome will not open a window narrower than about 500px**, so a phone width is
+measured by constraining the *container* (`target.style.width = "360px"`) inside a
+wider window rather than by asking for a 360px window — which the reported
+`innerWidth` will otherwise quietly lie about. The first two were a silent no-output
+run and a `NO REPORT`, and none of the three is a bug in the app being measured.
+
 And the second half of the fix is not optional. With the collision gone the row's
 `minmax(0, 1fr)` tracks stretched a cell to **173px** across a 980pt window — a 24px
 kana in a 173px box, sixteen rows of it, 2890px of scrolling. A chart is looked *up*.
@@ -2649,4 +2739,5 @@ assumed to be covered by the Chinese one.
 * **Grammar and particles.** "Kanji won't teach you to read" is the defining
   Japanese failure mode, and a tutor without grammar teaches characters rather
   than reading. Out of scope for now, and the largest thing missing from the
-  product.
+  product. N11's Start screen says *why* the kana carry the grammar; it teaches
+  none of it, which is the gap stated rather than closed.

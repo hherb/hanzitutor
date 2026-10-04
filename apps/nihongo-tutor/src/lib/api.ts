@@ -34,6 +34,7 @@ import type {
   Word,
   WordPage,
   WordsOfKanji,
+  WordsOfReading,
   YoonView,
 } from "./types";
 import type { Section } from "./nav";
@@ -247,6 +248,24 @@ export function wordsInBand(band: number, offset = 0, limit = 60): Promise<WordP
  */
 export function wordsOfKanji(ch: string, offset = 0, limit = 12): Promise<WordsOfKanji> {
   return invoke<WordsOfKanji>("words_of_kanji", { ch, offset, limit });
+}
+
+/**
+ * One page of the words this course teaches that are read `reading`, in course
+ * order — the Start screen's demonstration that one sound names several words.
+ *
+ * The reading must be **kana**: a romaji query is rejected rather than answered
+ * with an empty page, because every reading in the vocabulary is kana and an
+ * empty page would let a typo read as a gap in the data. A kana reading the
+ * course does not carry is a legitimate empty page, which the screen states in
+ * words.
+ */
+export function wordsOfReading(
+  reading: string,
+  offset = 0,
+  limit = 12,
+): Promise<WordsOfReading> {
+  return invoke<WordsOfReading>("words_of_reading", { reading, offset, limit });
 }
 
 /** One word, by its text and its reading. */

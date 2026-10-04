@@ -471,3 +471,41 @@ fn fifty_seven_joyo_characters_are_in_no_word() {
         );
     }
 }
+
+/// **The reading alone is not the word**, which is what the Start screen argues
+/// with — and it argues from this artifact rather than from an example typed into
+/// the interface.
+///
+/// はし is the textbook case and it is genuinely three words here, so a learner
+/// who has learned to read kana has three true answers to one sound and no way to
+/// choose between them from the reading. The three are frozen, and in the course's
+/// order: a rebuild that lost one, or that filed 端 after 箸, is a fact about the
+/// vocabulary and not about the screen.
+#[test]
+fn one_reading_names_several_words() {
+    let dataset = dataset();
+
+    let hashi: Vec<&str> = dataset.of_reading("はし").map(|w| w.text.as_str()).collect();
+    assert_eq!(hashi, vec!["橋", "端", "箸"], "bridge, edge, chopsticks");
+    // The words the screen draws carry the dictionary's own readings and glosses —
+    // nothing about the demonstration is composed in the interface.
+    for text in ["橋", "端", "箸"] {
+        let word = dataset
+            .find(text, "はし")
+            .unwrap_or_else(|| panic!("{text} (はし) is in the vocabulary"));
+        assert!(!word.meaning.is_empty(), "{text} has a gloss to show");
+    }
+
+    // And it is not one word's accident: かみ is five words of this course, the
+    // second reading the screen demonstrates.
+    let kami = dataset.of_reading("かみ").count();
+    assert_eq!(kami, 5, "かみ is read by five words here");
+    assert!(
+        dataset.of_reading("カミ").count() == kami,
+        "a reading is the same reading in either kana"
+    );
+
+    // A reading nothing here carries is empty rather than an error, which is what
+    // lets the screen say so in words.
+    assert_eq!(dataset.of_reading("ぬれ").count(), 0);
+}

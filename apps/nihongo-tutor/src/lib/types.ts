@@ -354,6 +354,23 @@ export interface WordsOfKanji {
   words: Word[];
 }
 
+/**
+ * One page of the words this course teaches that are read one way — what the
+ * Start screen demonstrates with.
+ *
+ * `reading` is echoed back in kana, so a screen can tell an answer about the
+ * reading it asked for from one about the reading that was up a moment ago, and
+ * `total` is what lets it say in words that one sound names several words — three
+ * for はし, five for かみ. The words carry the dictionary's own readings and
+ * glosses; nothing in the demonstration is composed in the interface.
+ */
+export interface WordsOfReading {
+  reading: string;
+  total: number;
+  offset: number;
+  words: Word[];
+}
+
 /** One passage, as the list offers it. */
 export interface PassageSummary {
   key: string;

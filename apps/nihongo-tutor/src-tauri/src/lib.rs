@@ -795,6 +795,49 @@ impl AppState {
         })
     }
 
+    /// One page of the words this course teaches that are **read** `reading`, in
+    /// course order.
+    ///
+    /// What the Start screen argues with, and the argument is the artifact's
+    /// rather than the interface's: はし is 橋, 箸 and 端 here, and かみ is five
+    /// words, so a learner who has the reading and not the character has several
+    /// true answers and no way to choose between them. The readings drawn are the
+    /// dictionary's own (invariant 21); this only selects among them, folding
+    /// katakana to hiragana so ハシ and はし are one query.
+    ///
+    /// A reading **in kana** is required, and a query in romaji is a message
+    /// rather than an empty page: every reading the artifact holds is kana, so
+    /// "hashi" matching nothing would be a typo dressed as a gap in the data —
+    /// invariant 13's rule, one command over from `words_of_kanji`'s refusal of a
+    /// character the jōyō set does not hold. An empty page is still a legitimate
+    /// answer for a kana reading the course does not carry, which the screen
+    /// states in words.
+    pub fn words_of_reading(
+        &self,
+        reading: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<WordsOfReading, String> {
+        if reading.is_empty() || !reading.chars().all(is_kana) {
+            return Err(format!(
+                "{reading:?} is not a reading; a reading is written in kana"
+            ));
+        }
+        let words = self
+            .words
+            .of_reading(reading)
+            .skip(offset)
+            .take(limit.clamp(1, MAX_WORD_PAGE))
+            .map(word_view)
+            .collect();
+        Ok(WordsOfReading {
+            reading: reading.to_string(),
+            total: self.words.of_reading(reading).count(),
+            offset,
+            words,
+        })
+    }
+
     /// One word, by its text and its reading.
     pub fn word(&self, text: &str, reading: &str) -> Result<WordView, String> {
         self.words
@@ -1197,6 +1240,22 @@ pub struct WordsOfKanji {
     pub words: Vec<WordView>,
 }
 
+/// One page of the words this course teaches that are read `reading`.
+///
+/// The same page shape as a band's, with the reading in place of the band:
+/// `reading` is echoed back so a screen can tell an answer about the reading it
+/// asked for from one about the reading that was up a moment ago, and `total` is
+/// what lets it say in words that one sound names several words.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WordsOfReading {
+    pub reading: String,
+    /// How many words this course teaches that are read this way, in all.
+    pub total: usize,
+    pub offset: usize,
+    pub words: Vec<WordView>,
+}
+
 /// One word, as the vocabulary screen draws it: the word, its own reading, the
 /// furigana that puts that reading over the right characters, and its band.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1545,6 +1604,23 @@ fn words_of_kanji(
     state.words_of_kanji(ch, offset, limit)
 }
 
+/// One page of the words this course teaches that are read `reading`, in course
+/// order — what the Start screen demonstrates with.
+///
+/// A reading the course does not carry answers with an empty page and a total of
+/// nothing, which the screen states in words; anything that is not kana is a
+/// message rather than a silent nothing, so a romanised query does not read as a
+/// gap in the vocabulary.
+#[tauri::command]
+fn words_of_reading(
+    state: State<'_, AppState>,
+    reading: String,
+    offset: usize,
+    limit: usize,
+) -> Result<WordsOfReading, String> {
+    state.words_of_reading(&reading, offset, limit)
+}
+
 /// One word, by its text and its reading.
 #[tauri::command]
 fn word(state: State<'_, AppState>, text: String, reading: String) -> Result<WordView, String> {
@@ -1715,6 +1791,7 @@ pub fn run() {
             word_bands,
             words_in_band,
             words_of_kanji,
+            words_of_reading,
             word,
             word_of_text,
             check_word,
@@ -2522,6 +2599,46 @@ mod tests {
 
         let err = state.words_of_kanji('鳩', 0, 12).unwrap_err();
         assert!(err.contains("not one of the jōyō kanji"), "{err}");
+    }
+
+    /// **The Start screen's demonstration.** One sound, several words, ordered the
+    /// way the course orders them — and a query that is not a reading refused
+    /// rather than answered with an empty page a learner would read as a gap.
+    #[test]
+    fn the_words_read_alike_arrive_in_course_order() {
+        let state = state();
+        let alike = state.words_of_reading("はし", 0, 12).expect("はし is a reading");
+        assert_eq!(alike.reading, "はし", "the reading asked for, echoed back");
+        assert_eq!(alike.total, 3, "橋, 端 and 箸");
+        assert_eq!(alike.offset, 0);
+        let texts: Vec<&str> = alike.words.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(texts, vec!["橋", "端", "箸"], "the course's order, not a second sort");
+        for word in &alike.words {
+            assert_eq!(word.reading, "はし", "{} is drawn with the dictionary's reading", word.text);
+            assert!(!word.meaning.is_empty(), "{} has a gloss to show", word.text);
+        }
+
+        // A reading is the same reading in either kana, so the katakana query finds
+        // the same three words.
+        assert_eq!(state.words_of_reading("ハシ", 0, 12).expect("a reading").total, 3);
+        // A kana reading the course does not carry is an empty page — a fact to
+        // state in words — and not an error.
+        let none = state.words_of_reading("ぬれ", 0, 12).expect("a reading");
+        assert_eq!(none.total, 0);
+        assert!(none.words.is_empty());
+        // Romaji is a message: no reading in the artifact is written that way, so
+        // an empty page would be a typo wearing the clothes of a gap in the data.
+        let err = state.words_of_reading("hashi", 0, 12).unwrap_err();
+        assert!(err.contains("is not a reading"), "{err}");
+        assert!(state.words_of_reading("", 0, 12).is_err());
+        // A limit the interface should not have asked for is clamped, and the
+        // **lower** bound is the one that can be observed here: an upper-bound
+        // assertion would be unfalsifiable, because no reading in this vocabulary
+        // has more than a page's worth of words (`words_of_kanji`'s 一, with 223,
+        // is where the upper bound is really tested).
+        assert_eq!(state.words_of_reading("はし", 0, 0).expect("はし").words.len(), 1);
+        // And a page past the end is empty rather than an error.
+        assert!(state.words_of_reading("はし", 3, 12).expect("はし").words.is_empty());
     }
 
     #[test]

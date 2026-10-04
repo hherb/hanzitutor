@@ -905,6 +905,71 @@ fn the_page_of_a_characters_words_is_read_the_way_the_command_reads_it() {
     assert!(state().words_of_kanji('鳩', 0, 3).is_err());
 }
 
+/// The Start screen's demonstration, on the wire: the page shape `types.ts`
+/// declares, with the reading echoed back and every word carrying the
+/// dictionary's own reading for that sound.
+#[test]
+fn the_words_read_alike_cross_with_the_reading_they_answer_for() {
+    let page = state().words_of_reading("はし", 0, 12).expect("はし is a reading");
+    let value = serde_json::to_value(&page).expect("serialises");
+    assert_eq!(keys(&value), vec!["offset", "reading", "total", "words"]);
+    assert_eq!(value["reading"], "はし", "the reading the answer is about, echoed back");
+    assert_eq!(value["offset"], 0);
+    assert_eq!(value["total"], 3, "橋, 端 and 箸 in this vocabulary");
+
+    let words = value["words"].as_array().expect("an array");
+    assert_eq!(words.len(), 3);
+    for key in ["text", "reading", "meaning", "band", "bandName", "nf", "furigana"] {
+        assert!(words[0].get(key).is_some(), "a word is missing {key}: {}", words[0]);
+    }
+    for word in words {
+        assert_eq!(
+            word["reading"], "はし",
+            "{word} is drawn with a reading the demonstration did not ask about"
+        );
+        assert!(
+            !word["meaning"].as_str().expect("a string").is_empty(),
+            "{word} has no gloss to show"
+        );
+    }
+}
+
+/// The request half, driven exactly as `api.ts` builds it:
+/// `{ reading, offset, limit }` — with a **non-zero offset**, because that is the
+/// only way the skip is exercised — and the refusal a romaji query meets, which is
+/// the difference between a typo and a gap in the vocabulary.
+#[test]
+fn the_page_of_words_read_alike_is_read_the_way_the_command_reads_it() {
+    let payload = json!({ "reading": "かみ", "offset": 2, "limit": 3 });
+    let reading = payload["reading"].as_str().expect("a string");
+    let offset = payload["offset"].as_u64().expect("a number") as usize;
+    let limit = payload["limit"].as_u64().expect("a number") as usize;
+
+    let page = state()
+        .words_of_reading(reading, offset, limit)
+        .expect("かみ is a reading");
+    assert_eq!(page.reading, "かみ");
+    assert_eq!(page.offset, 2, "the offset the interface posted, echoed back");
+    assert_eq!(page.words.len(), 3);
+    assert_eq!(page.total, 5, "one reading, five words in all");
+    // The page is the third to fifth word of the five, in the course's order — so
+    // this fails if the skip is dropped as well as if the order moves.
+    let texts: Vec<&str> = page.words.iter().map(|w| w.text.as_str()).collect();
+    assert_eq!(texts, vec!["神", "加味", "髪"]);
+    for word in &page.words {
+        assert_eq!(word.reading, "かみ", "{} is not read かみ", word.text);
+    }
+
+    // A kana reading the course does not carry is an empty page; anything that is
+    // not kana is a message, because an empty page there would be a typo the
+    // screen reported as a fact about the data.
+    let none = state().words_of_reading("ぬれ", 0, 3).expect("a reading");
+    assert_eq!(none.total, 0);
+    assert!(none.words.is_empty());
+    assert!(state().words_of_reading("kashi", 0, 3).is_err());
+    assert!(state().words_of_reading("", 0, 3).is_err());
+}
+
 #[test]
 fn a_radical_family_crosses_with_its_head_form_and_its_members() {    let radicals = state().radicals();
     assert_eq!(radicals.len(), 214);
