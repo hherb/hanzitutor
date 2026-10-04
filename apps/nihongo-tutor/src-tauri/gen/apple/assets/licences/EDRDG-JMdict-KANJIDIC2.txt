@@ -1,0 +1,96 @@
+EDRDG — JMdict and KANJIDIC2
+============================
+
+The readings, the English glosses, the kyōiku grades, the frequency ranks and the
+stroke counts this app teaches from are the work of the **Electronic Dictionary
+Research and Development Group** (EDRDG). Credit for them belongs to EDRDG and to
+the compilers of the dictionaries named below; this project claims no copyright
+over that material.
+
+Source
+------
+
+  JMdict     https://www.edrdg.org/wiki/index.php/JMdict-EDICT_Dictionary_Project
+  KANJIDIC2  https://www.edrdg.org/wiki/index.php/KANJIDIC_Project
+  Licence    https://www.edrdg.org/edrdg/licence.html
+
+Two forms of each dictionary are read, both from EDRDG's own site or from a pinned
+redistribution of its files (see the provenance record in LICENSES.md for the exact
+snapshots this build was made from):
+
+  * KANJIDIC2 and JMdict as JSON documents, republished by
+    `scriptin/jmdict-simplified` (https://github.com/scriptin/jmdict-simplified),
+    a reformatting under the same licence;
+  * `JMdict_e.gz`, EDRDG's own XML, read for exactly one field — the `nf01`-`nf48`
+    priority rank, which the JSON reformatting drops entirely.
+
+Attribution, as the licence asks it to be given
+-----------------------------------------------
+
+  The dictionary files are made available by the Electronic Dictionary Research
+  and Development Group (EDRDG) under a Creative Commons
+  Attribution-ShareAlike 4.0 International Licence (CC BY-SA 4.0).
+
+  Copyright over the documents covered by EDRDG's statement is held by
+  James William BREEN and The Electronic Dictionary Research and Development Group.
+
+  KANJIDIC2's SKIP codes are Jack HALPERN's, and EDRDG asks that they be credited
+  to him and to https://www.kanji.org/. This app's artifact does not carry them —
+  `prepare-kanji` reads no query codes — so nothing here reproduces them.
+
+Licence
+-------
+
+  Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+  Full legal text: see the file "CC-BY-SA-4.0.txt" beside this notice in the
+  bundle, or https://creativecommons.org/licenses/by-sa/4.0/legalcode
+
+  EDRDG's own licence statement, including the conditions this notice discharges
+  and the updating obligation described below, is at
+  https://www.edrdg.org/edrdg/licence.html
+
+What this app did to the data (the licences require this to be stated)
+---------------------------------------------------------------------
+
+  This app redistributes a **modified, derived** subset of the dictionary files,
+  not the files themselves. Specifically:
+
+  * Selected the 2,136 jōyō kanji and the common vocabulary this course teaches,
+    not EDRDG's full dictionary. The kanji set is bounded by the jōyō list; the
+    vocabulary is bounded by EDRDG's own "common word" markers and is reduced
+    further to the words whose every kanji the course can draw.
+  * Kept one reading, one gloss list and one grade per character, and one written
+    form, one reading and one gloss list per word. Translational equivalents in
+    languages other than English were dropped and are **not** redistributed: EDRDG
+    states that those are covered by separate copyright held by their compilers.
+  * Composed no reading and invented no reading alignment: a word's reading is the
+    dictionary's own kana form, and its furigana comes from JmdictFurigana's
+    alignment (see the notice beside this one) rather than from any rule written
+    here.
+  * Derived a level ladder — the highest kyōiku grade among a word's kanji, with
+    EDRDG's frequency rank ordering the words within a band. **The bands are this
+    project's approximation and are not the JLPT's**; the app's screens say so.
+  * Re-encoded the result into compact binary artifacts
+    (`crates/nihongo-core/data/kanji.bin.gz` and `words.bin.gz`) and recorded the
+    snapshot's own version and dictionary date in them.
+
+Consequence of ShareAlike
+-------------------------
+
+  The extracted dictionary text stays under CC BY-SA 4.0, and so does anything
+  built from it, including the two artifacts above. This does not reach the
+  program code (AGPL-3.0), the stroke outlines and the radical table (Arphic
+  Public License and LGPL-3.0-or-later), or the app's own interface text.
+
+Keeping it current
+------------------
+
+  EDRDG's licence states that a package using these files must have a procedure
+  for regularly updating them, and that failing to keep them up to date is a
+  violation of the licence. The procedure for this app is written down in
+  LICENSES.md, section "KANJIDIC2 — CC BY-SA 4.0, with the update obligation
+  designed" (and its vocabulary counterpart, "Refreshing it"): the snapshot is
+  pinned in `scripts/fetch-data.sh`, the pinned version and date are recorded in
+  the artifact and asserted by `crates/nihongo-core/tests/kanji_artifact.rs` and
+  `tests/words_artifact.rs`, and a refresh updates the pin, the artifact and those
+  tests in one commit.

@@ -93,7 +93,7 @@ done
 # restricted as it was found. Harmless for a build that only ever runs here, and a
 # real "cannot verify the signature" fault for anyone else who receives the
 # bundle: `scripts/build-appstore.sh` hit this from a licence text file at mode
-# 600, and the Kana Tutor bundle shipped its licence texts at mode 600 for the
+# 600, and the Nihongo Tutor bundle shipped its licence texts at mode 600 for the
 # same reason.
 #
 # It used to live inside the success branch below, which is the bug that let that

@@ -79,7 +79,7 @@ pub use input::{
     RomajiError,
 };
 pub use readings::{reading, Reading};
-pub use review::{due_items, kind_of, DueItem, ReviewKind};
+pub use review::{due_items, kind_of, queue, DueItem, Queue, ReviewKind, Section};
 pub use variants::{grade_kana, KanaGrade};
 pub use words::{
     band_for, band_name, is_kanji, Ruby, Word, WordsArtifact, WordDataset, WordsSource, BANDS,

@@ -104,7 +104,7 @@ pub const HEADLINE_INK: f32 = 0.25;
 /// study was fitted against, so overriding them piecemeal is the last thing it
 /// should do — and without it a payload of `{"inkWidth": 12}` is rejected with
 /// "missing field `resampleK`" before any grading happens. That is exactly how
-/// Kana Tutor shipped a Grade button that could not grade anything: it sends the
+/// Nihongo Tutor shipped a Grade button that could not grade anything: it sends
 /// pen width and nothing else. Sending every field is still fine.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -977,7 +977,7 @@ mod tests {
 
     // ---- the options an interface posts ------------------------------------
 
-    /// The payload Kana Tutor sends: the pen width, and nothing else.
+    /// The payload Nihongo Tutor sends: the pen width, and nothing else.
     ///
     /// It sent exactly this and the command rejected it — "missing field
     /// `resampleK`" — so its Grade button never graded a single attempt. A

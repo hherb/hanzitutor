@@ -1,12 +1,25 @@
-# Kana Tutor
+# Nihongo Tutor
 
-An offline app for learning hiragana and katakana. It is the third app in this
-workspace, after Hanzi Tutor (Chinese characters) and Tone Trainer (Mandarin
-tones), and it shares the geometry engine with both.
+An offline app for learning to read and write Japanese, in the order the language
+comes in: **the kana first, then the 2,136 jōyō kanji through the words they are
+written in**. It is the third app in this workspace, after Hanzi Tutor (Chinese
+characters) and Tone Trainer (Mandarin tones), and it shares the geometry engine
+with both.
+
+## Two courses, not one list of tabs
+
+The app is divided the way the study is. **Kana** is the on-ramp — 177 characters
+in 38 lessons, a few days' work — and **Kanji** is the course itself: 2,136
+characters in 216 lessons, behind 16,073 words. A switch at the top chooses which
+one is open, each course has its own row of screens, and the app returns to the
+course it was last in. Licences belongs to neither course and hangs off the
+footer. The division itself is `src/lib/nav.ts`: plain data, asserted by
+`nav.test.ts`, rather than a template someone has to read to find out what the app
+contains.
 
 ## What it teaches
 
-The course is the **gojūon**, in the order it is taught:
+The kana course is the **gojūon**, in the order it is taught:
 
 | | Lessons |
 | --- | --- |
@@ -15,15 +28,38 @@ The course is the **gojūon**, in the order it is taught:
 
 Each kana can be **animated** stroke by stroke, **traced** on the board and
 **graded** — shape, placement, ink and stroke order, against real stroke geometry
-— and its **reading typed** in either Hepburn or Kunrei-shiki romanisation.
+— and its **reading typed** in either Hepburn or Kunrei-shiki romanisation. A hand
+that joins two taught strokes is graded as the kana it drew, which is how さ is
+very often written, and the verdict says which strokes were joined.
 
-There are three views. **Practice** is the course and the board. **Tell them
-apart** is a discrimination drill: it prompts with a reading and offers the kana
-that shape is actually confused with, because シ and ツ differ only in stroke
-*direction* and repeating either one alone never teaches the difference. **Licences**
-shows every notice this app owes, in full.
+The kanji course is the same board over the character set:
 
-Everything is embedded. There is no network path in this app at all.
+| | |
+| --- | --- |
+| Kanji | 2,136 jōyō characters — 1,026 kyōiku in grades 1–6, then the remainder — in 216 lessons of ten, each opening on the board |
+| Radicals | the 214 Kangxi head forms with their geometry, and the jōyō characters classified under each |
+| Words | 16,073 words on a ladder derived from kyōiku grade, with furigana over every one, graded by typing the reading |
+| Read | three passages segmented into words, a reading over each kanji, and a word card behind every tap |
+
+## The screens
+
+Four in the kana course and five in the kanji course, with **Review** shared by
+both and asked for one course at a time. In **Kana**: **Practice** is the gojūon
+course and the board; **Chart** is the grid with the holes the language leaves, for
+looking a character up rather than learning it; **Tell them apart** is the
+discrimination drill, which asks about the pairs shape actually confuses — シ
+against ツ, きゃ against きや, か against が — weighted by what this learner gets
+wrong, and remembers the answers. In **Kanji**: the character course and its card;
+**Radicals**, the 214 head forms and their families; **Words**, the vocabulary by
+band; and **Read**, a passage with a word card behind every token. **Review** is
+the schedule those boards feed, and each course sees and counts only its own half
+of it: the kana course reviews kana, the kanji course reviews kanji and head
+forms, and the schedule behind both is one file of characters — the split is in
+what a screen offers, never in what is stored.
+
+Everything is embedded. There is no network path in this app at all, and the
+pronunciation comes from the operating system's own Japanese voice rather than
+from anything bundled or downloaded.
 
 ## Running it
 
@@ -58,6 +94,7 @@ Trainer lifted its pitch chart and its transcript rule the same way):
 | `src/lib/render.ts` | **Nothing.** It paints SVG outlines in font space and centre-lines in display space. AnimCJK publishes its kana in Make Me a Hanzi's own frame — same box, same y-up convention — so the transform and the painting are already correct for a kana. `types.ts` aliases `Character = Kana` so the file can stay untouched. |
 | `src/lib/KanaCanvas.svelte` | **New**, not lifted. It is the interaction only — pointer capture, the animation frame — since Hanzi Tutor's `PracticeCanvas` carries tone-panel and verdict-display concerns this app does not have. |
 | `src/lib/board.ts` | **New.** The board's arithmetic as pure functions — the pointer-to-display mapping and the animation's progress — so it can be tested without a canvas. `board.test.ts` is run by the **root** project's vitest. |
+| `src/lib/nav.ts` | **New.** The two courses and their screens as data, plus the membership test the deep links are guarded by. `nav.test.ts` asserts that every screen has one home, that Review is the only screen two courses share, and that Licences is in neither. |
 
 If `render.ts` is ever changed here, change it in `src/lib/render.ts` too, or
 record why they diverge.
@@ -115,7 +152,17 @@ a placeholder.
 
 ## Shipping it
 
-## Not done yet
+```bash
+cd apps/nihongo-tutor
+pnpm run build        # a signed .app and .dmg, via ../../scripts/build-release.sh
+```
+
+The bundle's notices are the thing to check afterwards, because a resource path is
+what only breaks in the packaged app:
+
+```bash
+ls ".cargo-target/release/bundle/macos/Nihongo Tutor.app/Contents/Resources/licences"
+```
 
 That must hold all ten files the catalogue names. See `LICENSES.md`,
 "Before you distribute", for the EDRDG and CC BY-SA obligations a distributor

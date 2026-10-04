@@ -6,6 +6,8 @@
  * side. A rename there fails that test rather than quietly showing nothing here.
  */
 
+import type { Section } from "./nav";
+
 /** A point in whichever space the caller is working in. */
 export interface Point {
   x: number;
@@ -544,15 +546,32 @@ export interface DueItem {
   lapses: number;
 }
 
-/** The review queue, plus how much of the schedule stands behind it. */
+/**
+ * The review queue of one course, plus how much of that course's schedule stands
+ * behind it.
+ *
+ * Every count is the *course's*: the kana screen is told how many kana are due,
+ * not how many characters of any kind, because it can only show the first.
+ */
 export interface ReviewQueueView {
-  /** Due characters, most overdue first, capped at the caller's limit. */
+  /** Due characters of this section, most overdue first, capped at the limit. */
   items: DueItem[];
-  /** Every character the schedule holds at all, due or not. */
+  /** Every character of this section the schedule holds, due or not. */
   cards: number;
-  /** How many are due, which is the length of the *uncapped* queue. */
+  /** How many of this section are due, which is the *uncapped* queue's length. */
   due: number;
-  /** When the next character comes back, when nothing is due now. */
+  /** When this section's next character comes back, when nothing is due now. */
   nextDue: string | null;
   warning: string | null;
+}
+
+/**
+ * What the app remembers about the shape of the interface.
+ *
+ * One field, and its own file rather than a corner of the review schedule: which
+ * screen is open must never be able to corrupt what is due.
+ */
+export interface Prefs {
+  /** The section last open, or null on a first run, which reads as the kana on-ramp. */
+  section: Section | null;
 }

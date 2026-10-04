@@ -1,11 +1,15 @@
 <script lang="ts">
   /**
-   * The kana tutor: a course down the side, the board in the middle, and the
-   * verdict and the reading beside it.
+   * Nihongo Tutor: two courses, one at a time.
    *
-   * The course is the gojūon — plain rows first, then the voiced ones, then the
-   * small, rare and katakana-only characters — and every kana on the board is
-   * graded by the same engine that grades a Chinese character.
+   * **Kana** is the on-ramp — a course down the side, the board in the middle, and
+   * the verdict and the reading beside it — and **Kanji** is the course itself:
+   * the character course, the radical table, the vocabulary and the passages.
+   * Which of the two is open is remembered in the app's own file, and the tabs
+   * under the switch are that course's own screens, from `lib/nav.ts`.
+   *
+   * Every character on the board, kana or kanji, is graded by the same engine that
+   * grades a Chinese character.
    */
   import { untrack } from "svelte";
   import KanaCanvas from "./lib/KanaCanvas.svelte";
@@ -19,6 +23,16 @@
   import RadicalsPanel from "./lib/RadicalsPanel.svelte";
   import ReviewPanel from "./lib/ReviewPanel.svelte";
   import { focusFor, joinedLabel, lessonKeyOf } from "./lib/kana";
+  import {
+    COURSES,
+    courseOf,
+    covers,
+    defaultView,
+    isSection,
+    tabsOf,
+    type Section,
+    type View,
+  } from "./lib/nav";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./lib/render";
   import { scheduleNote } from "./lib/review";
   import { canHear, isHearItKey, type VoiceStatus } from "./lib/speech";
@@ -36,17 +50,15 @@
 
   let info = $state<AppInfo | null>(null);
   let stats = $state<DatasetStats | null>(null);
-  let view = $state<
-    | "practice"
-    | "chart"
-    | "drill"
-    | "review"
-    | "kanji"
-    | "radicals"
-    | "words"
-    | "read"
-    | "licences"
-  >("practice");
+  /**
+   * The course that is open, and the screen of it.
+   *
+   * The two are kept apart on purpose: `review` is a screen of *both* courses and
+   * the section says whose queue it is, so the section cannot be derived from the
+   * view.
+   */
+  let section = $state<Section>("kana");
+  let view = $state<View>("practice");
   let script = $state<ScriptName>("hiragana");
   let course = $state<LessonView[]>([]);
   let lessonKey = $state<string | null>(null);
@@ -96,23 +108,102 @@
   /** The radical family the radicals panel should open, if any. */
   let selectedRadical = $state<number | null>(null);
 
+  /**
+   * A warning about the app rather than about an attempt: at present, that the
+   * section could not be remembered. Kept beside `error` rather than in it, because
+   * losing a preference is not the same as failing to grade.
+   */
+  let warning = $state<string | null>(null);
+
+  /**
+   * Open a screen, moving to another course first when it is not this one's.
+   *
+   * A screen belongs to a course, so a deep link is a promise about which course
+   * the learner ends up in — `nav.ts` is the authority, and this is why the
+   * section is passed explicitly rather than derived from the view: Review belongs
+   * to both, and deriving it would move a kanji reviewer into the kana course.
+   *
+   * The promise is checked rather than assumed: drawing a kanji screen under the
+   * kana tab row is the one way the division could come apart with no type error,
+   * so a call that names a screen the course does not have is a programming error
+   * and says so.
+   */
+  function goTo(next: Section, target: View) {
+    if (!covers(next, target)) {
+      throw new Error(`${target} is not a screen of ${next}`);
+    }
+    if (next !== section) {
+      section = next;
+      remember(next);
+    }
+    view = target;
+  }
+
+  /**
+   * The course switch: choose a course and open on its first screen.
+   *
+   * Clicking the course already open is deliberately a no-op rather than a reset,
+   * so the switch never throws away the screen the learner is working on.
+   */
+  function chooseSection(next: Section) {
+    if (next === section) return;
+    goTo(next, defaultView(next));
+  }
+
+  /**
+   * Write the section down, so the next start returns here.
+   *
+   * Failure is reported and not retried: the learner did move, this session knows
+   * where they are, and all that was lost is that the next start will open on the
+   * on-ramp instead.
+   */
+  function remember(next: Section) {
+    void api
+      .setSection(next)
+      .then((said) => {
+        // The warning travels with the last write rather than accumulating, so a
+        // switch that succeeds clears what an earlier one could not do.
+        warning = said;
+      })
+      .catch((e) => (warning = String(e)));
+  }
+
   /** Open a jōyō character on the kanji board. */
   function openKanji(ch: string) {
     kanjiPick = { kind: "kanji", ch };
-    view = "kanji";
+    goTo("kanji", "kanji");
   }
 
   /** Open one of the 214 radical head forms on the kanji board. */
   function openRadical(number: number) {
     kanjiPick = { kind: "radical", number };
-    view = "kanji";
+    goTo("kanji", "kanji");
   }
 
   /** The same panel, from its other side: the family a character belongs to. */
   function seeRadical(number: number) {
     kanjiPick = null;
     selectedRadical = number;
-    view = "radicals";
+    goTo("kanji", "radicals");
+  }
+
+  /**
+   * What one course holds, in numbers, for the switch that offers it.
+   *
+   * The counts are the reason the switch leads with the kanji course's size rather
+   * than the kana's: 177 characters in 38 lessons is a few days, and 2,136
+   * characters behind 16,073 words is the course itself.
+   *
+   * Characters and words, and not a count per screen: the tab row directly below
+   * already names the radicals and the passages, and the line has to survive a
+   * phone's width without being cut — which is the one thing that would turn two
+   * lines into three.
+   */
+  function courseSize(id: Section): string {
+    if (!stats) return "";
+    return id === "kana"
+      ? `${stats.kana} kana · ${stats.lessons} lessons`
+      : `${stats.kanji.toLocaleString()} kanji · ${stats.words.toLocaleString()} words`;
   }
 
   let typed = $state("");
@@ -196,7 +287,7 @@
    * it.
    */
   async function openKana(ch: string, where?: ScriptName) {
-    view = "practice";
+    goTo("kana", "practice");
     error = null;
     let target = where;
     if (!target) {
@@ -220,6 +311,21 @@
     try {
       [info, stats] = await Promise.all([api.appInfo(), api.datasetStats()]);
     } catch (e) {
+      error = String(e);
+    }
+    try {
+      // The course the learner left in, if there is one. A stored value is
+      // narrowed rather than trusted: it crosses a file boundary, and a hand
+      // edit there must open the on-ramp rather than throw the switch at a
+      // screen that does not exist.
+      const saved = await api.prefs();
+      if (isSection(saved.section)) {
+        section = saved.section;
+        view = defaultView(saved.section);
+      }
+    } catch (e) {
+      // Read once, and said if it fails: the only way `prefs` rejects is the IPC
+      // itself, and the app opens on the on-ramp either way.
       error = String(e);
     }
     try {
@@ -335,28 +441,48 @@
 </script>
 
 <main>
-  <header>
-    <h1>Kana Tutor</h1>
-    {#if stats}
-      <p class="sub">
-        {stats.kana} kana · {stats.hiragana} hiragana · {stats.katakana} katakana ·
-        {stats.lessons} lessons · {stats.kanji} kanji · {stats.radicals} radicals ·
-        {stats.words.toLocaleString()} words
-      </p>
-    {/if}
-  </header>
+  <!--
+    The app's name is the window's own title on the desktop and is not repeated on
+    screen: it is four words of the most valuable space in the interface, and every
+    screen underneath is worth more (`ROADMAP_NIHONGO.md` N10). The heading stays
+    for a reader that cannot see the title bar or the footer, at no cost to either.
+  -->
+  <h1 class="sr-only">Nihongo Tutor</h1>
 
   {#if error}
     <p class="error" role="alert">{error}</p>
   {/if}
+  {#if warning}
+    <p class="warning" role="status">{warning}</p>
+  {/if}
 
-  <div class="views" role="tablist">
-    {#each [["practice", "Practice"], ["chart", "Kana chart"], ["drill", "Tell them apart"], ["review", "Review"], ["kanji", "Kanji"], ["radicals", "Radicals"], ["words", "Words"], ["read", "Read"], ["licences", "Licences"]] as const as [id, label] (id)}
+  <!--
+    The course switch, not a tab: each course is a thing to study rather than a
+    screen. Two lines each and no more — the name, then what it is and how much of
+    it there is, because 177 characters is a few days and 2,136 behind 16,073 words
+    is not.
+  -->
+  <nav class="courses" aria-label="Courses">
+    {#each COURSES as course (course.id)}
+      <button
+        class="course"
+        class:active={section === course.id}
+        aria-pressed={section === course.id}
+        onclick={() => chooseSection(course.id)}
+      >
+        <span class="name">{course.label}</span>
+        <span class="info">{course.tagline} · {courseSize(course.id)}</span>
+      </button>
+    {/each}
+  </nav>
+
+  <div class="views" role="tablist" aria-label={`${courseOf(section).label} screens`}>
+    {#each tabsOf(section) as tab (tab.id)}
       <button
         role="tab"
-        aria-selected={view === id}
-        class:active={view === id}
-        onclick={() => (view = id)}>{label}</button
+        aria-selected={view === tab.id}
+        class:active={view === tab.id}
+        onclick={() => (view = tab.id)}>{tab.label}</button
       >
     {/each}
   </div>
@@ -519,7 +645,16 @@
   {:else if view === "drill"}
     <ConfusionDrill onopen={openKana} />
   {:else if view === "review"}
-    <ReviewPanel {voice} />
+    <!--
+      The same screen in both courses, told which one is open: the schedule is one
+      file of characters (invariant 15) and the section is what decides which of
+      them this queue offers and counts. Keyed on the section so that changing
+      course mounts a fresh panel — the due list, the chosen item and the board on
+      it are all that course's, and none of them can be carried across.
+    -->
+    {#key section}
+      <ReviewPanel {section} {voice} />
+    {/key}
   {:else if view === "kanji"}
     <KanjiPanel bind:pick={kanjiPick} onradical={seeRadical} {voice} />
   {:else if view === "radicals"}
@@ -536,7 +671,7 @@
     {#if info}
       <span>{info.name} {info.version} · {info.licence}</span>
     {/if}
-    <span>Everything the course teaches is in this bundle. Nothing is downloaded.</span>
+    <span>Everything the courses teach is in this bundle. Nothing is downloaded.</span>
     <span>
       {#if canHear(voice)}
         Pronunciation uses the system's own Japanese voice. Nothing is downloaded.
@@ -545,6 +680,20 @@
       {:else}
         Looking for a Japanese voice…
       {/if}
+    </span>
+    <!--
+      Licences belongs to neither course — it is a notice the app owes rather than
+      something it teaches — so it hangs off the footer instead of taking a tab
+      away from one of them. It stays reachable from either course, and the tab row
+      above is how the learner leaves again.
+    -->
+    <span class="utility">
+      <button
+        class="notice-link"
+        class:active={view === "licences"}
+        aria-pressed={view === "licences"}
+        onclick={() => (view = "licences")}>Licences</button
+      >
     </span>
   </footer>
 </main>

@@ -9,7 +9,7 @@
 //! keeping the commands thin.
 
 use hanzi_voice::Language;
-use nihongo_core::{DrillKind, GradeOptions, Point};
+use nihongo_core::{DrillKind, GradeOptions, Point, Section};
 use nihongo_tutor_lib::AppState;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -557,8 +557,14 @@ fn a_first_run_writes_nothing_until_something_is_answered() {
 fn app_info_names_the_app_the_bundle_config_names() {
     let config: Value = serde_json::from_str(include_str!("../tauri.conf.json"))
         .expect("tauri.conf.json parses");
+    // The identifier did **not** change when the product was renamed from "Kana
+    // Tutor" at N10, and that is deliberate rather than an oversight: on macOS the
+    // identifier is the app's data directory, so a new one would strand the
+    // learner's own `review.json`, `confusions.json` and `prefs.json` under the old
+    // name. The name a person reads and the key a file lives under are two
+    // different decisions, and invariant 15 is what makes them so.
     assert_eq!(config["identifier"], "com.hanzitutor.kana");
-    assert_eq!(config["productName"], "Kana Tutor");
+    assert_eq!(config["productName"], "Nihongo Tutor");
     assert_eq!(config["version"], env!("CARGO_PKG_VERSION"));
 }
 
@@ -1063,7 +1069,7 @@ fn a_second_attempt_inside_the_interval_does_not_reschedule() {
     assert!(!again.scheduled, "the card is not due again yet");
     assert_eq!(again.next_due, first.next_due, "and the due date did not move");
     assert_eq!(again.report.overall, first.report.overall, "the verdict is still a verdict");
-    assert_eq!(state.review_queue(40).cards, 1, "one character, one card");
+    assert_eq!(state.review_queue(40, None).cards, 1, "one character, one card");
 }
 
 /// What the Review screen reads: the due characters with their prompts, most
@@ -1087,7 +1093,7 @@ fn the_review_queue_crosses_with_the_due_characters() {
     .expect("writes a schedule");
 
     let state = AppState::load_at(dir.path());
-    let queue = state.review_queue(40);
+    let queue = state.review_queue(40, None);
     let value = serde_json::to_value(&queue).expect("serialises");
     assert_eq!(
         keys(&value),
@@ -1137,33 +1143,95 @@ fn the_review_queue_crosses_with_the_due_characters() {
     assert_eq!(items[2]["hint"], "radical 6 of 214");
 
     // The limit caps what is *shown*, not what is counted.
-    let page = state.review_queue(2);
+    let page = state.review_queue(2, None);
     assert_eq!(page.items.len(), 2);
     assert_eq!(page.due, 3);
     assert_eq!(page.items[0].ch, 'あ');
+
+    // And the same schedule, asked for one half at a time. This is the app's
+    // division in one assertion: the kana screen is not shown a kanji and the
+    // character screen carries the head forms with it, while neither loses a card
+    // the other cannot show.
+    let kana = state.review_queue(40, Some(Section::Kana));
+    assert_eq!(kana.cards, 1, "the kana course counts the kana, and only it");
+    assert_eq!(kana.due, 1);
+    assert_eq!(
+        kana.items.iter().map(|item| item.ch).collect::<Vec<_>>(),
+        vec!['あ']
+    );
+
+    let kanji = state.review_queue(40, Some(Section::Kanji));
+    assert_eq!(kanji.cards, 2, "the character course carries the head forms");
+    assert_eq!(kanji.due, 2);
+    let mut chars: Vec<char> = kanji.items.iter().map(|item| item.ch).collect();
+    chars.sort();
+    assert_eq!(chars, vec!['亅', '学']);
+
+    let whole = state.review_queue(40, None);
+    assert_eq!(whole.cards, kana.cards + kanji.cards);
+    assert_eq!(whole.due, kana.due + kanji.due);
 }
 
-/// The request half of the review queue: `{ limit }`, as the page size the screen
-/// is asking for.
+/// The request half of the review queue: `{ limit, section }`.
 ///
-/// `src/lib/api.ts` always sends one, so the deserialisation is the part that can
+/// `src/lib/api.ts` always sends both, so the deserialisation is the part that can
 /// go wrong quietly — a renamed key would make the command fall back to its own
-/// page size and the screen would show twenty where it asked for two.
+/// page size, or show the whole schedule to a screen that asked for one course.
 #[test]
-fn the_page_the_interface_asks_for_is_read_the_way_the_command_reads_it() {
+fn the_page_and_the_section_the_interface_asks_for_are_read_the_way_the_command_reads_it() {
     #[derive(Deserialize)]
     struct ReviewQueueArgs {
         limit: Option<usize>,
+        section: Option<Section>,
     }
 
-    let args: ReviewQueueArgs =
-        serde_json::from_value(json!({ "limit": 2 })).expect("the payload the interface posts");
+    let args: ReviewQueueArgs = serde_json::from_value(json!({ "limit": 2, "section": "kanji" }))
+        .expect("the payload the interface posts");
     assert_eq!(args.limit, Some(2), "the screen's page size arrives");
+    assert_eq!(args.section, Some(Section::Kanji), "and the course it asked for");
+    assert_eq!(
+        args.section.expect("a section").name(),
+        "kanji",
+        "the tag the interface sends is the one the type documents"
+    );
 
-    // And a caller that sends nothing gets the command's own page rather than a
-    // rejection, which is what makes `limit` optional on the Rust side.
-    let args: ReviewQueueArgs = serde_json::from_value(json!({})).expect("an omitted limit");
+    // And a caller that sends nothing gets the command's own page and the whole
+    // schedule rather than a rejection, which is what makes both optional.
+    let args: ReviewQueueArgs = serde_json::from_value(json!({})).expect("an omitted payload");
     assert_eq!(args.limit, None);
+    assert_eq!(args.section, None);
+}
+
+/// The section is remembered in the app's own file, survives a restart, and is
+/// still its own file — the schedule and the drill's log are untouched by it.
+#[test]
+fn the_section_the_learner_left_in_is_remembered() {
+    let dir = TempDir::new("prefs-section");
+    {
+        let state = AppState::load_at(dir.path());
+        assert_eq!(
+            state.prefs().section_or_default(),
+            Section::Kana,
+            "a first run opens on the kana on-ramp, which is what comes first"
+        );
+        assert_eq!(state.set_section(Section::Kanji), None, "it was written");
+        // The response the interface reads: one field, and the camelCase tag.
+        let value = serde_json::to_value(state.prefs()).expect("serialises");
+        assert_eq!(keys(&value), vec!["section"]);
+        assert_eq!(value["section"], "kanji");
+    }
+
+    let reopened = AppState::load_at(dir.path());
+    assert_eq!(reopened.prefs().section, Some(Section::Kanji));
+    assert!(
+        dir.path().join("prefs.json").exists(),
+        "the preference is in the app's own directory"
+    );
+    assert!(
+        !dir.path().join("review.json").exists()
+            && !dir.path().join("confusions.json").exists(),
+        "and in a file of its own, so it can never take a schedule with it"
+    );
 }
 
 /// A character the board cannot draw cannot be graded, so it can never reach the
@@ -1180,7 +1248,7 @@ fn a_character_the_board_cannot_draw_is_never_scheduled() {
         .grade_and_schedule(ch, &strokes, &GradeOptions::default())
         .unwrap_err();
     assert!(err.contains("not a kana, a jōyō kanji, or a radical"), "{err}");
-    assert_eq!(state.review_queue(40).cards, 0, "nothing was scheduled");
+    assert_eq!(state.review_queue(40, None).cards, 0, "nothing was scheduled");
 }
 
 /// The schedule is the app's own file, in the app's own directory, and it
@@ -1208,7 +1276,7 @@ fn what_the_schedule_remembers_survives_a_restart() {
 
     // A second AppState over the same directory is what a restart looks like.
     let reopened = AppState::load_at(dir.path());
-    let queue = reopened.review_queue(40);
+    let queue = reopened.review_queue(40, None);
     assert_eq!(queue.cards, 1, "the character was remembered");
     assert_eq!(queue.due, 0, "a failed attempt comes back in a minute, not at once");
     assert_eq!(

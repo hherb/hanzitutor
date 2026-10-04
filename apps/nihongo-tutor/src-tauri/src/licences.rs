@@ -1,6 +1,6 @@
-//! The licence and attribution notices that ship with Kana Tutor.
+//! The licence and attribution notices that ship with Nihongo Tutor.
 //!
-//! Kana Tutor's own code is AGPL-3.0, but the **data** it embeds comes from
+//! Nihongo Tutor's own code is AGPL-3.0, but the **data** it embeds comes from
 //! AnimCJK, and that licence requires its notice to travel with a
 //! redistribution. This module is the catalogue of those notices, and — exactly
 //! as in the main app's catalogue — it is the single source of truth for three
@@ -41,7 +41,7 @@ pub struct AppInfo {
 }
 
 pub const APP: AppInfo = AppInfo {
-    name: "Kana Tutor",
+    name: "Nihongo Tutor",
     version: env!("CARGO_PKG_VERSION"),
     identifier: "com.hanzitutor.kana",
     licence: "AGPL-3.0-only",
@@ -78,7 +78,7 @@ pub struct LicenceNotice {
 pub const NOTICES: &[LicenceNotice] = &[
     LicenceNotice {
         id: "agpl",
-        title: "Kana Tutor",
+        title: "Nihongo Tutor",
         licence: "GNU Affero General Public License, version 3",
         source: "https://github.com/hherb/hanzitutor",
         covers: "The app's own source code.",

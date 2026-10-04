@@ -1,0 +1,8 @@
+xcuserdata/
+build/
+Externals/
+# Not generated today — the project has no `configFiles` entry — but ignored in
+# advance because a signing config carries one person's team ID, which is the same
+# reason the macOS signing identity is not in `tauri.conf.json`. A device build
+# needs only `APPLE_DEVELOPMENT_TEAM` on the command line.
+Signing.xcconfig

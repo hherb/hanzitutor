@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The scene life cycle, which iOS 26 and later require.
+
+	  Without a manifest UIKit kills the app on launch rather than warning:
+
+	      EXC_BREAKPOINT (SIGTRAP) in
+	      ___UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption_block_
+
+	  Tauri's iOS template does not add this file, and the CLI merges it over the
+	  generated `Info.plist` **at build time** — `tauri ios init` alone does not —
+	  so the built app's plist is where to check it landed.
+
+	  `UIApplicationSupportsMultipleScenes` is `true` for the same reason Hanzi
+	  Tutor's is: that is what has launched on the test device (HHIP1, iOS 27)
+	  through `tao` 0.36+ and `tauri` 2.12. It declares multi-window support, which
+	  is not what UIKit actually requires here — `tao` now decides by the mere
+	  *presence* of this manifest (`platform_impl/ios/scene.rs`) — and this app is
+	  single-window, so `false` is the more honest declaration. It is not worth a
+	  second variable on a first launch: changing it changes windowing behaviour
+	  and wants its own tested change. See `HANDOVER.md` §6 for the long version.
+
+	  There is deliberately no microphone string. This app never records: it speaks
+	  through the system synthesiser and `hanzi-voice` is built without its capture
+	  feature, so `cpal` is not linked at all.
+	-->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

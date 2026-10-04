@@ -96,11 +96,11 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **314
-tests** — every `#[test]` in the two suites (200 in `nihongo-core`, 114 in
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **326
+tests** — every `#[test]` in the two suites (204 in `nihongo-core`, 122 in
 `nihongo-tutor`), plus two doc-tests (`lib.rs`'s and `variants.rs`'s);
 the frontend's are counted separately below.
-`pnpm run test:web` runs 145, of which **76** are this app's.
+`pnpm run test:web` runs 156, of which **87** are this app's.
 `cargo test -p hanzi-voice`, the shared crate the audio half lives in, is 29.
 
 | | |
@@ -128,12 +128,13 @@ the frontend's are counted separately below.
 | Words on a card | 16,073 words over 2,136 characters — 一 in 223, 人 in 218, and **57 characters in none**; a page of 12, in course order (invariant 28) |
 | Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
 | Notices | 10 — five of them added at N9, when the EDRDG, JmdictFurigana and UniDic obligations that had been recorded in `LICENSES.md` since N6 and N7 were found to satisfy nothing in the bundle (§8) |
-| Bundle | `Kana Tutor.app`, 15.25 MiB, signed (`com.hanzitutor.kana`, Team `X5DWXB4283`), `codesign --verify --deep --strict` clean, and carrying **its own icon** rather than Hanzi Tutor's; the `.dmg` installer is 8,186,456 bytes, `hdiutil verify` VALID and signed, and it is built by running Tauri's own `bundle_dmg.sh` outside the sandbox (trap 21). Installing it is what proved the icon: `/Applications/Kana Tutor.app` carries `icon.icns` md5 `130da45e…`, and the Dock agrees |
-| Screens | Practice, **Kana chart**, Tell them apart, **Review**, **Kanji**, **Radicals**, Words, Read, Licences |
-| Tests | nihongo-core 200, nihongo-tutor 114, hanzi-voice 29, frontend 76 of the 145 |
+| Bundle | built at N9 as `Kana Tutor.app`, 15.25 MiB, and **rebuilt after the N10 rename as `Nihongo Tutor.app`** — 15 MiB, `codesign --verify --deep --strict` clean, `Identifier=com.hanzitutor.kana`, Team `X5DWXB4283`, and all ten notices world-readable. The `.dmg` needs Tauri's own `bundle_dmg.sh` run outside the sandbox (trap 21); the N10 one is **7,957,111 bytes**, `hdiutil verify` checksum VALID, signed `Identifier=Nihongo Tutor_0.1.0_aarch64`, and mounting it shows `Nihongo Tutor.app` plus the `Applications` link with the inner app still passing `--deep --strict`. The N9 figures were 15.25 MiB and an 8,186,456-byte image; the icon work that milestone records is unchanged, and `/Applications/Kana Tutor.app` is still the N9 install — the N10 build has not been installed there |
+| Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review". See §5, "Building for iOS", for the two things `tauri ios init` does not provide |
+| Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Read, Review. Licences hangs off the footer, in neither course (invariant 31) |
+| Tests | nihongo-core 204, nihongo-tutor 122, hanzi-voice 29, frontend 87 of the 156 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
-| Learner data | two files, `confusions.json` and `review.json`, in the app's own data directory |
+| Learner data | three files, `confusions.json`, `review.json` and `prefs.json`, in the app's own data directory |
 | Version | both crates 0.1.0, and the app's to match |
 
 The app runs and has been looked at, all of it: the course, the board, stroke-order
@@ -141,7 +142,13 @@ animation, handwriting grading, the discrimination drill, the typing box, the
 katakana tab, the Licences panel and the review queue have each been seen working
 on a display, and so have the two kanji screens (below). The review queue has also
 been *used* — a character drawn on it was graded and rescheduled, which is not the
-same thing as being seen.
+same thing as being seen. **The two-course division of N10 was driven rather than
+looked at**: there was no active display in that session either, so the switch, the
+per-course tab row, both halves of the queue, the remembered section and the
+switch's two-line budget were all measured through the DOM probe in §5 — the recipe
+that works when a capture cannot be believed. The screens listed in the paragraph
+above were seen on a display when they were built; the header compaction is the
+part that has only ever been measured, and it is recorded that way on purpose.
 
 **And it has been heard.** N1 put the machine's own Japanese voice behind a button
 and the `h` key, and behind **every reading on a kanji card** — so a character can
@@ -309,9 +316,11 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   the yōon contrasts and the voicing contrasts), the
                                   weights, the tally, and the draw with its
                                   **spelling** keys — N3, N4
-  src/review.rs          (322)    what a scheduled character is, the prompt beside
-                                  it and the due queue — N2. The schedule itself is
-                                  hanzi-core's; this is the Japanese half
+  src/review.rs          (563)    what a scheduled character is, the prompt beside
+                                  it, which of the **two sections** teaches it, and
+                                  the due queue that section sees — N2, N10. The
+                                  schedule itself is hanzi-core's; this is the
+                                  Japanese half
   src/variants.rs        (480)    a hand that joins strokes, and grading one: the
                                   regrouping, the per-stroke guard that tells a join
                                   from a dropped stroke, and the measurements
@@ -352,25 +361,36 @@ scripts/fetch-unidic.sh           fetches and builds the UniDic dictionary into
                                   built, and the only thing that needs either
 
 apps/nihongo-tutor/               the app
-  src-tauri/src/lib.rs  (2702)    AppState, the speaker, the chart and the 28
+  src-tauri/src/lib.rs  (2783)    AppState, the speaker, the chart and the 30
                                   commands, all thin — and the one place a kana is
                                   graded through `nihongo_core::grade_kana` rather
                                   than the shared engine — invariant 30
-  src-tauri/src/store.rs (582)    the two files of this app's own: confusions.json
-                                  (load, record, atomic write — N3) and review.json
+  src-tauri/src/store.rs (754)    the three files of this app's own: confusions.json
+                                  (load, record, atomic write — N3), review.json
                                   (the SM-2 schedule, and the rule for when an
-                                  attempt is a review — N2)
+                                  attempt is a review — N2) and prefs.json (which
+                                  course was open — N10). One generic read/write
+                                  pair, because the ritual is the same for all
+                                  three — invariant 15
   src-tauri/src/licences.rs(157)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (1287)  43 tests locking the JSON the webview
+  src-tauri/tests/ipc_contract.rs (1355)  44 tests locking the JSON the webview
                                   reads *and the arguments it posts* (invariant 14),
                                   including the `joined` field a joined kana crosses
-                                  with — invariant 30 — and its empty twin on a kanji
+                                  with — invariant 30 — its empty twin on a kanji,
+                                  and the `section` both queue halves are asked for
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
-  src/App.svelte         (552)    the nine views, the course, the board wiring, the
-                                  one place the voice status is asked for — N1 —
-                                  and the one `openKana` a screen calls to put a
-                                  kana on the board — N4
+  src/App.svelte         (698)    the two courses and the switch between them, the
+                                  course list, the board wiring, the one place the
+                                  voice status and the remembered course are asked
+                                  for — N1, N10 — and the one `openKana` a screen
+                                  calls to put a kana on the board — N4
+  src/lib/nav.ts         (116)    **the division itself**: the two courses, their
+                                  screens, their defaults, and the membership test
+                                  `goTo` is guarded by — N10
+  src/lib/nav.test.ts    (152)    run by the ROOT project's vitest; asserts every
+                                  screen has one home, Review is the only screen
+                                  two courses share, and Licences is in neither
   src/lib/KanaCanvas.svelte(248)  pointer capture and the animation frame. Draws
                                   any `Drawable`, so a kana, a kanji and a radical
                                   all come through it
@@ -379,9 +399,10 @@ apps/nihongo-tutor/               the app
   src/lib/KanaChart.svelte(253)   the gojūon grid with its holes, and the characters
                                   off it — N4
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
-  src/lib/ReviewPanel.svelte(360) what is due, and a board to write it on — N2,
-                                  with the joined-stroke line its verdict owes a
-                                  hand that joined — invariant 30
+  src/lib/ReviewPanel.svelte(383) what is due **in one course**, and a board to
+                                  write it on — N2, N10 — with the joined-stroke
+                                  line its verdict owes a hand that joined —
+                                  invariant 30
   src/lib/KanjiPanel.svelte(869)  the kanji course, the board and the card — N8,
                                   whose readings are each a control — N1, and which
                                   lists the words the character is written in — 28
@@ -412,9 +433,10 @@ apps/nihongo-tutor/               the app
   src/lib/board.ts        (97)    the board's arithmetic, as pure functions
   src/lib/board.test.ts   (99)    run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
-  src/lib/types.ts       (558)    the IPC shapes, `Character = Drawable`, and the
-                                  chart's slots as `(string | null)[]`
-  src/lib/api.ts         (303)    one wrapper per command
+  src/lib/types.ts       (577)    the IPC shapes, `Character = Drawable`, the
+                                  chart's slots as `(string | null)[]`, and the
+                                  `Prefs` the remembered course crosses in
+  src/lib/api.ts         (326)    one wrapper per command
 
 crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
                                   part's data layer
@@ -672,9 +694,10 @@ a struct, test the *payload*, not the struct.
 
 ### 15. **The learner's data is this app's, and it stays this app's.**
 
-Kana Tutor writes exactly one thing about its learner — the per-pair tallies in
-`confusions.json`, in its own directory under the app's data directory — and no
-other app reads it, imports it, or shares a store with it. **The Japanese and
+Nihongo Tutor writes exactly three things about its learner — the per-pair tallies
+in `confusions.json`, the SM-2 schedule in `review.json`, and the remembered course
+in `prefs.json`, all in its own directory under the app's data directory — and no
+other app reads them, imports them, or shares a store with them. **The Japanese and
 Chinese apps are separate products; what is shared between them is code, never user
 data.** So `hanzi-store` is not the answer for the drill's tallies, and it is not
 the answer for the review queue that `ROADMAP_NIHONGO.md` N2 plans either, however
@@ -682,6 +705,14 @@ convenient its language-neutral types look. That was the maintainer's decision, 
 it is a boundary rather than an implementation detail: a shared store for two
 separate apps is what turns "separate" into "tangled", and the tangle is discovered
 on the day one app's schema change breaks the other's history.
+
+The three files are also **three files** rather than one, and that is part of the
+same invariant rather than tidiness: a mistake in writing which screen was open
+must not be able to reach a schedule. `prefs.json` is the newest (N10) and the
+cheapest, and it went in its own file for exactly that reason. The three share one
+generic read/write pair in `store.rs`, because the ritual — a missing file is a
+first run, an unreadable one is moved aside rather than overwritten, a write is a
+temporary plus a rename — is the same for a preference as for a schedule.
 
 Two practical consequences:
 
@@ -1265,6 +1296,57 @@ built *around* `grade_with_outlines`, not inside it. And `ROADMAP_NIHONGO.md`'s
 record that き is taught in three strokes was wrong: the artifact says four, and the
 selfcheck prints what the artifact says.
 
+---
+
+### 31. **The app is two courses, a screen belongs to one of them, and the switch says which.**
+
+**Kana are the on-ramp and kanji are the product** — that ordering is the premise
+`ROADMAP_NIHONGO.md` opened with, and N10 is where the interface stopped contradicting
+it. The app was nine flat tabs in one row, so "Kanji" sat seventh in a list whose
+first five entries were kana, the window was called *Kana Tutor*, and the bundle's own
+description sold hiragana and katakana. The division is now explicit:
+
+* **`src/lib/nav.ts` is the authority**, as data: two courses, their screens, their
+  labels, their blurbs, and the first screen each opens on. `nav.test.ts` asserts the
+  properties that make it a division — **every screen has exactly one home, Review is
+  the only screen two courses share, and Licences is in neither.** A screen added to
+  one course's template and to neither tab list fails there rather than shipping as a
+  tab that shows nothing.
+* **The section is passed beside the view, never derived from it.** Review is a screen
+  of both courses, so a function from view to section has no honest answer for it;
+  `goTo` takes both and **checks them against `nav.ts`** rather than assuming they
+  agree, which is the one way the division could come apart with no type error.
+* **The section scopes the review queue, and nothing else.** `nihongo_core::Section`
+  decides which `ReviewKind`s a course is shown, and `review::queue` returns the due
+  items, the card count and the next date **for that section** — a kana screen that
+  said "12 scheduled" while eleven were kanji would be describing a queue it cannot
+  show. The cards themselves are untouched: one file, one key per character
+  (invariant 15), so the split is in what a screen offers and never in what is stored.
+  `the_two_sections_partition_every_kind_of_character` pins that the two sections
+  claim each kind exactly once, and `a_section_offers_only_what_it_teaches` that the
+  two halves add up to the whole schedule.
+* **Licences is an obligation, not a course.** It does not get a tab in either course;
+  it is a link in the footer, reachable from both.
+* **The app's name is not on screen, and the switch is two lines.** The window title
+  carries the name on the desktop and the footer carries it at the bottom, so the
+  `<h1>` is `sr-only` — present for a reader, 1×1 px for the eye, measured — and the
+  old subtitle is gone. Each course button is exactly two lines: the name, then the
+  tagline and the counts (`The on-ramp · 177 kana · 38 lessons`). `nav.test.ts` asserts
+  the tagline is short enough to stay inside that budget, and the live check measured
+  it rather than trusting it: **52 px per button at 980×728**, with a count line that
+  was *longer* than the one that shipped not overflowing — which is the check that
+  matters, because the one way "two lines" becomes three is a long count line at a
+  narrow width.
+* **The course last open is remembered** in `prefs.json` (invariant 15), and a first
+  run opens on **Kana** — the default a new learner needs before any character. This is
+  the one place the two-course split is a preference rather than a rule, and the file is
+  its own so that a bad preference cannot damage a schedule.
+* **The product is called `Nihongo Tutor` (N10) and the identifier is still
+  `com.hanzitutor.kana`.** That is not an oversight: on macOS the identifier *is* the
+  app's data directory, so changing it would strand the learner's three files under the
+  old name. A name a person reads and a key a file lives under are two decisions, and
+  `app_info_names_the_app_the_bundle_config_names` pins both so neither drifts.
+
 ## 5. The verification loop
 
 Four layers, cheapest first. All of them are worth running before a commit that
@@ -1432,12 +1514,14 @@ the app being frontmost and the right thing to do on someone else's machine.
 # Start the app (dev server on :1422 plus the window) in the background.
 pnpm --dir apps/nihongo-tutor run dev > /tmp/kana-dev.log 2>&1 &
 
-# Find the window by TITLE — the owner name is `nihongo-tutor`, which contains
-# no "kana", so matching on the owner silently finds nothing.
+# Find the window by TITLE. It is not the owner name: the owner is
+# `nihongo-tutor` and the title is `Nihongo Tutor`, and they have been different
+# from each other on both sides of the N10 rename — matching on the owner finds
+# nothing.
 WID=$(python3 -c "
 import Quartz
 for w in Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID):
-    if str(w.get('kCGWindowName')) == 'Kana Tutor':
+    if str(w.get('kCGWindowName')) == 'Nihongo Tutor':
         print(w.get('kCGWindowNumber')); break
 ")
 screencapture -x -o -l"$WID" /tmp/kana.png
@@ -1462,8 +1546,10 @@ Zero means no rectangle is being composited, so **do not believe a capture** and
 use the HTTP probe below instead. `screencapture` still works there, and the file
 it writes still looks right — which is the whole trap.
 
-To see a view that needs a click, change the initial value of `view` in
-`App.svelte` and **restart the app** — see trap 3, HMR preserves state.
+To see a screen that needs a click, change the initial values of `section` and
+`view` in `App.svelte` **together** — a `view` the section does not have is refused
+by `goTo`'s guard (invariant 31) — and **restart the app**: see trap 3, HMR
+preserves state.
 
 ### Driving the interface, since it cannot be clicked from here
 
@@ -1640,7 +1726,10 @@ The drill's record is a file, which makes it the one part of this app that can b
 *read* rather than looked at:
 
 ```bash
-cat ~/Library/Application\ Support/com.hanzitutor.kana/confusions.json
+DIR=~/Library/Application\ Support/com.hanzitutor.kana
+cat "$DIR/confusions.json"    # the drill's tallies, keyed "シ|ツ"
+cat "$DIR/review.json"        # the SM-2 cards, keyed by character
+cat "$DIR/prefs.json"         # just {"section": "kanji" | "kana"}
 ```
 
 It is written after every answer, pretty-printed, and keyed by the pair
@@ -1649,7 +1738,10 @@ in the numbers rather than inferred from which kana came up. To prove that a
 restart reads it back, answer a few questions, quit, start again, and answer a few
 more: a pair's `asked` must continue from where it left off rather than restarting
 at 1. That is also the check the tests do over a temporary directory, and it is the
-one worth repeating by hand after touching `store.rs`.
+one worth repeating by hand after touching `store.rs`. `prefs.json` is the same
+check one line long: switch to Kanji, quit, start again, and it must open there —
+and its `section` is what the app reads, so a section that is not `kana` or `kanji`
+opens the on-ramp rather than throwing.
 
 Under the agent harness the write is **denied** — the sandbox refuses `~/Library`,
 so the drill shows "the answer was counted but could not be saved" and is working
@@ -1674,6 +1766,52 @@ The toolchain is the *only* thing that has to stay real: `scripts/with-cargo-env
 already points `CARGO_HOME` and `CARGO_TARGET_DIR` inside the repository, so cargo's
 registry and build output follow the project rather than `HOME`.
 
+### Building for iOS and putting it on the phone
+
+The app has a mobile shell as of N10 — `tauri ios init` has been run, and the
+generated project is `apps/nihongo-tutor/src-tauri/gen/apple/`. The recipe is the
+same as `HANDOVER.md` §6 gives for the Chinese app, and so are its two hard
+constraints: **`xcodebuild` cannot run inside the file sandbox** (DerivedData, the
+module cache and the profiles live under `~/Library`, and the Rust step's `swift-rs`
+build fails with `sandbox_apply: Operation not permitted`), and **the phone must be
+unlocked** for the install and the launch.
+
+```bash
+cd apps/nihongo-tutor
+rm -rf src-tauri/gen/apple/build          # a stale archive cannot be replaced
+APPLE_DEVELOPMENT_TEAM=X5DWXB4283 TAURI_ROOT="$PWD" \
+  ../../scripts/with-cargo-env.sh ../../scripts/tauri-cli.sh ios build --debug --target aarch64 --ci
+
+cd src-tauri/gen/apple/build && mkdir -p payload && cd payload
+unzip -q "../arm64/Nihongo Tutor.ipa"    # a copy also lives beside the .dmg:
+                                         # .cargo-target/release/bundle/ios/
+D=00008110-0010252A0293801E               # HHIP1; `xcrun devicectl list devices`
+xcrun devicectl device install app --device "$D" "Payload/Nihongo Tutor.app"
+xcrun devicectl device process launch --device "$D" com.hanzitutor.kana
+xcrun devicectl device capture screenshot --device "$D" --destination /tmp/phone.png
+```
+
+Three things are this app's own, and the first two are the ones that stop a build:
+
+* **`gen/apple/tauri` is not generated.** The Xcode *Build Rust Code* phase runs
+  `node tauri ios xcode-script …` from `gen/apple`, so without that shim the build
+  dies in `PhaseScriptExecution` with `Cannot find module '…/gen/apple/tauri'`.
+  It is a committed one-line forwarder to `@tauri-apps/cli/tauri.js`, copied from
+  the Chinese app's, and re-running `ios init` deletes it.
+* **AVFAudio has to be named in `gen/apple/project.yml`.** The shared speech code
+  engages the iOS audio session, and only this app lacks the `cpal` objects whose
+  clang autolink hints would pull the framework in — it builds `hanzi-voice`
+  without its `capture` feature on purpose. Without the line the link ends in
+  `Undefined symbols: _AVAudioSessionCategoryPlayback`. `cargo --print
+  native-static-libs` *does* list `-framework AVFAudio` for this app, but nothing
+  hands that list to Xcode. `ios init` regenerates `project.yml`, so the line is
+  documented here rather than only in the file. After editing it, regenerate with
+  `xcodegen generate` **in `gen/apple`** — `ios build` reads the `.xcodeproj`, not
+  the YAML.
+* **`src-tauri/Info.ios.plist`** carries the scene manifest iOS 26 and later
+  require; the CLI merges it at build time, and the built app's `Info.plist` is
+  where to check it landed. There is no microphone string here, unlike the Chinese
+  app's: this app never records.
 
 ---
 
@@ -1984,146 +2122,6 @@ name — `/Applications/DSH Desktop.app/Contents/MacOS/DSH Desktop … vite/bin/
 `pkill -f "DSH Desktop"` would be catastrophic. Kill by the port's owner, which is
 unambiguous.
 
----
-
-## 7. Open decisions
-
-Ordered by how much they block.
-
-### The pitch-accent lexicon — research done, decision not taken
-
-`ROADMAP_NIHONGO.md` N5. The short version: **no audit-clean pitch-accent
-lexicon can be bundled.** Kanjium's `accents.txt` carries a genuine CC BY-SA 4.0
-file and the author states in issue #13 that its source is withheld "due to
-potential copyright issues"; joining it against Wadoku's dump shows **88.9% of
-pairs identical including list order**. Wadoku and OJAD are openly non-free.
-The clean route is to **generate** accent patterns — `tdmelodic` is BSD-3-Clause
-— and the open verification is the licence and provenance of its **model
-weights** and the training labels. `docs/research/JAPANESE_TUTOR_FEASIBILITY.md`
-§6.1 has the full working.
-
-### Whether kana want spaced repetition at all — decided, and shipped
-
-**Decided: yes, but not because the kana want it, and the reasoning is invariant
-25's and `ROADMAP_NIHONGO.md` N2's Shipped section.** An SRS over 179 kana would
-not earn a screen against the drill's per-pair weights; what earns it is the kanji
-course, which is where the years go and which has no other memory at all. So the
-schedule is over every character a board can grade and the kana ride along.
-
-The reusable *code* was real: `hanzi-core::progress`'s SM-2, its due-date
-arithmetic and its attempt log are language-neutral and are used unchanged through
-`Scheduler`. `hanzi-store` remains the answer to nothing here — invariant 15 — and
-`fsrs-rs` remains the better algorithm that is not in, for the licence-and-weights
-reason that section records.
-
-### Where kana audio comes from
-
-**The desktop half of this is decided and shipped** — N1, and its Shipped section in
-`ROADMAP_NIHONGO.md`. macOS's own Japanese voices are what the app speaks with
-(`Kyoko (ja-JP)` on the machine this was built on), through the same in-process
-`AVSpeechSynthesizer` the other two apps already used, and the only thing the crate
-needed was to be told which language it speaks (invariant 26). Nothing is
-downloaded, nothing is bundled, and **the app has no audio files to license**.
-
-What remains open is only the bundled clips, and only if they are wanted: they
-would need generating — **MeloTTS-Japanese is MIT for both code and weights**,
-which is the cleanest option — and Commons has only
-about ten isolated kana clips with per-file licences. Nothing in the app needs them
-today, so the decision can wait; if it is taken, invariant 26's "nothing is bundled"
-changes and `licences.rs` grows a notice for the set.
-
-### Whether this stays a separate app
-
-It is `apps/nihongo-tutor/` with its own identifier `com.hanzitutor.kana`, which
-follows the repository's multi-app pattern and keeps the binary small. A learner
-studying both languages might want one app — but **the data half of this question
-is settled**: the two apps' learner data is separate and stays separate
-(invariant 15), so "one app" would mean one window over two stores rather than one
-store. The shared *code* is what makes that cheap, and it is already shared. What
-remains open is the shell, not the storage.
-
-### The kanji level ladder — decided
-
-The Japanese feasibility report §6.4: the JLPT publishes **no official kanji or
-vocabulary list**, and the best-licensed community list chains to tanos.co.uk,
-which asserts no licence, so bands are derived instead and the UI must say so.
-
-**Decided, and shipped for the vocabulary in `words.bin.gz` (invariant 20):** a
-word's band is the highest kyōiku grade among its kanji, 1–6, with band 7 for the
-jōyō remainder, and EDRDG's `nf` rank orders the words within a band. The
-alternative — frequency quantiles of roughly equal size — was rejected because a
-band would mix grade-1 and grade-6 kanji.
-
-**It was open whether the *kanji course* uses the same ladder or a different one,
-and N8 settled it: the same one.** The course orders characters by kyōiku grade —
-which is what `dictionaryJa.txt` supplies and what Japanese children actually learn
-in — and its grade labels are `nihongo_core::grade_name`, which *is*
-`words::band_name`, so "kyōiku 3" means one rung in both screens and a learner
-meets a character and the vocabulary built on it in the same band (大人 arrives in
-the grade-1 band, because 大 is grade 1 and 人 is grade 1). `curriculum.rs`'s unit
-test asserts the two names cannot drift apart; a future divergence would have to be
-a deliberate second ladder rather than an accident of two string tables.
-
-### What the app should say to a learner who already reads Chinese
-
-**A product question rather than a technical one, and the maintainer is best
-placed to answer it because they read Japanese first and learned Chinese second —
-the opposite direction to the one it is usually asked in.**
-
-**First, the part that is not a question.** The transferability that matters
-architecturally is the *mechanics*: counting strokes, pairing them and judging
-order and direction is one software problem whatever the script, which is why
-`nihongo-core` uses `hanzi-core`'s `geom`, `raster` and `grade` unchanged. **The
-data is a separate matter and stays Japanese** — AnimCJK for kanji geometry,
-KanjiVG as the stroke oracle, exactly as for the kana. The Chinese dataset is not
-an input to the kanji course: not a source, not a cross-check, not a fallback.
-
-**Then the product question.** The characters overlap enough that a Chinese reader
-arrives with a real head start, and the app should say something about it rather
-than pretend otherwise. The maintainer's summary of what actually carries over:
-
-> In many cases he will be familiar with the **meaning**, but the **phonemes will
-> be entirely different**, and sometimes even the meaning diverges. The only thing
-> that is basically the same is **stroke order and shape**, and to a degree the
-> meaning.
-
-So: **shape and stroke order transfer; pronunciation does not transfer at all;
-meaning transfers partly and unreliably.** The measurements behind that — 1,200 of
-the 2,136 jōyō are the same simplified character the HSK course teaches, 702 exist
-only as traditional forms, 234 are shinjitai with no counterpart, and the shape
-agrees about nine times in ten where both exist — are in `ROADMAP_NIHONGO.md`
-§"Why the overlap still matters", which is explicit that they inform a *screen* and
-not a build.
-
-The framing is probably "you have met this character — here is what Japanese reads
-it as" rather than "you know this", and the 234 両 乗 亀 亜 仏 仮 伝 価 働 児 剣 労 単
-厳 収 営 団 are worth knowing as a set, because they are where the head start runs
-out.
-
-**The non-negotiable part: glosses come from JMdict senses and never from a Chinese
-dictionary.** Meaning transfers often enough to be tempting and not often enough to
-be safe — 娘, 手紙, 汽車, 勉強, 丈夫 and 走る are actively wrong across the two
-languages, and a Chinese gloss on a Japanese card is worse than no card.
-
-**And the direction works both ways.** The maintainer's own path — Japanese first,
-Chinese second — is served today by Hanzi Tutor itself, so anything that records
-"this character is already known from the other language" must not assume which
-language came first.
-
-### The `assets/website` duplication
-
-`assets/README.md` records that all twelve files in `assets/website/` also exist
-byte-identical inside `assets/showcase/` — 10 MB carried twice. Plausibly
-deliberate (a flat set is easier to upload from). Decide whether it stays a copy.
-
-### The two Dependabot warnings that stand
-
-`glib` 0.18.5 (unsound) and `proc-macro-error` (unmaintained, via `glib-macros`)
-are one chain — `glib ← atk ← gtk ← muda/tao ← tauri` — and it is **GTK, so
-Linux-only**: `cargo tree -i glib` prints nothing for the host target or
-`aarch64-apple-darwin`. A fix needs gtk-rs 0.20, which needs a `muda`/`tao`/
-`tauri` that has not shipped it. Accepted, and revisited only if the Linux
-milestone happens.
 ### 19. Tauri's two version numbers live in different files, and only a bundle notices
 
 `pnpm --dir apps/nihongo-tutor run build` failed before it compiled anything:
@@ -2163,7 +2161,8 @@ of the same shape as trap 8's "suspect the loop before the table".
 
 ### 20. The bundle's file modes are the source files' modes, and the fix can be skipped
 
-Five of the ten licence texts in `Kana Tutor.app/Contents/Resources/licences/`
+Five of the ten licence texts in `Kana Tutor.app/Contents/Resources/licences/` —
+the bundle as it was named then; N10 renamed it, the paths below are current —
 were `-rw-------` — readable by the machine that built the bundle and by nobody
 else, which is a redistributor's problem with a licence-compliance flavour (a
 notice a recipient cannot read is not a notice they received). Tauri copies a
@@ -2181,12 +2180,18 @@ The check that catches it costs one command, and it is worth keeping in the loop
 for a release:
 
 ```bash
-ls -l ".cargo-target/release/bundle/macos/Kana Tutor.app/Contents/Resources/licences/"
+ls -l ".cargo-target/release/bundle/macos/Nihongo Tutor.app/Contents/Resources/licences/"
 ```
 
 Every line must be `-rw-r--r--`.
 
 ### 21. Building the `.dmg` — two failures that look identical and are not
+
+The transcripts in this trap are from N9, when the product was still named `Kana
+Tutor`; the commands are unchanged, the file names in them are not current. N10
+renamed the product and did **not** rebuild a bundle, so a `.dmg` after it will be
+`Nihongo Tutor_0.1.0_aarch64.dmg` — the identifier inside is still
+`com.hanzitutor.kana` (invariant 31).
 
 `pnpm run build` ends with
 
@@ -2396,6 +2401,155 @@ stops at its last cell, the voiced rows' accent band marks the row rather than
 running on across the empty half of the panel. **Check the rendered result and not
 only the corrected rule** — the first fix above was correct and still wrong.
 
+---
+
+## 7. Open decisions
+
+Ordered by how much they block.
+
+### The pitch-accent lexicon — research done, decision not taken
+
+`ROADMAP_NIHONGO.md` N5. The short version: **no audit-clean pitch-accent
+lexicon can be bundled.** Kanjium's `accents.txt` carries a genuine CC BY-SA 4.0
+file and the author states in issue #13 that its source is withheld "due to
+potential copyright issues"; joining it against Wadoku's dump shows **88.9% of
+pairs identical including list order**. Wadoku and OJAD are openly non-free.
+The clean route is to **generate** accent patterns — `tdmelodic` is BSD-3-Clause
+— and the open verification is the licence and provenance of its **model
+weights** and the training labels. `docs/research/JAPANESE_TUTOR_FEASIBILITY.md`
+§6.1 has the full working.
+
+### Whether kana want spaced repetition at all — decided, and shipped
+
+**Decided: yes, but not because the kana want it, and the reasoning is invariant
+25's and `ROADMAP_NIHONGO.md` N2's Shipped section.** An SRS over 179 kana would
+not earn a screen against the drill's per-pair weights; what earns it is the kanji
+course, which is where the years go and which has no other memory at all. So the
+schedule is over every character a board can grade and the kana ride along.
+
+The reusable *code* was real: `hanzi-core::progress`'s SM-2, its due-date
+arithmetic and its attempt log are language-neutral and are used unchanged through
+`Scheduler`. `hanzi-store` remains the answer to nothing here — invariant 15 — and
+`fsrs-rs` remains the better algorithm that is not in, for the licence-and-weights
+reason that section records.
+
+### Where kana audio comes from
+
+**The desktop half of this is decided and shipped** — N1, and its Shipped section in
+`ROADMAP_NIHONGO.md`. macOS's own Japanese voices are what the app speaks with
+(`Kyoko (ja-JP)` on the machine this was built on), through the same in-process
+`AVSpeechSynthesizer` the other two apps already used, and the only thing the crate
+needed was to be told which language it speaks (invariant 26). Nothing is
+downloaded, nothing is bundled, and **the app has no audio files to license**.
+
+What remains open is only the bundled clips, and only if they are wanted: they
+would need generating — **MeloTTS-Japanese is MIT for both code and weights**,
+which is the cleanest option — and Commons has only
+about ten isolated kana clips with per-file licences. Nothing in the app needs them
+today, so the decision can wait; if it is taken, invariant 26's "nothing is bundled"
+changes and `licences.rs` grows a notice for the set.
+
+### Whether this stays a separate app
+
+It is `apps/nihongo-tutor/` with its own identifier `com.hanzitutor.kana`, which
+follows the repository's multi-app pattern and keeps the binary small. A learner
+studying both languages might want one app — but **the data half of this question
+is settled**: the two apps' learner data is separate and stays separate
+(invariant 15), so "one app" would mean one window over two stores rather than one
+store. The shared *code* is what makes that cheap, and it is already shared. What
+remains open is the shell, not the storage.
+
+**N10 settled the naming half of it, and only the naming half: it is one app with
+two courses, called *Nihongo Tutor*.** Calling it *Kana Tutor* while the kanji are
+the bulk of the study was the same mistake as listing "Kanji" seventh among nine
+tabs (invariant 31), and the fix was to name the product after the language rather
+than after its first few days. The **identifier deliberately did not move**: it is
+the data directory, and a new one would strand the learner's own files. If the app
+is ever genuinely split into two products — which is still open — that is the day
+the identifier has to change and a migration has to be written with it.
+
+### The kanji level ladder — decided
+
+The Japanese feasibility report §6.4: the JLPT publishes **no official kanji or
+vocabulary list**, and the best-licensed community list chains to tanos.co.uk,
+which asserts no licence, so bands are derived instead and the UI must say so.
+
+**Decided, and shipped for the vocabulary in `words.bin.gz` (invariant 20):** a
+word's band is the highest kyōiku grade among its kanji, 1–6, with band 7 for the
+jōyō remainder, and EDRDG's `nf` rank orders the words within a band. The
+alternative — frequency quantiles of roughly equal size — was rejected because a
+band would mix grade-1 and grade-6 kanji.
+
+**It was open whether the *kanji course* uses the same ladder or a different one,
+and N8 settled it: the same one.** The course orders characters by kyōiku grade —
+which is what `dictionaryJa.txt` supplies and what Japanese children actually learn
+in — and its grade labels are `nihongo_core::grade_name`, which *is*
+`words::band_name`, so "kyōiku 3" means one rung in both screens and a learner
+meets a character and the vocabulary built on it in the same band (大人 arrives in
+the grade-1 band, because 大 is grade 1 and 人 is grade 1). `curriculum.rs`'s unit
+test asserts the two names cannot drift apart; a future divergence would have to be
+a deliberate second ladder rather than an accident of two string tables.
+
+### What the app should say to a learner who already reads Chinese
+
+**A product question rather than a technical one, and the maintainer is best
+placed to answer it because they read Japanese first and learned Chinese second —
+the opposite direction to the one it is usually asked in.**
+
+**First, the part that is not a question.** The transferability that matters
+architecturally is the *mechanics*: counting strokes, pairing them and judging
+order and direction is one software problem whatever the script, which is why
+`nihongo-core` uses `hanzi-core`'s `geom`, `raster` and `grade` unchanged. **The
+data is a separate matter and stays Japanese** — AnimCJK for kanji geometry,
+KanjiVG as the stroke oracle, exactly as for the kana. The Chinese dataset is not
+an input to the kanji course: not a source, not a cross-check, not a fallback.
+
+**Then the product question.** The characters overlap enough that a Chinese reader
+arrives with a real head start, and the app should say something about it rather
+than pretend otherwise. The maintainer's summary of what actually carries over:
+
+> In many cases he will be familiar with the **meaning**, but the **phonemes will
+> be entirely different**, and sometimes even the meaning diverges. The only thing
+> that is basically the same is **stroke order and shape**, and to a degree the
+> meaning.
+
+So: **shape and stroke order transfer; pronunciation does not transfer at all;
+meaning transfers partly and unreliably.** The measurements behind that — 1,200 of
+the 2,136 jōyō are the same simplified character the HSK course teaches, 702 exist
+only as traditional forms, 234 are shinjitai with no counterpart, and the shape
+agrees about nine times in ten where both exist — are in `ROADMAP_NIHONGO.md`
+§"Why the overlap still matters", which is explicit that they inform a *screen* and
+not a build.
+
+The framing is probably "you have met this character — here is what Japanese reads
+it as" rather than "you know this", and the 234 両 乗 亀 亜 仏 仮 伝 価 働 児 剣 労 単
+厳 収 営 団 are worth knowing as a set, because they are where the head start runs
+out.
+
+**The non-negotiable part: glosses come from JMdict senses and never from a Chinese
+dictionary.** Meaning transfers often enough to be tempting and not often enough to
+be safe — 娘, 手紙, 汽車, 勉強, 丈夫 and 走る are actively wrong across the two
+languages, and a Chinese gloss on a Japanese card is worse than no card.
+
+**And the direction works both ways.** The maintainer's own path — Japanese first,
+Chinese second — is served today by Hanzi Tutor itself, so anything that records
+"this character is already known from the other language" must not assume which
+language came first.
+
+### The `assets/website` duplication
+
+`assets/README.md` records that all twelve files in `assets/website/` also exist
+byte-identical inside `assets/showcase/` — 10 MB carried twice. Plausibly
+deliberate (a flat set is easier to upload from). Decide whether it stays a copy.
+
+### The two Dependabot warnings that stand
+
+`glib` 0.18.5 (unsound) and `proc-macro-error` (unmaintained, via `glib-macros`)
+are one chain — `glib ← atk ← gtk ← muda/tao ← tauri` — and it is **GTK, so
+Linux-only**: `cargo tree -i glib` prints nothing for the host target or
+`aarch64-apple-darwin`. A fix needs gtk-rs 0.20, which needs a `muda`/`tao`/
+`tauri` that has not shipped it. Accepted, and revisited only if the Linux
+milestone happens.
 
 ---
 
@@ -2409,6 +2563,11 @@ in by `include_str!` and copied into the bundle as plain text:
 | `agpl` | the app's own code, from the repository `LICENSE` |
 | `provenance` | `LICENSES.md`, bundled as `licences/PROVENANCE.md` |
 | `animcjk` | the kana and kanji geometry, the 214 radical head forms, **and the statement of what was changed** |
+| `edrdg` | EDRDG's JMdict and KANJIDIC2 — the readings, glosses, grades and ranks — **and the statement of what was selected, changed and dropped** |
+| `ccbysa` | the CC BY-SA 4.0 legal code those dictionaries are under |
+| `jmdict-furigana` | the furigana alignments, and that none is invented here |
+| `jmdict-furigana-mit` | the MIT text the notice above must accompany |
+| `unidic` | UniDic's segmentation of the passages, and that no dictionary entry is redistributed |
 | `lgpl` | the licence the kana SVGs and the kana `graphics` file are under |
 | `arphic` | the other licence that file could be under, per invariant 12 |
 
@@ -2420,6 +2579,17 @@ tests check that the AnimCJK notice actually **records the modification** —
 LGPL-3.0 §2 requires it — that the share-alike notices say what was selected and
 what was dropped, and that none of the notice files is gitignored, since a
 gitignored notice vanishes from a clone and the bundle.
+
+**Five of the ten arrived at N9, and the reason is worth more than the list.**
+The app shipped EDRDG's dictionary text from N6 and JmdictFurigana's alignments
+and UniDic's segmentation from N7, and the only notice any of the three had was a
+bullet inside `PROVENANCE.md`. That is the failure mode this section exists to
+warn about, and it was invisible for two milestones because **the test that reads
+the notice texts named five ids in a hardcoded table** — so a sixth notice was
+never read by anything, and a stub would have passed. The table now ends by
+asserting that *every* catalogued id appears in it, so the next notice cannot be
+added and forgotten. `LICENSES.md`'s KANJIDIC2 section records each of EDRDG's
+four requirements against the place it is met, and the three that were unmet.
 
 **N1 added none of them, and that is itself a licence decision**: the voice is the
 operating system's, so there are no audio files to attribute. A notice for the
@@ -2477,21 +2647,6 @@ assumed to be covered by the Chinese one.
   the learner what they mix up, or a drill that can *discover* a fourteenth kana
   pair. The record is there to build both on.
 * **Grammar and particles.** "Kanji won't teach you to read" is the defining
-  Japanese failure mode, and a kana tutor with no grammar is a kana tutor only.
-  Out of scope for now, and the largest thing missing from the product.
-| `edrdg` | EDRDG's JMdict and KANJIDIC2 — the readings, glosses, grades and ranks — **and the statement of what was selected, changed and dropped** |
-| `ccbysa` | the CC BY-SA 4.0 legal code those dictionaries are under |
-| `jmdict-furigana` | the furigana alignments, and that none is invented here |
-| `jmdict-furigana-mit` | the MIT text the notice above must accompany |
-| `unidic` | UniDic's segmentation of the passages, and that no dictionary entry is redistributed |
-**Five of the ten arrived at N9, and the reason is worth more than the list.**
-The app shipped EDRDG's dictionary text from N6 and JmdictFurigana's alignments
-and UniDic's segmentation from N7, and the only notice any of the three had was a
-bullet inside `PROVENANCE.md`. That is the failure mode this section exists to
-warn about, and it was invisible for two milestones because **the test that reads
-the notice texts named five ids in a hardcoded table** — so a sixth notice was
-never read by anything, and a stub would have passed. The table now ends by
-asserting that *every* catalogued id appears in it, so the next notice cannot be
-added and forgotten. `LICENSES.md`'s KANJIDIC2 section records each of EDRDG's
-four requirements against the place it is met, and the three that were unmet.
-
+  Japanese failure mode, and a tutor without grammar teaches characters rather
+  than reading. Out of scope for now, and the largest thing missing from the
+  product.

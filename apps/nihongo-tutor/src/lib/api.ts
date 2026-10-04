@@ -25,6 +25,7 @@ import type {
   PassageSummary,
   PassageView,
   Point,
+  Prefs,
   RadicalFamilyView,
   RadicalView,
   ReadingCheck,
@@ -35,6 +36,7 @@ import type {
   WordsOfKanji,
   YoonView,
 } from "./types";
+import type { Section } from "./nav";
 
 /**
  * The pen width the canvas paints with, in design units out of 1024.
@@ -101,15 +103,36 @@ export function gradeAttempt(ch: string, strokes: Point[][]): Promise<GradedAtte
 }
 
 /**
- * What the board has taught and what is due, most overdue first.
+ * What the board has taught and what is due, for one course.
  *
  * `limit` caps the items returned, not the count: the screen shows the top of a
  * backlog and says how big the backlog is. It is paged rather than whole because
  * a learner working through the kanji course can have hundreds of characters due
  * at once, and none of the rest of the app ships that much JSON to draw a list.
+ *
+ * `section` is which course is asking, and every count in the answer is that
+ * course's. The schedule behind it is one file of characters — the split is in
+ * what a screen offers, never in what is stored — so the kana screen is not shown
+ * a due kanji and the character screen carries the radical head forms with it.
  */
-export function reviewQueue(limit = 40): Promise<ReviewQueueView> {
-  return invoke<ReviewQueueView>("review_queue", { limit });
+export function reviewQueue(limit = 40, section?: Section): Promise<ReviewQueueView> {
+  return invoke<ReviewQueueView>("review_queue", { limit, section: section ?? null });
+}
+
+/** Which half of the app to open on, as the learner left it. */
+export function prefs(): Promise<Prefs> {
+  return invoke<Prefs>("prefs");
+}
+
+/**
+ * Remember the half of the app the learner moved to.
+ *
+ * The answer is a warning rather than a failure — the learner did move, and this
+ * session knows where they are; what may be lost is only that the next start
+ * returns there — so it is returned rather than thrown.
+ */
+export function setSection(section: Section): Promise<string | null> {
+  return invoke<string | null>("set_section", { section });
 }
 
 /** Check a typed reading, accepting either romanisation. */

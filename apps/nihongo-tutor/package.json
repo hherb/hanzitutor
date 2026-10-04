@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Learn to read and write Japanese kana",
+  "description": "Learn to read and write Japanese: the kana first, then the jōyō kanji",
   "license": "AGPL-3.0-only",
   "scripts": {
     "dev": "TAURI_ROOT=\"$PWD\" ../../scripts/with-cargo-env.sh ../../scripts/tauri-cli.sh dev",

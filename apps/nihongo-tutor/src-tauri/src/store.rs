@@ -1,29 +1,115 @@
 //! The app's own study files.
 //!
-//! Kana Tutor keeps exactly two things about its learner: which confusion pairs
-//! they get wrong, and when each character the board has taught comes back. Both
-//! live here — in files of this app's own, under this app's data directory — and
-//! deliberately **not** in a shared store. The Japanese and Chinese apps are
-//! separate products and their learners' data is separate with them: what is
-//! shared between the apps is *code*, never user data. See
-//! `HANDOVER_NIHONGO.md` invariant 15.
+//! Nihongo Tutor keeps exactly three things about its learner: which confusion
+//! pairs they get wrong, when each character the board has taught comes back, and
+//! which half of the app they were last in. All three live here — in files of this
+//! app's own, under this app's data directory — and deliberately **not** in a
+//! shared store. The Japanese and Chinese apps are separate products and their
+//! learners' data is separate with them: what is shared between the apps is
+//! *code*, never user data. See `HANDOVER_NIHONGO.md` invariant 15.
 //!
-//! Both files are plain JSON, written whole and atomically, so that a person can
-//! read one, copy it as a backup, or delete it to start over. Both are written by
-//! Rust rather than by the webview, which is why the app still holds no
+//! All three files are plain JSON, written whole and atomically, so that a person
+//! can read one, copy it as a backup, or delete it to start over. All three are
+//! written by Rust rather than by the webview, which is why the app still holds no
 //! filesystem permission in `capabilities/default.json`.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use nihongo_core::{now_iso8601, ConfusionLog, PairTally, ProgressError, ProgressStore};
+use nihongo_core::{
+    now_iso8601, ConfusionLog, PairTally, ProgressError, ProgressStore, Section,
+};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 /// The file's name inside the app's data directory.
 pub const FILE_NAME: &str = "confusions.json";
 
 /// The review schedule's file name, in the same directory.
 pub const REVIEW_FILE_NAME: &str = "review.json";
+
+/// What the app remembers about the shape of the interface itself.
+pub const PREFS_FILE_NAME: &str = "prefs.json";
+
+/// The half of the app that is open, remembered so the next start returns there.
+///
+/// It is small enough to be a field rather than a file of its own, and it is
+/// deliberately **not** a third thing the review schedule knows: which screen is
+/// open has nothing to do with what is due, and a preference must never be able to
+/// corrupt a schedule.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Prefs {
+    /// The section last open, or `None` on a first run — which the app reads as
+    /// the kana on-ramp, the one thing a learner needs before anything else.
+    pub section: Option<Section>,
+}
+
+impl Prefs {
+    /// The section to open, with a first run answered rather than `None`.
+    pub fn section_or_default(&self) -> Section {
+        self.section.unwrap_or(Section::Kana)
+    }
+}
+
+/// What the app remembers about how the learner left the interface.
+///
+/// The same file ritual as the other two stores: a missing file is the first run,
+/// a file that will not parse is moved aside rather than overwritten, and a write
+/// failure is returned rather than swallowed. Losing a preference is cheap, which
+/// is exactly why it must not be allowed to take the schedule with it — it lives
+/// in its own file for that reason and not for tidiness.
+pub struct PrefsStore {
+    /// `None` means nowhere to write: the preference still works for this
+    /// session, which is the state the unit tests run in.
+    path: Option<PathBuf>,
+    prefs: Prefs,
+}
+
+impl PrefsStore {
+    /// A store that keeps its answer in memory and writes nothing.
+    pub fn in_memory() -> Self {
+        Self {
+            path: None,
+            prefs: Prefs::default(),
+        }
+    }
+
+    /// Load `prefs.json` from `dir`, or start on the default.
+    pub fn at_dir(dir: impl AsRef<Path>) -> Self {
+        let path = dir.as_ref().join(PREFS_FILE_NAME);
+        Self {
+            prefs: read_json(&path),
+            path: Some(path),
+        }
+    }
+
+    /// What is remembered.
+    pub fn prefs(&self) -> Prefs {
+        self.prefs
+    }
+
+    /// Whether anything is written to disk at all.
+    pub fn is_persistent(&self) -> bool {
+        self.path.is_some()
+    }
+
+    /// Remember the section, writing the file, and say when the write failed.
+    ///
+    /// The answer is kept **even if the write fails** — the learner did move — and
+    /// the failure comes back rather than being swallowed, for the same reason the
+    /// drill's and the schedule's do: a preference that is not being saved should
+    /// not look like one that is.
+    pub fn set_section(&mut self, section: Section) -> Result<(), io::Error> {
+        self.prefs.section = Some(section);
+        match &self.path {
+            Some(path) => write_json(path, &self.prefs),
+            None => Ok(()),
+        }
+    }
+}
+
 
 /// What the app knows about this learner's confusion pairs, and where it is kept.
 pub struct ConfusionStore {
@@ -51,7 +137,7 @@ impl ConfusionStore {
     pub fn at_dir(dir: impl AsRef<Path>) -> Self {
         let path = dir.as_ref().join(FILE_NAME);
         Self {
-            log: read(&path),
+            log: read_json(&path),
             path: Some(path),
         }
     }
@@ -81,7 +167,7 @@ impl ConfusionStore {
     /// Write the file, if there is one to write.
     pub fn save(&self) -> io::Result<()> {
         match &self.path {
-            Some(path) => write(path, &self.log),
+            Some(path) => write_json(path, &self.log),
             None => Ok(()),
         }
     }
@@ -237,29 +323,33 @@ impl ReviewStore {
     }
 }
 
-/// Read the log, treating anything unreadable as "nothing recorded yet".
+/// Read a JSON file, treating anything unreadable as "nothing recorded yet".
 ///
-/// A file that will not parse is **moved aside** as `confusions.json.corrupt`
-/// rather than overwritten. It is the learner's history; this app should not be
-/// the thing that deletes it, and leaving it where it is would mean failing to
-/// write on every subsequent answer. The next answer writes a fresh file.
-fn read(path: &Path) -> ConfusionLog {
+/// A file that will not parse is **moved aside** as `<name>.json.corrupt` rather
+/// than overwritten. It is the learner's history; this app should not be the thing
+/// that deletes it, and leaving it where it is would mean failing to write on every
+/// subsequent answer. The next write creates a fresh file.
+///
+/// Generic because all three of the app's files are read this way, and the ritual
+/// — keep the unreadable one, carry on with the default, never crash on a file a
+/// person edited by hand — is the same ritual for a preference as for a schedule.
+fn read_json<T: DeserializeOwned + Default>(path: &Path) -> T {
     match fs::read_to_string(path) {
-        Ok(text) => match serde_json::from_str::<ConfusionLog>(&text) {
-            Ok(log) => log,
+        Ok(text) => match serde_json::from_str::<T>(&text) {
+            Ok(value) => value,
             Err(err) => {
                 eprintln!(
                     "{}: {err}; moving it aside and starting with no record",
                     path.display()
                 );
                 let _ = fs::rename(path, corrupt_path(path));
-                ConfusionLog::new()
+                T::default()
             }
         },
-        Err(err) if err.kind() == io::ErrorKind::NotFound => ConfusionLog::new(),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => T::default(),
         Err(err) => {
             eprintln!("{}: {err}; starting with no record", path.display());
-            ConfusionLog::new()
+            T::default()
         }
     }
 }
@@ -269,17 +359,17 @@ fn corrupt_path(path: &Path) -> PathBuf {
     path.with_extension("json.corrupt")
 }
 
-/// Write the log whole, via a neighbouring temporary and a rename.
+/// Write a JSON file whole, via a neighbouring temporary and a rename.
 ///
 /// A rename within a directory is atomic, so a reader either sees the previous
-/// file or the new one and never a half-written file — which matters because the
-/// file is rewritten after *every* answer, and the machine can lose power between
+/// file or the new one and never a half-written file — which matters because these
+/// files are rewritten after *every* answer, and the machine can lose power between
 /// two of them.
-fn write(path: &Path, log: &ConfusionLog) -> io::Result<()> {
+fn write_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let text = serde_json::to_string_pretty(log).map_err(io::Error::other)?;
+    let text = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, text.as_bytes())?;
     fs::rename(&tmp, path)
@@ -578,5 +668,87 @@ mod tests {
             1,
             "the attempt happened, and the schedule holds it until it can be written"
         );
+    }
+
+    // ---- the remembered section -------------------------------------------
+
+    #[test]
+    fn a_first_run_opens_on_the_kana_on_ramp_and_writes_nothing() {
+        let dir = TempDir::new("prefs-first-run");
+        let store = PrefsStore::at_dir(dir.path());
+        assert!(store.is_persistent());
+        assert_eq!(store.prefs().section, None, "nothing remembered yet");
+        assert_eq!(
+            store.prefs().section_or_default(),
+            Section::Kana,
+            "a learner who has never been here needs the kana first"
+        );
+        assert!(
+            !dir.path().join(PREFS_FILE_NAME).exists(),
+            "opening the app is not a preference to write"
+        );
+    }
+
+    #[test]
+    fn the_section_survives_a_restart_and_is_readable_json() {
+        let dir = TempDir::new("prefs-restart");
+        {
+            let mut store = PrefsStore::at_dir(dir.path());
+            store.set_section(Section::Kanji).expect("writes");
+        }
+        let reopened = PrefsStore::at_dir(dir.path());
+        assert_eq!(reopened.prefs().section, Some(Section::Kanji));
+        assert_eq!(reopened.prefs().section_or_default(), Section::Kanji);
+
+        // The file is the shape the handover documents, so a person can see and
+        // edit which half the app opens on.
+        let text = fs::read_to_string(dir.path().join(PREFS_FILE_NAME)).expect("the file");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(value["section"], "kanji");
+    }
+
+    #[test]
+    fn a_preference_file_that_will_not_parse_is_kept_aside_and_does_not_block_the_app() {
+        let dir = TempDir::new("prefs-corrupt");
+        let path = dir.path().join(PREFS_FILE_NAME);
+        fs::write(&path, "{ this is not json").expect("writes");
+
+        let mut store = PrefsStore::at_dir(dir.path());
+        assert_eq!(store.prefs().section, None, "a corrupt file is not a crash");
+        assert_eq!(store.prefs().section_or_default(), Section::Kana);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("prefs.json.corrupt")).expect("still there"),
+            "{ this is not json",
+            "kept as it was, not as an empty file"
+        );
+
+        // And the app carries on: the next move writes a valid file.
+        store.set_section(Section::Kanji).expect("writes");
+        assert_eq!(
+            PrefsStore::at_dir(dir.path()).prefs().section,
+            Some(Section::Kanji)
+        );
+    }
+
+    #[test]
+    fn a_preference_that_cannot_be_written_says_so_and_is_kept_in_memory() {
+        let dir = TempDir::new("prefs-unwritable");
+        fs::create_dir_all(dir.path().join("prefs.json.tmp")).expect("a directory in the way");
+        let mut store = PrefsStore::at_dir(dir.path());
+
+        assert!(store.set_section(Section::Kanji).is_err(), "the failure surfaces");
+        assert_eq!(
+            store.prefs().section,
+            Some(Section::Kanji),
+            "the learner did move, so this session still knows where they are"
+        );
+    }
+
+    #[test]
+    fn an_in_memory_preference_store_remembers_without_writing_anything() {
+        let mut store = PrefsStore::in_memory();
+        assert!(!store.is_persistent());
+        store.set_section(Section::Kanji).expect("nothing to write");
+        assert_eq!(store.prefs().section, Some(Section::Kanji));
     }
 }

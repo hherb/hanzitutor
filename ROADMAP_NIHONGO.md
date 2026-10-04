@@ -43,6 +43,7 @@ references for no gain.
 | **N7** | Kanji through vocabulary | **Shipped.** Words with their own readings and furigana, a derived ladder, and two screens — Words and Read. The kanji artifact it embedded unread is now the character course's, at N8. |
 | **N8** | **The kanji course and screens** | **Shipped.** The course, the 214-radical table and the components screen, all served from the artifact the vocabulary already needed. See the milestone for what the measurement added — and for the one thing it decided that was open. |
 | **N9** | Distribution | **Shipped.** The notices that were missing now ship, and a signed `.app` bundles — which it could not before, because the app's own lockfile pinned Tauri's JS at 2.11 against the workspace's 2.12. See the milestone for the three licence obligations that had been unmet since N6 and N7. |
+| **N10** | **Two courses, and the name to match** | **Shipped.** The app is now a kana course and a kanji course rather than nine flat tabs, Review is asked for one course at a time, the course last open is remembered, and the product is called *Nihongo Tutor*. Not a feature so much as the interface finally agreeing with the sentence at the top of this file. See the milestone for what is pinned by tests and what was deliberately left unbuilt. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -1260,6 +1261,117 @@ this app, and the criterion is conditional on wanting one. The listing copy: the
 is **no Japanese screenshot set** in `assets/showcase/` (every image there is Hanzi
 Tutor's), so writing store copy against screenshots that do not exist would be
 fiction. That is a capture session rather than a code change, and it stays open.
+
+---
+
+## N10 — Two courses, and the name to match
+
+The interface had been contradicting this roadmap's own opening sentence. **"Kana
+are the on-ramp; kanji are the product"** was written at the top of this file, and
+the app shipped nine flat tabs in one row whose first five were kana, a window
+called *Kana Tutor*, and a bundle description that sold hiragana and katakana and
+mentioned the kanji only as "beyond the kana". A learner whose years go into the
+2,136 characters met them seventh in a list.
+
+**The division is now explicit, and it is data rather than a template.**
+`apps/nihongo-tutor/src/lib/nav.ts` holds the two courses, their screens, their
+labels, their one-line descriptions and the screen each opens on. The app shows one
+course at a time with its own tab row, and the switch at the top says what each
+course is and what it holds:
+
+| Course | Screens | What the switch says |
+| --- | --- | --- |
+| **Kana** | Practice, Chart, Tell them apart, Review | 177 kana · 38 lessons |
+| **Kanji** | Kanji, Radicals, Words, Read, Review | 2,136 kanji · 16,073 words |
+
+**Licences is in neither course.** It is a notice the app owes rather than
+something it teaches, so it moved to the footer and stopped taking one of nine tab
+slots from the course that matters.
+
+**The switch is two lines and the page has no title.** The app's own name moved to
+the window title and the footer, and the `<h1>` became `sr-only` — the first
+version of this milestone still spent four lines above the first useful pixel on a
+name and a sentence, which on a 728-pixel window is a tenth of the screen saying
+what the title bar already said. Each course button is now the name and one line:
+`The on-ramp · 177 kana · 38 lessons` and `The main course · 2,136 kanji ·
+16,073 words` — characters and words, not a count per screen, because the tab row
+below already names the radicals and the passage reader. `nav.test.ts` asserts the
+tagline stays inside the two-line budget, and the live check **measured** it rather
+than trusting it: **52 px per button at 980×728**, `body.scrollHeight` 958 against a
+728-pixel viewport. The measurement was taken while the count line still listed the
+lessons and the radicals — a longer line than the one that shipped, so the one that
+shipped has more headroom, not less.
+
+**Review is in both, and each course sees only its own half.** The schedule did not
+split — it is still one file of cards keyed by character, which is invariant 15 —
+so the split is in what a screen offers and counts. `nihongo_core::Section` decides
+which `ReviewKind`s a course is shown (`Kana`, or `Kanji` plus the radical head
+forms), and `review::queue` returns the due items, the card count and the next date
+for that section. The count matters as much as the list: a kana screen saying "12
+scheduled" while eleven of them were kanji would be describing a queue it cannot
+show. Two tests are the division itself:
+`the_two_sections_partition_every_kind_of_character` (every kind is claimed exactly
+once) and `a_section_offers_only_what_it_teaches` (the two halves add up to the
+whole schedule, so nothing falls between them).
+
+**The course last open is remembered**, in `prefs.json` beside the other two files
+— its own file, because a preference must never be able to damage a schedule — and
+a first run opens on **Kana**, which is what a learner needs first. The preference
+is the one part of the division that is a choice rather than a rule.
+
+**The product is renamed *Nihongo Tutor*.** The identifier deliberately is **not**
+renamed: on macOS `com.hanzitutor.kana` *is* the data directory, so a new one would
+strand the learner's `confusions.json`, `review.json` and `prefs.json` under a name
+nothing reads. A name a person sees and the key a file lives under are two
+decisions, and `ipc_contract.rs` pins both.
+
+**What was measured rather than assumed.** The counts moved with the work:
+`cargo test -p nihongo-core -p nihongo-tutor` is **326** tests (204 + 122, was 314)
+with two doc-tests, and the frontend is **156** of which this app's **87** are
+(was 145 and 76 — the eleven new ones are `nav.test.ts`, and they are the division:
+every screen has exactly one home, Review is the only screen two courses share, and
+Licences is in neither). `pnpm run check:web` and clippy with `-D warnings` are
+clean.
+
+**The division was driven, not looked at.** This session had no active display
+(`CGGetActiveDisplayList` answered 0), so the switch, the tab row, both halves of the
+queue, the remembered section and the two-line budget were checked through the DOM
+probe recipe in `HANDOVER_NIHONGO.md` §5 rather than in a screenshot — which trap 4
+and the frozen backing store make the wrong tool here anyway. The probe found what
+it was for: a first run opens on **Kana** with `prefs` null; switching to **Kanji**
+writes `{"section":"kanji"}`; the kanji queue offers **学 and 亅** (`2 due · 2
+scheduled`) while the kana queue offers **あ** (`1 due · 1 scheduled`); Licences
+opens from the footer with all ten notices and leaves the tab row in place; and a
+relaunch then opened **on Kanji**, which is the whole point of writing it down.
+
+**And it was bundled and run on two devices.** The macOS `.dmg` the rename had left
+unbuilt now exists and was verified rather than assumed: **7,957,111 bytes**,
+`hdiutil verify` checksum VALID, signed `Identifier=Nihongo Tutor_0.1.0_aarch64`
+under Team `X5DWXB4283`, and mounting it shows `Nihongo Tutor.app` alongside the
+`Applications` link, the inner app passing `codesign --verify --deep --strict` and
+carrying all ten notices at mode 644. The `.dmg` step still has to be run outside
+the file sandbox (trap 21), which is the documented two-step path, not a new
+problem.
+
+**The Japanese app runs on the iPhone now**, which is new capability rather than a
+rebuild: `tauri ios init` had never been run here, and the two things the generated
+project does not provide are recorded in `HANDOVER_NIHONGO.md` §5 — the `tauri`
+shim in `gen/apple` that the Xcode *Build Rust Code* phase calls, and **AVFAudio**,
+which Hanzi Tutor links only because `cpal`'s CoreAudio objects autolink it and this
+app excludes `cpal` on purpose. The device build is a **development** one
+(`--debug --target aarch64 --ci` → `Nihongo Tutor.ipa`, installed on HHIP1 and
+driven by hand), and the mobile *layout* has not been addressed: on a phone the
+course screens still stack their three columns, so the lesson list comes before the
+board and a learner must scroll past it. That is the next thing to fix, not a
+bundling question.
+
+**What is deliberately not done.** The identifier decision above means there is no
+migration to write; if the app is ever split into two products, that is the day the
+identifier changes and the migration is written with it. The mobile shell is
+**scaffolded, not finished**: `src-tauri/gen/apple/` is generated code (44 files would
+be added, untracked in this change) and nobody has decided whether it is committed as Hanzi
+Tutor's is. No `Info.ios.plist`-style decision has been revisited for this app
+beyond the scene manifest, which is required to launch at all.
 
 ---
 

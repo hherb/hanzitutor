@@ -24,7 +24,7 @@
 <section class="licences">
   <h2>Licences</h2>
   <p class="lede">
-    Kana Tutor's own code is AGPL-3.0. The stroke data comes from AnimCJK, and the
+    Nihongo Tutor's own code is AGPL-3.0. The stroke data comes from AnimCJK, and the
     readings, glosses, grades and frequency ranks from EDRDG's JMdict and KANJIDIC2
     under CC BY-SA 4.0, with the furigana alignments from JmdictFurigana and the
     passages' segmentation from UniDic through lindera. All of them are modified

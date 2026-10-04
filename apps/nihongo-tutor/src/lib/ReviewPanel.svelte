@@ -12,25 +12,31 @@
    * times in one sitting is practice; it is graded, and the schedule does not
    * move, because otherwise five attempts in a minute would push あ out by a year.
    *
-   * ## Why this screen has its own board
+   * ## One course at a time
    *
-   * The due character has to be *written* to be reviewed, and the two screens that
-   * already have a board are about their own lists: Practice is a script's course
-   * and Kanji is a grade's. Routing a due character through either would fight
-   * `App.svelte`'s course-reload effect for the selection, so this panel owns the
-   * board, the way `ConfusionDrill` owns its question.
+   * This screen is reached from both courses and shows one of them: the schedule
+   * is a single file of characters (invariant 15), and `section` is what decides
+   * which of them are offered and counted here — the kana course its kana, the
+   * character course its kanji and head forms. The panel keeps its own board: the
+   * two screens that already have one are about their own lists (Practice is a
+   * script's course, Kanji is a grade's), and routing a due character through
+   * either would fight `App.svelte`'s course-reload effect for the selection.
    */
   import KanaCanvas from "./KanaCanvas.svelte";
   import SpeakButton from "./SpeakButton.svelte";
   import { joinedLabel } from "./kana";
+  import { courseOf, type Section } from "./nav";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
   import { overdueLabel, scheduleNote, upcomingLabel } from "./review";
   import * as api from "./api";
   import type { Drawable, DueItem, GradeReport, Point, ReviewQueueView } from "./types";
   import type { VoiceStatus } from "./speech";
 
-  /** What the `voice` command answered, asked once by `App.svelte`. */
-  let { voice }: { voice: VoiceStatus } = $props();
+  /** Which course's queue this is, and the voice `App.svelte` asked once for. */
+  let { section, voice }: { section: Section; voice: VoiceStatus } = $props();
+
+  /** The course being reviewed, for the labels and the two empty states. */
+  const course = $derived(courseOf(section));
 
   /** How many due characters one page carries. The header still counts them all. */
   const PAGE = 40;
@@ -58,12 +64,15 @@
   async function load() {
     try {
       error = null;
-      queue = await api.reviewQueue(limit);
+      queue = await api.reviewQueue(limit, section);
       now = new Date().toISOString();
     } catch (e) {
       error = String(e);
     }
   }
+  // Loaded once, for the course this panel was mounted in: `App.svelte` keys the
+  // panel on the section, so changing course mounts a new one rather than asking
+  // this one to change the meaning of what is on the board.
   void load();
 
   /** Put a due character on the board, fetching the geometry its kind implies. */
@@ -129,6 +138,7 @@
 <section class="review">
   <header>
     <h2>Review</h2>
+    <p class="scope">{course.label} — {course.blurb}</p>
     {#if queue}
       <p class="sub">
         {queue.due} due · {queue.cards} scheduled
@@ -176,8 +186,13 @@
       {:else if queue}
         <p class="empty">
           {#if queue.cards === 0}
-            Nothing is scheduled yet. Grade a character on Practice, Kanji or
-            Radicals and it will come back here.
+            {#if section === "kana"}
+              Nothing is scheduled yet. Grade a kana on Practice and it will come
+              back here.
+            {:else}
+              Nothing is scheduled yet. Grade a character on Kanji, or a head form
+              on Radicals, and it will come back here.
+            {/if}
           {:else if queue.nextDue}
             Nothing is due right now —
             {#if queue.cards === 1}
@@ -279,6 +294,14 @@
     margin: 0.2rem 0 0;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Which course's queue this is. It is not decoration: the same screen shows
+     either the kana or the characters, and the two are not interchangeable. */
+  .scope {
+    margin: 0.2rem 0 0;
+    color: var(--muted);
+    font-size: 0.84rem;
   }
 
   .hint {

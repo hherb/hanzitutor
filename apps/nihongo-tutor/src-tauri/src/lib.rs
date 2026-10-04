@@ -1,4 +1,4 @@
-//! The kana tutor's webview-facing surface.
+//! Nihongo Tutor's webview-facing surface.
 //!
 //! The shape is the same as the other two apps': a thin `#[tauri::command]` layer
 //! over methods on [`AppState`], so the whole interface can be driven and
@@ -21,23 +21,24 @@ pub mod store;
 use hanzi_voice::{Language, Speaker};
 use licences::{AppInfo, LicenceNotice};
 use nihongo_core::{
-    band_name, confusions_for, due_items, grade_kana, grade_name,
+    band_name, confusions_for, grade_kana, grade_name,
     kanji_lessons as build_kanji_lessons, key_of, lessons as build_lessons,
-    normalise_to_hiragana, now_iso8601, off_grid, parse_decomposition, reading, split_key, to_kana,
-    to_kana_in, yoon as build_yoon, Confusable, ConfusionLog, Decomposition, DrillKind, DrillPair,
-    DueItem, GradeOptions, GradeReport, KanaDataset, Kanji, KanjiDataset, Passage, PassageDataset,
-    PassageToken, Point, Row, Ruby, Script, Word, WordDataset, KANJI_LESSON_SIZE, ROWS,
-    VOWEL_COLUMNS,
+    normalise_to_hiragana, now_iso8601, off_grid, parse_decomposition,
+    queue as build_review_queue, reading, split_key, to_kana, to_kana_in, yoon as build_yoon,
+    Confusable, ConfusionLog, Decomposition, DrillKind, DrillPair, DueItem, GradeOptions,
+    GradeReport, KanaDataset, Kanji, KanjiDataset, Passage, PassageDataset, PassageToken, Point,
+    Row, Ruby, Script, Section, Word, WordDataset, KANJI_LESSON_SIZE, ROWS, VOWEL_COLUMNS,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::{ConfusionStore, ReviewStore};
+use store::{ConfusionStore, Prefs, PrefsStore, ReviewStore};
 use tauri::{Manager, State};
 
 /// The datasets, loaded once and shared by every command, the drill's memory of
-/// what this learner gets wrong, the schedule of what comes back, and the voice.
+/// what this learner gets wrong, the schedule of what comes back, how the
+/// interface was left, and the voice.
 ///
 /// All four artifacts are **embedded** — `include_bytes!`, not read from a path —
 /// so there is no data directory to find, no file to go missing, and no filesystem
@@ -56,6 +57,10 @@ pub struct AppState {
     /// The review schedule, in this app's own file beside the drill's — never a
     /// shared one. See [`store`] and `HANDOVER_NIHONGO.md` invariant 15.
     review: Mutex<ReviewStore>,
+    /// Which half of the app is open, in its own file beside the other two. A
+    /// preference must never be able to corrupt a schedule, which is why it is a
+    /// third file rather than a field in `review.json`.
+    prefs: Mutex<PrefsStore>,
     /// The system synthesiser, told once and for all that this app speaks
     /// **Japanese**. Behind an `Arc` because the warm-up thread outlives the
     /// closure that builds the state, and because every command that speaks shares
@@ -63,7 +68,7 @@ pub struct AppState {
     ///
     /// No learner data is here and none is written: the voice is the machine's,
     /// and which one is in use is the machine's answer. That is the opposite of
-    /// the two stores above, which are this app's own files — see
+    /// the three stores above, which are this app's own files — see
     /// `HANDOVER_NIHONGO.md` invariant 15.
     speaker: Arc<Speaker>,
 }
@@ -74,7 +79,11 @@ impl AppState {
     /// This is what a test wants and what the app falls back to when the platform
     /// will not name a data directory.
     pub fn load() -> Self {
-        Self::with_stores(ConfusionStore::in_memory(), ReviewStore::in_memory())
+        Self::with_stores(
+            ConfusionStore::in_memory(),
+            ReviewStore::in_memory(),
+            PrefsStore::in_memory(),
+        )
     }
 
     /// Load the committed artifact and the learner's records from `dir`.
@@ -83,10 +92,11 @@ impl AppState {
         Self::with_stores(
             ConfusionStore::at_dir(&dir),
             ReviewStore::at_dir(&dir),
+            PrefsStore::at_dir(&dir),
         )
     }
 
-    fn with_stores(drill: ConfusionStore, review: ReviewStore) -> Self {
+    fn with_stores(drill: ConfusionStore, review: ReviewStore, prefs: PrefsStore) -> Self {
         macro_rules! artifact {
             ($name:literal) => {
                 include_bytes!(concat!(
@@ -107,8 +117,32 @@ impl AppState {
                 .expect("the committed passages artifact decodes"),
             drill: Mutex::new(drill),
             review: Mutex::new(review),
+            prefs: Mutex::new(prefs),
             speaker: Arc::new(Speaker::new(Language::Japanese)),
         }
+    }
+
+    /// Which half of the app to open, and where the learner left it.
+    pub fn prefs(&self) -> Prefs {
+        self.prefs
+            .lock()
+            .expect("the preference store is not poisoned")
+            .prefs()
+    }
+
+    /// Remember the half of the app the learner moved to.
+    ///
+    /// The answer comes back as a warning rather than an error, exactly as a
+    /// graded attempt's write failure does: the learner did move, this session
+    /// knows where they are, and what was lost is only that the next start will
+    /// not.
+    pub fn set_section(&self, section: Section) -> Option<String> {
+        self.prefs
+            .lock()
+            .expect("the preference store is not poisoned")
+            .set_section(section)
+            .err()
+            .map(|err| format!("the section could not be remembered: {err}"))
     }
 
     /// The speaker, shared rather than borrowed.
@@ -381,37 +415,30 @@ impl AppState {
         })
     }
 
-    /// What the board has taught and what is due, most overdue first.
+    /// What the board has taught and what is due, in one half of the app.
     ///
     /// `limit` caps the items returned, not the count: a learner with two hundred
     /// due characters is told there are two hundred, and shown the most overdue
     /// ones. Taking only the first few is a decision for the screen, so the full
     /// number travels beside them.
-    pub fn review_queue(&self, limit: usize) -> ReviewQueueView {
+    ///
+    /// `section` is which course is asking. The schedule behind it is one file and
+    /// one set of cards (invariant 15) — the split is in what a screen offers, not
+    /// in what is stored — so the kana screen is not shown a due kanji and the
+    /// character screen carries the head forms with it. `None` is the whole
+    /// schedule, for a caller that is not one of the two screens.
+    pub fn review_queue(&self, limit: usize, section: Option<Section>) -> ReviewQueueView {
         let store = self
             .review
             .lock()
             .expect("the review store is not poisoned");
         let now = now_iso8601();
-        let items = due_items(store.store(), &self.kana, &self.kanji, &now);
-        let due = items.len();
-        // Nothing due: the soonest card is worth naming, so the screen can say
-        // when the next one is rather than only that the queue is empty.
-        let next_due = if due == 0 {
-            store
-                .store()
-                .cards()
-                .values()
-                .map(|card| card.due.clone())
-                .min()
-        } else {
-            None
-        };
+        let queue = build_review_queue(store.store(), &self.kana, &self.kanji, &now, section);
         ReviewQueueView {
-            items: items.into_iter().take(limit).collect(),
-            cards: store.store().cards().len(),
-            due,
-            next_due,
+            items: queue.items.into_iter().take(limit).collect(),
+            cards: queue.cards,
+            due: queue.due,
+            next_due: queue.next_due,
             warning: store.warning().map(str::to_string),
         }
     }
@@ -1284,17 +1311,22 @@ pub struct GradedAttempt {
     pub warning: Option<String>,
 }
 
-/// The review queue, as the Review screen draws it.
+/// The review queue, as one course's Review screen draws it.
+///
+/// Every count here is the **section's**, not the whole schedule's: a kana screen
+/// that said "12 scheduled" while eleven of them were kanji would be describing a
+/// queue it cannot show.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewQueueView {
-    /// Due characters, most overdue first, capped at the caller's limit.
+    /// Due characters in the section, most overdue first, capped at the caller's
+    /// limit.
     pub items: Vec<DueItem>,
-    /// How many characters the schedule holds at all, due or not.
+    /// How many characters the section's schedule holds at all, due or not.
     pub cards: usize,
     /// How many are due, which is the length of the *uncapped* queue.
     pub due: usize,
-    /// When the next character comes back, when nothing is due now.
+    /// When the next character of this section comes back, when nothing is due now.
     #[serde(default)]
     pub next_due: Option<String>,
     #[serde(default)]
@@ -1380,13 +1412,34 @@ fn next_drill_question(
     state.next_drill_question(kind.unwrap_or(DrillKind::Confusion))
 }
 
-/// What the board has taught this learner, and what is due.
+/// What the board has taught this learner, and what is due, in one section.
 ///
 /// `limit` caps the items returned, not the count: a learner with two hundred due
 /// characters is shown the most overdue ones and told how many there are.
+/// `section` is which half of the app is asking; an older interface that sends
+/// nothing gets the whole schedule rather than a rejection.
 #[tauri::command]
-fn review_queue(state: State<'_, AppState>, limit: Option<usize>) -> ReviewQueueView {
-    state.review_queue(limit.unwrap_or(REVIEW_PAGE))
+fn review_queue(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+    section: Option<Section>,
+) -> ReviewQueueView {
+    state.review_queue(limit.unwrap_or(REVIEW_PAGE), section)
+}
+
+/// Which half of the app to open on.
+#[tauri::command]
+fn prefs(state: State<'_, AppState>) -> Prefs {
+    state.prefs()
+}
+
+/// Remember the half of the app the learner moved to.
+///
+/// The answer is a warning string rather than a failure, so a preference that
+/// cannot be written does not look like a command that did not run.
+#[tauri::command]
+fn set_section(state: State<'_, AppState>, section: Section) -> Option<String> {
+    state.set_section(section)
 }
 
 /// How many due characters one page of the review queue carries.
@@ -1648,6 +1701,8 @@ pub fn run() {
             kana_chart,
             grade_attempt,
             review_queue,
+            prefs,
+            set_section,
             next_drill_question,
             record_drill_answer,
             check_reading,
@@ -1670,7 +1725,7 @@ pub fn run() {
             voice,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running the kana tutor");
+        .expect("error while running Nihongo Tutor");
 }
 
 #[cfg(test)]
@@ -2610,7 +2665,7 @@ mod tests {
     /// an empty list with no explanation.
     #[test]
     fn a_learner_who_has_written_nothing_has_an_empty_queue_and_no_next_date() {
-        let queue = state().review_queue(40);
+        let queue = state().review_queue(40, None);
         assert_eq!(queue.cards, 0);
         assert_eq!(queue.due, 0);
         assert!(queue.items.is_empty());
@@ -2630,7 +2685,7 @@ mod tests {
         assert!(graded.scheduled, "score {:.0}", graded.report.overall);
         let due = graded.next_due.clone().expect("a new card has a due date");
 
-        let queue = state.review_queue(40);
+        let queue = state.review_queue(40, None);
         assert_eq!(queue.cards, 1);
         assert_eq!(queue.due, 0, "a clean attempt is not due for a day");
         assert!(queue.items.is_empty());
@@ -2649,7 +2704,33 @@ mod tests {
             .expect("the board can write a head form the character course cannot");
         assert!(graded.scheduled);
         assert!(graded.next_due.is_some());
-        assert_eq!(state.review_queue(40).cards, 1);
+        assert_eq!(state.review_queue(40, None).cards, 1);
+    }
+
+    // ---- the two sections -------------------------------------------------
+
+    /// A section with nothing scheduled names no next date, rather than the other
+    /// section's — which is what a shared count would have shown it.
+    #[test]
+    fn an_empty_section_names_no_date_from_the_other_sections_cards() {
+        let state = state();
+        let said = state.kana('あ').expect("あ");
+        state
+            .grade_and_schedule('あ', &said.medians, &GradeOptions::default())
+            .expect("grades");
+
+        let kana = state.review_queue(40, Some(Section::Kana));
+        assert_eq!(kana.cards, 1);
+        assert!(kana.next_due.is_some(), "the kana card comes back");
+
+        let kanji = state.review_queue(40, Some(Section::Kanji));
+        assert_eq!(kanji.cards, 0);
+        assert_eq!(kanji.due, 0);
+        assert!(
+            kanji.next_due.is_none(),
+            "a kana's due date is not the character course's: {:?}",
+            kanji.next_due
+        );
     }
 
     // ---- pronunciation ----------------------------------------------------
@@ -2657,7 +2738,7 @@ mod tests {
     /// The app speaks Japanese, and that is asserted rather than assumed.
     ///
     /// [`Speaker::default`] is **Chinese**, because the two apps that existed
-    /// before the kana tutor were, and a Chinese voice reading あ is the one
+    /// before this app were, and a Chinese voice reading あ is the one
     /// failure here that no other test in this file could see: the command would
     /// answer `Ok(())`, the button would not report an error, and the learner
     /// would hear Mandarin. `hanzi-voice`'s own suite pins the two languages

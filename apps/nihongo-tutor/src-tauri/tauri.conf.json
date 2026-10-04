@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Kana Tutor",
+  "productName": "Nihongo Tutor",
   "version": "0.1.0",
   "identifier": "com.hanzitutor.kana",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Kana Tutor",
+        "title": "Nihongo Tutor",
         "width": 980,
         "height": 760,
         "minWidth": 480,
@@ -43,8 +43,8 @@
       "icons/icon.ico"
     ],
     "category": "Education",
-    "shortDescription": "Learn to read and write Japanese kana",
-    "longDescription": "An offline app for learning hiragana and katakana. It teaches the gojūon in order, one row at a time, with the dakuten and handakuten rows after the plain ones, the yōon digraphs, and the pairs learners actually mix up — シ and ツ, ソ and ン, る and ろ. Every kana can be traced on the board: each stroke is judged for shape, placement, ink and order against real stroke geometry, and the stroke order can be animated first. You can type a reading in either Hepburn or Kunrei romanisation and see the kana you produced. Everything the course teaches is in this bundle and needs no network.",
+    "shortDescription": "Learn to read and write Japanese: the kana first, then the jōyō kanji",
+    "longDescription": "An offline app for learning to read and write Japanese, in the two courses the language comes in. Kana training is the on-ramp: hiragana and katakana taught as the gojūon, one row at a time, with the dakuten and handakuten rows after the plain ones, the yōon digraphs, and the pairs learners actually mix up — シ and ツ, ソ and ン, る and ろ. It is a few days' work, and the app keeps it out of the way of everything else. Kanji training is the course itself: the 2,136 jōyō characters in 216 lessons by kyōiku grade, the 214 Kangxi radicals and the families they head, 16,073 words on a banded ladder with furigana over every one, and three passages segmented into words with a word card behind every tap. Every kana and every character can be traced on the board: each stroke is judged for shape, placement, ink and order against real stroke geometry, and the stroke order can be animated first. Readings can be typed in either Hepburn or Kunrei romanisation, words are graded by typing their own reading, and the characters are scheduled for review on SM-2. Everything the courses teach is in this bundle and needs no network.",
     "copyright": "Copyright © Horst Herb and contributors",
     "resources": {
       "../../../LICENSE": "licences/AGPL-3.0.txt",

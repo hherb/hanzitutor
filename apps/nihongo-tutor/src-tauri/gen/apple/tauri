@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+/*
+ * The entry point the Xcode "Build Rust Code" phase expects.
+ *
+ * The npm Tauri CLI generates a script phase that runs `node tauri ios
+ * xcode-script …` with `src-tauri/gen/apple` as the working directory, and
+ * `tauri ios init` does not create this file, so the build stops with
+ * "Cannot find module '…/gen/apple/tauri'". This forwards to the CLI the app
+ * already depends on (the npm package declares no `exports` map), which node
+ * finds by walking up from here to `apps/nihongo-tutor/node_modules`.
+ *
+ * Deleting `gen/apple` and re-initialising removes this file — init only knows
+ * the files it generates. Restore it if a build suddenly cannot find it.
+ */
+import "@tauri-apps/cli/tauri.js";
