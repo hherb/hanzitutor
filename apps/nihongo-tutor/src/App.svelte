@@ -8,11 +8,11 @@
    * app's own file, and the tabs under the switch are that course's own screens,
    * from `lib/nav.ts`.
    *
-   * Both courses are **two screens where the board is involved** — the list of what
-   * to study, and the board for one character, taken by a panel that reports it
-   * (`bind:practice`) so the app can step its own chrome aside. `HANDOVER_NIHONGO.md`
-   * invariants 33 and 34 are the rule, and this file is where the two panels are
-   * handed the request that opened one.
+   * Every course screen that opens something is **two screens**: the list of what to
+   * study, and the stage for one of them — a board, a radical's family, a word's card,
+   * a passage — taken by a panel that reports it (`bind:stage`) so the app can step
+   * its own chrome aside. `HANDOVER_NIHONGO.md` invariants 33, 34 and 35 are the rule,
+   * and this file is where the panels are handed the request that opened one.
    *
    * Every character on the board, kana or kanji, is graded by the same engine that
    * grades a Chinese character.
@@ -32,6 +32,7 @@
     courseOf,
     covers,
     defaultView,
+    hasStage,
     isSection,
     tabsOf,
     type Section,
@@ -92,15 +93,23 @@
   let warning = $state<string | null>(null);
 
   /**
-   * Whether a course's practice stage is up, which the panel tells us.
+   * Whether a course screen's stage is up, which its panel tells us.
    *
    * A stage takes the whole screen: the course switch and the tab row are the
-   * *course's*, and while one character is being written they cost the board about
-   * 150px of the phone's height. `Lessons` on the stage is the way back, and it
-   * brings both rows with it (invariants 33 and 34).
+   * *course's*, and while one thing is being worked on they cost the phone about
+   * 150px of the height the thing needs. The stage's own first control is the way
+   * back, and it brings both rows with it (invariants 33, 34 and 35).
+   *
+   * One flag per panel rather than one for the app, because the screens hand each
+   * other the learner: a component tapped inside the kanji stage's fold sends them
+   * to the radicals panel while the kanji panel's own stage is still up, and a
+   * shared flag would then keep the chrome hidden on a course screen.
    */
-  let kanjiPractice = $state(false);
-  let kanaPractice = $state(false);
+  let kanaStage = $state(false);
+  let kanjiStage = $state(false);
+  let radicalsStage = $state(false);
+  let wordsStage = $state(false);
+  let readStage = $state(false);
 
   /**
    * The voice pronunciation will use, or `null` when the machine has none.
@@ -235,12 +244,37 @@
   }
 
   /**
+   * Whether a stage is up on the screen that is open.
+   *
+   * A stage belongs to one panel, and `bind:stage` is how that panel says so; the
+   * five that can are the five `nav.ts` names as two-screen. A sixth that kept a
+   * flag without being listed there, or was listed there and not handled here, is a
+   * programming error rather than a course screen that quietly keeps its chrome —
+   * the same refusal `goTo` makes for a screen its course does not have.
+   */
+  const stageUp = $derived.by(() => {
+    switch (view) {
+      case "practice":
+        return kanaStage;
+      case "kanji":
+        return kanjiStage;
+      case "radicals":
+        return radicalsStage;
+      case "words":
+        return wordsStage;
+      case "read":
+        return readStage;
+      default:
+        if (hasStage(view)) throw new Error(`${view} has a stage and no flag`);
+        return false;
+    }
+  });
+
+  /**
    * Whether the app's own chrome — the switch and the open course's tab row —
    * should be drawn. Licences and Start here hang off the footer either way.
    */
-  const chromeVisible = $derived(
-    !((view === "kanji" && kanjiPractice) || (view === "practice" && kanaPractice)),
-  );
+  const chromeVisible = $derived(!stageUp);
 
   async function boot() {
     try {
@@ -313,8 +347,8 @@
     The course switch, not a tab: each course is a thing to study rather than a
     screen. Two lines each and no more — the name, then what it is and how much of
     it there is, because 177 characters is a few days and 2,136 behind 16,073 words
-    is not. Both rows step aside while a practice stage is up: the stage is the
-    screen then, and it carries its own way back.
+    is not. Both rows step aside while a stage is up: the stage is the screen then,
+    and it carries its own way back.
   -->
   {#if chromeVisible}
     <nav class="courses" aria-label="Courses">
@@ -350,7 +384,7 @@
       written in and the panel is what owns the course that request belongs to
       (invariant 34).
     -->
-    <KanaPanel bind:pick={kanaPick} bind:practice={kanaPractice} {voice} />
+    <KanaPanel bind:pick={kanaPick} bind:stage={kanaStage} {voice} />
   {:else if view === "chart"}
     <KanaChart onopen={openKana} />
   {:else if view === "drill"}
@@ -367,13 +401,18 @@
       <ReviewPanel {section} {voice} />
     {/key}
   {:else if view === "kanji"}
-    <KanjiPanel bind:pick={kanjiPick} bind:practice={kanjiPractice} onradical={seeRadical} {voice} />
+    <KanjiPanel bind:pick={kanjiPick} bind:stage={kanjiStage} onradical={seeRadical} {voice} />
   {:else if view === "radicals"}
-    <RadicalsPanel bind:focus={selectedRadical} onopen={openKanji} onpractise={openRadical} />
+    <RadicalsPanel
+      bind:focus={selectedRadical}
+      bind:stage={radicalsStage}
+      onopen={openKanji}
+      onpractise={openRadical}
+    />
   {:else if view === "words"}
-    <VocabularyPanel {voice} />
+    <VocabularyPanel bind:stage={wordsStage} {voice} />
   {:else if view === "read"}
-    <PassagePanel {voice} />
+    <PassagePanel bind:stage={readStage} {voice} />
   {:else if view === "start"}
     <!--
       Start here belongs to neither course: it is about the language rather than

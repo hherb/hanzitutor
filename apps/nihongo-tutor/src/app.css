@@ -167,8 +167,16 @@ main {
   color: var(--accent);
 }
 
+/* The open course's screens. It **wraps**, which the five kanji tabs need: they
+   are 374px of button together, so at a phone's width — or at any window narrow
+   enough for the page to carry a vertical scrollbar, which takes another 17px of
+   the client width — a single-line row ran 13px past the page and gave the whole
+   app a horizontal scroll. Measured at 390×844 in the app's own webview
+   (`ROADMAP_NIHONGO.md` N15); wrapping keeps every tab reachable, which a
+   scrolling row would not. */
 .views {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin: 12px 0 6px;
   border-bottom: 1px solid var(--line);

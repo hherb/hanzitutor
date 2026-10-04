@@ -703,15 +703,15 @@
     margin-left: auto;
   }
 
-  /* 44px is the size a finger needs, and every control on this stage is that
-     tall on a phone: measured in the harness at 390px, the back button was 25px
-     and the fold 40px before this, which are the two a learner reaches for with
-     a thumb rather than a pointer. */
+  /* 44px is the size a finger needs, and every control on this stage is that tall
+     on a phone: measured in the harness at 390px, the back button was 25px and the
+     fold 40px, and the arrows and the Grade button were 40 as well — all four are
+     fixed, and the arrows are 44 here because a stage is where a thumb reaches. */
   .step {
     display: grid;
     place-items: center;
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     border: 1px solid var(--line);
     border-radius: 50%;
     background: var(--panel);
@@ -1095,7 +1095,7 @@
     display: inline-flex;
     align-items: center;
     gap: 7px;
-    min-height: 40px;
+    min-height: 44px;
     padding: 0 16px;
     border: 1px solid var(--accent);
     border-radius: 11px;

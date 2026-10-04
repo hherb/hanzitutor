@@ -34,6 +34,33 @@ export type KanjiView = "kanji" | "radicals" | "words" | "read" | "review";
 /** Every screen, including the two that belong to neither course. */
 export type View = KanaView | KanjiView | "licences" | "start";
 
+/**
+ * The screens that are **two** screens: a course, and the stage one of its cards
+ * opens.
+ *
+ * Five, and each of them has a panel that reports a stage is up so the app can
+ * take its own chrome — the course switch and the tab row — out of the way
+ * (`HANDOVER_NIHONGO.md` invariants 33, 34 and 35). The list is here rather than in
+ * the template because it is a property of the division: a screen added to one of
+ * these panels' machines and not to this list, or the other way round, is what
+ * `nav.test.ts` fails on.
+ */
+export type StageView = "practice" | "kanji" | "radicals" | "words" | "read";
+
+/** The five, in the order the courses name them. */
+export const STAGE_VIEWS: readonly StageView[] = [
+  "practice",
+  "kanji",
+  "radicals",
+  "words",
+  "read",
+];
+
+/** Whether this screen is a course with a stage inside it. */
+export function hasStage(view: View): view is StageView {
+  return (STAGE_VIEWS as readonly View[]).includes(view);
+}
+
 /** One tab, as the row under the course switch draws it. */
 export interface Tab {
   readonly id: View;

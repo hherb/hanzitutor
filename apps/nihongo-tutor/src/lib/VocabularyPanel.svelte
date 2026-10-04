@@ -1,41 +1,60 @@
 <script lang="ts">
   /**
-   * The vocabulary: the ladder down the side, the words of one band, and the card
-   * for the word that is selected.
+   * The vocabulary: the course screen — the ladder down the side and the words of
+   * one band — and the stage one of the words opens.
    *
-   * The ladder is the part worth reading. A word's band is the **highest kyōiku
-   * grade among its kanji** — 1 to 6, with a seventh for a word containing a kanji
-   * from the jōyō remainder — and EDRDG's frequency rank orders the words inside a
-   * band. That is a teaching order, not a popularity contest: a word becomes
-   * readable exactly when its kanji are known.
+   * ## Two screens, and this is the first one
+   *
+   * The card used to sit in a second column beside the list: the bands, the page of
+   * words, and the chosen word's card. On a phone that is N12's complaint — the
+   * thing a learner tapped a row for is *below* the twenty-four rows they then have
+   * to scroll back through — so the list is the course and `WordStage` is what a row
+   * opens. `HANDOVER_NIHONGO.md` invariants 33 and 34 are the rule.
+   *
+   * ## The ladder is the part worth reading
+   *
+   * A word's band is the **highest kyōiku grade among its kanji** — 1 to 6, with a
+   * seventh for a word containing a kanji from the jōyō remainder — and EDRDG's
+   * frequency rank orders the words inside a band. That is a teaching order, not a
+   * popularity contest: a word becomes readable exactly when its kanji are known.
    *
    * It is **this project's** ladder and the screen says so twice — in the header
    * and on every card — because there has been no official JLPT kanji or
    * vocabulary list since 2010, and a level number would imply an authority the
    * data does not have.
    */
-  import WordCard from "./WordCard.svelte";
+  import WordStage from "./WordStage.svelte";
   import * as api from "./api";
   import type { BandView, Word } from "./types";
   import type { VoiceStatus } from "./speech";
   import { pageWindow } from "./words";
 
-  /**
-   * What the `voice` command answered.
-   *
-   * Passed straight through to the card rather than asked for here: `App.svelte`
-   * asks once, so one missing Japanese voice disables every control in the app
-   * together, and a panel that asked again would be a second answer to one
-   * question.
-   */
-  let { voice }: { voice: VoiceStatus } = $props();
+  interface Props {
+    /**
+     * What the `voice` command answered.
+     *
+     * Passed straight through to the stage rather than asked for here: `App.svelte`
+     * asks once, so one missing Japanese voice disables every control in the app
+     * together, and a panel that asked again would be a second answer to one
+     * question.
+     */
+    voice: VoiceStatus;
+    /**
+     * Whether a stage is up, told to `App.svelte` so it can take the course switch
+     * and the tab row out of the way while one is (invariants 33 and 34).
+     */
+    stage?: boolean;
+  }
+
+  let { voice, stage = $bindable(false) }: Props = $props();
 
   let bands = $state<BandView[]>([]);
   let band = $state(1);
   let page = $state(1);
   let total = $state(0);
   let words = $state<Word[]>([]);
-  let selected = $state<Word | null>(null);
+  /** The word whose stage is up, or `null` while the course itself is showing. */
+  let open = $state<Word | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
 
@@ -43,6 +62,16 @@
   const PAGE = 24;
 
   const window_ = $derived(pageWindow(total, PAGE, page));
+
+  /**
+   * Keep the app told whether a stage is up.
+   *
+   * One place rather than two: `open` is set by a row and by leaving, and a flag
+   * written at each would be wrong the day a third caller arrives.
+   */
+  $effect(() => {
+    stage = open !== null;
+  });
 
   async function loadBands() {
     try {
@@ -63,7 +92,6 @@
       const found = await api.wordsInBand(band, window_.offset, window_.limit);
       words = found.words;
       total = found.total;
-      selected = null;
     } catch (e) {
       error = String(e);
     } finally {
@@ -87,40 +115,49 @@
   void loadBands();
 </script>
 
-<section class="vocab">
-  <header>
-    <h2>Words</h2>
-    <p class="sub">
-      {bands.reduce((sum, b) => sum + b.words, 0).toLocaleString()} words, each with the reading
-      the dictionary gives it and an English gloss.
-    </p>
-    <p class="hint">
-      The bands are <strong>ours</strong>: a word's band is the highest school grade among its
-      kanji, with a seventh for the jōyō remainder, and EDRDG's frequency orders them inside a
-      band. They are not the JLPT's — there has been no official JLPT list since 2010 — and a
-      learner should read them as a rough order rather than a level.
-    </p>
-  </header>
+{#if open}
+  <!--
+    Keyed on the word, so a second row mounts a fresh stage rather than merging the
+    new word into the reading box and the verdict of the old one.
+  -->
+  {#key open.text + open.reading}
+    <WordStage word={open} {voice} onleave={() => (open = null)} />
+  {/key}
+{:else}
+  <section class="vocab">
+    <header>
+      <h2>Words</h2>
+      <p class="sub">
+        {bands.reduce((sum, b) => sum + b.words, 0).toLocaleString()} words, each with the
+        reading the dictionary gives it and an English gloss. Choose a word to see its
+        furigana and to check its reading.
+      </p>
+      <p class="hint">
+        The bands are <strong>ours</strong>: a word's band is the highest school grade among
+        its kanji, with a seventh for the jōyō remainder, and EDRDG's frequency orders them
+        inside a band. They are not the JLPT's — there has been no official JLPT list since
+        2010 — and a learner should read them as a rough order rather than a level.
+      </p>
+    </header>
 
-  {#if error}
-    <p class="error" role="alert">{error}</p>
-  {/if}
+    {#if error}
+      <p class="error" role="alert">{error}</p>
+    {/if}
 
-  <div class="bands" role="tablist" aria-label="Bands">
-    {#each bands as entry (entry.band)}
-      <button
-        role="tab"
-        aria-selected={band === entry.band}
-        class:active={band === entry.band}
-        onclick={() => (band = entry.band)}
-      >
-        <span class="label">{entry.name}</span>
-        <span class="count">{entry.words}</span>
-      </button>
-    {/each}
-  </div>
+    <div class="bands" role="tablist" aria-label="Bands">
+      {#each bands as entry (entry.band)}
+        <button
+          role="tab"
+          aria-selected={band === entry.band}
+          class:active={band === entry.band}
+          onclick={() => (band = entry.band)}
+        >
+          <span class="label">{entry.name}</span>
+          <span class="count">{entry.words}</span>
+        </button>
+      {/each}
+    </div>
 
-  <div class="layout">
     <section class="list" aria-label="Words in this band">
       {#if busy}
         <p class="hint">Loading…</p>
@@ -130,11 +167,11 @@
           <li>
             <button
               class="row"
-              class:active={selected?.text === entry.text && selected?.reading === entry.reading}
-              onclick={() => (selected = entry)}
+              onclick={() => (open = entry)}
+              title="Open {entry.text} to see its furigana and check its reading"
             >
-              <span class="text">{entry.text}</span>
-              <span class="reading">{entry.reading}</span>
+              <span class="text" lang="ja">{entry.text}</span>
+              <span class="reading" lang="ja">{entry.reading}</span>
               <span class="gloss">{entry.meaning}</span>
             </button>
           </li>
@@ -153,16 +190,8 @@
         </nav>
       {/if}
     </section>
-
-    <section class="card-slot">
-      {#if selected}
-        <WordCard word={selected} {voice} />
-      {:else}
-        <p class="placeholder">Choose a word to see its furigana and to check its reading.</p>
-      {/if}
-    </section>
-  </div>
-</section>
+  </section>
+{/if}
 
 <style>
   .vocab header h2 {
@@ -210,17 +239,10 @@
     color: var(--muted, #6b6b6b);
   }
 
-  .layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
-    gap: 1.2rem;
-    align-items: start;
-  }
-
-  @media (max-width: 900px) {
-    .layout {
-      grid-template-columns: 1fr;
-    }
+  /* The band's words, as a list to choose from rather than a column beside a card
+     — the card is a screen of its own now. */
+  .list {
+    max-width: 90ch;
   }
 
   ul {
@@ -247,12 +269,8 @@
   }
 
   .row:hover {
-    background: var(--hover, #f4f4f1);
-  }
-
-  .row.active {
     border-color: var(--accent, #2f6f4f);
-    background: var(--accent-soft, #eaf3ed);
+    background: var(--hover, #f4f4f1);
   }
 
   .text {
@@ -293,14 +311,6 @@
   .pager button:disabled {
     opacity: 0.5;
     cursor: default;
-  }
-
-  .placeholder {
-    color: var(--muted, #6b6b6b);
-    border: 1px dashed var(--line, #dcdcd6);
-    border-radius: 10px;
-    padding: 2rem 1rem;
-    text-align: center;
   }
 
   .error {

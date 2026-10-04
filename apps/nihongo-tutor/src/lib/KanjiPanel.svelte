@@ -51,18 +51,18 @@
     /** What the `voice` command answered, asked once by `App.svelte`. */
     voice?: VoiceStatus;
     /**
-     * Whether a practice stage is up, told to `App.svelte` so it can take the
-     * course switch and the tab row out of the way while one is.
+     * Whether a stage is up, told to `App.svelte` so it can take the course switch
+     * and the tab row out of the way while one is.
      *
      * The maintainer's instruction, and the reason is the screen: with the switch
      * and the row above it the board had about 150px less than the phone could
      * give it. A stage is then the whole screen and **`Lessons` is the way out**
      * — which is why that button is the first thing on it.
      */
-    practice?: boolean;
+    stage?: boolean;
   }
 
-  let { pick = $bindable(null), onradical, voice, practice = $bindable(false) }: Props = $props();
+  let { pick = $bindable(null), onradical, voice, stage = $bindable(false) }: Props = $props();
 
   let lessons = $state<KanjiLessonView[]>([]);
   let grade = $state(1);
@@ -90,7 +90,7 @@
    * which the app never writes back — so there is nothing here to loop.
    */
   $effect(() => {
-    practice = practising !== null;
+    stage = practising !== null;
   });
 
   async function loadLessons() {

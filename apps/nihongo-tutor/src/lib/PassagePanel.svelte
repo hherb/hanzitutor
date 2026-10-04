@@ -1,153 +1,114 @@
 <script lang="ts">
   /**
-   * Reading: a short passage with a reading over every kanji, and a tap on any
-   * word opens the card for it.
+   * Reading: the course screen — the passages there are — and the stage one of them
+   * opens.
    *
-   * The segmentation is not done here. Japanese has no spaces, so words have to be
-   * found by a morphological analyser — and the analyser and its 134 MB dictionary
-   * run at **build time**, in `prepare-passages`, so the artifact carries the
-   * tokens and this screen only draws them. That is what keeps the app's promise
-   * that nothing is downloaded: there is no tokeniser here to download one for.
+   * ## Two screens, and this is the first one
    *
-   * A token is tappable when the pipeline linked it to a word the course teaches,
-   * and every kanji-bearing token is one of those — `prepare-passages` refuses to
-   * build a passage that uses a kanji the vocabulary does not hold, because such a
-   * passage would ask a learner to read a character they have no card for. So a
-   * tap always works, and the underline under a tappable word says so.
+   * The passage used to be drawn below a row of chips with the tapped word's card
+   * beside it, which on a phone meant scrolling past the passage to the card and back
+   * to the passage. `PassageStage` is the second screen, the chrome steps aside while
+   * one is up, and `HANDOVER_NIHONGO.md` invariants 33 and 34 are the rule.
+   *
+   * ## The segmentation is not done here
+   *
+   * Japanese has no spaces, so words have to be found by a morphological analyser —
+   * and the analyser and its 134 MB dictionary run at **build time**, in
+   * `prepare-passages`, so the artifact carries the tokens and the stage only draws
+   * them. That is what keeps the app's promise that nothing is downloaded: there is
+   * no tokeniser here to download one for.
+   *
+   * ## The gloss is not on this screen
+   *
+   * A passage's English gloss is shown under the passage it belongs to, in the stage.
+   * Putting it on the card a learner chooses from would answer the reading before it
+   * was attempted, which is the one thing a reading exercise cannot afford.
    */
-  import WordCard from "./WordCard.svelte";
+  import PassageStage from "./PassageStage.svelte";
   import * as api from "./api";
-  import type { PassageSummary, PassageView, Word } from "./types";
+  import type { PassageSummary } from "./types";
   import type { VoiceStatus } from "./speech";
-  import { needsRuby, tokenIsTappable } from "./words";
 
-  /** What the `voice` command answered, asked once by `App.svelte`. */
-  let { voice }: { voice: VoiceStatus } = $props();
+  interface Props {
+    /** What the `voice` command answered, asked once by `App.svelte`. */
+    voice: VoiceStatus;
+    /**
+     * Whether a stage is up, told to `App.svelte` so it can take the course switch
+     * and the tab row out of the way while one is (invariants 33 and 34).
+     */
+    stage?: boolean;
+  }
+
+  let { voice, stage = $bindable(false) }: Props = $props();
 
   let summaries = $state<PassageSummary[]>([]);
-  let key = $state<string | null>(null);
-  let passage = $state<PassageView | null>(null);
-  let opened = $state<Word | null>(null);
   let error = $state<string | null>(null);
-  let busy = $state(false);
+  /** The passage whose stage is up, or `null` while the course itself is showing. */
+  let open = $state<PassageSummary | null>(null);
 
   async function loadList() {
     try {
       error = null;
       summaries = await api.passages();
-      key = summaries[0]?.key ?? null;
     } catch (e) {
       error = String(e);
     }
   }
-
-  async function loadPassage() {
-    if (!key) return;
-    try {
-      error = null;
-      busy = true;
-      opened = null;
-      passage = await api.passage(key);
-    } catch (e) {
-      error = String(e);
-    } finally {
-      busy = false;
-    }
-  }
-
-  async function open(word: string) {
-    try {
-      error = null;
-      opened = await api.wordOfText(word);
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  $effect(() => {
-    void key;
-    void loadPassage();
-  });
-
   void loadList();
+
+  /**
+   * Keep the app told whether a stage is up.
+   *
+   * One place rather than two: `open` is set by a card and by leaving, and a flag
+   * written at each would be wrong the day a third caller arrives.
+   */
+  $effect(() => {
+    stage = open !== null;
+  });
 </script>
 
-<section class="reading">
-  <header>
-    <h2>Read</h2>
-    <p class="sub">
-      Short passages, written for this course and held to the words it teaches — every kanji
-      here is one you have a card for. Tap a word to open it.
-    </p>
-  </header>
+{#if open}
+  <!--
+    Keyed on the passage, so a second card mounts a fresh stage rather than merging
+    the new passage into the text, the tapped word and the error of the old one.
+  -->
+  {#key open.key}
+    <PassageStage start={open} {voice} onleave={() => (open = null)} />
+  {/key}
+{:else}
+  <section class="reading">
+    <header>
+      <h2>Read</h2>
+      <p class="sub">
+        Short passages, written for this course and held to the words it teaches — every kanji
+        here is one you have a card for. Choose a passage to read it, and tap a word inside it
+        to open that word.
+      </p>
+    </header>
 
-  {#if error}
-    <p class="error" role="alert">{error}</p>
-  {/if}
+    {#if error}
+      <p class="error" role="alert">{error}</p>
+    {/if}
 
-  <div class="passages" role="tablist" aria-label="Passages">
-    {#each summaries as entry (entry.key)}
-      <button
-        role="tab"
-        aria-selected={key === entry.key}
-        class:active={key === entry.key}
-        onclick={() => (key = entry.key)}
-      >
-        <span class="title">{entry.title}</span>
-        <span class="count">{entry.tokens} words</span>
-      </button>
-    {/each}
-  </div>
+    <ul class="passages">
+      {#each summaries as entry (entry.key)}
+        <li>
+          <button class="passage" onclick={() => (open = entry)} title="Read {entry.title}">
+            <span class="title">{entry.title}</span>
+            <span class="count">
+              {entry.lines} {entry.lines === 1 ? "line" : "lines"} · {entry.tokens}
+              {entry.tokens === 1 ? "word" : "words"}
+            </span>
+          </button>
+        </li>
+      {/each}
+    </ul>
 
-  <div class="layout">
-    <section class="text" aria-label="Passage">
-      {#if busy}
-        <p class="hint">Loading…</p>
-      {/if}
-      {#if passage}
-        <h3>{passage.title}</h3>
-        {#each passage.lines as line, i (i)}
-          <p class="line">
-            {#each line as token, j (j)}
-              {#if tokenIsTappable(token)}
-                <button
-                  class="token"
-                  title={token.surface}
-                  onclick={() => void open(token.word as string)}
-                >
-                  {#if needsRuby({ ruby: token.surface, rt: token.rt })}
-                    <ruby>{token.surface}<rt>{token.rt}</rt></ruby>
-                  {:else}
-                    {token.surface}
-                  {/if}
-                </button>
-              {:else}
-                <span class="token plain">
-                  {#if needsRuby({ ruby: token.surface, rt: token.rt })}
-                    <ruby>{token.surface}<rt>{token.rt}</rt></ruby>
-                  {:else}
-                    {token.surface}
-                  {/if}
-                </span>
-              {/if}
-            {/each}
-          </p>
-        {/each}
-        {#if passage.gloss}
-          <p class="gloss">{passage.gloss}</p>
-        {/if}
-      {/if}
-    </section>
-
-    <section class="card-slot">
-      {#if opened}
-        <WordCard word={opened} {voice} />
-      {:else}
-        <p class="placeholder">Tap any underlined word in the passage to open it here.</p>
-      {/if}
-    </section>
-  </div>
-</section>
+    {#if summaries.length === 0 && !error}
+      <p class="hint">Loading the passages…</p>
+    {/if}
+  </section>
+{/if}
 
 <style>
   .reading header h2 {
@@ -160,102 +121,50 @@
     max-width: 65ch;
   }
 
+  /* The passages, as cards to choose from rather than a row of chips above the text
+     — the text is a screen of its own now. */
   .passages {
-    display: flex;
-    gap: 0.4rem;
-    flex-wrap: wrap;
-    margin: 1rem 0;
+    list-style: none;
+    margin: 1rem 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 0.5rem;
+    max-width: 90ch;
   }
 
-  .passages button {
+  .passage {
+    width: 100%;
     display: flex;
-    gap: 0.5rem;
-    align-items: baseline;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
     font: inherit;
-    padding: 0.35rem 0.7rem;
+    padding: 0.7rem 0.9rem;
     border: 1px solid var(--line, #dcdcd6);
-    border-radius: 999px;
+    border-radius: 10px;
     background: var(--panel, #fff);
+    color: var(--ink);
+    text-align: left;
     cursor: pointer;
   }
 
-  .passages button.active {
+  .passage:hover {
     border-color: var(--accent, #2f6f4f);
-    background: var(--accent-soft, #eaf3ed);
   }
 
-  .passages .count {
+  .title {
+    font-size: 1rem;
+    font-weight: 600;
+  }
+
+  .count {
     font-size: 0.8rem;
     color: var(--muted, #6b6b6b);
   }
 
-  .layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-    gap: 1.2rem;
-    align-items: start;
-  }
-
-  @media (max-width: 900px) {
-    .layout {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .text h3 {
-    margin: 0 0 0.6rem;
-    font-size: 1.1rem;
-  }
-
-  .line {
-    margin: 0 0 0.7rem;
-    font-size: 1.5rem;
-    line-height: 2.4;
-  }
-
-  .token {
-    font: inherit;
-    font-size: inherit;
-    padding: 0 0.05rem;
-    border: 0;
-    background: none;
-    color: inherit;
-    vertical-align: baseline;
-  }
-
-  .token.plain {
-    cursor: default;
-  }
-
-  button.token {
-    border-bottom: 2px solid var(--accent-soft, #cfe3d7);
-    cursor: pointer;
-  }
-
-  button.token:hover {
-    background: var(--accent-soft, #eaf3ed);
-  }
-
-  .token rt {
-    font-size: 0.7rem;
-    color: var(--muted, #6b6b6b);
-  }
-
-  .gloss {
-    margin-top: 1rem;
-    color: var(--muted, #6b6b6b);
-    font-size: 0.9rem;
-  }
-
-  .placeholder {
-    color: var(--muted, #6b6b6b);
-    border: 1px dashed var(--line, #dcdcd6);
-    border-radius: 10px;
-    padding: 2rem 1rem;
-    text-align: center;
-  }
-
   .hint {
+    margin-top: 1rem;
     color: var(--muted, #6b6b6b);
   }
 

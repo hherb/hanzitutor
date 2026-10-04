@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   COURSES,
+  STAGE_VIEWS,
   covers,
   courseOf,
   defaultView,
+  hasStage,
   isSection,
   tabsOf,
   type Course,
@@ -115,6 +117,40 @@ describe("the courses", () => {
       expect(claimants(view), `${view} is in a course`).toEqual([]);
     }
     expect(FOOTER_VIEWS).toEqual(["licences", "start"]);
+  });
+});
+
+describe("the screens that are two screens", () => {
+  it("are the five whose panel opens a stage of its own", () => {
+    // Written out rather than derived: a stage is a screen the app takes its own
+    // chrome off for, and adding or removing one is a decision rather than a
+    // consequence of a template edit.
+    expect(STAGE_VIEWS).toEqual(["practice", "kanji", "radicals", "words", "read"]);
+  });
+
+  it("are every screen with a stage, and no other screen has one", () => {
+    expect(ALL_VIEWS.filter(hasStage)).toEqual([...STAGE_VIEWS]);
+    for (const view of ALL_VIEWS) {
+      if (!STAGE_VIEWS.includes(view)) expect(hasStage(view), view).toBe(false);
+    }
+    // The two footer screens are the ones it would be easiest to get wrong: Start
+    // here hands the learner to a course but is not itself one of these.
+    expect(hasStage("licences")).toBe(false);
+    expect(hasStage("start")).toBe(false);
+  });
+
+  it("each belong to exactly one course, so a stage never hides another course's switch", () => {
+    for (const view of STAGE_VIEWS) {
+      expect(claimants(view), `${view}: ${claimants(view).join(", ")}`).toHaveLength(1);
+    }
+  });
+
+  it("leave the screens that are one thing alone", () => {
+    // The chart, the drill and the review queue each draw one screen with nothing
+    // to open inside them, and Review is the screen two courses share.
+    for (const view of ["chart", "drill", "review"] as View[]) {
+      expect(hasStage(view), view).toBe(false);
+    }
   });
 });
 

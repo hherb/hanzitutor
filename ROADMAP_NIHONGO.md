@@ -47,6 +47,7 @@ references for no gain.
 | **N11** | **Start here: what the writing system is for** | **Shipped.** The one screen a learner should meet before choosing a course: the characters came from China and carry meaning, the kana carry the grammar, and romanisation therefore discards both — demonstrated with the app's own vocabulary, where はし is 橋, 端 and 箸. In neither course, hanging off the footer beside Licences. See the milestone for why the argument is data rather than prose. |
 | **N12** | **The kanji course in two screens** | **Shipped.** The course was one page and the board sat at the bottom of it: on a phone a learner scrolled past the lesson list and the character grid to write one character, and back to choose the next. The course is now the grade chips and one card per lesson of ten (each card showing its ten characters), and tapping a card opens a stage — readings above the board, the board, the tools below it, and everything else about the character behind one `More` fold. See the milestone for the measurement that made the fold universal. |
 | **N13** | **The kana course in two screens** | **Shipped.** N12's complaint, on the kana course and for the same reason: the lesson list, the lesson's kana and the board were stacked in three columns, so a phone made a learner scroll past the course to write one kana. The course is now the script toggle and one card per lesson carrying its own kana, and a card opens a stage — the sound above the board, the board, the tools below it, everything else behind one `More`. See the milestone for the two bugs the measurement corrected, one of which was N12's too. |
+| **N15** | **The last three screens, and a thumb's width** | **Shipped.** N13 left the Radicals, Words and Read screens one column each and named them as the next piece of the same work; each is now a course screen plus a stage, the chrome steps aside for all five two-screen panels (`STAGE_VIEWS`), and the arrows and Grade grew to the 44px a finger needs in both stages. See the milestone for the 13px overflow the phone measurement found in the app's own tab row — a bug none of the three new screens had. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -1672,7 +1673,8 @@ stage's **768** in the same window, with the same 130px tool block and a shorter
 (112px against 147). Two touch targets are under the 44px a finger needs, and both
 are the kanji stage's own values carried over unchanged: the arrows at **40** and the
 Grade button at **40**. **Raising those two in both stages is the obvious next
-polish**, and doing it in one stage only would be worse than leaving it.
+polish**, and doing it in one stage only would be worse than leaving it. *(N15 did
+exactly that, in both stages — see that milestone.)*
 
 **And the course screen was seen on the phone.** The build was installed on HHIP1
 (iPhone 13 Pro Max) and launched: the script toggle, and the lesson cards two to a
@@ -1684,6 +1686,9 @@ over the probe, which is the same thing minus the eye.
 still draw one column each, and **Review** keeps its older look — the complaint
 applies to all four, and none of them is the board. The stage offers no strip of the
 lesson's kana, by the decision above. And the tool row's two touch targets, above.
+*(N15 is where the first, third and fourth of those were done and the measurement it
+took found the app's own tab row overflowing; Review is still as this paragraph left
+it.)*
 
 ---
 
@@ -1735,6 +1740,112 @@ the iOS set come from the same command, and only one of them is named in the con
 no Japanese screenshot set. The desktop bundle was not rebuilt this session — the new
 artwork is in `src-tauri/icons/` for the next `pnpm run build` to pick up (and its
 `.dmg` half is trap 21's any day).
+
+---
+
+## N15 — The last three screens, and a thumb's width
+
+**N13 named this work and left it.** Its "What is deliberately not done" said the
+Radicals, Words and Read screens each draw one column and that the complaint applies to
+all of them, and that the tool row's two touch targets — the arrows and the Grade
+button, both 40px — were "the obvious next polish", worth doing in both stages at once
+or not at all. This is both halves of that paragraph.
+
+**Three panels became six screens.** The shape is N12's and N13's, applied to the
+screens that are not boards: the panel is **the course** and the stage is **the thing one
+of its cards opens**.
+
+* **Radicals** — `RadicalsPanel` is the search box, the two orders and the 214 rows;
+  `RadicalStage` is one head form: its number, its stroke count, how much it unlocks, the
+  characters classified under it, and the one button that writes it. The stage draws **no
+  board**, because the head form and every family member go to the *kanji* screen's
+  board — one grading path for three kinds of thing, invariant 13 — so this is the one
+  stage that hands the writing next door rather than doing it.
+* **Words** — `VocabularyPanel` is the ladder and a page of the band; `WordStage` is one
+  word's own card, furigana, reading, band and typing box, unchanged. The card is not
+  redrawn: `WordCard` is the same component `Read` and the kanji stage use, so the reading
+  a learner types is still checked against the dictionary's own.
+* **Read** — `PassagePanel` is the passage cards; `PassageStage` is one passage with a
+  reading over every kanji, a tappable token wherever the pipeline linked a word, the
+  gloss under it, and the tapped word's card below.
+
+**Four decisions inside that shape.**
+
+* **No arrows on any of the three.** The kanji and kana stages step through a *lesson* —
+  ten characters, five kana, in the order the course teaches them — and that is what the
+  arrows either side of the board are. A radical is found by number, by head form or by a
+  character that uses it; a word is one of a page of twenty-four; a passage is read whole.
+  An arrow for "the next one in whatever list the learner last built" would be a second,
+  invisible ordering rule, and the rule the kana chart is held to applies unchanged:
+  **a chart is looked *up*** (trap 23), not worked through.
+* **`bind:practice` became `bind:stage`.** The prop said "a practice stage is up", which
+  was true while the two screens that had one were the two practice screens. Five panels
+  now report one and three of them are not practice at all, so the prop is named for the
+  thing it means. `nav.ts` carries the list — `STAGE_VIEWS`, five screens — and
+  `App.svelte`'s lookup **throws** for a sixth, so a screen that keeps a stage flag and is
+  not in the list is a programming error rather than a course screen that quietly keeps
+  its chrome. A flag per panel rather than one shared one, because the screens hand each
+  other the learner: "See the family" moves from the kanji stage to the radicals panel
+  while the kanji panel's stage is still up.
+* **The gloss stays in the stage.** A passage's English translation on the card a learner
+  chooses from would answer the reading before it was attempted, which is the one thing a
+  reading exercise cannot afford.
+* **The tapped word's card is drawn under the passage rather than brought into view.**
+  That is a measurement and not a preference: the three shipped passages are **7 lines
+  between them**, so the card lands on the same phone screen as the text it came from —
+  measured at 390×844, the card's top edge at **y=459 of 812**. A passage long enough to
+  push it below the fold would have to take that decision again.
+
+**Measured, because the phone is the width it was rebuilt for**, in the app's own webview
+at **390×844** (headless Chrome is unavailable under this harness — trap 23) and again at
+the app's own 980×760, driven over §5's DOM probe:
+
+* **Radicals**: 214 rows, the first `水 radical 85 118 characters` in the size order; the
+  stage opening `人`, `Radical 9 of 214`, `2 strokes · 102 characters`, 102 member
+  buttons and `Write 人 on the board` at **179×44**; that button landing on the kanji
+  board's stage with `人` on it and no chrome.
+* **Words**: 7 bands, 24 rows, `一つ ひとつ one` first and the pager reading `page 1 of
+  25`; the stage opening 一つ under `kyōiku 1`, and typing its own reading answering
+  **`Correct — 一つ is ひとつ.`**
+* **Read**: 3 cards, the first `あさ 3 lines · 13 words`; the stage drawing 3 lines, 5
+  tappable tokens and the gloss, and a tap on 私 opening its card at y=459.
+* **The chrome is absent in all six stages of the run and back after all six ways out** —
+  12 measurements per run, at both widths, plus the cross-screen pair below.
+* **The screens still hand each other the learner.** The kanji stage's `More` fold was
+  opened on 日, its `See the family` link followed, and it landed on the **radicals
+  stage**: `Radical 72 of 214` with 38 member buttons and no chrome, and `Radicals`
+  returned to the 214-row list with the chrome back. That path used to open a second
+  column in the panel and now has to open the stage, which is the one piece of N15's
+  wiring the six phases above did not touch.
+* **The touch targets**: the arrows are **44×44** and Grade **104×44** on both stages at
+  both widths, from 40 before.
+* **The tools' block still sits on the phone's screen**: with the chrome stepped aside, its
+  bottom edge is at **y=743 of 812** on the kana stage and **778** on the kanji stage.
+  (N13 measured a different element of those stages, so the two sets are not comparable
+  and no comparison is claimed.)
+
+**What measuring it corrected, and it was not one of the new screens.** The app's own tab
+row, `.views`, was a single-line flex row, and the kanji course's five tabs are **374px of
+button** together. At 390×844 the desktop webview's space-taking scrollbar leaves 373px of
+client width, so the row ran **13px past the page** and gave the whole app a horizontal
+scroll — on the *course* screens of the radicals, words and read panels, and on the kanji
+course screen it did the same before this milestone existed. `app.css` wraps the row now
+(`flex-wrap: wrap`), every screen measures **0** overflow, and the fix is in the shared
+stylesheet rather than in any of the three screens, because the row is the chrome's.
+A probe that only read `innerText` would have found none of this — `overflow=0` is a
+number you have to ask for, and `getBoundingClientRect()` is what names the element.
+
+**Frontend tests 101 → 105 of 170 → 174**, all of them this milestone's: the four in
+`nav.test.ts` that pin `STAGE_VIEWS` — the five, that every other screen has no stage,
+that each belongs to exactly one course, and that the chart, the drill and the review
+queue are left alone. There is nothing else arithmetic to pin: the three stages are
+rendering, and what holds them is the probe above and the invariants.
+
+**What is deliberately not done.** **Review still keeps its older look**, as N13 left it:
+its queue is above its board, so the same complaint is true of it and it is the next piece
+of this work rather than a thing this milestone did in passing. The three stages draw no
+board, by the decision above. And nothing about the schedule, the learner's three files,
+the readings or the voice changed: this milestone is screens.
 
 ---
 

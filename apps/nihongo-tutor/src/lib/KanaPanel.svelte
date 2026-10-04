@@ -45,13 +45,13 @@
     /** What the `voice` command answered, asked once by `App.svelte`. */
     voice?: VoiceStatus;
     /**
-     * Whether a practice stage is up, told to `App.svelte` so it can take the
-     * course switch and the tab row out of the way while one is.
+     * Whether a stage is up, told to `App.svelte` so it can take the course switch
+     * and the tab row out of the way while one is.
      */
-    practice?: boolean;
+    stage?: boolean;
   }
 
-  let { pick = $bindable(null), voice, practice = $bindable(false) }: Props = $props();
+  let { pick = $bindable(null), voice, stage = $bindable(false) }: Props = $props();
 
   const SCRIPTS: readonly ScriptName[] = ["hiragana", "katakana"];
 
@@ -90,7 +90,7 @@
    * loop.
    */
   $effect(() => {
-    practice = practising !== null;
+    stage = practising !== null;
   });
 
   $effect(() => {
