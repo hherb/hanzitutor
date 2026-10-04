@@ -1846,6 +1846,22 @@ tapping `ひと.つ` must log `speak "ひとつ"`, `ひと-` must log `speak "�
 check — it names the spoken form, so the DOM says what will be heard without
 pressing anything.
 
+**And on the iPhone the Ring/Silent switch is the first thing to check.** The first
+on-device report of the N12 stage was "tapping a reading should speak"; the feature
+had shipped at N1, and the phone was simply on silent — from the stage, tapping a
+reading does speak. `engage_session` sets `AVAudioSessionCategoryPlayback` precisely
+so that an explicit tap is heard through the switch, and its comment says so, but
+**activation is asynchronous and nothing waits for it**, which that same comment
+records as a deliberate trade: the main-thread hang risk against a session that
+"costs volume, not words". So a tap made while the session is still activating can
+be silent with the switch on, which is what the maintainer met. **Ask about the
+switch before instrumenting anything** — and if a build really is silent, the probe
+is a temporary `eprintln!` in the app's `speak` command plus
+`xcrun devicectl device process launch --console`, which streams a bundled app's own
+stderr and is the only place a phone build can say what it did. (The build with that
+probe in it was never installed, and was deleted rather than left to be handed to
+someone.)
+
 **A due item on demand.** Anything that offers a control only for one kind of
 scheduled character needs two cards due at once, and grading cannot produce that —
 a failed attempt comes back in a minute and a good one tomorrow. Run the app with
