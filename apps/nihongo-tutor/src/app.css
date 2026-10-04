@@ -81,6 +81,17 @@ main {
   border: 0;
 }
 
+/* On a phone the 2.25rem above is the *desktop's* title-bar allowance and buys
+   nothing: the inset the notch needs arrives through `--safe-top` from the mobile
+   shell. Hanzi Tutor's phone layout adds 8px on top of the safe area, and this is
+   the same number — measured at 390px, the whole stage is 690px tall, and 28px of
+   a phone's screen is a real share of it. */
+@media (max-width: 760px) {
+  main {
+    padding-top: calc(var(--safe-top, 0px) + 8px);
+  }
+}
+
 .error {
   background: color-mix(in srgb, var(--bad) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);

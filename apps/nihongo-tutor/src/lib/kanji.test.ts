@@ -15,6 +15,8 @@ import {
   gradeTabs,
   lessonHolding,
   lessonsIn,
+  neighbour,
+  positionIn,
   sortFamilies,
   spokenReading,
 } from "./kanji";
@@ -81,6 +83,37 @@ describe("finding a lesson", () => {
   it("returns null for a character the course does not teach", () => {
     // 鳩 is jinmeiyō: a component can name it, and there is no lesson for it.
     expect(lessonHolding(course, "鳩")).toBeNull();
+  });
+});
+
+describe("stepping through a lesson", () => {
+  const ten = lesson("g1-1", 1, "日月火水木金土山川田");
+
+  it("steps one character either way", () => {
+    expect(neighbour(ten, "日", 1)).toBe("月");
+    expect(neighbour(ten, "月", -1)).toBe("日");
+    expect(neighbour(ten, "田", -1)).toBe("川");
+  });
+
+  it("stops at both ends rather than wrapping", () => {
+    // A lesson is a sequence a learner works through; an arrow that jumped from
+    // the tenth back to the first would hide that the lesson is finished.
+    expect(neighbour(ten, "日", -1)).toBeNull();
+    expect(neighbour(ten, "田", 1)).toBeNull();
+    expect(positionIn(ten, "日")).toBe(1);
+    expect(positionIn(ten, "田")).toBe(10);
+  });
+
+  it("has nowhere to step for a radical, a stranger, or no move at all", () => {
+    // A radical head form belongs to no lesson of characters.
+    expect(neighbour(null, "水", 1)).toBeNull();
+    expect(neighbour(null, "水", -1)).toBeNull();
+    expect(positionIn(null, "水")).toBe(0);
+    // A character this lesson does not hold.
+    expect(neighbour(ten, "中", 1)).toBeNull();
+    expect(positionIn(ten, "中")).toBe(0);
+    // And a caller that asks for no movement gets none.
+    expect(neighbour(ten, "月", 0)).toBeNull();
   });
 });
 

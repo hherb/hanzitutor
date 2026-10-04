@@ -63,6 +63,34 @@ export function lessonHolding(lessons: KanjiLessonView[], ch: string): KanjiLess
   return lessons.find((lesson) => lesson.kanji.includes(ch)) ?? null;
 }
 
+/**
+ * The character `delta` places from `ch` inside a lesson — the arrow either side
+ * of the board.
+ *
+ * `null` at either end rather than wrapping: the ten characters of a lesson are a
+ * sequence a learner works through, and an arrow that jumped from the tenth back
+ * to the first would hide the fact that the lesson is finished. A character the
+ * lesson does not hold, and a lesson of one, both answer `null` — there is
+ * nowhere to step to.
+ */
+export function neighbour(
+  lesson: KanjiLessonView | null,
+  ch: string,
+  delta: number,
+): string | null {
+  if (!lesson || delta === 0) return null;
+  const at = lesson.kanji.indexOf(ch);
+  if (at < 0) return null;
+  return lesson.kanji[at + delta] ?? null;
+}
+
+/** Where `ch` sits in its lesson, 1-based, for a screen that says so. */
+export function positionIn(lesson: KanjiLessonView | null, ch: string): number {
+  if (!lesson) return 0;
+  const at = lesson.kanji.indexOf(ch);
+  return at < 0 ? 0 : at + 1;
+}
+
 /** How the radicals panel orders the 214. */
 export type RadicalOrder = "number" | "size";
 

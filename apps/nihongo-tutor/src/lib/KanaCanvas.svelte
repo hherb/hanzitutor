@@ -23,13 +23,30 @@
     report: GradeReport | null;
     /** How long the whole stroke-order animation should take, in ms. */
     sweepMs?: number;
+    /**
+     * Whether the faint reference copy is on the board while the learner draws.
+     *
+     * `true` is tracing and `false` is recall, which is Hanzi Tutor's Hint
+     * toggle: with the guide off, the character is on the board only in the
+     * learner's memory until the animation is asked for. **Changing it clears the
+     * attempt**, which is deliberate and is what Hanzi Tutor does — half an
+     * attempt traced and half remembered is not an answer to either question.
+     */
+    guide?: boolean;
     /** Called with the finished attempt when the learner asks for a grade. */
     onchange?: (strokes: Point[][]) => void;
     /** Called when the learner asks for the guide animation. */
     onanimate?: () => void;
   }
 
-  let { character, report, sweepMs = 1400, onchange, onanimate }: Props = $props();
+  let {
+    character,
+    report,
+    sweepMs = 1400,
+    guide = true,
+    onchange,
+    onanimate,
+  }: Props = $props();
 
   let canvas = $state<HTMLCanvasElement | null>(null);
 
@@ -47,12 +64,15 @@
 
   /** When the learner starts fresh on a new character, so does the board. */
   $effect(() => {
-    // Reading this is what makes the effect re-run on a change.
+    // Reading these is what makes the effect re-run on a change. `guide` is one
+    // of them: toggling the hint is switching between tracing and recall, and the
+    // attempt belongs to whichever of the two it was drawn under.
     void character?.ch;
+    void guide;
     strokes = [];
     current = null;
     drawing = false;
-    ghostCount = character ? character.strokeCount : 0;
+    ghostCount = character && guide ? character.strokeCount : 0;
     sweep = null;
     cancelAnimationFrame(raf);
     // Deliberately no `paint()` here. `paint` reads every one of those pieces of

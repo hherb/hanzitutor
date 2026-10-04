@@ -45,6 +45,7 @@ references for no gain.
 | **N9** | Distribution | **Shipped.** The notices that were missing now ship, and a signed `.app` bundles — which it could not before, because the app's own lockfile pinned Tauri's JS at 2.11 against the workspace's 2.12. See the milestone for the three licence obligations that had been unmet since N6 and N7. |
 | **N10** | **Two courses, and the name to match** | **Shipped.** The app is now a kana course and a kanji course rather than nine flat tabs, Review is asked for one course at a time, the course last open is remembered, and the product is called *Nihongo Tutor*. Not a feature so much as the interface finally agreeing with the sentence at the top of this file. See the milestone for what is pinned by tests and what was deliberately left unbuilt. |
 | **N11** | **Start here: what the writing system is for** | **Shipped.** The one screen a learner should meet before choosing a course: the characters came from China and carry meaning, the kana carry the grammar, and romanisation therefore discards both — demonstrated with the app's own vocabulary, where はし is 橋, 端 and 箸. In neither course, hanging off the footer beside Licences. See the milestone for why the argument is data rather than prose. |
+| **N12** | **The kanji course in two screens** | **Shipped.** The course was one page and the board sat at the bottom of it: on a phone a learner scrolled past the lesson list and the character grid to write one character, and back to choose the next. The course is now the grade chips and one card per lesson of ten (each card showing its ten characters), and tapping a card opens a stage — readings above the board, the board, the tools below it, and everything else about the character behind one `More` fold. See the milestone for the measurement that made the fold universal. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -1396,13 +1397,28 @@ cheap to demonstrate:
 * the characters **came from China** and were kept for their *meaning* — 山 is
   "mountain" whichever way it is read — so the shape carries the meaning and the
   sound comes from the word it stands in;
-* the **kana carry the grammar**: Japanese inflects every verb and adjective and
-  marks the role of every part of a sentence with a particle, where Chinese needs
-  no such machinery to the same degree. Writing those endings is what the two
-  syllabaries were derived to do;
+* the **kana carry the sound and the grammar**: one character is one mora, so a
+  reading is written in kana; and Japanese inflects every verb and adjective and
+  marks the role of every part of a sentence with a particle — all of it kana —
+  where Chinese needs no such machinery to the same degree. Writing those endings
+  is what the two syllabaries were derived to do;
 * Japanese has **few distinct sounds and no tones**, so one reading names many
-  words, the context does the disambiguating in speech, and **romanisation throws
-  away both the meaning and the syntax**.
+  words and it is the character that tells them apart on the page, context doing
+  that work in speech;
+* and therefore **romanisation answers neither question**: it leaves out *which*
+  word the kanji meant, and it is read with the reader's own sound system —
+  English *hashi* is an English word, with an English *h*, a vowel Japanese does
+  not have and no pitch, and ら becomes an English *r* rather than the Japanese
+  flap.
+
+**A correction the paragraph above carries, because the first wording was wrong.**
+The screen shipped saying that romanisation "throws away the grammar, which lives
+in the endings" — the maintainer caught it, and it is false: *taberu* romanises
+食べる's ending perfectly well, and so does every particle. What romanisation
+cannot do is recover the **meaning** the characters carry or the **sound** the kana
+fix, and those two are what the screen now says. The claim was wrong in the same
+direction as the belief the screen exists to correct, which is why it is recorded
+here rather than quietly edited.
 
 **And the demonstration is the app's own vocabulary, not an example typed into the
 screen.** The panel asks the new `words_of_reading` command for two readings and
@@ -1443,6 +1459,99 @@ tall. A read-once screen, so its length is not the thing to optimise.
 on **Kana**, which N10 pinned, and the introduction is a link rather than a gate. It
 is also not a tutorial with progress or a second copy of the course's content — it
 states why the writing is the way it is and hands the learner to a course.
+
+---
+
+## N12 — The kanji course in two screens
+
+**The complaint was scrolling, and it was right.** The kanji course was a single
+page: the grade tabs, a column of lesson cards, the ten characters of the chosen
+lesson, and then the board with the character's whole card under it. On a window
+that is a lot of scrolling; on a phone it is unusable, because the board sits below
+the lesson list and the character grid — a learner scrolls *past the course* to
+write one character, then scrolls back to choose the next. The maintainer's own
+proposal is the shape that shipped.
+
+**The course is the first screen.** `KanjiPanel` is now the grade chips and **one
+card per lesson of ten**, and each card carries its ten characters: "1–10" names a
+range and tells a learner nothing about whether 日 is in it, so the cluster is on
+the card. Tapping a card opens the board on that lesson's first character.
+
+**The stage is the second screen, and it is the whole screen.** `KanjiPractice`
+holds one character, and the order on it is the maintainer's:
+
+* **the app's chrome steps aside while a stage is up.** The course switch and the
+  tab row are the *course's*, and they cost the board about 150px of a phone's
+  height; the stage reports that it is up (`bind:practice`), `App.svelte` draws
+  neither row, and **`Lessons` — the first thing on the stage — is the way back**.
+  The footer stays, because Licences and Start here are not the course's either;
+* the **readings above the board** — on, then kun, each its own control that speaks
+  the *reading* rather than the character (invariant 27). A radical shows its number
+  and how much it unlocks in the same place, which is the same kind of fact;
+* the **board**, with nothing beside it;
+* the **tools below the board** and nothing else: Hint, Strokes, Undo, Clear and
+  Grade, as Hanzi Tutor's icon row draws them — a glyph on a tinted disc with its
+  short name under it, two or three tools to a card;
+* **everything else about the character behind one `More` fold**: the meaning, the
+  nanori, the stroke count, the grade, the frequency, the radical, the IDS
+  components, and the words the character is written in. The **meaning is folded in
+  with the rest** on the maintainer's instruction rather than kept above the board —
+  it is prose about the character, and what the board needs above it is the sound.
+  It is Hanzi Tutor's fold, and Hanzi Tutor's reasoning for having one at all.
+
+**Three decisions inside that shape.**
+
+* **Inside a lesson, the arrows either side of the character are the only way on.**
+  There is deliberately no strip of ten characters: it would be a second grid above
+  a board that already has the ten one arrow away. The maintainer chose arrows
+  only.
+* **The fold is at every width, unlike Hanzi Tutor's, which is phone-only** —
+  because that app's stage has a sidebar to hold the facts and this one is a single
+  column. The measurement is the reason rather than a preference: with the fold
+  open at the app's own 980×728 the card pushed the board to **y=1160**, which is
+  the scrolling this milestone exists to remove. Folded, the board follows the
+  readings at **y=333**.
+* **The board's faint guide became a control.** `KanaCanvas` gained `guide`, and
+  the stage's Hint button is Hanzi Tutor's trace/recall toggle: a faint copy on the
+  board, or the character hidden while the learner writes it from memory. Changing
+  it **clears the attempt**, which is Hanzi Tutor's own behaviour and is deliberate
+  — half an attempt traced and half remembered answers neither question. It
+  defaults to on, which is what every other caller of the board already had, so the
+  kana screens, Review and the radicals panel are unchanged.
+
+**And the icons are lifted, not invented.** `Icon.svelte` is copied
+**byte-identically** from `src/lib/Icon.svelte` of the Chinese app in this same
+repository — the arrangement invariant 6 already records for `render.ts`, and the
+same rule applies: if one copy changes, both change, or the divergence is written
+down. The glyphs are drawn rather than taken from an icon set for that app's own
+reason, which has not stopped being true here: a kit would be a licence to notice
+for shapes this simple, and this app's notice list is pinned by a test.
+
+**Measured, because the phone is the width it was rebuilt for.** This session had
+no active display, so the flow was driven over §5's DOM probe first: the course
+renders seven grade chips and eight grade-1 lesson cards with their clusters; the
+switch and the tab row are **gone from the DOM** while a stage is up and are back
+when Lessons is pressed; a card opens the stage on 日 with `1 / 10` and the first
+arrow disabled; the board follows the readings (`meta` y=136, board y=254, controls
+y=585 at 980×728, with the warning banner the sandbox's refused preference write
+puts at the top of the page); the arrow steps 日 → 一 to `2 / 10`; Grade is disabled
+with an empty board; tapping a component inside the fold opens that component at
+`2 / 10`; and a radical head form opens with **no arrows at all**, because it belongs
+to no lesson. Then the stage was measured with the headless-Chrome harness in the
+app's real stylesheet at a phone viewport: no horizontal overflow, all five tools on
+**one row**, `main`'s top padding **8px** rather than the desktop's 36, and the whole
+thing — readings, board, tools and the Grade button — **598px**, in a 789px viewport.
+The stage was 690px before the meaning was folded in and the chrome stepped aside,
+which is 92px of a phone's screen returned to the board. Two touch targets were under
+the 44px a finger needs, the back button at 25px and the fold at 40, and both were
+fixed because of that measurement rather than in spite of it.
+
+**What is deliberately not done.** The **kana** practice screen keeps its stacked
+three-column layout: the same complaint applies to it on a phone, and treating it
+the same way is the next piece of this work rather than something this milestone
+silently changed. The radicals, Words and Read screens are untouched, and the kanji
+course has no character grid as such any more — the cluster is on the card and the
+characters are one arrow apart.
 
 ---
 

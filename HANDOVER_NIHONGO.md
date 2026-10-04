@@ -100,7 +100,7 @@ Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **331
 tests** — every `#[test]` in the two suites (206 in `nihongo-core`, 125 in
 `nihongo-tutor`), plus two doc-tests (`lib.rs`'s and `variants.rs`'s);
 the frontend's are counted separately below.
-`pnpm run test:web` runs 162, of which **93** are this app's.
+`pnpm run test:web` runs 165, of which **96** are this app's.
 `cargo test -p hanzi-voice`, the shared crate the audio half lives in, is 29.
 
 | | |
@@ -131,8 +131,8 @@ the frontend's are counted separately below.
 | Notices | 10 — five of them added at N9, when the EDRDG, JmdictFurigana and UniDic obligations that had been recorded in `LICENSES.md` since N6 and N7 were found to satisfy nothing in the bundle (§8) |
 | Bundle | built at N9 as `Kana Tutor.app`, 15.25 MiB, and **rebuilt after the N10 rename as `Nihongo Tutor.app`** — 15 MiB, `codesign --verify --deep --strict` clean, `Identifier=com.hanzitutor.kana`, Team `X5DWXB4283`, and all ten notices world-readable. The `.dmg` needs Tauri's own `bundle_dmg.sh` run outside the sandbox (trap 21); the N10 one is **7,957,111 bytes**, `hdiutil verify` checksum VALID, signed `Identifier=Nihongo Tutor_0.1.0_aarch64`, and mounting it shows `Nihongo Tutor.app` plus the `Applications` link with the inner app still passing `--deep --strict`. The N9 figures were 15.25 MiB and an 8,186,456-byte image; the icon work that milestone records is unchanged, and `/Applications/Kana Tutor.app` is still the N9 install — the N10 build has not been installed there |
 | Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review". See §5, "Building for iOS", for the two things `tauri ios init` does not provide |
-| Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Read, Review. **Start here** and Licences hang off the footer, in neither course (invariant 31) |
-| Tests | nihongo-core 206, nihongo-tutor 125, hanzi-voice 29, frontend 93 of the 162 |
+| Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Read, Review, where **Kanji is itself two screens**: the course (grades, a card per lesson of ten) and the board it opens (invariant 33). **Start here** and Licences hang off the footer, in neither course (invariant 31) |
+| Tests | nihongo-core 206, nihongo-tutor 125, hanzi-voice 29, frontend 96 of the 165 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | three files, `confusions.json`, `review.json` and `prefs.json`, in the app's own data directory |
@@ -168,14 +168,30 @@ synthesiser accepted the utterance, not that anything came out of a speaker.
 **Everything the app embeds is on screen now.** **Words** browses the ladder band
 by band with furigana over every word and grades a typed reading; **Read** draws a
 passage with a reading over each kanji and opens a word card when one is tapped;
-**Kanji** is the character course — grades, lessons of ten, a grid, the board, and
-a card carrying the readings, the glosses, the radical in both of its shapes, the
-IDS components **and the words the character is written in**, each opening its own
-word card; and **Radicals** shows all 214 head forms, each with the jōyō
+**Kanji** is the character course — and since N12 it is **two screens**: the course
+itself (the grade chips and one card per lesson of ten, each card showing its ten
+characters) and the board a card opens, where the readings sit above the board, the
+tools below it, and the radical in both of its shapes, the IDS components **and the
+words the character is written in** wait behind one `More` fold, each word opening
+its own card; and **Radicals** shows all 214 head forms, each with the jōyō
 characters classified under it, searchable and ordered by what a radical unlocks.
 The kanji artifact was embedded and read by nothing for a whole milestone; N8 is
 what read it, and the radical table it now carries is what makes the second screen
 possible. Each milestone's own record says what its measurement corrected.
+
+**And the board no longer sits at the bottom of the kanji course.** N12 split that
+screen in two, because on a phone the board was *below* the lesson list and the
+character grid: a learner scrolled past the course to write one character and back
+to choose the next. The course is now the grades and **one card per lesson of ten**,
+each card showing its ten characters — which is what the choice is between — and
+tapping a card opens the stage: **the readings above the board, the board, and the
+tools below it**, with everything else about the character behind one `More` fold.
+Inside a lesson the arrows either side of the character are the only way on, the
+board's faint guide became a **Hint** toggle (tracing or recall, Hanzi Tutor's), and
+the tool row is Hanzi Tutor's icon row — `Icon.svelte` having been lifted
+byte-identically from the Chinese app, as `render.ts` was before it. Invariant 33 is
+the rule; the measurements, including the one that made the fold universal rather
+than phone-only, are in `ROADMAP_NIHONGO.md` N12.
 
 **And the last of it is the vocabulary on the character's card**, which §9 below had
 called the obvious next thing after N8 — the thing `words::of_kanji` had been
@@ -217,11 +233,15 @@ of its forms (*て is the plain kana; で is the same kana with the dakuten ゛*
 **And a learner can now be told why the characters are worth learning before the
 first lesson.** **Start here** — in neither course, hanging off the footer beside
 Licences — says what the writing is for: the characters came from China and were
-kept for their meaning, the kana exist to write the grammar those characters cannot
-carry, and Japanese's few distinct sounds and absent tones mean a reading alone
-names several words. That last claim is shown rather than asserted, from the app's
-own vocabulary: **はし is 橋, 端 and 箸, and かみ is five words**. Invariant 32 is the
-rule; the measurements are in `ROADMAP_NIHONGO.md` N11.
+kept for their meaning, the kana fix the sound (**one character, one mora**) as well
+as carrying the grammar, and Japanese's few distinct sounds and absent tones mean a
+reading alone names several words. So romanisation answers neither question: it
+loses which word was meant, and it is read with the reader's own sounds, which is
+how an English speaker comes to say *hashi* as an English word. The word half is
+shown rather than asserted, from the app's own vocabulary: **はし is 橋, 端 and 箸,
+and かみ is five words**. Invariant 32 is the rule; the measurements are in
+`ROADMAP_NIHONGO.md` N11, which also records the wording the screen first shipped
+with and why it was wrong.
 
 **Two parts of the app learn about their learner now.** The drill is **N3**'s: it
 used to draw a kana from a pool and throw the answer away, and it now draws a
@@ -423,9 +443,10 @@ apps/nihongo-tutor/               the app
                                   size, and the one sentence that states a count —
                                   invariant 32
   src/lib/start.test.ts   (58)    run by the ROOT project's vitest
-  src/lib/KanaCanvas.svelte(248)  pointer capture and the animation frame. Draws
+  src/lib/KanaCanvas.svelte(268)  pointer capture and the animation frame. Draws
                                   any `Drawable`, so a kana, a kanji and a radical
-                                  all come through it
+                                  all come through it; `guide` is the faint copy,
+                                  and turning it off clears the attempt — N12
   src/lib/ConfusionDrill.svelte(392)  the drill: five exercises, one question, one
                                   answer, remembered — N3, N4
   src/lib/KanaChart.svelte(253)   the gojūon grid with its holes, and the characters
@@ -435,9 +456,16 @@ apps/nihongo-tutor/               the app
                                   write it on — N2, N10 — with the joined-stroke
                                   line its verdict owes a hand that joined —
                                   invariant 30
-  src/lib/KanjiPanel.svelte(869)  the kanji course, the board and the card — N8,
-                                  whose readings are each a control — N1, and which
-                                  lists the words the character is written in — 28
+  src/lib/KanjiPanel.svelte(287)  **the kanji course**: the grade chips and one card
+                                  per lesson of ten, each card carrying its ten
+                                  characters — N8, and the first of N12's two screens
+  src/lib/KanjiPractice.svelte(1231)  **the stage**: one character, its readings above
+                                  the board, the board, the tool row below it, and
+                                  everything else behind the `More` fold — N12,
+                                  invariant 33
+  src/lib/Icon.svelte    (144)    LIFTED FROM THE CHINESE APP, BYTE-IDENTICAL — the
+                                  board's tool glyphs, drawn rather than taken from
+                                  an icon set — N12, invariant 33
   src/lib/RadicalsPanel.svelte(501)   the 214 head forms and their families — N8
   src/lib/VocabularyPanel.svelte(309) the ladder, a band's words, the card — N7
   src/lib/PassagePanel.svelte(265)  a passage with furigana and a tap on any word — N7
@@ -445,9 +473,10 @@ apps/nihongo-tutor/               the app
   src/lib/SpeakButton.svelte(168)   the one "Hear it" control: a button for the
                                   three standalone callers, and a link for a
                                   reading on the kanji card — N1
-  src/lib/kanji.ts       (138)    the course's and the radicals' arithmetic, and
-                                  `spokenReading`, as pure functions — N8, N1
-  src/lib/kanji.test.ts  (170)    run by the ROOT project's vitest
+  src/lib/kanji.ts       (166)    the course's and the radicals' arithmetic,
+                                  `spokenReading`, and `neighbour`/`positionIn` —
+                                  the arrows either side of the board — N8, N1, N12
+  src/lib/kanji.test.ts  (203)    run by the ROOT project's vitest
   src/lib/kana.ts         (86)    which lesson a kana belongs to, which kana a
                                   loaded course should open on, how wide the chart's
                                   grid is, whether a drill answer is one kana — N4 —
@@ -479,9 +508,11 @@ crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
                                   is a default feature this app turns off
 ```
 
-The line counts are the current tree's for the rows N11 touched — `words.rs`, the
-two artifacts' tests, the app's `lib.rs` and `ipc_contract.rs`, `App.svelte`,
-`nav.ts`, `nav.test.ts`, `types.ts`, `api.ts` and the three new `start*` files —
+The line counts are the current tree's for the rows N11 and N12 touched —
+`words.rs`, the two artifacts' tests, the app's `lib.rs` and `ipc_contract.rs`,
+`App.svelte`, `nav.ts`, `nav.test.ts`, `types.ts`, `api.ts`, the three `start*`
+files, and the six kanji files (`KanjiPanel`, `KanjiPractice`, `Icon`,
+`KanaCanvas`, `kanji.ts`, `kanji.test.ts`) —
 and were last checked while writing invariants 26 and 27 for the rest; a few of the
 earlier numbers were stale even then, which is worth knowing before treating one as
 a measurement.
@@ -611,6 +642,14 @@ byte-identical. If `render.ts` is ever changed here, change it in the Chinese ap
 too — or record why they diverge. This follows the pattern the repository already
 uses between its apps: Tone Trainer lifted `ToneChart.svelte` and `transcript.ts`
 the same way.
+
+**And N12 lifted a second file the same way**: `apps/nihongo-tutor/src/lib/Icon.svelte`
+is byte-identical to `src/lib/Icon.svelte`, because the kanji stage's tool row is
+that app's tool row — a glyph on a tinted disc with its short name under it. It uses
+only the names this app draws (`back`, `next`, `play`, `eye`, `eye-off`, `undo`,
+`trash`, `tick`); the rest ship with it so that the two copies stay one file, and the
+same rule applies. A third lift is a pattern rather than a coincidence, and the file
+to check first when the two apps' interfaces are compared.
 
 `KanaCanvas.svelte` and `board.ts` are new, not lifted: Hanzi Tutor's
 `PracticeCanvas` carries tone-panel and verdict-display concerns this app does
@@ -1424,6 +1463,81 @@ prose is about the writing system and the evidence is drawn, so a hand-written
 sentence about 山 or 食べる is the only kind of claim in this app that no test
 pins — which is why the wording is short, and why the numbers in it (three words,
 five words) are the artifact's.
+
+**And that untested prose got a claim wrong on its first outing**, which is the
+evidence for the paragraph above. The screen shipped saying romanisation "throws
+away the grammar, which lives in the endings"; the maintainer caught it and it is
+false — *taberu* romanises 食べる's ending perfectly well. What romanisation cannot
+recover is the **meaning** the characters carry and the **sound** the kana fix.
+N11 carries the correction; the lesson is that prose about a language is the one
+thing here no test reads, so it needs a reader.
+
+---
+
+### 33. **The kanji course is two screens, and the board is the second one.**
+
+The course was one page — grades, lesson cards, the ten characters of a lesson, the
+board and the character's whole card, stacked in three columns. On a window that is
+a lot of scrolling; **on a phone it is unusable**, because the board sits below the
+lesson list and the character grid: a learner scrolls *past the course* to write one
+character and back to choose the next. N12 splits it, and the maintainer's own
+proposal is the shape that shipped.
+
+* **`KanjiPanel` is the course**: the grade chips and one card per lesson of ten,
+  each card carrying its ten characters. The title "1–10" names a range and says
+  nothing about whether 日 is in it, so the cluster is on the card — and tapping a
+  card is what opens the board.
+* **`KanjiPractice` is the stage, and while it is up it is the whole screen.**
+  The course switch and the tab row are the *course's*, so the panel tells
+  `App.svelte` that a stage is up (`bind:practice`) and neither row is drawn: on a
+  phone they cost the board about 150px, and `Lessons` — the stage's first control —
+  is the way back. The footer stays; Licences and Start here are not the course's
+  either.
+* **The order on the stage is fixed: readings above the board, the board, then the
+  tools below it.** Above the board is the *sound* — on, then kun, each its own
+  control (`invariant 27`), or a radical's number and family size, which is the same
+  kind of fact. Everything that is prose about the character — **including the
+  meaning** — is inside the fold, so the row under the board is only what a board
+  needs: Hint, Strokes, Undo, Clear, Grade. Folding the meaning in was the
+  maintainer's instruction and it is 92px of a phone's screen.
+* **Inside a lesson, the arrows either side of the character are the only way on.**
+  No strip of ten: it would be a second grid above a board whose ten characters are
+  one arrow away. That was the maintainer's explicit choice (arrows only), not an
+  oversight.
+* **Everything else about the character is behind one `More` fold** — nanori, the
+  radical, the IDS components, the words it is written in — which is Hanzi Tutor's
+  arrangement. **The fold is at every width here, unlike Hanzi Tutor's phone-only
+  one**, because that app's stage has a sidebar for the facts and this one is a
+  single column: measured at the app's own 980×728, an open fold pushed the board
+  to **y=1160**, which is the scrolling the milestone exists to remove. Folded, the
+  board follows the readings at y=333.
+* **The board's guide is a control now.** `KanaCanvas` gained `guide` — the faint
+  copy on the board, or off while the learner writes from memory — and changing it
+  **clears the attempt**, which is Hanzi Tutor's own trace/recall behaviour: half an
+  attempt traced and half remembered answers neither question. It defaults to `true`,
+  which is what the kana screens, Review and the radicals panel already had, so
+  none of them changed.
+* **`Icon.svelte` is lifted, byte-identically, from the Chinese app's** — the
+  arrangement invariant 6 records for `render.ts`, and the same rule: if one copy
+  changes, both change, or the divergence is written down. The glyphs are drawn
+  rather than taken from an icon set because a kit would be a licence to notice for
+  shapes this simple, and this app's notice list is pinned by a test.
+
+**Measured, because the phone is the width it was rebuilt for.** The flow was
+driven over §5's DOM probe with no display: seven grade chips, eight grade-1 lesson
+cards with their clusters, the switch and tab row **absent from the DOM** while a
+stage is up and back after Lessons, a card opening the stage on 日 at `1 / 10` with
+the first arrow disabled, the board following the readings (`meta` y=136, board
+y=254, controls y=585), the arrow stepping 日 → 一 to `2 / 10`, Grade disabled with an
+empty board, a component tapped inside the fold opening at `2 / 10`, a **radical**
+opening with no arrows at all (it belongs to no lesson), and Lessons returning to the
+eight cards. Then the headless-Chrome harness measured the stage in the app's real
+stylesheet at a phone viewport: no horizontal overflow, all five tools on one row,
+`main`'s top padding **8px** rather than the desktop's 36, and the whole action —
+readings, board, tools, Grade — **598px** tall in a 789px viewport, against 690px
+before the meaning was folded in and the chrome stepped aside. Two touch targets were
+under the 44px a finger needs (the back button at 25px, the fold at 40) and both were
+fixed because of that measurement.
 
 ## 5. The verification loop
 
@@ -2741,3 +2855,10 @@ assumed to be covered by the Chinese one.
   than reading. Out of scope for now, and the largest thing missing from the
   product. N11's Start screen says *why* the kana carry the grammar; it teaches
   none of it, which is the gap stated rather than closed.
+* **The kana course in the kanji course's new shape.** N12 split the kanji screen
+  in two because a phone made one page unusable, and the same complaint applies to
+  Practice: on a phone the lesson list and the kana grid come before the board, so
+  a learner scrolls to write. It was deliberately **not** changed with the kanji
+  work — the kana course is the on-ramp and its screens are shallow — so it is the
+  next screen to treat this way rather than something N12 did in passing. The same
+  goes for the Radicals, Words and Read screens, which still draw one column each.

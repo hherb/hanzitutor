@@ -54,7 +54,7 @@
     shape carries the meaning; the sound comes from the word.
   </p>
 
-  <h3>The kana carry the grammar</h3>
+  <h3>The kana carry the sound and the grammar</h3>
   <p>
     Japanese grammar lives in endings and particles, and those had to be written
     too. Chinese needs no such machinery to the same degree: its grammar is carried
@@ -62,18 +62,20 @@
     of the job on its own. Japanese inflects every verb and adjective — 食べる,
     食べた, 食べない, 食べれば — and marks the role of every part of the sentence with
     a particle, so the endings matter as much as the stems. Two syllabaries were
-    derived from simplified characters to write exactly that: hiragana and katakana.
-    <strong>The kanji carry the meaning; the kana carry the grammar.</strong>
+    derived from simplified characters to write exactly that: hiragana and katakana,
+    one character to one sound, so they are also where a reading is written down.
+    <strong>The kanji carry the meaning; the kana carry the sound and the
+    grammar.</strong>
   </p>
 
   <h3>Why romanisation is not a substitute</h3>
   <p>
-    Japanese has few distinct sounds, and no tones of the kind that keep Chinese
-    words apart. (It has a pitch accent, but it is not written and it separates far
-    fewer words.) What it has instead is a great many words that sound alike. In
-    speech, the sentence and the situation tell them apart; written in roman letters,
-    nothing is left to do it with, and the reading alone cannot say which word is
-    meant.
+    Roman letters can spell the sounds, and that is all they can do. They cannot say
+    <strong>which word</strong> is meant: Japanese has few distinct sounds and no tones
+    of the kind that keep Chinese words apart (it has a pitch accent, but it is not
+    written and it separates far fewer words), so a great many words sound alike — and
+    on the page it is the character that tells them apart. In speech the sentence and
+    the situation do that work; a spelling has nothing to do it with.
   </p>
 
   {#if error}
@@ -105,20 +107,32 @@
     </p>
   {/if}
 
+  <p>
+    And a romanised spelling does not say how the word sounds either, because it is
+    read with the reader's own sound system. <em>hashi</em> to an English reader is an
+    English word — an English <em>h</em>, a vowel Japanese does not have, no pitch —
+    and ら is an English <em>r</em>, not the Japanese flap. Three readers given the
+    same spelling produce three different pronunciations and none of them is Japanese.
+    Kana have no such latitude: one character is one mora, and the same sound every
+    time.
+  </p>
+
   <h3>What that means while you learn</h3>
   <p>
-    The kana course comes first, and it is a few days' work — the endings and the
-    particles are all kana, so it is the course that unlocks everything else. After
-    that the characters are not an arbitrary list: each one is a meaning with more
-    than one possible sound, which is why this course teaches them inside words
-    (大人 is おとな, 今日 is きょう) rather than with one reading per character. The
-    romanisation in the app is there to type with and to fall back on, not to write
-    Japanese in.
+    The two scripts do the two jobs. <strong>Kana are the sound</strong> — every
+    reading in this app is written in them, and so is the grammar, because every
+    ending and every particle is kana. That is why the kana course comes first, and
+    why it is only a few days' work. <strong>Kanji are the meaning</strong> — each one
+    is a word-part with more than one possible sound, which is why this course teaches
+    them inside words (大人 is おとな, 今日 is きょう) rather than with one reading per
+    character. The romanisation in the app is there to type with and to fall back on;
+    it is not how the language is written.
   </p>
   <p class="closing">
-    The commonest mistake a beginner makes is to assume that Japanese can be
-    understood from romanised writing alone. It cannot: the sounds collide, and the
-    grammar lives in the endings that romanisation throws away.
+    The commonest mistake a beginner makes is to treat a romanised spelling as if it
+    were Japanese. It is not: it leaves out which word was meant, and it invites the
+    reader to supply sounds the language does not have. Kana for the sound, kanji for
+    the meaning — that is the whole design.
   </p>
 
   <div class="go">

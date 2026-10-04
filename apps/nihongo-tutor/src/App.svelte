@@ -207,6 +207,21 @@
       : `${stats.kanji.toLocaleString()} kanji · ${stats.words.toLocaleString()} words`;
   }
 
+  /**
+   * Whether the kanji course has a practice stage up, which the panel tells us.
+   *
+   * A stage takes the whole screen: the course switch and the tab row are the
+   * *course's*, and while one character is being written they cost the board about
+   * 150px of the phone's height. `Lessons` on the stage is the way back, and it
+   * brings both rows with it (invariant 33).
+   */
+  let kanjiPractice = $state(false);
+  /**
+   * Whether the app's own chrome — the switch and the open course's tab row —
+   * should be drawn. Licences and Start here hang off the footer either way.
+   */
+  const chromeVisible = $derived(!(view === "kanji" && kanjiPractice));
+
   let typed = $state("");
   let check = $state<ReadingCheck | null>(null);
   /**
@@ -461,32 +476,35 @@
     The course switch, not a tab: each course is a thing to study rather than a
     screen. Two lines each and no more — the name, then what it is and how much of
     it there is, because 177 characters is a few days and 2,136 behind 16,073 words
-    is not.
+    is not. Both rows step aside while a kanji practice stage is up: the stage is
+    the screen then, and it carries its own way back.
   -->
-  <nav class="courses" aria-label="Courses">
-    {#each COURSES as course (course.id)}
-      <button
-        class="course"
-        class:active={section === course.id}
-        aria-pressed={section === course.id}
-        onclick={() => chooseSection(course.id)}
-      >
-        <span class="name">{course.label}</span>
-        <span class="info">{course.tagline} · {courseSize(course.id)}</span>
-      </button>
-    {/each}
-  </nav>
+  {#if chromeVisible}
+    <nav class="courses" aria-label="Courses">
+      {#each COURSES as course (course.id)}
+        <button
+          class="course"
+          class:active={section === course.id}
+          aria-pressed={section === course.id}
+          onclick={() => chooseSection(course.id)}
+        >
+          <span class="name">{course.label}</span>
+          <span class="info">{course.tagline} · {courseSize(course.id)}</span>
+        </button>
+      {/each}
+    </nav>
 
-  <div class="views" role="tablist" aria-label={`${courseOf(section).label} screens`}>
-    {#each tabsOf(section) as tab (tab.id)}
-      <button
-        role="tab"
-        aria-selected={view === tab.id}
-        class:active={view === tab.id}
-        onclick={() => (view = tab.id)}>{tab.label}</button
-      >
-    {/each}
-  </div>
+    <div class="views" role="tablist" aria-label={`${courseOf(section).label} screens`}>
+      {#each tabsOf(section) as tab (tab.id)}
+        <button
+          role="tab"
+          aria-selected={view === tab.id}
+          class:active={view === tab.id}
+          onclick={() => (view = tab.id)}>{tab.label}</button
+        >
+      {/each}
+    </div>
+  {/if}
 
   {#if view === "practice"}
   <div class="tabs" role="tablist">
@@ -657,7 +675,7 @@
       <ReviewPanel {section} {voice} />
     {/key}
   {:else if view === "kanji"}
-    <KanjiPanel bind:pick={kanjiPick} onradical={seeRadical} {voice} />
+    <KanjiPanel bind:pick={kanjiPick} bind:practice={kanjiPractice} onradical={seeRadical} {voice} />
   {:else if view === "radicals"}
     <RadicalsPanel bind:focus={selectedRadical} onopen={openKanji} onpractise={openRadical} />
   {:else if view === "words"}
