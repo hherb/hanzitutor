@@ -1455,6 +1455,11 @@ three lines at 320px rather than being clipped, and at the app's own 980×728 th
 footer links share one line (`utility` 146×24, one row) with the panel **1,388px**
 tall. A read-once screen, so its length is not the thing to optimise.
 
+**Seen, and read, on the iPhone.** The maintainer opened this screen on the device
+before any of it had been on a display on this machine, and the romanisation claim
+it carried was wrong — that is the correction above, and it is the argument for a
+reader rather than a probe.
+
 **Deliberately not done.** It is **not** shown on a first run: a first start opens
 on **Kana**, which N10 pinned, and the introduction is a link rather than a gate. It
 is also not a tutorial with progress or a second copy of the course's content — it
@@ -1552,6 +1557,17 @@ the same way is the next piece of this work rather than something this milestone
 silently changed. The radicals, Words and Read screens are untouched, and the kanji
 course has no character grid as such any more — the cluster is on the card and the
 characters are one arrow apart.
+
+**And the readings carry no sign that they can be heard** — no speaker glyph, no
+"tap to hear". They are dashed-underlined controls, the same affordance the passages
+use for a tappable word, and the maintainer's decision is that explaining them is a
+job for the **on-boarding screen** when the app is published (N11's *Start here* is
+that screen) rather than for a glyph on every reading: a row of six on-readings with
+six speakers on it clutters the one block that exists to be read. Recorded here
+because the first on-device report was "tapping a reading should speak" — the answer
+was the phone's silent switch, and the *second* thing that exchange showed is that
+nothing on the screen says the readings are controls. That is now a publishing
+milestone's job, deliberately, rather than a debt N12 left behind.
 
 ---
 

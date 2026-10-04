@@ -150,11 +150,17 @@ switch's two-line budget were all measured through the DOM probe in §5 — the 
 that works when a capture cannot be believed. The screens listed in the paragraph
 above were seen on a display when they were built; the header compaction is the
 part that has only ever been measured, and it is recorded that way on purpose.
-**Start here (N11) is the next one that has only ever been measured**, for the same
-reason and with the same two tools: the §5 DOM probe drove the link, both readings
-and both buttons, and the headless-Chrome harness in trap 23 measured the layout at
-320, 360, 430, 500 and 980 px. It has not been seen on a display, and that is worth
-knowing before trusting its typography rather than its behaviour.
+**Start here (N11) was measured before it was seen, and then seen on a phone.** The
+§5 DOM probe drove the link, both readings and both buttons, and the
+headless-Chrome harness in trap 23 measured the layout at 320, 360, 430, 500 and
+980 px — and the first thing the maintainer did with the iOS build was **read it**,
+which is how the romanisation claim in it was found to be wrong (N11's correction).
+So its behaviour and its words have both been through a reader; its typography on a
+desktop window still has not. **N12's stage has now been seen on the phone too** —
+the maintainer drove it, and its two screenshots are what produced the two
+corrections after it (the chrome stepping aside and the meaning folding in). The
+rule that remains: a screen that has only been *measured* has not been seen, and a
+reader finds what a probe cannot.
 
 **And it has been heard.** N1 put the machine's own Japanese voice behind a button
 and the `h` key, and behind **every reading on a kanji card** — so a character can
