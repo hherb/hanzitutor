@@ -100,7 +100,7 @@ Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **331
 tests** — every `#[test]` in the two suites (206 in `nihongo-core`, 125 in
 `nihongo-tutor`), plus two doc-tests (`lib.rs`'s and `variants.rs`'s);
 the frontend's are counted separately below.
-`pnpm run test:web` runs 165, of which **96** are this app's.
+`pnpm run test:web` runs 170, of which **101** are this app's.
 `cargo test -p hanzi-voice`, the shared crate the audio half lives in, is 29.
 
 | | |
@@ -129,10 +129,10 @@ the frontend's are counted separately below.
 | One reading | **はし is 橋, 端 and 箸 and かみ is five words** (上 紙 神 加味 髪) — the homophones the **Start here** screen argues with, drawn from the artifact rather than typed into the interface (invariant 32) |
 | Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
 | Notices | 10 — five of them added at N9, when the EDRDG, JmdictFurigana and UniDic obligations that had been recorded in `LICENSES.md` since N6 and N7 were found to satisfy nothing in the bundle (§8) |
-| Bundle | built at N9 as `Kana Tutor.app`, 15.25 MiB, and **rebuilt after the N10 rename as `Nihongo Tutor.app`** — 15 MiB, `codesign --verify --deep --strict` clean, `Identifier=com.hanzitutor.kana`, Team `X5DWXB4283`, and all ten notices world-readable. The `.dmg` needs Tauri's own `bundle_dmg.sh` run outside the sandbox (trap 21); the N10 one is **7,957,111 bytes**, `hdiutil verify` checksum VALID, signed `Identifier=Nihongo Tutor_0.1.0_aarch64`, and mounting it shows `Nihongo Tutor.app` plus the `Applications` link with the inner app still passing `--deep --strict`. The N9 figures were 15.25 MiB and an 8,186,456-byte image; the icon work that milestone records is unchanged, and `/Applications/Kana Tutor.app` is still the N9 install — the N10 build has not been installed there |
-| Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review". See §5, "Building for iOS", for the two things `tauri ios init` does not provide |
-| Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Read, Review, where **Kanji is itself two screens**: the course (grades, a card per lesson of ten) and the board it opens (invariant 33). **Start here** and Licences hang off the footer, in neither course (invariant 31) |
-| Tests | nihongo-core 206, nihongo-tutor 125, hanzi-voice 29, frontend 96 of the 165 |
+| Bundle | built at N9 as `Kana Tutor.app`, 15.25 MiB, and **rebuilt after the N10 rename as `Nihongo Tutor.app`** — 15 MiB, `codesign --verify --deep --strict` clean, `Identifier=com.hanzitutor.kana`, Team `X5DWXB4283`, and all ten notices world-readable. The `.dmg` needs Tauri's own `bundle_dmg.sh` run outside the sandbox (trap 21); the N10 one is **7,957,111 bytes**, `hdiutil verify` checksum VALID, signed `Identifier=Nihongo Tutor_0.1.0_aarch64`, and mounting it shows `Nihongo Tutor.app` plus the `Applications` link with the inner app still passing `--deep --strict`. The N9 figures were 15.25 MiB and an 8,186,456-byte image; the icon N9 drew has since been **redesigned at N14** — white field, the flag's red あ — and both the desktop set and the iOS set were regenerated from the new master, so a build from this tree wears a different face than the 15 MiB one described here; `/Applications/Kana Tutor.app` is still the N9 install, and the N10 build has not been installed there |
+| Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review", and the kana course seen on the device at N13. See §5, "Building for iOS", for the three things `tauri ios init` does not provide |
+| Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Read, Review, where **Kanji and Practice are each two screens**: the course and the board it opens (invariants 33 and 34). **Start here** and Licences hang off the footer, in neither course (invariant 31) |
+| Tests | nihongo-core 206, nihongo-tutor 125, hanzi-voice 29, frontend 101 of the 170 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | three files, `confusions.json`, `review.json` and `prefs.json`, in the app's own data directory |
@@ -198,6 +198,22 @@ the tool row is Hanzi Tutor's icon row — `Icon.svelte` having been lifted
 byte-identically from the Chinese app, as `render.ts` was before it. Invariant 33 is
 the rule; the measurements, including the one that made the fold universal rather
 than phone-only, are in `ROADMAP_NIHONGO.md` N12.
+
+**And N13 gave the kana course the same shape.** It had the same complaint — the
+script toggle, the lesson list, the lesson's kana and the board with the verdict,
+the typing box and the confusions under it, stacked in three columns, so a phone made
+a learner scroll past the course to write one kana — and N12 recorded it as the next
+piece rather than doing it in passing. `KanaPanel` is now the course (the script
+toggle, one card per lesson, each card carrying its own kana) and `KanaPractice` is
+the stage (the sound above the board, the board, the tools below it, and what the
+kana is written with, the typing exercise and the kana it is confused with behind one
+`More`). The chrome steps aside while a stage is up, `Lessons` is the way back, and
+the arrows either side of the kana are **the lesson of whatever kana is on the
+board** — derived from the course on every change, because the confusions list
+crosses lessons. Invariant 34 is the rule. Measuring it found two bugs, and one of
+them was N12's: the board cleared itself on a Hint toggle without telling the screen
+above it, so the verdict stayed up over strokes that had been discarded. The
+measurements are in `ROADMAP_NIHONGO.md` N13.
 
 **And the last of it is the vocabulary on the character's card**, which §9 below had
 called the obvious next thing after N8 — the thing `words::of_kanji` had been
@@ -428,12 +444,15 @@ apps/nihongo-tutor/               the app
                                   posts (invariant 32)
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
-  src/App.svelte         (718)    the two courses and the switch between them, the
-                                  course list, the board wiring, the one place the
-                                  voice status and the remembered course are asked
-                                  for — N1, N10 — the one `openKana` a screen
-                                  calls to put a kana on the board — N4 — and the
-                                  two footer links, Licences and Start here (31, 32)
+  src/App.svelte         (426)    the two courses and the switch between them, the
+                                  `chromeVisible` that stands the switch and the tab
+                                  row aside while either course's stage is up (33,
+                                  34), the one place the voice status and the
+                                  remembered course are asked for — N1, N10 — the one
+                                  `openKana` a screen calls to put a kana on the
+                                  board, carrying the script it is written in — N4,
+                                  N13 — and the two footer links, Licences and Start
+                                  here (31, 32)
   src/lib/nav.ts         (120)    **the division itself**: the two courses, their
                                   screens, their defaults, and the membership test
                                   `goTo` is guarded by — N10 — with Start here and
@@ -449,14 +468,24 @@ apps/nihongo-tutor/               the app
                                   size, and the one sentence that states a count —
                                   invariant 32
   src/lib/start.test.ts   (58)    run by the ROOT project's vitest
-  src/lib/KanaCanvas.svelte(268)  pointer capture and the animation frame. Draws
+  src/lib/KanaCanvas.svelte(274)  pointer capture and the animation frame. Draws
                                   any `Drawable`, so a kana, a kanji and a radical
-                                  all come through it; `guide` is the faint copy,
-                                  and turning it off clears the attempt — N12
+                                  all come through it; `guide` is the faint copy, and
+                                  turning it off clears the attempt **and reports the
+                                  emptied board** to the screen above — N12, N13
   src/lib/ConfusionDrill.svelte(392)  the drill: five exercises, one question, one
                                   answer, remembered — N3, N4
   src/lib/KanaChart.svelte(253)   the gojūon grid with its holes, and the characters
                                   off it — N4
+  src/lib/KanaPanel.svelte(306)   **the kana course**: the script toggle and one card
+                                  per lesson, each card carrying that lesson's own
+                                  kana, and the request from another screen consumed
+                                  once its script's course is loaded — N13, invariant
+                                  34
+  src/lib/KanaPractice.svelte(932)  **the kana stage**: one kana, its sound above the
+                                  board, the board, the tool row below it, and the
+                                  typing exercise and the confusions behind the
+                                  `More` fold — N13, invariant 34
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
   src/lib/ReviewPanel.svelte(383) what is due **in one course**, and a board to
                                   write it on — N2, N10 — with the joined-stroke
@@ -483,12 +512,13 @@ apps/nihongo-tutor/               the app
                                   `spokenReading`, and `neighbour`/`positionIn` —
                                   the arrows either side of the board — N8, N1, N12
   src/lib/kanji.test.ts  (203)    run by the ROOT project's vitest
-  src/lib/kana.ts         (86)    which lesson a kana belongs to, which kana a
-                                  loaded course should open on, how wide the chart's
-                                  grid is, whether a drill answer is one kana — N4 —
-                                  and `joinedLabel`, the one line that renders which
-                                  taught strokes were joined — invariant 30
-  src/lib/kana.test.ts   (147)    run by the ROOT project's vitest
+  src/lib/kana.ts         (123)    which lesson a kana belongs to, what to call that
+                                  lesson on a card, and how the arrows step through
+                                  it — N13 — how wide the chart's grid is, whether a
+                                  drill answer is one kana — N4 — and `joinedLabel`,
+                                  the one line that renders which taught strokes were
+                                  joined — invariant 30
+  src/lib/kana.test.ts   (182)    run by the ROOT project's vitest
   src/lib/words.ts       (101)    furigana and paging arithmetic, as pure functions
   src/lib/words.test.ts  (131)    run by the ROOT project's vitest
   src/lib/review.ts       (89)    "2 days overdue" and "in 2 days", as pure
@@ -500,10 +530,12 @@ apps/nihongo-tutor/               the app
   src/lib/board.ts        (97)    the board's arithmetic, as pure functions
   src/lib/board.test.ts   (99)    run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
-  src/lib/types.ts       (594)    the IPC shapes, `Character = Drawable`, the
+  src/lib/types.ts       (617)    the IPC shapes, `Character = Drawable`, the
                                   chart's slots as `(string | null)[]`, the
-                                  `Prefs` the remembered course crosses in, and
+                                  `Prefs` the remembered course crosses in,
                                   `WordsOfReading` for the Start screen — invariant 32
+                                  — and `KanaPick`, the script-carrying request that
+                                  opens the kana stage — invariant 34
   src/lib/api.ts         (345)    one wrapper per command
 
 crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
@@ -514,11 +546,12 @@ crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
                                   is a default feature this app turns off
 ```
 
-The line counts are the current tree's for the rows N11 and N12 touched —
+The line counts are the current tree's for the rows N11, N12 and N13 touched —
 `words.rs`, the two artifacts' tests, the app's `lib.rs` and `ipc_contract.rs`,
 `App.svelte`, `nav.ts`, `nav.test.ts`, `types.ts`, `api.ts`, the three `start*`
-files, and the six kanji files (`KanjiPanel`, `KanjiPractice`, `Icon`,
-`KanaCanvas`, `kanji.ts`, `kanji.test.ts`) —
+files, the six kanji files (`KanjiPanel`, `KanjiPractice`, `Icon`,
+`KanaCanvas`, `kanji.ts`, `kanji.test.ts`), and the kana course's own
+(`KanaPanel`, `KanaPractice`, `KanaCanvas`, `kana.ts`, `kana.test.ts`) —
 and were last checked while writing invariants 26 and 27 for the rest; a few of the
 earlier numbers were stale even then, which is worth knowing before treating one as
 a measurement.
@@ -1545,6 +1578,63 @@ before the meaning was folded in and the chrome stepped aside. Two touch targets
 under the 44px a finger needs (the back button at 25px, the fold at 40) and both were
 fixed because of that measurement.
 
+---
+
+### 34. **The kana course is two screens too, and the stage is the whole screen.**
+
+Invariant 33's shape, one course over. N13 is where the kana course got it, because
+the complaint was the same one: the script toggle, the lesson list, the lesson's kana
+and the board — with the verdict, the typing box and the confusions under it — were
+stacked in three columns, so on a phone a learner scrolled *past the course* to write
+one kana and back to choose the next. The rule, in the same parts:
+
+* **`KanaPanel` is the course and `KanaPractice` is the stage.** The panel owns the
+  script toggle, one card per lesson (each carrying that lesson's own kana), and the
+  `bind:practice` report that tells `App.svelte` a stage is up; the stage is one kana,
+  the sound above the board, the board, and the tools below it. `chromeVisible`
+  stands the switch and the tab row aside while **either** course's stage is up, and
+  `Lessons` — the first control on the stage — is the way back. Invariant 33's
+  arrangement, applied to the other course rather than re-decided.
+* **The order on the stage is 33's**: what you are being asked to write above the
+  board (the kana, its reading, and the one control that says it), the board, then
+  the tools — Hint, Strokes, Undo, Clear, Grade — and everything else about the kana
+  behind one `More` fold, at every width. The fold is not a phone-only control, for
+  33's measured reason.
+* **The arrows either side of the kana are the lesson of the kana on the board, and
+  the lesson is derived from the course on every change.** The confusions list
+  crosses lessons — シ and ツ are different rows — so a stage that remembered the
+  lesson it was opened with would offer the wrong arrows the moment one was tapped.
+  `kana.ts`'s `lessonOf`, `neighbourIn` and `positionIn` are the arithmetic, and
+  `lessonLabel` is what a card calls a lesson: a lesson's title is two halves and
+  **which half is the name depends on the kind of lesson it is**, so it is read from
+  the data (the half that is not `kana.join(" ")`) rather than by splitting the
+  string — reading the first half as the kana called the small-kana group `Small kana`
+  its lesson and ゃ ゅ ょ っ its sound.
+* **A request that opens a kana carries the script it is written in.** `KanaPick` is
+  `{ ch, script }`: the kana course is one course per script, so `KanaPanel` switches
+  to the request's script and **waits for that script's course to be the loaded one**
+  before honouring it. That is N4's `focusFor` rule made structural — a request
+  naming only a character could otherwise open a katakana kana among the hiragana
+  lessons — and `focusFor` is gone with the single-course design that needed it. The
+  panel consumes the request rather than passing it down, so returning to the tab
+  does not reopen what the learner left.
+* **The board tells its screen when it empties itself.** `KanaCanvas` calls
+  `onchange([])` when `guide` changes, because a verdict belongs to the attempt it
+  judged: without it, Hint cleared the board while the verdict above it stayed up and
+  `Grade` still held the strokes that had been thrown away. Every other path that
+  empties the board — `undo` and `clear` — already told its caller. **The same bug
+  was in N12's kanji stage**, which is why this is written as a rule about the board
+  rather than a fact about the kana screen.
+
+What is **not** changed: `nav.ts` and hence invariant 31's division (Practice is still
+the kana course's first screen, and the stage is inside it), the review schedule and
+its file (invariant 15/25), what may be handed to the voice (invariant 27 — the stage
+speaks `kana.ch`, and `h` still only fires on the screen with a kana on the board),
+and the joined-stroke rule (invariant 30 — the stage shows the same line, because it
+is the same `joinedLabel`). The Radicals, Words and Read screens each still draw one
+column; treating them this way is the next piece of the same work rather than
+something N13 did in passing.
+
 ## 5. The verification loop
 
 Four layers, cheapest first. All of them are worth running before a commit that
@@ -1811,6 +1901,9 @@ any screen:
   If the report is in the image, the image is *current*, which is the one thing a
   `-l` capture cannot tell you on its own; and it needs no Vite middleware, because
   the probe's output *is* the screen.
+* **And a layout can be measured with no Chrome and no capture at all** — point the
+  app's own window at the phone's size and read the numbers out of the page. Trap 23
+  closes with the recipe and with why the harness was not available to N13.
 * **A surprising capture is not automatically a stale one.** One from N2's check
   showed more due characters than the file held, a grade nobody had recorded, and
   a hand-drawn character — and it read as the stale backing store above. It was
@@ -2022,6 +2115,23 @@ Three things are this app's own, and the first two are the ones that stop a buil
   documented here rather than only in the file. After editing it, regenerate with
   `xcodegen generate` **in `gen/apple`** — `ios build` reads the `.xcodeproj`, not
   the YAML.
+* **The iOS icon set is not the app's either** — `ios init` writes Tauri's template
+  logo into `gen/apple/Assets.xcassets/AppIcon.appiconset/`, and it did so here
+  *after* N9 had generated the desktop icons, so the phone drew the template's "T"
+  until N14. It is one command, run from `apps/nihongo-tutor/` whenever the artwork
+  changes or the iOS project is re-initialised (and `--ios-color` is what fills the
+  transparent corners, because an iOS icon has no alpha):
+
+  ```bash
+  TAURI_ROOT="$PWD" ../../scripts/with-cargo-env.sh ../../scripts/tauri-cli.sh \
+    icon app-icon.png --ios-color "#ffffff"
+  ```
+
+  `store/README.md` records the same obligation for the Chinese app and the same
+  consequence of skipping it. **Nothing in the tree names the iOS set**, which is
+  why this is a step to remember rather than one a check would catch; the artwork is
+  `apps/nihongo-tutor/app-icon.png` and its generation is `ROADMAP_NIHONGO.md` N9
+  and N14.
 * **`src-tauri/Info.ios.plist`** carries the scene manifest iOS 26 and later
   require; the CLI merges it at build time, and the built app's `Info.plist` is
   where to check it landed. There is no microphone string here, unlike the Chinese
@@ -2627,6 +2737,22 @@ stops at its last cell, the voiced rows' accent band marks the row rather than
 running on across the empty half of the panel. **Check the rendered result and not
 only the corrected rule** — the first fix above was correct and still wrong.
 
+**And on a machine where headless Chrome will not run at all, the app's own webview
+measures the same thing.** N13's check had no harness: `--dump-dom` hung on *every*
+page, including a bare `data:text/html,<h1>hi</h1>`, with Chrome 154 under this
+harness's sandbox — the profile, the crash reporter and Chrome's own process sandbox
+are all refused outside the workspace, and the flags that usually paper over that
+(`--no-sandbox --disable-breakpad --disable-crash-reporter --disable-dev-shm-usage`)
+did not make it return. The fallback needs no Chrome and is closer to the thing being
+measured: **set `tauri.conf.json`'s window to the phone's size** (390×844, with
+`minWidth`/`minHeight` to match or the window will not go that small), start the dev
+app, and read the numbers out of the page with §5's DOM probe. It is the engine the
+phone runs, it lays the layout out for real, and both stages can be measured in the
+same window for comparison — which is how N13 found that the tool row wraps to two
+group cards at 390px in **both** stages rather than only in the new one. Revert the
+window size afterwards, and remember that changing it restarts the app (trap 3's
+rule, the other way round: the file is right and the window is not what it says).
+
 ---
 
 ## 7. Open decisions
@@ -2877,10 +3003,13 @@ assumed to be covered by the Chinese one.
   than reading. Out of scope for now, and the largest thing missing from the
   product. N11's Start screen says *why* the kana carry the grammar; it teaches
   none of it, which is the gap stated rather than closed.
-* **The kana course in the kanji course's new shape.** N12 split the kanji screen
-  in two because a phone made one page unusable, and the same complaint applies to
-  Practice: on a phone the lesson list and the kana grid come before the board, so
-  a learner scrolls to write. It was deliberately **not** changed with the kanji
-  work — the kana course is the on-ramp and its screens are shallow — so it is the
-  next screen to treat this way rather than something N12 did in passing. The same
-  goes for the Radicals, Words and Read screens, which still draw one column each.
+* **The kana course in the kanji course's new shape — built.** N12 split the kanji
+  screen in two because a phone made one page unusable, and the same complaint
+  applied to Practice: on a phone the lesson list and the kana grid came before the
+  board, so a learner scrolled to write. It was deliberately **not** changed with the
+  kanji work — the kana course is the on-ramp and its screens are shallow — and
+  **N13 is where it was treated the same way**: `KanaPanel` is the script toggle and
+  one card per lesson, `KanaPractice` is the stage, and the chrome steps aside while
+  one is up (invariant 34). The same still goes for the Radicals, Words and Read
+  screens, which draw one column each, and for the two touch targets on the shared
+  tool row that are under 44px — `ROADMAP_NIHONGO.md` N13 records both.

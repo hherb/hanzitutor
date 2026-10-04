@@ -75,6 +75,12 @@
     ghostCount = character && guide ? character.strokeCount : 0;
     sweep = null;
     cancelAnimationFrame(raf);
+    // The screen above is told, because the attempt it is holding **is this one**:
+    // without this, toggling the guide cleared the board while the verdict above it
+    // stayed up and `Grade` still held the strokes it had just thrown away. Every
+    // other path that empties the board tells the parent — `undo` and `clear` —
+    // and this is the one that did not.
+    onchange?.([]);
     // Deliberately no `paint()` here. `paint` reads every one of those pieces of
     // state, so calling it from this effect made the effect depend on what it
     // writes — and `strokes = []` is a fresh array, never `===` the last, so the

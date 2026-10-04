@@ -2,28 +2,31 @@
   /**
    * Nihongo Tutor: two courses, one at a time.
    *
-   * **Kana** is the on-ramp — a course down the side, the board in the middle, and
-   * the verdict and the reading beside it — and **Kanji** is the course itself:
-   * the character course, the radical table, the vocabulary and the passages.
-   * Which of the two is open is remembered in the app's own file, and the tabs
-   * under the switch are that course's own screens, from `lib/nav.ts`.
+   * **Kana** is the on-ramp — the course and the board a lesson opens — and
+   * **Kanji** is the course itself: the character course, the radical table, the
+   * vocabulary and the passages. Which of the two is open is remembered in the
+   * app's own file, and the tabs under the switch are that course's own screens,
+   * from `lib/nav.ts`.
+   *
+   * Both courses are **two screens where the board is involved** — the list of what
+   * to study, and the board for one character, taken by a panel that reports it
+   * (`bind:practice`) so the app can step its own chrome aside. `HANDOVER_NIHONGO.md`
+   * invariants 33 and 34 are the rule, and this file is where the two panels are
+   * handed the request that opened one.
    *
    * Every character on the board, kana or kanji, is graded by the same engine that
    * grades a Chinese character.
    */
-  import { untrack } from "svelte";
-  import KanaCanvas from "./lib/KanaCanvas.svelte";
   import ConfusionDrill from "./lib/ConfusionDrill.svelte";
   import KanaChart from "./lib/KanaChart.svelte";
-  import LicencesPanel from "./lib/LicencesPanel.svelte";
-  import SpeakButton from "./lib/SpeakButton.svelte";
-  import StartPanel from "./lib/StartPanel.svelte";
-  import VocabularyPanel from "./lib/VocabularyPanel.svelte";
-  import PassagePanel from "./lib/PassagePanel.svelte";
+  import KanaPanel from "./lib/KanaPanel.svelte";
   import KanjiPanel from "./lib/KanjiPanel.svelte";
+  import LicencesPanel from "./lib/LicencesPanel.svelte";
+  import PassagePanel from "./lib/PassagePanel.svelte";
   import RadicalsPanel from "./lib/RadicalsPanel.svelte";
   import ReviewPanel from "./lib/ReviewPanel.svelte";
-  import { focusFor, joinedLabel, lessonKeyOf } from "./lib/kana";
+  import StartPanel from "./lib/StartPanel.svelte";
+  import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import {
     COURSES,
     courseOf,
@@ -34,18 +37,13 @@
     type Section,
     type View,
   } from "./lib/nav";
-  import { VERDICT_COLOUR, VERDICT_LABEL } from "./lib/render";
-  import { scheduleNote } from "./lib/review";
-  import { canHear, isHearItKey, type VoiceStatus } from "./lib/speech";
+  import { canHear, type VoiceStatus } from "./lib/speech";
   import * as api from "./lib/api";
   import type {
     AppInfo,
     DatasetStats,
-    GradeReport,
-    Kana,
+    KanaPick,
     KanjiPick,
-    LessonView,
-    ReadingCheck,
     ScriptName,
   } from "./lib/types";
 
@@ -60,41 +58,18 @@
    */
   let section = $state<Section>("kana");
   let view = $state<View>("practice");
-  let script = $state<ScriptName>("hiragana");
-  let course = $state<LessonView[]>([]);
-  let lessonKey = $state<string | null>(null);
-  let selected = $state<string | null>(null);
-  let kana = $state<Kana | null>(null);
-  let report = $state<GradeReport | null>(null);
-  /**
-   * The taught strokes the last verdict read as drawn joined, 1-based — `[[1, 2]]`
-   * for a さ written in two strokes. It travels with `report`, and is what makes
-   * the per-stroke list below honest: its numbers are the *drawn* strokes.
-   */
-  let joined = $state<number[][]>([]);
   let error = $state<string | null>(null);
-  let busy = $state(false);
 
   /**
-   * A kana another screen asked the practice board to open, waiting for the
-   * course of the script it belongs to to load.
+   * A kana another screen has asked the kana board to open, waiting for that
+   * course to be the one on screen.
    *
-   * Only ever set when the course for that script is not loaded yet: within a
-   * script that is already loaded the kana opens at once. It carries the script
-   * with it, so a slow load can tell whether the request is still the one being
-   * waited for — a single slot without it would let a load that has been overtaken
-   * apply the kana from the tap *before* the last one.
+   * The chart, the drill and the stage's own confusions list all end up here. The
+   * request carries the script it is written in, because the kana course is one
+   * course per script: a request that did not say which would let a katakana kana
+   * be looked up in the hiragana lessons.
    */
-  let wanted = $state<{ ch: string; script: ScriptName } | null>(null);
-
-  /**
-   * The script whose course is in `course` right now, or `null` while one loads.
-   *
-   * `script` is the toggle and `loadedScript` is what is actually on screen, and
-   * they disagree for as long as a load takes — which is exactly when a tap has to
-   * know better than to look the kana up in the wrong course.
-   */
-  let loadedScript = $state<ScriptName | null>(null);
+  let kanaPick = $state<KanaPick | null>(null);
 
   /**
    * A character or radical another screen has asked the kanji board to open.
@@ -115,6 +90,28 @@
    * losing a preference is not the same as failing to grade.
    */
   let warning = $state<string | null>(null);
+
+  /**
+   * Whether a course's practice stage is up, which the panel tells us.
+   *
+   * A stage takes the whole screen: the course switch and the tab row are the
+   * *course's*, and while one character is being written they cost the board about
+   * 150px of the phone's height. `Lessons` on the stage is the way back, and it
+   * brings both rows with it (invariants 33 and 34).
+   */
+  let kanjiPractice = $state(false);
+  let kanaPractice = $state(false);
+
+  /**
+   * The voice pronunciation will use, or `null` when the machine has none.
+   *
+   * Asked once, here, and handed to every screen that offers a "Hear it" button,
+   * so one answer governs them all: a machine with no Japanese voice disables
+   * every button and says why, rather than each panel discovering it separately.
+   * `undefined` is the moment before the answer arrives, which is why the three
+   * states are kept apart — see `lib/speech.ts`.
+   */
+  let voice = $state<VoiceStatus>(undefined);
 
   /**
    * Open a screen, moving to another course first when it is not this one's.
@@ -189,6 +186,36 @@
   }
 
   /**
+   * Open a kana on the practice stage, from wherever it was offered.
+   *
+   * The chart, the drill and the confusions list on a stage are all promises that
+   * tapping a kana writes it. The script is not worked out from the character
+   * here: the app's own dataset is the authority on which of り and リ is which and
+   * on ー being katakana, and it already says so in the `Kana` it returns. A caller
+   * that knows the script — the chart does — passes it and saves the round trip.
+   *
+   * The request is handed to `KanaPanel` whole, script included, and the panel is
+   * what decides when it can be honoured: the kana's own course has to be the one
+   * loaded, or a katakana kana would land among the hiragana lessons. The last tap
+   * wins, because the panel consumes the request it finds rather than a queue of
+   * them.
+   */
+  async function openKana(ch: string, where?: ScriptName) {
+    goTo("kana", "practice");
+    error = null;
+    let target = where;
+    if (!target) {
+      try {
+        target = (await api.kana(ch)).script;
+      } catch (e) {
+        error = String(e);
+        return;
+      }
+    }
+    kanaPick = { ch, script: target };
+  }
+
+  /**
    * What one course holds, in numbers, for the switch that offers it.
    *
    * The counts are the reason the switch leads with the kanji course's size rather
@@ -208,120 +235,12 @@
   }
 
   /**
-   * Whether the kanji course has a practice stage up, which the panel tells us.
-   *
-   * A stage takes the whole screen: the course switch and the tab row are the
-   * *course's*, and while one character is being written they cost the board about
-   * 150px of the phone's height. `Lessons` on the stage is the way back, and it
-   * brings both rows with it (invariant 33).
-   */
-  let kanjiPractice = $state(false);
-  /**
    * Whether the app's own chrome — the switch and the open course's tab row —
    * should be drawn. Licences and Start here hang off the footer either way.
    */
-  const chromeVisible = $derived(!(view === "kanji" && kanjiPractice));
-
-  let typed = $state("");
-  let check = $state<ReadingCheck | null>(null);
-  /**
-   * The voice pronunciation will use, or `null` when the machine has none.
-   *
-   * Asked once, here, and handed to every screen that offers a "Hear it" button,
-   * so one answer governs them all: a machine with no Japanese voice disables
-   * every button and says why, rather than each panel discovering it separately.
-   * `undefined` is the moment before the answer arrives, which is why the three
-   * states are kept apart — see `lib/speech.ts`.
-   */
-  let voice = $state<VoiceStatus>(undefined);
-  /**
-   * What the review schedule did with the last attempt.
-   *
-   * Grading and scheduling are one command, so the verdict and the next due date
-   * arrive together; this is the half the panel did not have before.
-   */
-  let note = $state<{ tone: "ok" | "plain" | "bad"; text: string } | null>(null);
-
-  let board = $state<ReturnType<typeof KanaCanvas> | null>(null);
-  /**
-   * The attempt as the canvas last reported it, for grading.
-   *
-   * Reactive because the Grade button's enabled state reads it: a plain `let`
-   * would leave the button disabled after the first stroke.
-   */
-  let attempt = $state<{ x: number; y: number }[][]>([]);
-
-  const activeLesson = $derived(course.find((l) => l.key === lessonKey) ?? null);
-
-  $effect(() => {
-    void loadCourse(script);
-  });
-
-  async function loadCourse(which: ScriptName) {
-    try {
-      const lessons = await api.lessons(which);
-      // A load that has been overtaken by a later toggle is dropped rather than
-      // applied: the two responses can arrive in either order, and the course on
-      // screen has to be the script the learner last chose.
-      if (untrack(() => script) !== which) return;
-      course = lessons;
-      loadedScript = which;
-      // A kana another screen asked for wins over the first of the course — but
-      // only the request that belongs to *this* script. Cleared either way, so a
-      // request whose script is not this one cannot be applied to the next load.
-      // Read untracked deliberately: this effect must not depend on the request it
-      // is consuming, or setting it would re-run the load that clears it.
-      const asked = untrack(() => wanted);
-      wanted = null;
-      const focus = focusFor(asked, which, lessons);
-      const inLesson = focus ? lessonKeyOf(lessons, focus) : null;
-      lessonKey = inLesson ?? lessons[0]?.key ?? null;
-      if (focus) await select(focus);
-    } catch (e) {
-      // The request goes with the course that failed to load, rather than staying
-      // to be applied to whichever script loads next.
-      wanted = null;
-      loadedScript = null;
-      error = String(e);
-    }
-  }
-
-  /**
-   * Open a kana on the practice board, from wherever it was offered.
-   *
-   * The chart, the lesson grid, the confusions list and the drill's own feedback
-   * all end up here, and all of them are promises that tapping a kana writes it.
-   * The script is not worked out from the character here: the app's own dataset is
-   * the authority on which of り and リ is which and on ー being katakana, and it
-   * already says so in the `Kana` it returns. A caller that knows the script —
-   * the chart does — passes it and saves the round trip.
-   *
-   * The last tap wins. A kana is opened directly only when its script's course is
-   * the one on screen; otherwise it is handed to the load that is bringing that
-   * course, which leaves the *latest* request in force — so a tap that overtakes an
-   * earlier one is the one that lands, and a load that fails takes its request with
-   * it.
-   */
-  async function openKana(ch: string, where?: ScriptName) {
-    goTo("kana", "practice");
-    error = null;
-    let target = where;
-    if (!target) {
-      try {
-        target = (await api.kana(ch)).script;
-      } catch (e) {
-        error = String(e);
-        return;
-      }
-    }
-    if (target !== script || loadedScript !== target) {
-      wanted = { ch, script: target };
-      script = target;
-      return;
-    }
-    lessonKey = lessonKeyOf(course, ch) ?? lessonKey;
-    await select(ch);
-  }
+  const chromeVisible = $derived(
+    !((view === "kanji" && kanjiPractice) || (view === "practice" && kanaPractice)),
+  );
 
   async function boot() {
     try {
@@ -357,102 +276,20 @@
   void boot();
 
   /**
-   * The "hear it" shortcut, live only on the screen that has a kana on the board.
-   *
-   * One view rather than the whole app deliberately: a window-level letter key
-   * that fired on every screen would speak whatever happened to be selected on a
-   * screen the learner is not looking at. The rule about which presses count is
-   * `isHearItKey`, which is a pure function because it is about typing.
-   */
-  function onKey(event: KeyboardEvent) {
-    if (!isHearItKey(event)) return;
-    if (view !== "practice" || !selected || !canHear(voice)) return;
-    event.preventDefault();
-    void api.speak(selected).catch((e) => {
-      error = String(e);
-    });
-  }
-
-  /**
-   * Choosing another character, or leaving the screen, ends whatever is being
-   * said.
+   * Leaving the screen ends whatever is being said.
    *
    * A voice that keeps talking over the next thing the learner looks at is the
-   * one way an audio feature becomes an annoyance, and speaking never changes
-   * either of these — the button does that — so this effect only ever stops.
+   * one way an audio feature becomes an annoyance. The stage stops it when the
+   * character on the board changes; this is the half that covers leaving the
+   * screen altogether, and speaking never changes `view` — the button does that —
+   * so this effect only ever stops.
    */
   $effect(() => {
-    view;
-    selected;
+    void view;
     void api.stopSpeaking().catch(() => {
       // Nothing to report: this is cleanup, and the usual answer is that nothing
       // was being said.
     });
-  });
-
-  async function select(ch: string) {
-    try {
-      error = null;
-      selected = ch;
-      report = null;
-      joined = [];
-      note = null;
-      check = null;
-      typed = "";
-      attempt = [];
-      kana = await api.kana(ch);
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  function onStrokes(strokes: { x: number; y: number }[][]) {
-    attempt = strokes;
-    // A verdict belongs to the attempt it judged; the moment the attempt changes
-    // it is stale, and leaving it up would colour the new strokes with the old
-    // reading.
-    report = null;
-    joined = [];
-    note = null;
-  }
-
-  async function grade() {
-    if (!selected) return;
-    try {
-      busy = true;
-      error = null;
-      // The command grades *and* offers the attempt to the review schedule, so
-      // what comes back is the verdict plus the schedule's answer to it.
-      const graded = await api.gradeAttempt(selected, attempt);
-      report = graded.report;
-      joined = graded.joined;
-      note = scheduleNote(graded, new Date().toISOString());
-    } catch (e) {
-      error = String(e);
-    } finally {
-      busy = false;
-    }
-  }
-
-  async function checkTyped() {
-    if (!selected) return;
-    try {
-      check = await api.checkReading(selected, typed);
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  /** The verdict line, in words, for the report that is up. */
-  const summary = $derived.by(() => {
-    if (!report) return null;
-    const wrong = report.strokes.filter(
-      (s) => s.verdict !== "correct" && s.userIndex !== null,
-    );
-    return {
-      total: report.strokes.length,
-      wrong,
-    };
   });
 </script>
 
@@ -476,8 +313,8 @@
     The course switch, not a tab: each course is a thing to study rather than a
     screen. Two lines each and no more — the name, then what it is and how much of
     it there is, because 177 characters is a few days and 2,136 behind 16,073 words
-    is not. Both rows step aside while a kanji practice stage is up: the stage is
-    the screen then, and it carries its own way back.
+    is not. Both rows step aside while a practice stage is up: the stage is the
+    screen then, and it carries its own way back.
   -->
   {#if chromeVisible}
     <nav class="courses" aria-label="Courses">
@@ -507,158 +344,13 @@
   {/if}
 
   {#if view === "practice"}
-  <div class="tabs" role="tablist">
-    {#each ["hiragana", "katakana"] as const as name (name)}
-      <button
-        role="tab"
-        aria-selected={script === name}
-        class:active={script === name}
-        onclick={() => (script = name)}>{name}</button
-      >
-    {/each}
-  </div>
-
-  <div class="layout">
-    <nav aria-label="Lessons">
-      {#each course as lesson (lesson.key)}
-        <button
-          class="lesson"
-          class:active={lesson.key === lessonKey}
-          class:voiced={lesson.voiced}
-          onclick={() => (lessonKey = lesson.key)}
-        >
-          <span class="kana">{lesson.title.split(" — ")[0]}</span>
-          <span class="sound">{lesson.title.split(" — ")[1] ?? ""}</span>
-        </button>
-      {/each}
-    </nav>
-
-    <section class="picker" aria-label="Kana in this lesson">
-      {#if activeLesson}
-        <div class="grid">
-          {#each activeLesson.kana as ch (ch)}
-            <button class="cell" class:active={ch === selected} onclick={() => select(ch)}>
-              {ch}
-            </button>
-          {/each}
-        </div>
-      {/if}
-
-      <div class="yoon">
-        <p class="hint">Yōon are two kana that make one mora — type them together.</p>
-      </div>
-    </section>
-
-    <section class="practice">
-      {#if kana}
-        <div class="prompt">
-          <span class="big">{kana.ch}</span>
-          <span class="reading">
-            {#if kana.silent}
-              <em>no sound of its own</em>
-            {:else}
-              {kana.hepburn}{#if kana.romaji.length > 1}
-                <small>(or {kana.romaji.slice(1).join(", ")})</small>{/if}
-            {/if}
-          </span>
-          <span class="strokes">{kana.strokeCount}
-            {kana.strokeCount === 1 ? "stroke" : "strokes"}</span>
-        </div>
-
-        <KanaCanvas bind:this={board} character={kana} {report} onchange={onStrokes} />
-
-        <div class="actions">
-          <SpeakButton text={kana.ch} {voice} label="Hear it (H)" />
-          <button onclick={() => board?.animate()}>Show stroke order</button>
-          <button onclick={() => board?.undo()}>Undo</button>
-          <button onclick={() => board?.clear()}>Clear</button>
-          <button class="primary" disabled={busy || attempt.length === 0} onclick={grade}>
-            Grade
-          </button>
-        </div>
-
-        {#if report && summary}
-          {@const drawnJoined = joinedLabel(joined)}
-          <div class="verdict" class:ok={report.legible}>
-            <p class="overall">
-              {report.overall.toFixed(0)}<span>/100</span>
-              <em>{report.legible ? "legible" : "not yet"}</em>
-            </p>
-            <dl class="scores">
-              <div><dt>shape</dt><dd>{report.shapeScore.toFixed(2)}</dd></div>
-              <div><dt>place</dt><dd>{report.positionScore.toFixed(2)}</dd></div>
-              <div><dt>ink</dt><dd>{report.inkScore.toFixed(2)}</dd></div>
-              <div><dt>order</dt><dd>{report.orderScore.toFixed(2)}</dd></div>
-            </dl>
-            <ul class="strokes-list">
-              {#each report.strokes as stroke (stroke.refIndex)}
-                <li style="--c:{VERDICT_COLOUR[stroke.verdict]}">
-                  <span class="dot"></span>
-                  stroke {stroke.refIndex + 1}: {VERDICT_LABEL[stroke.verdict]}
-                </li>
-              {/each}
-            </ul>
-            {#if drawnJoined}
-              <p class="fine">Taught strokes {drawnJoined} were drawn as one.</p>
-            {/if}
-            {#if summary.wrong.length === 0}
-              <p class="fine">Every stroke the right shape, in the right place, in order.</p>
-            {/if}
-          </div>
-        {/if}
-
-        {#if note}
-          <p class="note" class:ok={note.tone === "ok"} class:bad={note.tone === "bad"}>
-            {note.text}
-          </p>
-        {/if}
-
-        <div class="typing">
-          <label for="typed">Type the reading</label>
-          <div class="row">
-            <input
-              id="typed"
-              bind:value={typed}
-              onkeydown={(e) => e.key === "Enter" && checkTyped()}
-              placeholder={kana.romaji[0] ?? ""}
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-            />
-            <button onclick={checkTyped}>Check</button>
-          </div>
-          {#if check}
-            <p class="result" class:ok={check.correct}>
-              {#if check.correct}
-                Correct.
-              {:else}
-                That is {check.produced || "not a reading"} — try again.
-              {/if}
-            </p>
-          {/if}
-          <p class="hint">
-            Both romanisations are accepted: Hepburn <code>shi tsu fu</code> and Kunrei
-            <code>si tu hu</code> alike.
-          </p>
-        </div>
-
-        {#if kana.confusions.length > 0}
-          <div class="confusions">
-            <h2>Not to be confused with</h2>
-            <ul>
-              {#each kana.confusions as c (c.ch)}
-                <li>
-                  <button class="cell small" onclick={() => openKana(c.ch)}>{c.ch}</button>
-                  <span>{c.tell}</span>
-                </li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
-      {/if}
-    </section>
-  </div>
-
+    <!--
+      The kana course, and the stage a lesson opens: two screens inside one panel,
+      because the request that opens a kana has to arrive with the script it is
+      written in and the panel is what owns the course that request belongs to
+      (invariant 34).
+    -->
+    <KanaPanel bind:pick={kanaPick} bind:practice={kanaPractice} {voice} />
   {:else if view === "chart"}
     <KanaChart onopen={openKana} />
   {:else if view === "drill"}
@@ -732,5 +424,3 @@
     </span>
   </footer>
 </main>
-
-<svelte:window onkeydown={onKey} />

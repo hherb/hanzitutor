@@ -148,13 +148,36 @@ export interface DatasetStats {
   kanjiLessons: number;
 }
 
-/** One lesson, as the sidebar lists it. */
+/** One lesson, as the course's cards list it. */
 export interface LessonView {
   key: string;
+  /**
+   * The lesson written as two halves joined by `" — "`: a grid row is
+   * `"あ い う え お — a i u e o"` and an off-grid group is
+   * `"Small kana — ゃ ゅ ょ っ"`, so which half is the name depends on which kind
+   * of lesson it is. `kana.ts`'s `lessonLabel` is what reads it, and reads it
+   * from the data rather than from a second table of group names.
+   */
   title: string;
   kana: string[];
   voiced: boolean;
   count: number;
+}
+
+/**
+ * A kana another screen asked the practice board to open, and the script it is
+ * written in.
+ *
+ * The script travels with the request rather than being looked up by the screen
+ * that receives it, and that is the whole point of the shape: the kana course is
+ * one course per script, so a request that did not say which would let a
+ * katakana kana be opened among the hiragana lessons — the race N4 fixed once for
+ * a single course, made structural now that there are two screens. `App.svelte`
+ * resolves it from the dataset once, for the callers that do not already know it.
+ */
+export interface KanaPick {
+  ch: string;
+  script: ScriptName;
 }
 
 /**

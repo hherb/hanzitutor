@@ -46,6 +46,7 @@ references for no gain.
 | **N10** | **Two courses, and the name to match** | **Shipped.** The app is now a kana course and a kanji course rather than nine flat tabs, Review is asked for one course at a time, the course last open is remembered, and the product is called *Nihongo Tutor*. Not a feature so much as the interface finally agreeing with the sentence at the top of this file. See the milestone for what is pinned by tests and what was deliberately left unbuilt. |
 | **N11** | **Start here: what the writing system is for** | **Shipped.** The one screen a learner should meet before choosing a course: the characters came from China and carry meaning, the kana carry the grammar, and romanisation therefore discards both — demonstrated with the app's own vocabulary, where はし is 橋, 端 and 箸. In neither course, hanging off the footer beside Licences. See the milestone for why the argument is data rather than prose. |
 | **N12** | **The kanji course in two screens** | **Shipped.** The course was one page and the board sat at the bottom of it: on a phone a learner scrolled past the lesson list and the character grid to write one character, and back to choose the next. The course is now the grade chips and one card per lesson of ten (each card showing its ten characters), and tapping a card opens a stage — readings above the board, the board, the tools below it, and everything else about the character behind one `More` fold. See the milestone for the measurement that made the fold universal. |
+| **N13** | **The kana course in two screens** | **Shipped.** N12's complaint, on the kana course and for the same reason: the lesson list, the lesson's kana and the board were stacked in three columns, so a phone made a learner scroll past the course to write one kana. The course is now the script toggle and one card per lesson carrying its own kana, and a card opens a stage — the sound above the board, the board, the tools below it, everything else behind one `More`. See the milestone for the two bugs the measurement corrected, one of which was N12's too. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -679,8 +680,11 @@ reading it:
   load that failed left its request to be applied to whichever course loaded next,
   opening one script's kana under the other's lessons. The request now carries its
   script, only a load for that script may consume it, a superseded load is dropped,
-  and the rule itself is `focusFor` in `src/lib/kana.ts` with four tests, because a
+  and the rule itself was `focusFor` in `src/lib/kana.ts` with four tests, because a
   race in a component with no test harness is a rule that should not live inline.
+  *(N13 made the same rule structural rather than a comparison: the request is a
+  `KanaPick` carrying its script and the panel waits for that script's course, so
+  `focusFor` is gone with the one-screen design that needed it.)*
 * **The chart could stick on "Loading the chart…".** A response for a script the
   toggle had left was assigned to `view` and then hidden at render, so two quick
   toggles arriving out of order left nothing to show and nothing left to re-request
@@ -1553,10 +1557,11 @@ fixed because of that measurement rather than in spite of it.
 
 **What is deliberately not done.** The **kana** practice screen keeps its stacked
 three-column layout: the same complaint applies to it on a phone, and treating it
-the same way is the next piece of this work rather than something this milestone
-silently changed. The radicals, Words and Read screens are untouched, and the kanji
-course has no character grid as such any more — the cluster is on the card and the
-characters are one arrow apart.
+the same way was the next piece of this work rather than something this milestone
+silently changed — **N13 below is that piece, and this sentence is left standing so
+the reader of the earlier version can see it was taken up.** The radicals, Words and
+Read screens are untouched, and the kanji course has no character grid as such any
+more — the cluster is on the card and the characters are one arrow apart.
 
 **And the readings carry no sign that they can be heard** — no speaker glyph, no
 "tap to hear". They are dashed-underlined controls, the same affordance the passages
@@ -1568,6 +1573,168 @@ because the first on-device report was "tapping a reading should speak" — the 
 was the phone's silent switch, and the *second* thing that exchange showed is that
 nothing on the screen says the readings are controls. That is now a publishing
 milestone's job, deliberately, rather than a debt N12 left behind.
+
+---
+
+## N13 — The kana course in two screens
+
+**The complaint N12 fixed for the kanji course was still true for the kana one.** The
+kana practice screen was a single page in three columns: the lesson list down the
+left, the chosen lesson's kana in the middle, and the board with the verdict, the
+typing box and the confusions stacked down the right. On a phone that is the same
+failure — the board sits below the course, so a learner scrolls past the lessons to
+write one kana and back again to choose the next — and N12 named it as the next piece
+of that work rather than doing it in passing. This is that piece.
+
+**The two screens.** `KanaPanel` is the course: the script toggle, one card per
+lesson, and each card carrying that lesson's own kana (a lesson is a row of the
+syllabary, plus the groups that are not on the grid at all). Tapping a card opens
+`KanaPractice`, which is the board. The chrome steps aside while a stage is up — the
+same `bind:practice` arrangement the kanji panel uses — and `Lessons`, the first
+control on the stage, is the way back. `HANDOVER_NIHONGO.md` invariant 34 is the rule
+and 33 is the one it follows.
+
+**The stage, in the maintainer's order** — the sound above the board, the board, the
+tools below it:
+
+* the **sound** above the board: the kana itself, its Hepburn reading with the
+  alternates, and the one control that says it. `Hear it` hands the **character** to
+  the voice, which for a kana is also its pronunciation (invariant 27), and っ or ー
+  says `no sound of its own` instead of offering a button that would say nothing;
+* the **board**, with nothing beside it;
+* the **tools** below the board, as the kanji stage draws them: Hint (the guide,
+  tracing or recall), Strokes, Undo, Clear, and Grade as the primary control;
+* everything else behind one `More` fold — what the kana is written with, the typing
+  exercise, and the kana it is confused with. Folded, the whole action — sound,
+  board, tools, Grade — ends at **y=667 in an 812px viewport**.
+
+**Three decisions inside that shape.**
+
+* **The arrows either side of the kana are the lesson's, wherever the kana came
+  from.** A lesson's kana are one sequence and the arrows step through it — no strip
+  of five, which would be a second grid above a board that already has the lesson an
+  arrow away. The lesson is **derived from the course on every change** rather than
+  remembered from the open, because the confusions list crosses lessons: シ and ツ are
+  two different rows, so tapping one on the other's stage has to move the arrows with
+  it. The live check opened ゆ from the chart and found `2 / 3` in the lesson `ya`.
+* **The request that opens a kana carries the script it is written in.** The kana
+  course is one course per script now, so a request naming only a character could
+  open a katakana kana among the hiragana lessons — the race N4 fixed once for a
+  single course, and the reason `focusFor` existed. `KanaPick` is `{ ch, script }`,
+  the panel switches to the request's script and **waits for that script's course**
+  before honouring it, and the rule is structural rather than a comparison, so
+  `focusFor` is gone with the single-course design that needed it.
+* **The tool row is the kanji stage's — the same five controls, the same shapes —
+  and the fold is at every width**, unlike Hanzi Tutor's phone-only one, for
+  invariant 33's reason. Measured at 390px, the row's three group cards wrap to two
+  rows (the four help and drawing tools, then Grade), and **the kanji stage measured
+  in the same window behaves identically** — it is the shared row's own behaviour and
+  not something the kana stage introduced.
+
+**What measuring it corrected — two bugs, one of them shared with the kanji stage.**
+
+* **The old lesson list called an off-grid group's kana its name.** A lesson's title
+  is `"<one half> — <the other half>"`, and **which half is the name depends on the
+  kind of lesson it is**: a grid row is `"あ い う え お — a i u e o"` and an off-grid
+  group is `"Small kana — ゃ ゅ ょ っ"`. Reading the first half as the kana and the
+  second as the sound — which is what `split(" — ")[0]`/[1] did — labelled the
+  small-kana lesson `Small kana` and its sound `ゃ ゅ ょ っ`. `kana.ts`'s `lessonLabel`
+  decides from the data — the half that is not `kana.join(" ")` is the name — and
+  `kana.test.ts` pins both shapes plus a title that matches neither.
+* **The Hint toggle threw the attempt away without telling the screen above it.**
+  `KanaCanvas` clears the board when the guide changes (Hanzi Tutor's trace/recall
+  behaviour, invariant 33's stage) and did not call `onchange`, so the verdict stayed
+  on screen for strokes the board had just discarded and `Grade` still held them.
+  Every other path that empties the board tells its caller — `undo` and `clear` — and
+  this was the one that did not. **It was N12's bug too, in the kanji stage**, and it
+  shipped because nothing had pressed Hint after grading. The board now reports the
+  emptied attempt.
+
+**Measured, because the phone is the width that matters.** The flow was driven over
+§5's DOM probe: 18 hiragana lesson cards reading `a`, `ka`, `sa` … with their clusters
+and counts; a card opening the stage on あ at `1 / 5` with the first arrow disabled;
+the switch and the tab row **absent from the DOM** while a stage is up and back after
+`Lessons`; the arrows stepping あ → い and back; a synthetic hand drawn along あ's own
+centre-lines graded **100/100** with all four scores 1.00, the schedule answering
+`the attempt was counted but could not be saved` (the harness's refused write, trap
+5); the fold hiding the typing box until `More`; `Hear it` and the `h` key each
+reaching Rust (`speak "あ" -> Ok(())`) while `h` typed in the reading box did not; the
+katakana course's 20 cards ending in `Prolonged sound mark` with ー, which opened at
+`1 / 1` reading `no sound of its own`.
+
+Then the layout was measured **in the app's own webview at a 390×844 window** — not
+in headless Chrome, which could not be used this session: `--dump-dom` hangs under
+this harness's sandbox even on a `data:` URL (Chrome 154), so trap 23's harness was
+unavailable, and the webview the phone actually runs is the better engine anyway. In
+it: no horizontal overflow (`scrollWidth` 373 of 390), `main`'s top padding **8px**
+rather than the desktop's 36, and the action ending at **y=667** — against the kanji
+stage's **768** in the same window, with the same 130px tool block and a shorter meta
+(112px against 147). Two touch targets are under the 44px a finger needs, and both
+are the kanji stage's own values carried over unchanged: the arrows at **40** and the
+Grade button at **40**. **Raising those two in both stages is the obvious next
+polish**, and doing it in one stage only would be worse than leaving it.
+
+**And the course screen was seen on the phone.** The build was installed on HHIP1
+(iPhone 13 Pro Max) and launched: the script toggle, and the lesson cards two to a
+row — あ い う え お, か き く け こ, … や ゆ よ reading `3 kana`. The **stage** has not
+been captured on the device; it has been measured in the desktop webview and driven
+over the probe, which is the same thing minus the eye.
+
+**What is deliberately not done.** The **Radicals**, **Words** and **Read** screens
+still draw one column each, and **Review** keeps its older look — the complaint
+applies to all four, and none of them is the board. The stage offers no strip of the
+lesson's kana, by the decision above. And the tool row's two touch targets, above.
+
+---
+
+## N14 — The icon, on the phone too
+
+**The phone was showing Tauri's template logo.** The app's own icon was made at N9 —
+あ white on the Chinese app's red squircle — and generated for the desktop bundle with
+`tauri icon`. The iOS shell arrived at N10 (`tauri ios init`), **after** that
+generation, so `src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/` still held
+what `ios init` had written: the yellow-and-teal Tauri "T" on white. That is what the
+home screen drew on the device, and it was found by looking at the phone rather than
+by any check — `tauri.conf.json` names `icons/icon.icns` for the desktop bundle and
+**nothing in the tree names the iOS set at all**.
+
+It is a documented obligation rather than a new discovery: `store/README.md` says the
+platform sets come from `tauri icon` and that forgetting it after changing the artwork
+leaves "the phones … showing the **template's Tauri logo**, which is what had happened
+here" — for Hanzi Tutor, once already. The fix is one command, and it has to be run
+after the iOS project exists:
+
+```bash
+cd apps/nihongo-tutor
+TAURI_ROOT="$PWD" ../../scripts/with-cargo-env.sh ../../scripts/tauri-cli.sh \
+  icon app-icon.png --ios-color "#ffffff"
+```
+
+**And the design changed with it: white field, red あ.** Two apps that teach
+characters from the same origin should not wear near-identical squares, and N9's icon
+was the Chinese app's red squircle with a white glyph — the two were distinguishable
+only by the glyph. The new master is the **inverse**: the same squircle mask and the
+same glyph box, white where it was red, and the flag's red (`#BC002D`) for the あ. It
+is generated rather than drawn, for N9's reason and with N9's face — あ in **Hiragino
+Kaku Gothic ProN W6**, scaled to the ink box the white あ had (`561 × 598` at
+`(255, 205)` on the 1024 canvas) — so the family's proportions are unchanged and only
+the two colours moved. `#BC002D` is the Japanese flag's red and the white is its
+field; the stripe the old icon carried is gone, because the glyph is the mark. The
+mask is **reused rather than reinvented**, read from the old master's own alpha, which
+is the same thing N9 did with Hanzi Tutor's.
+
+**Measured in the bundle that was installed, not in the source tree.**
+`AppIcon60x60@2x.png` inside `Nihongo Tutor.app` was the new artwork rather than the
+template's, `Assets.car` was rebuilt from it, and `Info.plist` already named
+`AppIcon` — so the only thing that had ever been wrong was the catalog's *contents*,
+which is the shape of this mistake and the reason a green build says nothing about it.
+N9's "the same md5 as Hanzi Tutor's" trap has a second half now: **the desktop set and
+the iOS set come from the same command, and only one of them is named in the config.**
+
+**Still deliberately not done.** N9's open items stand: there is no Play listing and
+no Japanese screenshot set. The desktop bundle was not rebuilt this session — the new
+artwork is in `src-tauri/icons/` for the next `pnpm run build` to pick up (and its
+`.dmg` half is trap 21's any day).
 
 ---
 

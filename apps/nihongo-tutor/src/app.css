@@ -235,6 +235,11 @@ nav {
   padding-right: 4px;
 }
 
+/* The base every lesson card starts from: the courses' own panels set the sizing
+   and the border they want, and both keep `align-items: flex-start` from here so a
+   card's children are laid out to the left rather than stretched. The rules for the
+   old three-column lesson *list* — its `.kana` and `.sound` spans and its `.active`
+   state — went with the column, in N13. */
 .lesson {
   display: flex;
   flex-direction: column;
@@ -248,30 +253,6 @@ nav {
   cursor: pointer;
   font: inherit;
   text-align: left;
-}
-
-.lesson .kana {
-  font-size: 1.02rem;
-  letter-spacing: 0.06em;
-}
-
-.lesson .sound {
-  font-size: 0.74rem;
-  color: var(--muted);
-}
-
-.lesson.voiced {
-  border-left: 3px solid color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.lesson.active {
-  border-color: var(--accent);
-}
-
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
-  gap: 6px;
 }
 
 .cell {
@@ -298,10 +279,6 @@ nav {
   width: 34px;
   height: 34px;
   aspect-ratio: auto;
-}
-
-.picker .yoon {
-  margin-top: 12px;
 }
 
 .hint {

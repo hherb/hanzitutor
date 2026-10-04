@@ -1,88 +1,121 @@
 import { describe, expect, it } from "vitest";
 
-import { chartColumns, focusFor, isSingleKana, joinedLabel, lessonKeyOf } from "./kana";
+import {
+  chartColumns,
+  isSingleKana,
+  joinedLabel,
+  lessonLabel,
+  lessonOf,
+  neighbourIn,
+  positionIn,
+} from "./kana";
 import type { ChartView, LessonView } from "./types";
 
 /**
  * The kana screens' arithmetic.
  *
- * Four rules. Three of them are what make "a kana offered anywhere can be opened
- * on the board" true rather than nearly true: which lesson a kana opened from
- * elsewhere belongs to, how wide the chart's grid is, and whether a drill answer
- * is a kana the board can draw at all. The fourth is how a verdict says which
- * taught strokes a hand drew joined — the line that makes the per-stroke list's
- * numbers honest.
+ * Four rules make "a kana offered anywhere can be opened on the board" true
+ * rather than nearly true: which lesson a kana belongs to, how the arrows step
+ * through it, how wide the chart's grid is, and whether a drill answer is a kana
+ * the board can draw at all. The fifth is how a verdict says which taught strokes
+ * a hand drew joined — the line that makes the per-stroke list's numbers honest.
  */
 
-const lesson = (key: string, kana: string[]): LessonView => ({
+const lesson = (key: string, kana: string[], title?: string): LessonView => ({
   key,
-  title: `${kana.join(" ")} — ${key}`,
+  title: title ?? `${kana.join(" ")} — ${key}`,
   kana,
   voiced: false,
   count: kana.length,
 });
 
 const course: LessonView[] = [
-  lesson("hiragana-a", ["あ", "い", "う", "え", "お"]),
-  lesson("hiragana-ya", ["や", "ゆ", "よ"]),
-  lesson("hiragana-small", ["ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "ゃ", "ゅ", "ょ", "っ", "ゎ"]),
+  lesson("hiragana-a", ["あ", "い", "う", "え", "お"], "あ い う え お — a i u e o"),
+  lesson("hiragana-ya", ["や", "ゆ", "よ"], "や ゆ よ — ya yu yo"),
+  lesson("hiragana-small", ["ぁ", "ぃ", "ぅ", "ぇ", "ぉ"], "Small kana — ぁ ぃ ぅ ぇ ぉ"),
 ];
 
-const chart = (rows: (string | null)[][]): ChartView => ({
-  script: "hiragana",
-  rows: rows.map((cells) => ({ sound: "ka", voiced: false, cells })),
-  offGrid: [],
-});
-
-describe("lessonKeyOf", () => {
+describe("lessonOf", () => {
   it("finds the lesson a kana is taught in, not the first lesson", () => {
-    expect(lessonKeyOf(course, "ゆ")).toBe("hiragana-ya");
-    expect(lessonKeyOf(course, "ゃ")).toBe("hiragana-small");
+    expect(lessonOf(course, "ゆ")?.key).toBe("hiragana-ya");
+    expect(lessonOf(course, "ぉ")?.key).toBe("hiragana-small");
   });
 
   it("answers with nothing when the course does not teach it", () => {
-    expect(lessonKeyOf(course, "カ")).toBeNull();
-    expect(lessonKeyOf([], "あ")).toBeNull();
+    expect(lessonOf(course, "カ")).toBeNull();
+    expect(lessonOf([], "あ")).toBeNull();
   });
 
   it("does not mistake a kana for one it merely contains", () => {
     // き is not in きゃ: a lesson's members are its kana, not its substrings.
     const withDigraph = [lesson("hiragana-small", ["きゃ"])];
-    expect(lessonKeyOf(withDigraph, "き")).toBeNull();
-    expect(lessonKeyOf(withDigraph, "きゃ")).toBe("hiragana-small");
+    expect(lessonOf(withDigraph, "き")).toBeNull();
+    expect(lessonOf(withDigraph, "きゃ")?.key).toBe("hiragana-small");
   });
 });
 
-describe("focusFor", () => {
-  const hiragana: LessonView[] = [lesson("hiragana-a", ["あ", "い", "う"])];
-  const katakana: LessonView[] = [lesson("katakana-a", ["ア", "イ", "ウ"])];
-
-  it("honours a request that belongs to the course being opened", () => {
-    expect(focusFor({ ch: "い", script: "hiragana" }, "hiragana", hiragana)).toBe("い");
-    expect(focusFor({ ch: "ウ", script: "katakana" }, "katakana", katakana)).toBe("ウ");
+describe("lessonLabel", () => {
+  it("is the row's sound for a lesson of the gojūon grid", () => {
+    expect(lessonLabel(course[0]!)).toBe("a i u e o");
+    expect(lessonLabel(course[1]!)).toBe("ya yu yo");
   });
 
-  it("refuses a request from the other script, and opens the first kana instead", () => {
-    // The case a single un-tagged slot gets wrong: a request left over from a
-    // script whose load failed must not be applied to whichever course loads next,
-    // or the board shows one script's kana under the other's lessons.
-    expect(focusFor({ ch: "い", script: "hiragana" }, "katakana", katakana)).toBe("ア");
-    expect(focusFor({ ch: "ウ", script: "katakana" }, "hiragana", hiragana)).toBe("あ");
+  it("is the group's own name for a lesson off the grid", () => {
+    // The title's halves swap places here — "Small kana — ぁ ぃ ぅ ぇ ぉ" names the
+    // group first — and reading the first half blindly would call the kana the
+    // lesson's sound and the group its name.
+    expect(lessonLabel(course[2]!)).toBe("Small kana");
   });
 
-  it("falls back to the first kana when nothing was asked for", () => {
-    expect(focusFor(null, "hiragana", hiragana)).toBe("あ");
+  it("does not read the label off a lesson whose kana it cannot match", () => {
+    // A title shape this does not know still answers with the half a learner used
+    // to see, rather than with an empty label or with the whole title.
+    const odd = lesson("hiragana-x", ["あ"], "Something else entirely");
+    expect(lessonLabel(odd)).toBe("Something else entirely");
+  });
+});
+
+describe("neighbourIn", () => {
+  it("steps to the kana either side inside the lesson", () => {
+    expect(neighbourIn(course[0]!, "い", 1)).toBe("う");
+    expect(neighbourIn(course[0]!, "い", -1)).toBe("あ");
   });
 
-  it("answers with nothing only when there is neither a request nor a course", () => {
-    // The order matters and is the point: a request that belongs to this script is
-    // a kana the caller was promised, so it is honoured even for an empty course —
-    // what lesson to highlight is the caller's fallback, not this function's.
-    expect(focusFor({ ch: "い", script: "hiragana" }, "hiragana", [])).toBe("い");
-    // With no matching request and no course there is no kana to open.
-    expect(focusFor({ ch: "い", script: "hiragana" }, "katakana", [])).toBeNull();
-    expect(focusFor(null, "hiragana", [])).toBeNull();
+  it("stops at both ends rather than wrapping", () => {
+    // A lesson is a sequence a learner works through; an arrow that jumped from
+    // the last kana back to the first would hide that the lesson is finished.
+    expect(neighbourIn(course[0]!, "あ", -1)).toBeNull();
+    expect(neighbourIn(course[0]!, "お", 1)).toBeNull();
   });
+
+  it("answers nothing for a kana the lesson does not hold, and for no lesson", () => {
+    // The case the stage meets when it opens a kana from the confusions list:
+    // シ belongs to another lesson, so this one has no arrow to offer.
+    expect(neighbourIn(course[0]!, "ん", 1)).toBeNull();
+    expect(neighbourIn(null, "あ", 1)).toBeNull();
+  });
+
+  it("does not move when asked for no step", () => {
+    expect(neighbourIn(course[0]!, "あ", 0)).toBeNull();
+  });
+});
+
+describe("positionIn", () => {
+  it("counts from one, which is what the stage prints", () => {
+    expect(positionIn(course[0]!, "あ")).toBe(1);
+    expect(positionIn(course[0]!, "お")).toBe(5);
+  });
+
+  it("is zero for a kana the lesson does not hold, and for no lesson", () => {
+    expect(positionIn(course[0]!, "ん")).toBe(0);
+    expect(positionIn(null, "あ")).toBe(0);
+  });
+});
+
+const chart = (rows: (string | null)[][]): ChartView => ({
+  script: "hiragana",
+  rows: rows.map((cells) => ({ sound: "ka", voiced: false, cells })),
+  offGrid: [],
 });
 
 describe("chartColumns", () => {
