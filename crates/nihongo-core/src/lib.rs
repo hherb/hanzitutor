@@ -37,6 +37,11 @@
 pub mod curriculum;
 pub mod drill;
 pub mod grammar;
+// The grammar drill: the course's own sentences with the pattern taken out, and the
+// tally of which patterns this learner misses. Its own module rather than a corner of
+// `grammar` because it is the *practice* half — `grammar` is the data layer the
+// course and the drill both read, and the drill writes nothing into it.
+pub mod grammar_drill;
 pub mod input;
 pub mod kana;
 pub mod kanji;
@@ -63,9 +68,15 @@ pub use grammar::{
     GrammarExample, GrammarPoint, GrammarSource, GRAMMAR_ARTIFACT_MAGIC,
 };
 pub use drill::{
-    confusion_pairs, find_pair, key_of, pair_key, split_key, voicing_pairs, yoon_pairs, ConfusionLog,
-    DrillKind, DrillPair, DrillSide, PairTally, CORRECT_WEIGHT, MIN_WEIGHT, START_WEIGHT,
-    WRONG_WEIGHT,
+    confusion_pairs, find_pair, key_of, pair_key, pick_weighted, split_key, voicing_pairs,
+    yoon_pairs, ConfusionLog, DrillKind, DrillPair, DrillSide, PairTally, CORRECT_WEIGHT,
+    MIN_WEIGHT, START_WEIGHT, WRONG_WEIGHT,
+};
+pub use grammar_drill::{
+    askable, askable_of, askable_points, attaches_alike, blank_for, can_distract,
+    draw as draw_grammar_question, fills_the_same_hole, formation_head, lumps, plausible,
+    question_for, size as grammar_drill_size, Askable, Blank, DrillSize, GrammarLog, GrammarOption,
+    GrammarQuestion, LENGTH_WINDOW, MIN_BLANK, OPTION_COUNT,
 };
 pub use hanzi_core::{
     decompose::{parse as parse_decomposition, Component, Decomposition},

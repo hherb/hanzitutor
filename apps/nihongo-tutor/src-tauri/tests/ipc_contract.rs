@@ -1678,3 +1678,126 @@ fn the_voice_the_interface_is_offered_is_japanese() {
         }
     }
 }
+
+/// One question for the grammar drill, as the webview reads it.
+///
+/// The shape is `nihongo_core::grammar_drill::GrammarQuestion`'s own — the app does
+/// not reshape it — so what this pins is the wire form of that type: the two halves
+/// of the sentence with its furigana, the English the corpus pairs with it, the
+/// answer's own pattern, meaning, formation and note for the reveal, and the
+/// options. Every one of those is a field the screen draws or shows, which is why
+/// the exact key set is asserted rather than a few of them.
+#[test]
+fn a_grammar_question_crosses_with_its_sentence_its_answer_and_its_options() {
+    let state = state();
+    let question = state
+        .next_grammar_question_with_rolls(0.0, 0.0, 0.0)
+        .expect("the first pattern of the course can be asked");
+    let value = serde_json::to_value(&question).expect("serialises");
+    assert_eq!(
+        keys(&value),
+        vec![
+            "after", "before", "blank", "en", "formation", "ja", "meaning", "notes", "options",
+            "pattern", "point", "reading",
+        ]
+    );
+    // The ruby spans are the corpus's, one shape for a plain segment and one for a
+    // kanji with its reading over it.
+    let spans = value["before"].as_array().expect("an array");
+    let after = value["after"].as_array().expect("an array");
+    assert!(!spans.is_empty() || !after.is_empty(), "the sentence has to be somewhere");
+    for span in spans.iter().chain(after.iter()) {
+        assert_eq!(keys(span), vec!["rt", "ruby"]);
+        assert!(span["ruby"].as_str().is_some_and(|text| !text.is_empty()));
+    }
+    // Three options, each a whole pattern with its own id and, where the corpus
+    // stores one, its kana reading.
+    let options = value["options"].as_array().expect("an array");
+    assert_eq!(options.len(), 3, "the answer and two distractors");
+    for option in options {
+        assert_eq!(keys(option), vec!["id", "pattern", "reading"]);
+        assert!(!option["pattern"].as_str().expect("a pattern").is_empty());
+        assert!(!option["id"].as_str().expect("an id").is_empty());
+    }
+    assert!(
+        options.iter().any(|option| option["id"] == question.point),
+        "the answer is among the options"
+    );
+    // And the three parts really are the sentence, which is what the screen draws:
+    // the two halves, and the lump of the pattern that came out of the middle.
+    let before: String = question.before.iter().map(|part| part.ruby.as_str()).collect();
+    let after: String = question.after.iter().map(|part| part.ruby.as_str()).collect();
+    assert_eq!(format!("{before}{}{after}", question.blank), question.ja);
+    assert!(!question.blank.is_empty());
+    assert_eq!(
+        question.ja.matches(&question.blank).count(),
+        1,
+        "the hole has one place to go"
+    );
+    assert!(!question.en.is_empty(), "the English is the way in for a beginner");
+    assert!(
+        question.reading.is_none() || !question.reading.as_deref().unwrap_or("").is_empty(),
+        "a stored reading is either absent or real: the app composes none"
+    );
+}
+
+#[test]
+fn the_grammar_drill_size_crosses_as_camel_case() {
+    let size = state().grammar_drill_size();
+    let value = serde_json::to_value(size).expect("serialises");
+    assert_eq!(keys(&value), vec!["examples", "points", "total"]);
+    assert_eq!(value["total"], 526);
+    assert_eq!(value["points"], 363);
+    assert_eq!(value["examples"], 903);
+}
+
+/// The arguments `record_grammar_answer` takes, as the webview posts them.
+///
+/// Spelled out rather than inferred, because this is the half of the contract that
+/// fails loudly — a wrong key is a rejected command — and the half that has already
+/// gone wrong once in this app (`HANDOVER_NIHONGO.md` invariant 14). There is
+/// deliberately no `correct` field: the interface says what was asked and what was
+/// picked, and Rust decides.
+#[derive(Deserialize)]
+struct RecordGrammarAnswer {
+    point: String,
+    picked: String,
+}
+
+#[test]
+fn the_grammar_answer_the_interface_posts_is_read_the_way_the_command_reads_it() {
+    // `src/lib/api.ts` authors exactly this payload for exactly this command:
+    //   invoke("record_grammar_answer", { point, picked })
+    let state = state();
+    let question = state
+        .next_grammar_question_with_rolls(0.0, 0.0, 0.0)
+        .expect("a question");
+    let picked = question
+        .options
+        .iter()
+        .find(|option| option.id != question.point)
+        .expect("a distractor")
+        .id
+        .clone();
+    let payload = json!({ "point": question.point, "picked": picked });
+    let args: RecordGrammarAnswer =
+        serde_json::from_value(payload).expect("the payload the interface posts deserialises");
+    let tally = state
+        .record_grammar_answer(&args.point, &args.picked)
+        .expect("records");
+    let value = serde_json::to_value(&tally).expect("serialises");
+    assert_eq!(keys(&value), vec!["asked", "correct", "point", "weight", "wrong"]);
+    assert_eq!(value["point"], question.point);
+    assert_eq!(value["asked"], 1);
+    assert_eq!(value["wrong"], 1);
+    assert_eq!(value["weight"], 3.0, "a miss is weighted by the drill's own rule");
+
+    // A payload that names a pattern the drill cannot ask is a message, not a
+    // panic, and a payload that names nothing at all is a message too.
+    let refused = state
+        .record_grammar_answer("no-such-pattern", &question.point)
+        .unwrap_err();
+    assert!(serde_json::to_value(&refused).expect("serialises").is_string());
+    assert!(refused.contains("not a pattern this drill asks about"), "{refused}");
+    assert!(state.record_grammar_answer(&question.point, "no-such-pattern").is_err());
+}

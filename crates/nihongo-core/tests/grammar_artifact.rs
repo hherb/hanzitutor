@@ -335,3 +335,103 @@ fn the_artifact_records_where_the_corpus_came_from_and_what_was_changed() {
         source.modifications
     );
 }
+
+/// The drill's own account of the course, pinned.
+///
+/// The rule that finds a blank is a *reading* of the corpus rather than a field of
+/// it (see `nihongo_core::grammar_drill`), so the numbers it comes to are the
+/// artifact's numbers and belong here with the rest of them: if the corpus moves, or
+/// the rule changes what it can locate, this is where the change is deliberate.
+///
+/// **363 of the 526 points and 903 of the 1,526 sentences** at a three-character
+/// minimum, against 343 and 852 before the bracketed groups were read as what they
+/// are — 17 points were reachable only because `〜あまり（に）` holds an optional に
+/// rather than the lump `あまり（に）`, which occurs in no Japanese sentence.
+#[test]
+fn the_drill_can_ask_most_of_the_course_from_the_corpus_own_sentences() {
+    use nihongo_core::grammar_drill::{askable, blank_for, can_distract, size};
+
+    let dataset = dataset();
+    let measured = size(&dataset);
+    assert_eq!(measured.total, 526);
+    assert_eq!(measured.points, 363, "363 of the 526 patterns have a sentence the rule can blank");
+    assert_eq!(measured.examples, 903, "over 903 of the 1,526 sentences");
+
+    // And over every one of those sentences, the three properties the question
+    // rests on: the blank is at least as long as the floor, it occurs exactly once
+    // (a hole with two places to go is not a question), and no other point's pattern
+    // says exactly what came out (or two options would be right).
+    let mut clashes = 0usize;
+    let mut clash_points = std::collections::BTreeSet::new();
+    for answer in askable(&dataset) {
+        assert!(
+            answer.blank.text.chars().count() >= nihongo_core::MIN_BLANK,
+            "{} asked a blank of {}",
+            answer.point.id,
+            answer.blank.text.chars().count()
+        );
+        assert_eq!(
+            answer.example.ja.matches(&answer.blank.text).count(),
+            1,
+            "{}'s blank occurs more than once in {}",
+            answer.point.id,
+            answer.example.ja
+        );
+        // The split keeps the sentence whole, which is what the screen draws.
+        assert_eq!(
+            answer.before().iter().map(|part| part.ruby.as_str()).collect::<String>()
+                + &answer.blank.text
+                + &answer.after().iter().map(|part| part.ruby.as_str()).collect::<String>(),
+            answer.example.ja,
+            "{} lost or invented text",
+            answer.point.id
+        );
+        if dataset.points().iter().any(|other| {
+            other.id != answer.point.id
+                && nihongo_core::lumps(&other.pattern).contains(&answer.blank.text)
+        }) {
+            clashes += 1;
+            clash_points.insert(answer.point.id.clone());
+        }
+    }
+    assert_eq!(clashes, 34, "34 sentences have a point elsewhere that says exactly what came out");
+    assert_eq!(clash_points.len(), 16, "and 16 points are involved");
+
+    // Every point that can be asked has a question with three distinct options and
+    // the answer among them, and every option that is not the answer is safe.
+    let mut asked = 0usize;
+    for answer in askable(&dataset) {
+        let options: Vec<&nihongo_core::GrammarPoint> = dataset
+            .points()
+            .iter()
+            .filter(|other| can_distract(&answer, other))
+            .collect();
+        assert!(
+            options.len() >= nihongo_core::OPTION_COUNT - 1,
+            "{} cannot find two safe distractors",
+            answer.point.id
+        );
+        asked += 1;
+    }
+    assert_eq!(asked, 903);
+
+    // A pattern the corpus stores with an optional particle is asked at all only
+    // because the brackets are read as what they are.
+    let amari = dataset.get("amari-ni").expect("〜あまり（に） is in the corpus");
+    assert_eq!(amari.pattern, "〜あまり（に）");
+    assert!(
+        amari.examples.iter().any(|example| blank_for(amari, example).is_some()),
+        "〜あまり（に） is askable because あまりに is one of its lumps"
+    );
+    assert!(
+        nihongo_core::lumps(&amari.pattern).iter().any(|lump| lump == "あまりに"),
+        "the optional に is one of the pattern's own readings: {:?}",
+        nihongo_core::lumps(&amari.pattern)
+    );
+    let blank = blank_for(amari, &amari.examples[0]).expect("its first sentence can be asked");
+    assert!(
+        blank.text == "あまり" || blank.text == "あまりに",
+        "{:?} is not one of the pattern's readings",
+        blank.text
+    );
+}

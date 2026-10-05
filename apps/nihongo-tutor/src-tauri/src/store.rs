@@ -1,30 +1,34 @@
 //! The app's own study files.
 //!
-//! Nihongo Tutor keeps exactly three things about its learner: which confusion
-//! pairs they get wrong, when each character the board has taught comes back, and
-//! which half of the app they were last in. All three live here — in files of this
-//! app's own, under this app's data directory — and deliberately **not** in a
-//! shared store. The Japanese and Chinese apps are separate products and their
-//! learners' data is separate with them: what is shared between the apps is
-//! *code*, never user data. See `HANDOVER_NIHONGO.md` invariant 15.
+//! Nihongo Tutor keeps exactly four things about its learner: which confusion pairs
+//! they get wrong, which grammar patterns they miss, when each character the board
+//! has taught comes back, and which half of the app they were last in. All four live
+//! here — in files of this app's own, under this app's data directory — and
+//! deliberately **not** in a shared store. The Japanese and Chinese apps are
+//! separate products and their learners' data is separate with them: what is shared
+//! between the apps is *code*, never user data. See `HANDOVER_NIHONGO.md`
+//! invariant 15.
 //!
-//! All three files are plain JSON, written whole and atomically, so that a person
-//! can read one, copy it as a backup, or delete it to start over. All three are
-//! written by Rust rather than by the webview, which is why the app still holds no
-//! filesystem permission in `capabilities/default.json`.
+//! All four files are plain JSON, written whole and atomically, so that a person can
+//! read one, copy it as a backup, or delete it to start over. All four are written by
+//! Rust rather than by the webview, which is why the app still holds no filesystem
+//! permission in `capabilities/default.json`.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use nihongo_core::{
-    now_iso8601, ConfusionLog, PairTally, ProgressError, ProgressStore, Section,
+    now_iso8601, ConfusionLog, GrammarLog, PairTally, ProgressError, ProgressStore, Section,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The file's name inside the app's data directory.
 pub const FILE_NAME: &str = "confusions.json";
+
+/// The grammar drill's file name, in the same directory.
+pub const GRAMMAR_FILE_NAME: &str = "grammar.json";
 
 /// The review schedule's file name, in the same directory.
 pub const REVIEW_FILE_NAME: &str = "review.json";
@@ -160,6 +164,77 @@ impl ConfusionStore {
     /// progress is not being saved should be told rather than discover it later.
     pub fn record(&mut self, key: &str, correct: bool) -> io::Result<PairTally> {
         let tally = self.log.record(key, correct);
+        self.save()?;
+        Ok(tally)
+    }
+
+    /// Write the file, if there is one to write.
+    pub fn save(&self) -> io::Result<()> {
+        match &self.path {
+            Some(path) => write_json(path, &self.log),
+            None => Ok(()),
+        }
+    }
+}
+
+/// What the app knows about this learner's grammar patterns, and where it is kept.
+///
+/// The kana drill's [`ConfusionStore`] one course over, and a **separate file** for
+/// the reason invariant 15 gives: a mistake in writing one must not be able to reach
+/// the other, and a pattern id (`ni-taishite`) is not a pair of kana (`シ|ツ`) — the
+/// two key spaces would be one map's keys if these shared a file, and nothing
+/// reading it could tell which was which.
+///
+/// The tally itself is [`nihongo_core::GrammarLog`], which holds the same
+/// [`PairTally`] and the same weight rule as the kana drill.
+pub struct GrammarStore {
+    /// `None` means nowhere to write, as in the other stores: the tallies still work
+    /// for this session, and the app falls back to that when the platform will not
+    /// name a data directory.
+    path: Option<PathBuf>,
+    log: GrammarLog,
+}
+
+impl GrammarStore {
+    /// A store that keeps its record in memory and writes nothing.
+    pub fn in_memory() -> Self {
+        Self {
+            path: None,
+            log: GrammarLog::new(),
+        }
+    }
+
+    /// Load `grammar.json` from `dir`, or start empty.
+    ///
+    /// A missing file is not an error: that is the first run, and the first answer
+    /// creates it.
+    pub fn at_dir(dir: impl AsRef<Path>) -> Self {
+        let path = dir.as_ref().join(GRAMMAR_FILE_NAME);
+        Self {
+            log: read_json(&path),
+            path: Some(path),
+        }
+    }
+
+    /// The record itself.
+    pub fn log(&self) -> &GrammarLog {
+        &self.log
+    }
+
+    /// Whether anything is written to disk at all.
+    pub fn is_persistent(&self) -> bool {
+        self.path.is_some()
+    }
+
+    /// Record one answer against a pattern, write the file, and say what the record
+    /// now is.
+    ///
+    /// The same rule the kana drill's store follows: the record is kept **even if
+    /// the write fails** — the answer happened — but the failure is returned rather
+    /// than swallowed, because a learner whose progress is not being saved should be
+    /// told rather than discover it later.
+    pub fn record(&mut self, id: &str, correct: bool) -> io::Result<PairTally> {
+        let tally = self.log.record(id, correct);
         self.save()?;
         Ok(tally)
     }
@@ -687,6 +762,76 @@ mod tests {
             !dir.path().join(PREFS_FILE_NAME).exists(),
             "opening the app is not a preference to write"
         );
+    }
+
+    // ---- the grammar drill's record ---------------------------------------
+
+    #[test]
+    fn a_grammar_answer_survives_a_restart_in_its_own_file() {
+        let dir = TempDir::new("grammar-restart");
+        {
+            let mut store = GrammarStore::at_dir(dir.path());
+            assert!(store.is_persistent());
+            store.record("te-kudasai", false).expect("writes");
+            store.record("te-kudasai", true).expect("writes");
+        }
+        let reopened = GrammarStore::at_dir(dir.path());
+        assert_eq!(
+            reopened.log().tally("te-kudasai"),
+            PairTally { asked: 2, correct: 1, wrong: 1 }
+        );
+        assert_eq!(reopened.log().patterns_seen(), 1);
+
+        // Its own file, not the kana drill's: the two key spaces must not meet.
+        let text = fs::read_to_string(dir.path().join(GRAMMAR_FILE_NAME)).expect("the file");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(value["points"]["te-kudasai"]["wrong"], 1);
+        assert!(value.get("pairs").is_none(), "the kana drill's key is not this file's");
+        assert!(
+            !dir.path().join(FILE_NAME).exists(),
+            "recording a grammar answer wrote nothing into confusions.json"
+        );
+    }
+
+    #[test]
+    fn a_grammar_file_that_will_not_parse_is_kept_aside_and_does_not_block_the_app() {
+        let dir = TempDir::new("grammar-corrupt");
+        let path = dir.path().join(GRAMMAR_FILE_NAME);
+        fs::write(&path, "{ this is not json").expect("writes");
+
+        let mut store = GrammarStore::at_dir(dir.path());
+        assert!(store.log().is_empty(), "a corrupt file is not a crash");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("grammar.json.corrupt")).expect("still there"),
+            "{ this is not json",
+            "kept as it was, not as an empty file"
+        );
+
+        // And the app carries on: the next answer writes a valid file.
+        store.record("te-kudasai", true).expect("writes");
+        assert_eq!(GrammarStore::at_dir(dir.path()).log().patterns_seen(), 1);
+    }
+
+    #[test]
+    fn a_grammar_write_that_fails_is_reported_and_the_answer_is_still_counted() {
+        let dir = TempDir::new("grammar-unwritable");
+        fs::create_dir_all(dir.path().join("grammar.json.tmp")).expect("a directory in the way");
+        let mut store = GrammarStore::at_dir(dir.path());
+
+        assert!(store.record("te-kudasai", false).is_err(), "the failure surfaces");
+        assert_eq!(
+            store.log().tally("te-kudasai"),
+            PairTally { asked: 1, correct: 0, wrong: 1 },
+            "the answer happened, and the record holds it until it can be written"
+        );
+    }
+
+    #[test]
+    fn an_in_memory_grammar_store_records_without_writing_anything() {
+        let mut store = GrammarStore::in_memory();
+        assert!(!store.is_persistent());
+        store.record("te-kudasai", true).expect("nothing to write");
+        assert_eq!(store.log().tally("te-kudasai").correct, 1);
     }
 
     #[test]

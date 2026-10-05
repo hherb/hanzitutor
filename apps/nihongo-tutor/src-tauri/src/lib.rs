@@ -22,6 +22,7 @@ use hanzi_voice::{Language, Speaker};
 use licences::{AppInfo, LicenceNotice};
 use nihongo_core::{
     band_name, confusions_for, grade_kana, grade_name,
+    grammar_drill as grammar_practice,
     kanji_lessons as build_kanji_lessons, key_of, lessons as build_lessons,
     normalise_to_hiragana, now_iso8601, off_grid, parse_decomposition,
     queue as build_review_queue, reading, split_key, to_kana, to_kana_in, yoon as build_yoon,
@@ -34,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::{ConfusionStore, Prefs, PrefsStore, ReviewStore};
+use store::{ConfusionStore, GrammarStore, Prefs, PrefsStore, ReviewStore};
 use tauri::{Manager, State};
 
 /// The datasets, loaded once and shared by every command, the drill's memory of
@@ -66,6 +67,10 @@ pub struct AppState {
     /// and recording an answer is a write. Contention is nil: one learner, one
     /// window, and a lock held for the microseconds a JSON write takes.
     drill: Mutex<ConfusionStore>,
+    /// The grammar drill's memory: which of the course's patterns this learner has
+    /// missed, in a file of its own beside the kana drill's. Two drills, two key
+    /// spaces, two files — see [`store`] and `HANDOVER_NIHONGO.md` invariant 15.
+    grammar_drill: Mutex<GrammarStore>,
     /// The review schedule, in this app's own file beside the drill's — never a
     /// shared one. See [`store`] and `HANDOVER_NIHONGO.md` invariant 15.
     review: Mutex<ReviewStore>,
@@ -93,6 +98,7 @@ impl AppState {
     pub fn load() -> Self {
         Self::with_stores(
             ConfusionStore::in_memory(),
+            GrammarStore::in_memory(),
             ReviewStore::in_memory(),
             PrefsStore::in_memory(),
         )
@@ -103,12 +109,18 @@ impl AppState {
         let dir = dir.into();
         Self::with_stores(
             ConfusionStore::at_dir(&dir),
+            GrammarStore::at_dir(&dir),
             ReviewStore::at_dir(&dir),
             PrefsStore::at_dir(&dir),
         )
     }
 
-    fn with_stores(drill: ConfusionStore, review: ReviewStore, prefs: PrefsStore) -> Self {
+    fn with_stores(
+        drill: ConfusionStore,
+        grammar_drill: GrammarStore,
+        review: ReviewStore,
+        prefs: PrefsStore,
+    ) -> Self {
         macro_rules! artifact {
             ($name:literal) => {
                 include_bytes!(concat!(
@@ -132,6 +144,7 @@ impl AppState {
             grammar: GrammarDataset::from_gzip_bytes(artifact!("grammar.bin.gz"))
                 .expect("the committed grammar artifact decodes"),
             drill: Mutex::new(drill),
+            grammar_drill: Mutex::new(grammar_drill),
             review: Mutex::new(review),
             prefs: Mutex::new(prefs),
             speaker: Arc::new(Speaker::new(Language::Japanese)),
@@ -608,6 +621,79 @@ impl AppState {
             .iter()
             .all(|side| !side.prompt.is_empty() && !side.spelling.is_empty())
             && pair.characters().all(|ch| self.kana.get(ch).is_some())
+    }
+
+    /// The next grammar question: which pattern (weighted towards the ones this
+    /// learner has missed), which of its own sentences, and which two wrong
+    /// answers.
+    ///
+    /// The three rolls are supplied rather than drawn here for the reason the kana
+    /// drill's are: the whole decision is then deterministic in a test. The rule —
+    /// how a blank is found, what makes a distractor safe, what makes it plausible
+    /// — is `nihongo_core::grammar_drill`'s, and this is the thin half that reads
+    /// this app's own record and hands the question on.
+    pub fn next_grammar_question_with_rolls(
+        &self,
+        point_roll: f64,
+        example_roll: f64,
+        option_roll: f64,
+    ) -> Option<grammar_practice::GrammarQuestion> {
+        let log = self
+            .grammar_drill
+            .lock()
+            .expect("the grammar drill's store is not poisoned");
+        grammar_practice::draw(&self.grammar, log.log(), point_roll, example_roll, option_roll)
+    }
+
+    /// The next question, with the randomness supplied by the clock.
+    pub fn next_grammar_question(&self) -> Option<grammar_practice::GrammarQuestion> {
+        self.next_grammar_question_with_rolls(roll(), roll(), roll())
+    }
+
+    /// What the grammar drill can ask, for the screen's own line about it.
+    pub fn grammar_drill_size(&self) -> grammar_practice::DrillSize {
+        grammar_practice::size(&self.grammar)
+    }
+
+    /// Record what the learner answered, and say what the pattern's record now is.
+    ///
+    /// **Correctness is decided here**, not sent by the interface: a client that
+    /// could post `correct: true` would be a client that could lie to itself, and
+    /// the file is meant to be worth reading. The pattern asked about is looked up
+    /// in the pool the drill can actually ask from, and the answer that was picked
+    /// in the course the app holds, so neither a pattern the learner could not have
+    /// been asked nor an id that names nothing can be written into the file for
+    /// good. The picked pattern need not be askable itself — a distractor is any
+    /// point of the course.
+    pub fn record_grammar_answer(
+        &self,
+        point: &str,
+        picked: &str,
+    ) -> Result<GrammarTally, String> {
+        let askable = grammar_practice::askable_points(&self.grammar)
+            .into_iter()
+            .any(|candidate| candidate.id == point);
+        if !askable {
+            return Err(format!(
+                "{point:?} is not a pattern this drill asks about, so there is nothing to record"
+            ));
+        }
+        if self.grammar.get(picked).is_none() {
+            return Err(format!("{picked:?} is not a pattern of this course"));
+        }
+        let tally = self
+            .grammar_drill
+            .lock()
+            .expect("the grammar drill's store is not poisoned")
+            .record(point, picked == point)
+            .map_err(|err| format!("the answer was counted but could not be saved: {err}"))?;
+        Ok(GrammarTally {
+            point: point.to_string(),
+            asked: tally.asked,
+            correct: tally.correct,
+            wrong: tally.wrong,
+            weight: tally.weight(),
+        })
     }
 
     /// The yōon digraphs for one script — the pairs that make one mora.
@@ -1243,6 +1329,23 @@ pub struct DrillTally {
     pub correct: u32,
     pub wrong: u32,
     /// The pair's share of the drill, per the rule in `nihongo_core::drill`.
+    pub weight: f64,
+}
+
+/// What the learner's record for one grammar pattern now is, after an answer.
+///
+/// The same shape as [`DrillTally`] with a point where that one has a pair, and the
+/// same arithmetic behind `weight`: `nihongo_core::drill`'s rule, over the grammar
+/// drill's own pool. The id is the corpus's (`ni-taishite`); the screen already has
+/// the pattern it was asked about, so the readable form does not travel twice.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GrammarTally {
+    pub point: String,
+    pub asked: u32,
+    pub correct: u32,
+    pub wrong: u32,
+    /// The pattern's share of the drill, per the rule in `nihongo_core::drill`.
     pub weight: f64,
 }
 
@@ -1934,6 +2037,42 @@ fn grammar_search(state: State<'_, AppState>, query: String, limit: usize) -> Gr
     state.grammar_search(&query, limit)
 }
 
+/// The next grammar question: one of the corpus's own sentences with the pattern
+/// taken out, and three patterns to choose between. `None` only if nothing at all
+/// can be asked.
+///
+/// The question is drawn in Rust, weighted by how often this learner has missed the
+/// pattern, rather than drawn here from a list. That is not a layering preference:
+/// only the asker knows which pattern it asked, and the answer has to be remembered
+/// against it.
+#[tauri::command]
+fn next_grammar_question(state: State<'_, AppState>) -> Option<grammar_practice::GrammarQuestion> {
+    state.next_grammar_question()
+}
+
+/// What the grammar drill can ask of the course, in numbers.
+///
+/// Asked for once by the screen so it can say how much of the course is askable
+/// rather than leave a learner wondering why a pattern they know never comes up.
+#[tauri::command]
+fn grammar_drill_size(state: State<'_, AppState>) -> grammar_practice::DrillSize {
+    state.grammar_drill_size()
+}
+
+/// Record what the learner answered, and get the pattern's record back.
+///
+/// `point` is the pattern the question asked for and `picked` is the one that was
+/// chosen. There is deliberately no way to say whether it was right: correctness is
+/// decided in Rust from those two, against the pattern the question named.
+#[tauri::command]
+fn record_grammar_answer(
+    state: State<'_, AppState>,
+    point: String,
+    picked: String,
+) -> Result<GrammarTally, String> {
+    state.record_grammar_answer(&point, &picked)
+}
+
 /// Hear `text` in the system's Japanese voice, cutting off anything already being
 /// said.
 ///
@@ -2078,6 +2217,9 @@ pub fn run() {
             phrases_in_band,
             grammar_page,
             grammar_search,
+            next_grammar_question,
+            grammar_drill_size,
+            record_grammar_answer,
             speak,
             stop_speaking,
             voice,
@@ -3278,6 +3420,91 @@ mod tests {
                 "the voice in use must be a Japanese one: {voice}"
             );
         }
+    }
+
+    // ---- the grammar drill -------------------------------------------------
+
+    /// The question the app hands the screen is one the corpus can answer.
+    ///
+    /// The rule itself is `nihongo_core::grammar_drill`'s and is measured there; what
+    /// this pins is the app's half of it: the sentence shown really is one of the
+    /// pattern's own, the blank really is a lump of that pattern, the answer is among
+    /// the options, and the pattern the question names is one the drill can record
+    /// against.
+    #[test]
+    fn the_grammar_question_the_app_draws_is_the_corpus_own() {
+        let state = state();
+        let question = state.next_grammar_question_with_rolls(0.0, 0.0, 0.0).expect("a question");
+        let point = state.grammar.get(&question.point).expect("the answer is a course pattern");
+        assert!(point.examples.iter().any(|example| example.ja == question.ja));
+        assert!(nihongo_core::lumps(&point.pattern).iter().any(|lump| question.ja.contains(lump)));
+        assert_eq!(
+            question
+                .options
+                .iter()
+                .filter(|option| option.id == question.point)
+                .count(),
+            1,
+            "exactly one option is the answer"
+        );
+        assert_eq!(question.options.len(), nihongo_core::OPTION_COUNT);
+        // The sentence is handed over in two halves that reassemble with the blank
+        // in the middle — the shape the screen draws.
+        let before: String = question.before.iter().map(|part| part.ruby.as_str()).collect();
+        let after: String = question.after.iter().map(|part| part.ruby.as_str()).collect();
+        assert!(question.ja.starts_with(&before), "{before:?} is not the sentence's start");
+        assert!(question.ja.ends_with(&after), "{after:?} is not the sentence's end");
+        assert!(question.ja.len() > before.len() + after.len(), "the blank is a real gap");
+
+        // And the same rolls are the same question, which is what makes any of this
+        // assertable.
+        let again = state.next_grammar_question_with_rolls(0.0, 0.0, 0.0).expect("a question");
+        assert_eq!(again, question);
+    }
+
+    /// An answer is recorded against the pattern that was asked, and correctness is
+    /// decided here rather than sent by the interface.
+    #[test]
+    fn a_grammar_answer_is_recorded_against_the_pattern_and_counted_here() {
+        let state = state();
+        let question = state.next_grammar_question_with_rolls(0.0, 0.0, 0.0).expect("a question");
+        let wrong = question
+            .options
+            .iter()
+            .find(|option| option.id != question.point)
+            .expect("a distractor")
+            .id
+            .clone();
+
+        let missed = state.record_grammar_answer(&question.point, &wrong).expect("recorded");
+        assert_eq!(missed.point, question.point);
+        assert_eq!((missed.asked, missed.correct, missed.wrong), (1, 0, 1));
+        assert_eq!(missed.weight, 3.0, "a miss makes the pattern three times as likely");
+
+        let right = state.record_grammar_answer(&question.point, &question.point).expect("recorded");
+        assert_eq!((right.asked, right.correct, right.wrong), (2, 1, 1));
+        assert_eq!(right.weight, 2.0);
+
+        // A pattern the drill cannot ask, and an id that names nothing, are refused
+        // rather than written into the file for good.
+        let refused = state.record_grammar_answer("no-such-pattern", &question.point).unwrap_err();
+        assert!(refused.contains("not a pattern this drill asks about"), "{refused}");
+        let refused = state.record_grammar_answer(&question.point, "no-such-pattern").unwrap_err();
+        assert!(refused.contains("not a pattern of this course"), "{refused}");
+        // A point that is in the course but cannot be asked is still refused as the
+        // question, because the learner could not have been asked about it.
+        let masked = state.grammar_drill_size();
+        assert!(masked.points < masked.total, "some patterns cannot be asked, which the size says");
+    }
+
+    /// The drill's own size is the measurement, and the app reports it unchanged.
+    #[test]
+    fn the_app_reports_how_much_of_the_course_the_drill_can_ask() {
+        let state = state();
+        let size = state.grammar_drill_size();
+        assert_eq!(size.total, state.grammar.len());
+        assert_eq!(size.points, 363);
+        assert_eq!(size.examples, 903);
     }
 
     /// Nothing to say is an error, and a huge utterance is refused.

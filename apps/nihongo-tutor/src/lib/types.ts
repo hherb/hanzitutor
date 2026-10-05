@@ -306,6 +306,96 @@ export interface DrillTally {
   weight: number;
 }
 
+/**
+ * One pattern offered as an answer in the grammar drill.
+ *
+ * A whole pattern as the course writes it — `〜なくてもいい`, `〜あまり（に）` — with
+ * its kana reading only where the corpus stores one, because the pattern itself is
+ * written with a kanji. Nothing here is composed: a reading the corpus does not
+ * carry is absent rather than guessed (`HANDOVER_NIHONGO.md` invariant 21).
+ */
+export interface GrammarOption {
+  /** The point's own id, which the answer is recorded against. */
+  id: string;
+  /** The pattern, `〜` slots and all. */
+  pattern: string;
+  /** The pattern in kana, where the corpus stores one. */
+  reading: string | null;
+}
+
+/**
+ * One question from the grammar drill: a sentence of the corpus's own with one lump
+ * of its pattern taken out, and three patterns to choose between.
+ *
+ * The sentence arrives in **two halves** rather than as a string with a marker in it,
+ * because the furigana travels with it: each half is the corpus's own ruby spans, and
+ * the blank is the gap between them. `point` is the answer's id, and `pattern`,
+ * `reading`, `meaning`, `formation` and `notes` are what the reveal shows once an
+ * answer is picked — the screen decides when, and the apparatus for a wrong answer is
+ * not a second round trip.
+ *
+ * Send `point` and the id that was picked back unchanged: whether it was right is
+ * decided in Rust, because a client that could report its own correctness could lie
+ * to itself.
+ */
+export interface GrammarQuestion {
+  /** The answer's id. */
+  point: string;
+  /** The sentence's furigana before the blank. */
+  before: Ruby[];
+  /** …and after it. */
+  after: Ruby[];
+  /**
+   * What was taken out — a lump of the answer's pattern, and not necessarily the
+   * whole of it: `〜の方が〜より` leaves `の方が` in the hole and keeps `より`.
+   *
+   * The three parts together are the sentence, which is how the reveal draws it
+   * whole again with the corpus's furigana still on it.
+   */
+  blank: string;
+  /** The sentence as written, for the reveal. */
+  ja: string;
+  /** The English the corpus pairs with the sentence. */
+  en: string;
+  /** The answer's pattern. */
+  pattern: string;
+  /** The answer's kana reading, where the corpus stores one. */
+  reading: string | null;
+  /** What the answer means. */
+  meaning: string;
+  /** What the answer attaches to. */
+  formation: string;
+  /** The corpus's note on nuance, with its level references removed. */
+  notes: string | null;
+  /** Three options, the answer among them and in no fixed place. */
+  options: GrammarOption[];
+}
+
+/** What the learner's record for one grammar pattern is, after an answer. */
+export interface GrammarTally {
+  point: string;
+  asked: number;
+  correct: number;
+  wrong: number;
+  /** The pattern's share of the drill — the same rule the kana drill uses. */
+  weight: number;
+}
+
+/**
+ * How much of the grammar course a question can be built from.
+ *
+ * A measurement of the committed artifact rather than a promise: `points` is how many
+ * of the corpus's `total` patterns have a sentence the blank rule can find the
+ * pattern's own text in, and `examples` is how many sentences those are. The screen
+ * states it, because a pattern a learner knows and never meets deserves an
+ * explanation rather than silence.
+ */
+export interface GrammarDrillSize {
+  points: number;
+  examples: number;
+  total: number;
+}
+
 /** One licence notice, with its text, for a Licences screen. */
 export interface LicenceNotice {
   id: string;

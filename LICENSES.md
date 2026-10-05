@@ -981,6 +981,14 @@ own `GrammarSource`:
   invariant 21 records for a word's reading, one step out;
 * the result is re-encoded into `grammar.bin.gz` with the corpus's version recorded in it.
 
+Those four are changes to the **data** and they are the whole of them: a sentence is stored,
+redistributed and shown as the corpus wrote it. The grammar **drill** — N20, the practice half
+of the grammar course — draws one of those sentences with the pattern's own text blanked while
+the learner is being asked which pattern it is, and shows it whole again once an answer is
+given. That is a presentation of the material rather than a change to it, it is recorded in the
+artifact's notice for the same reason, and it is why `prepare-grammar` and `grammar.bin.gz` are
+untouched by the drill.
+
 **ShareAlike consequence.** The grammar text stays under CC BY-SA 4.0, and so does
 `grammar.bin.gz` and anything built from it. It does not reach the program code
 (AGPL-3.0), the kana and kanji geometry (Arphic Public License and LGPL-3.0-or-later),

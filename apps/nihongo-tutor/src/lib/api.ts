@@ -17,7 +17,10 @@ import type {
   DrillQuestion,
   DrillTally,
   GradedAttempt,
+  GrammarDrillSize,
   GrammarPage,
+  GrammarQuestion,
+  GrammarTally,
   Kana,
   KanjiLessonView,
   KanjiView,
@@ -342,6 +345,40 @@ export function phrasesInBand(band: number): Promise<PhraseView[]> {
  */
 export function grammarPage(offset = 0, limit = 20): Promise<GrammarPage> {
   return invoke<GrammarPage>("grammar_page", { offset, limit });
+}
+
+/**
+ * The next grammar question: one of the corpus's own sentences with its pattern
+ * taken out, and three patterns to choose between.
+ *
+ * Drawn in Rust, weighted by how often this learner has missed the pattern, rather
+ * than drawn here from a list — only the asker knows which pattern it asked, and the
+ * answer has to be remembered against it. `null` means nothing at all could be
+ * asked, which the screen says in words rather than leaving blank.
+ */
+export function nextGrammarQuestion(): Promise<GrammarQuestion | null> {
+  return invoke<GrammarQuestion | null>("next_grammar_question", {});
+}
+
+/**
+ * What the grammar drill can ask of the course, in numbers.
+ *
+ * Asked for once, so the screen can say how much of the course is askable instead of
+ * leaving a learner wondering why a pattern they know never comes up.
+ */
+export function grammarDrillSize(): Promise<GrammarDrillSize> {
+  return invoke<GrammarDrillSize>("grammar_drill_size", {});
+}
+
+/**
+ * Record what the learner answered, and get the pattern's record back.
+ *
+ * `point` is the pattern the question asked for and `picked` is the one that was
+ * chosen. There is deliberately no way to say whether it was right: correctness is
+ * decided in Rust from those two, against the pattern the question named.
+ */
+export function recordGrammarAnswer(point: string, picked: string): Promise<GrammarTally> {
+  return invoke<GrammarTally>("record_grammar_answer", { point, picked });
 }
 
 /**

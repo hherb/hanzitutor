@@ -66,7 +66,54 @@ pub const CORRECT_WEIGHT: f64 = 1.0;
 /// stopped missing has to come back eventually — see the module docs.
 pub const MIN_WEIGHT: f64 = 0.25;
 
+/// Draw one item from `items`, each as likely as its own weight.
+///
+/// The arithmetic behind [`ConfusionLog::pick_by`], lifted out so that the grammar
+/// drill's log — which keeps the same tallies under point ids rather than pair
+/// keys — draws by exactly this rule instead of restating it. One weight, one
+/// draw, two key spaces.
+///
+/// `weight` is asked once per item, so a caller that is counting on a stable
+/// order gets one: the walk is in the caller's order and the first item whose
+/// share of the total the roll lands inside wins. `roll` is a number in `0..1`
+/// supplied by the caller, which is the whole point — the arithmetic is pure, so a
+/// test can ask for the item at `0.0`, at `0.999` and at a boundary, and a caller
+/// that wants randomness supplies its own. An out-of-range or NaN roll is clamped
+/// rather than trusted.
+///
+/// Returns `None` when there is nothing to draw from, and when the weights do not
+/// add up to a positive finite total — which the floor makes unreachable for a
+/// log of this crate's own, but which a caller handing over weights of its own
+/// could still do, and a division by nothing is worse than no question.
+pub fn pick_weighted<T>(items: &[T], weight: impl Fn(&T) -> f64, roll: f64) -> Option<&T> {
+    if items.is_empty() {
+        return None;
+    }
+    let total: f64 = items.iter().map(&weight).sum();
+    if !total.is_finite() || total <= 0.0 {
+        return None;
+    }
+    let roll = if roll.is_nan() { 0.0 } else { roll.clamp(0.0, 1.0) };
+    // `roll == 1.0` would land past the last item and be caught by the fallback
+    // below; the clamp keeps a caller's `1.0` on the last item rather than making
+    // it an accident of floating-point.
+    let mut remaining = roll.min(1.0 - f64::EPSILON) * total;
+    for item in items {
+        let weight = weight(item);
+        if remaining < weight {
+            return Some(item);
+        }
+        remaining -= weight;
+    }
+    items.last()
+}
+
 /// What one learner has done with one pair.
+///
+/// `crate::grammar_drill` records the same tally under a grammar point's id rather
+/// than a pair's key, and that is deliberate: one type and one weight rule mean the
+/// two drills cannot drift apart in what "seen", "missed" and "worth asking again"
+/// mean. Only the key space and the file are each drill's own.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PairTally {
@@ -466,29 +513,7 @@ impl ConfusionLog {
         key: impl Fn(&T) -> String,
         roll: f64,
     ) -> Option<&'a T> {
-        if items.is_empty() {
-            return None;
-        }
-        let total: f64 = items.iter().map(|item| self.weight(&key(item))).sum();
-        // The floor makes this unreachable, but a total that is zero or NaN —
-        // a caller handing over a whole log of its own — must not become a
-        // division by nothing.
-        if !total.is_finite() || total <= 0.0 {
-            return None;
-        }
-        let roll = if roll.is_nan() { 0.0 } else { roll.clamp(0.0, 1.0) };
-        // `roll == 1.0` would land past the last item and be caught by the
-        // fallback below; the clamp keeps a caller's `1.0` on the last item
-        // rather than making it an accident of floating-point.
-        let mut remaining = roll.min(1.0 - f64::EPSILON) * total;
-        for item in items {
-            let weight = self.weight(&key(item));
-            if remaining < weight {
-                return Some(item);
-            }
-            remaining -= weight;
-        }
-        items.last()
+        pick_weighted(items, |item| self.weight(&key(item)), roll)
     }
 
     /// How the classic pairs' weights stand, biggest first, for a caller that

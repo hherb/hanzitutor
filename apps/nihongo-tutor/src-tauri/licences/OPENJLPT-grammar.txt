@@ -85,6 +85,14 @@ What this app did to the data (the licence requires this to be stated)
     (`crates/nihongo-core/data/grammar.bin.gz`) and recorded OpenJLPT's own version
     in it.
 
+  Those four are changes to the **data**, and they are the whole of them: an
+  example sentence is stored, redistributed and shown exactly as the corpus wrote
+  it. The grammar **drill** (`nihongo_core::grammar_drill`) draws one of those
+  sentences with the pattern's own text blanked while the learner is being asked
+  which pattern it is, and shows it whole again once an answer is given. That is a
+  presentation of the material rather than a change to it, and it is stated here
+  rather than left to a licensor to notice.
+
 Consequence of ShareAlike
 -------------------------
 

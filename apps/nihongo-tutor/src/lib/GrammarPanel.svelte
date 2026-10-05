@@ -32,10 +32,11 @@
    * checked at build time and asserted in `tests/grammar_artifact.rs`. The screen
    * states that, and the words in an example are not tappable.
    */
+  import GrammarDrill from "./GrammarDrill.svelte";
   import GrammarStage from "./GrammarStage.svelte";
   import * as api from "./api";
   import { untrack } from "svelte";
-  import type { GrammarPage, GrammarPoint } from "./types";
+  import type { GrammarDrillSize, GrammarPage, GrammarPoint } from "./types";
   import type { VoiceStatus } from "./speech";
   import { GRAMMAR_PAGE, GRAMMAR_SEARCH, searchNoteFor, stepTo } from "./grammar";
   import { pageWindow } from "./words";
@@ -67,6 +68,17 @@
   let open = $state<{ point: GrammarPoint; position: number } | null>(null);
   /** The position an arrow asked for, waiting for the page that holds it to load. */
   let pendingPosition = $state<number | null>(null);
+  /**
+   * Whether the drill is up, and what it can ask.
+   *
+   * The drill is the panel's **second stage**, beside the pattern one of its rows
+   * opens: it is about the course rather than about one pattern, so it belongs to
+   * this screen rather than to a tab of its own, and it reports `stage` like any
+   * other stage so the app's chrome steps aside for it (`nav.ts`'s `STAGE_VIEWS`
+   * already names Grammar, so nothing outside this file changes).
+   */
+  let drilling = $state(false);
+  let drillSize = $state<GrammarDrillSize | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
 
@@ -87,7 +99,7 @@
   const canNext = $derived(open !== null && stepTo(open.position, 1, total) !== null);
 
   $effect(() => {
-    stage = open !== null;
+    stage = open !== null || drilling;
   });
 
   async function loadPage() {
@@ -156,6 +168,20 @@
     page = target.page;
   }
 
+  // What the drill can ask, asked for once, so its door can say how much of the
+  // course is behind it rather than leaving a learner to wonder.
+  $effect(() => {
+    void (async () => {
+      try {
+        drillSize = await api.grammarDrillSize();
+      } catch (e) {
+        // A count is a courtesy. The course itself still loads, and the panel says
+        // nothing about a number it does not have.
+        void e;
+      }
+    })();
+  });
+
   // A page change is what fetches; the arrows only set where to land.
   $effect(() => {
     void window_.offset;
@@ -167,11 +193,46 @@
   // that is no longer on screen.
   function goToPage(next: number) {
     open = null;
+    drilling = false;
     page = next;
   }
 </script>
 
-<section class="grammar">
+<!--
+  Two stages, and either of them is **the whole screen**: the pager and the pattern
+  one of its rows opens both step aside for one, exactly as the kana course's lesson
+  list and the kanji course's grade chips do (`KanaPanel` and `KanjiPanel` draw their
+  stage in this same position, before the course section). The panel's own header goes
+  with them — on a phone it is four paragraphs of course preamble, and measured at
+  390px it put the drill's own first control at y=371.
+-->
+{#if drilling}
+  <!--
+    The drill is a stage of this panel rather than a screen of its own: it asks about
+    the course, not about one pattern, and a seventh tab would cost the phone width
+    the tab row does not have (invariant 35). Its own first control is the way back,
+    as every stage's is.
+  -->
+  <GrammarDrill {voice} onleave={() => (drilling = false)} />
+{:else if open}
+  <!--
+    Keyed on the pattern, so a second row mounts a fresh stage rather than merging the
+    new pattern into the last one's sentences.
+  -->
+  {#key open.point.id}
+    <GrammarStage
+      point={open.point}
+      position={open.position}
+      {total}
+      {voice}
+      canPrev={canPrev}
+      canNext={canNext}
+      onstep={step}
+      onleave={() => (open = null)}
+    />
+  {/key}
+{:else}
+  <section class="grammar">
   <header>
     <h2>Grammar</h2>
     <p class="sub">
@@ -198,24 +259,22 @@
     <p class="error" role="alert">{error}</p>
   {/if}
 
-  {#if open}
     <!--
-      Keyed on the pattern, so a second row mounts a fresh stage rather than merging
-      the new pattern into the last one's sentences.
+      The way into the drill, at the top of the course screen where the learner meets
+      it before the list: reading 526 patterns without ever being asked one back is
+      what this milestone exists to fix.
     -->
-    {#key open.point.id}
-      <GrammarStage
-        point={open.point}
-        position={open.position}
-        {total}
-        {voice}
-        canPrev={canPrev}
-        canNext={canNext}
-        onstep={step}
-        onleave={() => (open = null)}
-      />
-    {/key}
-  {:else}
+    <div class="practise">
+      <button class="start" onclick={() => (drilling = true)}>Practise the patterns</button>
+      <span class="count">
+        {#if drillSize}
+          {drillSize.points} of the {drillSize.total} can be asked
+        {:else}
+          Ask one back
+        {/if}
+      </span>
+    </div>
+
     <div class="find">
       <label for="grammar-search">Find a pattern</label>
       <input
@@ -282,8 +341,8 @@
         </nav>
       {/if}
     {/if}
-  {/if}
-</section>
+  </section>
+{/if}
 
 <style>
   .grammar header h2 {
@@ -306,6 +365,29 @@
 
   .provenance {
     font-size: 0.8rem;
+  }
+
+  .practise {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin: 0.9rem 0 0;
+  }
+
+  .start {
+    min-height: 44px;
+    padding: 0.4rem 0.9rem;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    background: var(--accent);
+    color: var(--accent-ink);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .practise .count {
+    font-size: 0.85rem;
+    color: var(--muted);
   }
 
   .find {

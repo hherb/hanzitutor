@@ -52,6 +52,7 @@ references for no gain.
 | **N17** | **The queue's own end** | **Shipped.** The Review queue, asked for the same day: its list of what is due is *above* its board, so the next character was a scroll away. The same control is now the way on there too — `Next`, and **`Nothing due`** when the queue is empty, which is the maintainer's wording because an empty queue is a state rather than the stage's `finish`. `afterGradeInQueue` plus `review.ts`'s `nextDue`/`hasNextDue`, and a measured run against a real `review.json` whose three cards SM-2'd from 1–3 October to 13 October. |
 | **N18** | **Graded phrases: reading at your level** | **Shipped.** The counterpart of Hanzi Tutor's Phrases screen: **1,400 Japanese sentences imported from Tatoeba**, every one held to the vocabulary the course teaches, levelled on this project's own ladder, with a reading over every kanji and the system voice. `prepare-phrases` imports and filters them; the Phrases screen in the kanji course draws one band at a time. See the milestone for the funnel, for the licence measurement that corrected N7, and for the **107 sentences whose contributor the export did not name** — which the first run shipped, and which the research found and this now refuses to. |
 | **N19** | **Grammar: the patterns at last** | **Shipped.** The largest gap the roadmap named: particles, the copula and every ending are kana, so a learner who finished the kana course had unlocked the grammar and been given nothing to use it on. **526 patterns imported from OpenJLPT**, each with the form it is built from, the note that says how it differs from a similar one, and two or three sentences with a reading over every kanji — in one course order rather than a ladder, because the measurement put 344 of the 526 in the top band, and with the corpus's JLPT levels dropped rather than shown. See the milestone for the licence work that decided it. |
+| **N20** | **Grammar practice: the patterns asked back** | **Shipped.** N19 gave the learner 526 patterns to read and nothing to answer. The Grammar screen's second stage now draws one of the corpus's own sentences with the pattern's own text taken out and offers three patterns — **363 of the 526 can be asked**, over 903 of the 1,526 sentences — weighted by what this learner has missed and remembered in `grammar.json`. See the milestone for the blank rule's two measurements, the distractor that was plausible only after a second signal was added, and the layout fault the phone found in the screen that was already there. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -60,11 +61,13 @@ spot below — the grading tolerances never re-fitted for kana. The other was th
 of three interface surfaces nobody had watched; that one is done, and it found two
 bugs rather than none (see "Cross-cutting polish").
 
-**Grammar was the third, and N19 is where it stopped being one.** It was called the
-largest gap in the product rather than in the kana course, and that is what it
-turned out to be worth doing as a milestone of its own: 526 imported patterns with
-their form, their nuance and their sentences, and a licence chain that had to be
-read before a line of it could ship.
+**Grammar was the third, and N19 is where it stopped being one — and N20 is where it
+started answering back.** It was called the largest gap in the product rather than in
+the kana course, and that is what it turned out to be worth doing as a milestone of
+its own: 526 imported patterns with their form, their nuance and their sentences, and
+a licence chain that had to be read before a line of it could ship. Reading a course
+is still not practising it, which is what this file's own weak-spot bullet had said
+since N19, so the milestone after it made the same course ask.
 
 ---
 
@@ -2257,6 +2260,162 @@ pipelines; the schedule and its file (invariant 15); what may be handed to the v
 grammar screen passes a whole sentence, which is invariant 37's exception rather than a new
 one; and the joined-stroke rule.
 
+## N20 — Grammar practice: the patterns asked back
+
+**Shipped.** N19 gave the learner 526 patterns to read and nothing to answer, and this
+file's known weak spots said so in as many words the day it shipped: *"grammar is
+presented and searchable, but nothing asks the learner to produce or choose a pattern"*.
+The **Grammar** screen now has a second stage. `Practise the patterns` draws one of the
+corpus's own sentences with the pattern's own text taken out, offers **three patterns to
+choose between**, weighted by what this learner has missed, and remembers the answer in
+the app's own fourth file. **Choosing** is the half N19's own words named that is now
+done; what is still not built is the *production* half — nothing asks a learner to build a
+sentence — and the tie between a pattern and the words and characters that trigger it.
+
+### The question is a cloze, and nothing is written to build it
+
+The corpus stores, for every pattern, two or three whole sentences its authors wrote to
+show it. The drill shows one of them with one lump of the pattern removed and the English
+translation the corpus pairs with it, because this is a drill about which pattern fits
+rather than a reading test, and a beginner with no way into the sentence cannot answer at
+all. Everything on the screen is the artifact's: the sentence, its furigana, its
+translation, the three patterns offered, and the answer's meaning, formation and note in
+the reveal. **The drill writes no Japanese of its own**, and the blank is found in the
+stored sentence rather than stored in it.
+
+### The blank rule, and the two measurements inside it
+
+A pattern is not stored in the sentence it appears in: `〜に対して` is the corpus's written
+form of a pattern whose sentence says に対して, and `何も〜ない` is two lumps with the verb
+between them. So the rule *finds* the blank:
+
+* the **lumps** of a pattern are its `/` alternatives with the `〜` slots taken out, with
+  each **bracketed group read as what it is**, and each `〜`-separated fragment taken as
+  well;
+* the blank is the **longest** lump that occurs **exactly once** in the sentence — a lump
+  that occurs twice is a hole with two places to go;
+* it is at least **three characters** long;
+* and it never **partially** covers a furigana span that carries a reading: a blank may
+  take a kanji and its reading together, or sit inside a span that has no reading, but it
+  may not leave half a ruby pair behind.
+
+**The bracketed groups are what took measuring, and what they cost was 17 patterns.** The
+corpus writes an optional element or an English gloss in brackets, and the two are
+distinguishable by exactly one property that was checked over the whole set: the **four**
+Japanese groups are に, は, も and よ (`〜上（に）`, `〜（よ）うではないか`) and every one of
+the other **41** is a gloss (`〜まで（until）`, `〜くらい / 〜ぐらい（approximately）`). Read
+as text, `〜あまり（に）`'s lump is `あまり（に）` — which occurs in no Japanese sentence —
+and the drill is silent about the whole pattern in the way a filter that matches nothing
+looks like a filter that found nothing. Read correctly, `あまり` and `あまりに` are both
+lumps, and the drill reaches **363 of the 526 patterns** instead of 343.
+
+**And the three-character floor is a decision.** Dropping to two adds 159 askable
+sentences and asks `私はマリア[__]。` for `〜です` — a question about an ending whose answer
+the English gives away, rather than about a pattern. What is lost with it is recorded in
+the same breath: `〜てください`'s third sentence says ぬいでください, the voiced form of the
+same ending, and the rule cannot locate てください in it, so that sentence is **not asked**
+rather than asked with a guessed blank.
+
+### What makes a distractor safe, and what makes it plausible
+
+**Safe** has one test, and it is exact: the text taken out must not be one of a
+distractor's own lumps, because putting the same text back is the only thing that
+reproduces the sentence. **34 of the 903** askable sentences have such a point elsewhere
+in the course (16 points are involved — the corpus stores `〜そうだ` twice, once for
+appearance and once for hearsay) and those draw their options from the remaining 500-odd.
+A distractor that merely *overlaps* the blank is deliberately allowed, and those are often
+the mistakes worth asking about: `〜まで` beside `〜までに`, `〜たばかり` beside `〜ばかり`.
+
+**Plausible** is two signals, and the second was added because the first was measured and
+found short:
+
+* a **shared tag** (the corpus's own grouping — `request`, `condition`, `concession`) with
+  a **similar length**. **28 of the 903** sentences have fewer than two distractors by this
+  alone, and the ones it fails are the ones a learner would notice: a live run offered
+  `〜ところだ` the distractors `〜にして` and `〜なり`, which share neither tag nor shape;
+* the same **formation head** — the token before the first `+` in `formation`, so
+  `〜なさい` and `〜かねる` are both `Verb-stem` and a learner reaching for a verb-stem
+  ending has both in mind. With it, **none** of the 903 sentences falls short, and a live
+  run offered `〜といっても` the distractors `〜にしても` and `〜にしては`.
+
+The three tiers are taken in that order — tag, formation head, then anything safe, which
+the shipped artifact never reaches — and only the first is turned by the roll, so a
+fallback is never arbitrary.
+
+### The options, and the answer's place among them
+
+Three: a pattern is chosen from a course of 526 and a coin flip teaches nothing, and each
+option is a whole pattern (`〜なくてもいい`) that has to fit a phone's width. The order is
+**shuffled in Rust**, from the same roll, rather than left to the screen: where the right
+answer sits is part of the question rather than a detail of its drawing, and a shuffle that
+the payload pins can be asserted on. `the_right_answer_is_not_always_in_the_same_place`
+holds all three positions over thirty rolls.
+
+### A second stage of the grammar course, not a seventh tab
+
+The drill belongs to the Grammar screen the way the board belongs to the kanji course, so
+it is `GrammarPanel`'s **second stage**: `bind:stage` goes up while it is open, the switch
+and the tab row step aside, and its own first control is the way back. `nav.ts` and
+`STAGE_VIEWS` are untouched — a seventh tab would have cost the phone width the tab row
+does not have (invariant 35), and the drill asks about the course rather than about one
+pattern.
+
+**Measuring it found a pre-existing fault in the same screen.** With the panel's header
+outside the stage branch, the course preamble — heading, sub-line, the order statement and
+the provenance paragraph — stayed drawn above the stage, and at 390px the drill's own first
+control sat at **y=371** on an 812px screen. `KanaPanel` and `KanjiPanel` had always drawn
+their stage *before* the course section; the grammar panel now does too, for the stage a
+pattern opens as well as for the drill. The same measurement moved the drill's way on:
+with the explanation above it, `Next question` sat at **y=871**, and invariant 33's own
+arrangement — the controls under the thing answered, the prose below — puts it at **y=475**,
+visible without scrolling.
+
+### What the drill remembers, and where
+
+`grammar.json`, in the app's own data directory beside `confusions.json`, `review.json` and
+`prefs.json` — **a fourth file**, and a separate one for invariant 15's reason: a pattern
+id (`ni-taishite`) and a pair of kana (`シ|ツ`) would be one map's keys in one file, and
+nothing reading it could tell which was which. The tally is `nihongo_core::drill`'s own
+`PairTally` and its own weight rule — `max(0.25, 1 + 2 × wrong − correct)` — lifted into a
+free `pick_weighted` so the two drills draw by one arithmetic rather than two that agree
+today. The schedule is untouched: a grammar point has no handwritten attempt behind it, and
+invariant 25's queue stays over characters the board can grade.
+
+### What was measured rather than assumed
+
+Driven over §5's DOM probe, because the session had **0 active displays** and a `-l`
+capture would have been a frozen frame:
+
+| step | measured |
+| --- | --- |
+| the door | `Practise the patterns · 363 of the 526 can be asked`, and the drill's own line: *363 of the 526 patterns can be asked, over 903 sentences — the rest have no sentence their own text can be found in, once, whole.* |
+| the stage | the switch and the tab row **absent from the DOM**, and the panel's own header gone with them (`header still there=false`) |
+| a question | `本人の意思 ？ 、彼は地方の支店に異動させられた。` with its furigana, its English, and three patterns: `〜に反して / 〜際（に） / 〜ざるを得ない` |
+| the press reached Rust | `[probe] grammar answer "ni-hanshite" picked "ni-hanshite" -> true` — the ids are the corpus's, and **correctness is decided there** rather than posted by the screen |
+| a wrong answer | the first run's `〜にして is not it — the sentence takes 〜ところだ, be about to; be in the middle of; have just done.`, with the reveal: the pattern, `WRITTEN WITH Verb-dict / Verb-te + いる / Verb-ta + ところだ`, the corpus's note, and the sentence whole again |
+| the record | `〜に反して: 1 of 1 right — this pattern comes up less often now.`, and `grammar.json` written: `{"points":{"ni-hanshite":{"asked":1,"correct":1,"wrong":0}, …}}` |
+| the way on | `Next question` drew a new sentence and three new options; both answers recorded, `prefs.json` beside `grammar.json` and **no `confusions.json`** — the two drills' files are separate |
+| the way back | `Grammar` returned to the course: chrome visible, 20 rows, drill gone |
+| at 390×812 | `pageOverflow 0` before and after answering, option heights 47/69/47, back and Next 44px, the pool note 58px, the reveal below the controls |
+| the sandboxed run | with `HOME` outside the workspace the write is refused and the screen says so — `the answer was counted but could not be saved: Operation not permitted` — which is trap 5 and invariant 15 working, not a failure |
+
+**Tests.** 16 in `grammar_drill.rs` (the lumps and the bracketed groups, the blank rule, the
+furigana refusal, the distractor safety and plausibility, the weighted draw, the shuffle,
+the log's round trip), 1 artifact test over the committed corpus (the counts, the blank
+over all 903, the same-text clashes, the plausible-pool claim), 3 in the app's own suite,
+4 for `grammar.json` in `store.rs`, and 3 in `ipc_contract.rs` (the question's whole shape,
+the size's three keys, both halves of the record payload). The frontend adds 16 for
+`grammarDrill.ts`. The four verification layers are green, and the artifacts are
+byte-identical after a rebuild.
+
+**What is not changed:** the vocabulary and its ladder; the phrases and the passages; the
+grammar artifact itself — the drill **draws** a blank at runtime and `prepare-grammar`,
+`grammar.bin.gz` and their tests are untouched, which is why the OpenJLPT notice now says
+so rather than leaving a licensor to notice; the schedule and its file; the joined-stroke
+rule; and what may be handed to the voice — the drill speaks the **sentence**, and only
+after it has been answered, because before that the voice would read out the pattern the
+blank took away.
+
 ## Cross-cutting polish
 
 Recorded here rather than as milestones because none of them is a feature.
@@ -2341,17 +2500,20 @@ Recorded here rather than as milestones because none of them is a feature.
   strokes — kanji stroke order is the thing being taught, and the Chinese app has
   always graded its characters that way. A kanji drawn with two strokes joined is
   refused with the taught count, and `joined` is empty for a kanji and a radical.
-* **Grammar — shipped at N19, and this bullet is kept rather than deleted.** It
-  stood here from N0 as the largest gap in the product: particles, the copula and
+* **Grammar — shipped at N19 and N20, and this bullet is kept rather than deleted.**
+  It stood here from N0 as the largest gap in the product: particles, the copula and
   every inflectional ending are kana, so a learner who finished the kana course had
-  unlocked grammar and been given nothing to use it on. The **Grammar** screen now
-  carries **526 patterns imported from OpenJLPT** — each with the form it is built
-  from, a note on nuance, and two or three sentences with a reading over every kanji
-  — in one course order rather than a ladder, with the corpus's JLPT levels dropped.
-  What is still missing is what a *drill* would add: grammar is presented and
-  searchable, but nothing asks the learner to produce or choose a pattern, and
-  nothing ties a pattern to the characters or words that trigger it. That is the next
-  piece, and it would need its own attempt source the way the review queue did.
+  unlocked grammar and been given nothing to use it on. N19 put **526 patterns
+  imported from OpenJLPT** on a screen — each with the form it is built from, a note
+  on nuance, and two or three sentences with a reading over every kanji — in one
+  course order rather than a ladder, with the corpus's JLPT levels dropped. N20 then
+  made the screen **ask**: a pattern's own sentence with the pattern's own text taken
+  out, three patterns to choose between, weighted by what this learner misses
+  (`grammar.json`, and 363 of the 526 patterns can be asked that way). What is still
+  missing is the *production* half and the link between a pattern and the vocabulary:
+  nothing asks a learner to build a sentence with a pattern, and nothing ties a
+  pattern to the words or characters that trigger it. Both would need their own
+  attempt source the way the review queue needed the board.
 * **The 13 confusion pairs are still a fixed list, and the yōon drill did not
   change that.** N3 weighs them by what this learner gets wrong, which is the half
   that was worth having — and N4's second exercise records its 33 yōon contrasts
