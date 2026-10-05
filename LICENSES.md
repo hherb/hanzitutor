@@ -765,13 +765,22 @@ Tatoeba out for *passages* is that it does not have any — see
 ### UniDic and lindera — what the segmentation is derived from
 
 The segmentation is **not** redistributed text and it is **not** a dictionary: it is
-one analyser's answer about three short passages, stored as token boundaries and
-readings. It is still derived from the analyser and its dictionary, so both are
+one analyser's answer about the text this project ships, stored as token boundaries
+and readings. It is still derived from the analyser and its dictionary, so both are
 recorded.
 
-| Source | What the artifact takes | Licence |
+Three artifacts carry it. `passages.bin.gz` holds the boundaries and readings the
+**Read** screen draws over three passages written here. `phrases.bin.gz` holds them
+for 1,400 sentences imported from Tatoeba — the sentences' copyright is the Tatoeba
+section's, and the analyser's part is the same as here. And since **N21**
+`grammar.bin.gz` holds, for each of OpenJLPT's 1,526 example sentences, **which of
+this app's own words the sentence uses**, which is what the Grammar screen lists and
+turns into word cards; the corpus's furigana markup is not a word boundary, so this
+one link is the analyser's rather than the corpus's.
+
+| Source | What the artifacts take | Licence |
 | --- | --- | --- |
-| [lindera](https://github.com/lindera/lindera) 6.2 | The segmentation and the readings, computed by `prepare-passages` | **MIT** |
+| [lindera](https://github.com/lindera/lindera) 6.2 | The segmentation and the readings, computed by `prepare-passages`, `prepare-phrases` and `prepare-grammar` | **MIT** |
 | `unidic-mecab-2.1.2`, via [`lindera-unidic`](https://crates.io/crates/lindera-unidic) | The dictionary the analyser reads | **BSD-3-Clause-equivalent**, Copyright (c) 2011-2017, The UniDic Consortium |
 
 UniDic's terms are the three-clause BSD form, verbatim in the crate's own
@@ -794,7 +803,8 @@ UniDic's terms are the three-clause BSD form, verbatim in the crate's own
 
 **Nothing UniDic contains is redistributed.** The dictionary is built into
 `.lindera/`, which is gitignored, is about 500 MB unpacked, and is not part of any
-bundle; only the token boundaries it produced for three passages are. The fetch is
+bundle; only the token boundaries it produced, and the word index the grammar
+artifact carries, are. The fetch is
 `scripts/fetch-unidic.sh`, and the archive is pinned by MD5 in `lindera-unidic`'s
 own `build.rs` (repeated in that script so a change to it is visible in a diff):
 
@@ -804,12 +814,13 @@ md5 f4502a563e1da44747f61dcd2b269e35  unidic-mecab-2.1.2.tar.gz
 
 **That the notice travels with the artifact is a correction N9 made.** BSD-3-Clause
 asks for the copyright notice, the conditions and the disclaimer to accompany a
-binary redistribution, and the passages artifact is a derived redistribution
-however small it is — but until N9 the only copy of that text was *this file*,
+binary redistribution, and these artifacts are a derived redistribution however
+small they are — but until N9 the only copy of that text was *this file*,
 which is neither compiled into the app nor copied into its bundle, and the
 catalogue named neither lindera nor UniDic at all. Both now ship:
-`apps/nihongo-tutor/src-tauri/licences/ANALYSER-UniDic-lindera.txt` holds the
-two licences verbatim and the statement that no dictionary entry is redistributed,
+`apps/nihongo-tutor/src-tauri/licences/ANALYSER-UniDic-lindera.txt` — which names all
+three artifacts since N21 — holds the two licences verbatim and the statement that no
+dictionary entry is redistributed,
 and it is catalogued twice — as `unidic` (BSD-3-Clause, the dictionary) and as
 `lindera` (MIT, the analyser) — because the two are different works under
 different licences and a reader looking for either should find it.

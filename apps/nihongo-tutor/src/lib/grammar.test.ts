@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  charactersNote,
   GRAMMAR_PAGE,
   GRAMMAR_SEARCH,
   pageOf,
@@ -10,6 +11,7 @@ import {
   searchNote,
   searchNoteFor,
   stepTo,
+  wordsNote,
 } from "./grammar";
 
 describe("positionLabel", () => {
@@ -136,5 +138,30 @@ describe("rowLabel", () => {
         examples: [],
       }),
     ).toBe("〜は — as for; marks the topic");
+  });
+});
+
+describe("wordsNote", () => {
+  it("says how many of the course's words the sentences use, and whose they are", () => {
+    expect(wordsNote(12)).toBe("12 words this course teaches appear in these sentences:");
+    expect(wordsNote(1)).toBe("One word this course teaches appears in these sentences:");
+    expect(wordsNote(28)).toContain("28 words");
+  });
+
+  it("states an empty list rather than leaving the reader guessing", () => {
+    expect(wordsNote(0)).toBe("No word this course teaches appears in these sentences.");
+    expect(wordsNote(-1)).toBe(wordsNote(0));
+  });
+});
+
+describe("charactersNote", () => {
+  it("names the pattern's own characters, and nothing at all for a kana pattern", () => {
+    expect(charactersNote(1)).toBe(
+      "The pattern is written with one character this course teaches:",
+    );
+    expect(charactersNote(2)).toBe(
+      "The pattern is written with 2 characters this course teaches:",
+    );
+    expect(charactersNote(0)).toBe("");
   });
 });

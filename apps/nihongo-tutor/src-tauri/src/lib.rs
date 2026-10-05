@@ -1082,6 +1082,48 @@ impl AppState {
                 .collect(),
         }
     }
+
+    /// What one grammar pattern links to: the words its sentences use, and the
+    /// characters it is written with.
+    ///
+    /// The link itself is the artifact's — `prepare-grammar` wrote it from UniDic's
+    /// segmentation of the corpus's own sentences, because the corpus's furigana
+    /// marks readings rather than word boundaries and the rule built on it produced
+    /// fragments (see `nihongo_core::grammar`) — and this command is the thin half
+    /// that resolves each linked text into the record a card draws.
+    ///
+    /// An unknown pattern id is an error rather than an empty answer, which is
+    /// invariant 13's rule one screen over from `words_of_kanji`'s: a row that links
+    /// nowhere and a pattern that is not in the course look the same to the learner,
+    /// and only one of them is a bug.
+    pub fn grammar_links(&self, id: &str) -> Result<GrammarLinks, String> {
+        let point = self
+            .grammar
+            .get(id)
+            .ok_or_else(|| format!("{id:?} is not a pattern in this course"))?;
+        let words = point
+            .words()
+            .into_iter()
+            .filter_map(|text| self.words.of_text(text))
+            .map(word_view)
+            .collect();
+        // Filtered by this app's own dataset rather than by the artifact: the
+        // corpus writes a pattern with whatever characters it is written with, and
+        // a character outside the jōyō set is one the board cannot open — the
+        // artifact test says there are none today, and a corpus that moved must not
+        // turn that into a dead button on a card.
+        let characters = point
+            .characters()
+            .into_iter()
+            .filter(|ch| self.kanji.get(*ch).is_some())
+            .map(|ch| ch.to_string())
+            .collect();
+        Ok(GrammarLinks {
+            id: point.id.clone(),
+            words,
+            characters,
+        })
+    }
 }
 
 /// The largest page a caller may ask for.
@@ -1626,6 +1668,34 @@ pub struct GrammarPageView {
     pub points: Vec<GrammarPointView>,
 }
 
+/// What one grammar pattern links to in the rest of the course.
+///
+/// The tie `ROADMAP_NIHONGO.md`'s known weak spots asked for, and it runs in the
+/// two directions the app can actually draw: **the words** this pattern's own
+/// sentences use, each resolved to the record its card needs, and **the characters**
+/// the pattern itself is written with.
+///
+/// Both are read out of the two committed artifacts — the grammar one carries the
+/// link `prepare-grammar` wrote from UniDic's segmentation, and the words and kanji
+/// datasets are what turn it into cards — so nothing here segments, reads or guesses
+/// anything. A word the vocabulary does not hold would be a row the app cannot open
+/// and is skipped rather than drawn dead; `tests/grammar_artifact.rs` asserts there
+/// is none, and the two artifacts are committed separately, which is why this command
+/// is defensive about a state the tests say cannot happen.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GrammarLinks {
+    /// The pattern these links belong to, echoed so a slow answer cannot land on
+    /// the pattern after it.
+    pub id: String,
+    /// The course words this pattern's sentences use, each named once, in the order
+    /// the sentences say them.
+    pub words: Vec<WordView>,
+    /// The kanji the pattern itself is written with, each once, in the order they
+    /// appear — every one of them a jōyō character the board can open.
+    pub characters: Vec<String>,
+}
+
 /// One band of the phrase ladder, as the Phrases screen offers it.
 ///
 /// The same shape as [`BandView`] with the count of phrases where that one has the
@@ -2037,6 +2107,12 @@ fn grammar_search(state: State<'_, AppState>, query: String, limit: usize) -> Gr
     state.grammar_search(&query, limit)
 }
 
+/// What one grammar pattern links to: its sentences' words and its own characters.
+#[tauri::command]
+fn grammar_links(state: State<'_, AppState>, id: String) -> Result<GrammarLinks, String> {
+    state.grammar_links(&id)
+}
+
 /// The next grammar question: one of the corpus's own sentences with the pattern
 /// taken out, and three patterns to choose between. `None` only if nothing at all
 /// can be asked.
@@ -2217,6 +2293,7 @@ pub fn run() {
             phrases_in_band,
             grammar_page,
             grammar_search,
+            grammar_links,
             next_grammar_question,
             grammar_drill_size,
             record_grammar_answer,
@@ -3460,6 +3537,56 @@ mod tests {
         // assertable.
         let again = state.next_grammar_question_with_rolls(0.0, 0.0, 0.0).expect("a question");
         assert_eq!(again, question);
+    }
+
+    /// A pattern's links are the course's own words and jōyō characters, and the
+    /// command is what resolves them — the artifact carries texts, not cards.
+    #[test]
+    fn a_patterns_links_are_the_courses_words_and_its_own_characters() {
+        let state = state();
+
+        // A beginner pattern, by name: 〜は's sentences are built from words the
+        // course teaches, in the order the sentences say them, and the pattern
+        // itself is kana, so there is no character to open.
+        let wa = state.grammar_links("wa").expect("〜は is in the course");
+        assert_eq!(wa.id, "wa");
+        assert_eq!(
+            wa.words.iter().map(|word| word.text.as_str()).collect::<Vec<_>>(),
+            vec!["私", "学生", "今日", "天気", "良い", "本", "面白い"],
+        );
+        assert!(wa.characters.is_empty(), "〜は is written with no kanji");
+        // Every word crosses with everything a card draws, not only its text: the
+        // reading is the dictionary's and the band is this project's.
+        let gakusei = wa.words.iter().find(|word| word.text == "学生").expect("学生");
+        assert_eq!(gakusei.reading, "がくせい");
+        assert_eq!(gakusei.band_name, band_name(gakusei.band));
+
+        // A pattern written with a kanji offers that character, and only jōyō ones
+        // the board can actually open.
+        let hanshite = state.grammar_links("ni-hanshite").expect("〜に反して is in the course");
+        assert_eq!(hanshite.characters, vec!["反".to_string()]);
+        for ch in &hanshite.characters {
+            let ch = ch.chars().next().expect("one character");
+            assert!(state.kanji.get(ch).is_some(), "{ch} must be openable");
+        }
+        assert!(!hanshite.words.is_empty(), "its sentences use words of the course");
+
+        // Every pattern links somewhere, and nothing links to a word the vocabulary
+        // does not hold — which is what lets the screen draw the list without
+        // checking it.
+        let mut words = 0usize;
+        for point in state.grammar.points() {
+            let links = state.grammar_links(&point.id).expect("every id resolves");
+            assert_eq!(links.id, point.id);
+            for word in &links.words {
+                assert!(state.words.of_text(&word.text).is_some(), "{}: {}", point.id, word.text);
+                words += 1;
+            }
+        }
+        assert_eq!(words, 7345, "the union of the course's links");
+
+        let refused = state.grammar_links("no-such-pattern").unwrap_err();
+        assert!(refused.contains("not a pattern in this course"), "{refused}");
     }
 
     /// An answer is recorded against the pattern that was asked, and correctness is

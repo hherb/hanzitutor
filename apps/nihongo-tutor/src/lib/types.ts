@@ -622,6 +622,27 @@ export interface GrammarPage {
   points: GrammarPoint[];
 }
 
+/**
+ * What one pattern links to in the rest of the course.
+ *
+ * The tie the two courses were missing: **the words** the pattern's own sentences
+ * use, each a whole record so it can be handed straight to `WordCard`, and **the
+ * characters** the pattern itself is written with, each one the board can open.
+ *
+ * Both come from the artifact rather than from anything computed here — the word
+ * link is UniDic's, written by `prepare-grammar` because the corpus's furigana marks
+ * readings rather than word boundaries (`nihongo_core::grammar` has the
+ * measurement) — so this screen never decides what a word is.
+ */
+export interface GrammarLinks {
+  /** The pattern these links belong to, echoed so a slow answer cannot land late. */
+  id: string;
+  /** The course words in the pattern's sentences, each named once, in sentence order. */
+  words: Word[];
+  /** The kanji the pattern is written with, each once, in the order they appear. */
+  characters: string[];
+}
+
 /** One lesson of the kanji course, as the sidebar lists it. */
 export interface KanjiLessonView {
   /** Stable key, e.g. `"g1-3"`. */

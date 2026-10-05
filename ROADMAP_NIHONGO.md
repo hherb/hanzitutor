@@ -53,6 +53,7 @@ references for no gain.
 | **N18** | **Graded phrases: reading at your level** | **Shipped.** The counterpart of Hanzi Tutor's Phrases screen: **1,400 Japanese sentences imported from Tatoeba**, every one held to the vocabulary the course teaches, levelled on this project's own ladder, with a reading over every kanji and the system voice. `prepare-phrases` imports and filters them; the Phrases screen in the kanji course draws one band at a time. See the milestone for the funnel, for the licence measurement that corrected N7, and for the **107 sentences whose contributor the export did not name** — which the first run shipped, and which the research found and this now refuses to. |
 | **N19** | **Grammar: the patterns at last** | **Shipped.** The largest gap the roadmap named: particles, the copula and every ending are kana, so a learner who finished the kana course had unlocked the grammar and been given nothing to use it on. **526 patterns imported from OpenJLPT**, each with the form it is built from, the note that says how it differs from a similar one, and two or three sentences with a reading over every kanji — in one course order rather than a ladder, because the measurement put 344 of the 526 in the top band, and with the corpus's JLPT levels dropped rather than shown. See the milestone for the licence work that decided it. |
 | **N20** | **Grammar practice: the patterns asked back** | **Shipped.** N19 gave the learner 526 patterns to read and nothing to answer. The Grammar screen's second stage now draws one of the corpus's own sentences with the pattern's own text taken out and offers three patterns — **363 of the 526 can be asked**, over 903 of the 1,526 sentences — weighted by what this learner has missed and remembered in `grammar.json`. See the milestone for the blank rule's two measurements, the distractor that was plausible only after a second signal was added, and the layout fault the phone found in the screen that was already there. |
+| **N21** | **The pattern's vocabulary** | **Shipped.** N19's screen and N20's drill both left the grammar course an island: its sentences are made of words the course teaches, and nothing said which. Every pattern's stage now lists the words its own sentences use — **526 of 526 patterns, 8,151 links** — each opening its own card, and the characters the pattern itself is written with (**107 patterns, 143 characters, every one jōyō**), each opening the kanji board. The word link is **the analyser's**, and the rule built on the corpus's own furigana was measured and rejected first: 405 disagreements, several of them fragments. See the milestone for that measurement and for what it cost (`prepare-grammar` is now behind `tokenize`). |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -68,6 +69,15 @@ its own: 526 imported patterns with their form, their nuance and their sentences
 a licence chain that had to be read before a line of it could ship. Reading a course
 is still not practising it, which is what this file's own weak-spot bullet had said
 since N19, so the milestone after it made the same course ask.
+
+**And N21 is the tie the grammar course was still missing.** Both of the milestones
+before it left the same hole: the patterns' sentences are made of words the course
+teaches, and nothing on the screen said which — the course was imported text sitting
+beside a vocabulary it never mentioned. Each pattern's stage now lists the course's
+own words its sentences use and the characters the pattern itself is written with,
+and each opens the card behind it. The measurement that decided how is the
+milestone's: the corpus's furigana marks readings rather than word boundaries, so the
+rule built on it produced fragments, and the link is UniDic's.
 
 ---
 
@@ -2416,6 +2426,114 @@ rule; and what may be handed to the voice — the drill speaks the **sentence**,
 after it has been answered, because before that the voice would read out the pattern the
 blank took away.
 
+## N21 — The pattern's vocabulary: what its sentences are made of
+
+**Shipped.** N19 put 526 imported patterns on a screen and N20 made the screen ask, and
+both left the same hole standing: the grammar course was an island. Its sentences are
+built from words this course teaches — **8,151 links over 1,526 sentences** — and a
+learner who met 〜に反して was never told that they already knew 予想, 上司 and 指示, or
+that the pattern turns on the character 反. Every pattern's stage now says both: the
+words its own sentences use, each opening the word's own card, and the characters the
+pattern itself is written with, each opening that character on the kanji board.
+
+### The link is the analyser's, and the obvious rule was measured and rejected
+
+The corpus ships its own furigana markup for every example, and the obvious rule
+followed from it: a course word was "used" by a sentence when the word's written form
+and its reading were a run of the corpus's own ruby spans. It was built, run over all
+1,526 examples and **rejected**, because the corpus's furigana marks *readings*, not
+word boundaries, and the two are not the same thing:
+
+| the sentence | the rule's match | what the sentence actually says |
+| --- | --- | --- |
+| けさは朝ご飯を食べずに家を出た。 | ご飯 | 朝ご飯 — the markup is `{朝|あさ}ご{飯|はん}`, so `ご` + `飯` spells a run that equals ご飯 |
+| 妹といっしょに買い物に行きます。 | 買い | 買い物 — `{買|か}い{物|もの}` |
+| きのうは雨でしたから、出かけませんでした。 | 出 | 出かける — `{出|で}か…` |
+
+Measured against UniDic over the same 1,526 sentences, the runtime rule agreed with the
+analyser **2,622** times and disagreed **405** times, and the disagreements are not
+near-misses: they are fragments a learner would read as wrong words. So the link is
+**UniDic's**, computed once at build time — the same `segment::analyse` that segments
+the passages and the phrases, and the same `word_for` rule that links 食べた to 食べる
+rather than to its surface.
+
+### What that cost, and why it was worth paying
+
+`prepare-grammar` is behind **`tokenize`** as of this milestone, and its inputs grew by
+two: the committed words artifact (what a token is looked up in) and the UniDic
+dictionary that `scripts/fetch-unidic.sh` builds. Regenerating `grammar.bin.gz`
+therefore needs `fetch-unidic.sh` to have run once, exactly as regenerating the
+passages and the phrases does — the shipped artifact is still committed, and nothing a
+learner installs has an analyser in it.
+
+The three pipelines that need a dictionary are now named in all three places that
+matter: `Cargo.toml`'s `required-features`, `HANDOVER_NIHONGO.md` §5's lint-by-name
+rule for `tokenize`, and the **analyser notice**, which named only the passages and now
+names the passages, the phrases and the grammar's word links — the same correction N9
+made when the notice was found to satisfy nothing in the bundle.
+
+### The characters, and why every one of them can be opened
+
+The second half of "the words and characters" is the pattern's own written form: 反 in
+〜に反して is the character a learner recognises the pattern by. The stage offers those
+characters as chips, and each opens the character on the kanji board — the other
+course's screen, through the same request the radicals panel uses.
+
+All **143** characters across the **107** patterns that carry one are in the jōyō set,
+so there is no dead chip to filter: the app still checks against its own kanji dataset
+before offering one (invariant 13's rule), and the artifact test asserts the property
+that makes the check a formality rather than a hope.
+
+### The numbers, pinned
+
+| | |
+| --- | --- |
+| Patterns with a linked word | **526 of 526** |
+| Sentences that use one | **1,523 of 1,526** (three are made of words this course does not teach) |
+| Links in the artifact | **8,151** (per sentence, each word named once) |
+| A pattern's union | **7,345** words; the most on one pattern **28** |
+| Patterns written with a character | **107**, carrying **143** characters, all jōyō |
+| Artifact | **226,452 bytes** from 591 KB, version 2 (`GRAMM002`), byte-identical on rebuild |
+
+The corpus's own text is untouched: the furigana the screen draws is still OpenJLPT's,
+parsed and checked, and the word index is stored *beside* the sentence rather than in
+it. The OpenJLPT notice, `LICENSES.md` and the artifact's own `modifications` string
+all say so, because an index derived from a share-alike text is still derived from it.
+
+### What was measured rather than assumed
+
+Driven over §5's DOM probe, because the session had **0 active displays**:
+
+| step | measured |
+| --- | --- |
+| the course | 20 rows, `363 of the 526 can be asked` |
+| a pattern | searched `ni-hanshite`, opened row 284 — `〜に反して`, its reading, `WRITTEN WITH Noun + に反して / …`, 3 examples |
+| the section | `The pattern is written with one character this course teaches:` and `18 words this course teaches appear in these sentences:` |
+| the chips | character `反`; words `大方 予想 反する 無名 新人 優勝 本人 意思 彼 地方 支店 異動 上司 指示 有る 法律 事 無い` |
+| a word | tapping 大方 opened its own card — `大おお方かた`, reading おおかた, `large part; greater part; majority`, `kyōiku 2`, `EDRDG frequency nf12`, the band disclaimer and the typing box; tapping the chip again closed it |
+| a character | tapping 反 left for the kanji board with the chrome gone: `Lessons`, `5 / 10`, 反 with `ON ハン ホン タン ホ`, `KUN そ.る …`, and the tool row |
+| at 390×812 | `pageOverflow 0`; 18 word chips in **4 wrapped rows**, 63×59 each, the character chip 46×61, the chip row 349px wide inside the 390px window |
+
+**Tests.** 3 more in `tests/grammar_artifact.rs` (every linked word is a word the words
+artifact teaches and is named once; the reach of the link; every character a pattern is
+written with is jōyō), 2 in `grammar.rs` (the union's order, the characters), 1 in the
+app's own suite (the command resolves both halves, and every linked word of all 526
+patterns is in the vocabulary), 1 in `ipc_contract.rs` (the whole shape the stage reads,
+down to the word's own keys), and 3 in `grammar.test.ts` for the two functions that turn
+a count into a sentence. The cross-artifact assertion lives in the grammar's artifact
+test rather than the vocabulary's, because the grammar is the artifact whose rebuild
+could break it. The four layers are green — **448 Rust tests, 228 frontend** — and a
+rebuild of the artifact is byte-identical.
+
+### What is not changed
+
+The corpus's furigana, which is still what is drawn and what is checked at build time;
+the grammar artifact's *text*; the drill and its file; the schedule; and the two
+pipelines that already had the analyser, which were not touched. The sentences
+themselves stay untappable — invariant 38's promise that a grammar example is not held
+to the vocabulary stands, and what was added is a list of the course's own words beside
+the sentences rather than a second way to read them.
+
 ## Cross-cutting polish
 
 Recorded here rather than as milestones because none of them is a feature.
@@ -2500,20 +2618,23 @@ Recorded here rather than as milestones because none of them is a feature.
   strokes — kanji stroke order is the thing being taught, and the Chinese app has
   always graded its characters that way. A kanji drawn with two strokes joined is
   refused with the taught count, and `joined` is empty for a kanji and a radical.
-* **Grammar — shipped at N19 and N20, and this bullet is kept rather than deleted.**
-  It stood here from N0 as the largest gap in the product: particles, the copula and
-  every inflectional ending are kana, so a learner who finished the kana course had
-  unlocked grammar and been given nothing to use it on. N19 put **526 patterns
-  imported from OpenJLPT** on a screen — each with the form it is built from, a note
-  on nuance, and two or three sentences with a reading over every kanji — in one
+* **Grammar — shipped at N19, N20 and N21, and this bullet is kept rather than
+  deleted.** It stood here from N0 as the largest gap in the product: particles, the
+  copula and every inflectional ending are kana, so a learner who finished the kana
+  course had unlocked grammar and been given nothing to use it on. N19 put **526
+  patterns imported from OpenJLPT** on a screen — each with the form it is built from,
+  a note on nuance, and two or three sentences with a reading over every kanji — in one
   course order rather than a ladder, with the corpus's JLPT levels dropped. N20 then
   made the screen **ask**: a pattern's own sentence with the pattern's own text taken
   out, three patterns to choose between, weighted by what this learner misses
-  (`grammar.json`, and 363 of the 526 patterns can be asked that way). What is still
-  missing is the *production* half and the link between a pattern and the vocabulary:
-  nothing asks a learner to build a sentence with a pattern, and nothing ties a
-  pattern to the words or characters that trigger it. Both would need their own
-  attempt source the way the review queue needed the board.
+  (`grammar.json`, and 363 of the 526 patterns can be asked that way). **N21 tied the
+  course to the vocabulary it had been sitting beside**: every pattern's stage lists
+  the course's own words its sentences use (526 of 526, 8,151 links) and the characters
+  the pattern itself is written with (107 patterns, 143 characters, all jōyō), each
+  opening the card behind it — the *link* half of this bullet, answered. What is still
+  missing is the **production** half: nothing asks a learner to build a sentence with a
+  pattern, which would need its own attempt source the way the review queue needed the
+  board.
 * **The 13 confusion pairs are still a fixed list, and the yōon drill did not
   change that.** N3 weighs them by what this learner gets wrong, which is the half
   that was worth having — and N4's second exercise records its 33 yōon contrasts

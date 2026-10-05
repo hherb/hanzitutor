@@ -178,11 +178,13 @@ pub const NOTICES: &[LicenceNotice] = &[
     },
     LicenceNotice {
         id: "unidic",
-        title: "UniDic — the dictionary the passages were segmented with",
+        title: "UniDic — the dictionary the text was segmented with",
         licence: "BSD-3-Clause",
         source: "https://clrd.ninjal.ac.jp/unidic/ (via https://crates.io/crates/lindera-unidic)",
         covers: "The word boundaries and readings the reading screen draws over its \
-                 passages, computed at build time through lindera. Only the \
+                 passages, the same for the Phrases screen's imported sentences, and \
+                 — since N21 — the link between a grammar pattern and the course's own \
+                 words, all computed at build time through lindera. Only the \
                  segmentation is redistributed — no dictionary entry is — and the \
                  dictionary is not bundled with this app or fetched by it.",
         file: "apps/nihongo-tutor/src-tauri/licences/ANALYSER-UniDic-lindera.txt",
@@ -226,6 +228,9 @@ pub const NOTICES: &[LicenceNotice] = &[
                  space in front of it, and the corpus's own furigana markup is parsed \
                  into \
                  ruby segments with no reading invented and no alignment derived. \
+                 Each example also records which of this app's own words its sentence \
+                 uses — UniDic's segmentation, not the corpus's, since the corpus's \
+                 furigana marks readings rather than word boundaries. \
                  The share-alike obligation is discharged by this entry, the text it \
                  points at, and the provenance recorded inside the artifact.",
         file: "apps/nihongo-tutor/src-tauri/licences/OPENJLPT-grammar.txt",

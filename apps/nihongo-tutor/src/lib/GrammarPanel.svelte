@@ -54,9 +54,16 @@
      * and the tab row out of the way while one is (invariants 33 and 35).
      */
     stage?: boolean;
+    /**
+     * Open a character on the kanji board, handed down to the stage.
+     *
+     * The board belongs to the kanji course, so this panel cannot draw it: the
+     * request travels to `App.svelte` exactly as the radicals screen's does.
+     */
+    onkanji: (ch: string) => void;
   }
 
-  let { voice, stage = $bindable(false) }: Props = $props();
+  let { voice, stage = $bindable(false), onkanji }: Props = $props();
 
   let total = $state(0);
   let page = $state(1);
@@ -229,6 +236,7 @@
       canNext={canNext}
       onstep={step}
       onleave={() => (open = null)}
+      {onkanji}
     />
   {/key}
 {:else}

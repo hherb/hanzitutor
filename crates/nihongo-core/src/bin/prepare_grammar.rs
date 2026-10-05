@@ -18,27 +18,53 @@
 //!   that the grammar content is the project's own; the full attribution is a
 //!   notice of its own in the app.
 //!
-//! Run: `pnpm run prepare-grammar` (add `--features nihongo-core/prepare` to a
-//! plain `cargo run`). It needs no analyser: the corpus supplies its own furigana
-//! markup for every kanji, so this pipeline is `prepare`, not `tokenize`.
+//! Run: `pnpm run prepare-grammar`. It needs the **analyser** as well as the raw
+//! corpus: the corpus supplies its own furigana markup for every kanji, so the
+//! examples as drawn need no analyser at all, but the sentence records which of the
+//! course's words it uses, and that link must be UniDic's rather than the markup's
+//! — the corpus's furigana marks readings, not word boundaries, and the obvious
+//! rule built on it was measured and rejected ([`nihongo_core::grammar`] and
+//! [`GrammarExample::words`] carry the numbers). So this binary is behind
+//! `tokenize` and needs `scripts/fetch-unidic.sh` to have run once, like
+//! `prepare-passages` and `prepare-phrases`.
+//!
+//! The inputs are therefore the corpus, the **committed words artifact** (the
+//! vocabulary a token is looked up in) and the built dictionary.
 
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+use lindera::dictionary::load_dictionary;
+use lindera::mode::Mode;
+use lindera::segmenter::Segmenter;
 
 use nihongo_core::grammar::{
     parse_furigana, strip_level_references, GrammarArtifact, GrammarDataset, GrammarExample,
     GrammarPoint, GrammarSource, GRAMMAR_ARTIFACT_MAGIC,
 };
+use nihongo_core::segment::analyse;
 use nihongo_core::words::{is_kanji, Ruby};
+use nihongo_core::WordDataset;
 use serde::Deserialize;
 
 /// The upstream dataset, as published.
 const CORPUS: &str = "OpenJLPT";
 const CORPUS_URL: &str = "https://github.com/evanclan/OpenJLPT";
 const LICENCE: &str = "CC BY-SA 4.0";
+
+/// The analyser this pipeline links the examples' vocabulary with, and the
+/// dictionary it uses.
+///
+/// Constants for the reason `prepare-passages` states them: the artifact records
+/// both, and half a version is worse than none. `LINDERA_VERSION` must track the
+/// `lindera` requirement in `Cargo.toml`, and `UNIDIC_VERSION` is the archive
+/// `lindera-unidic`'s build script fetches — `scripts/fetch-unidic.sh` repeats its
+/// name and MD5 so a change to it shows up in a diff here.
+const LINDERA_VERSION: &str = "6.2";
+const UNIDIC_VERSION: &str = "unidic-mecab-2.1.2";
 
 /// The level files, in the order a course meets them.
 ///
@@ -99,7 +125,10 @@ const SELECTION: &str = "all 526 grammar points the corpus publishes, in the ord
 /// What was done to the text on the way in, as CC BY-SA 4.0 §3(a)(1)(B) requires.
 const MODIFICATIONS: &str = "the JLPT level references in the notes were removed; the examples' \
                              furigana markup was parsed into ruby segments; no text was added or \
-                             reworded";
+                             reworded. Each example also records which of the course's own words \
+                             its sentence uses, from UniDic's segmentation — an index over the \
+                             sentence rather than a change to it, and the sentence is stored and \
+                             shown exactly as the corpus wrote it";
 
 fn main() -> ExitCode {
     match run() {
@@ -121,15 +150,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut raw_dir = repo_root.join("data/raw/openjlpt");
     let mut out_path = crate_dir.join("data/grammar.bin.gz");
+    let mut words_path = crate_dir.join("data/words.bin.gz");
+    let mut dictionary: Option<PathBuf> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--raw" => raw_dir = PathBuf::from(args.next().ok_or("--raw needs a directory")?),
             "--out" => out_path = PathBuf::from(args.next().ok_or("--out needs a file")?),
+            "--words" => words_path = PathBuf::from(args.next().ok_or("--words needs a file")?),
+            "--dictionary" => {
+                dictionary = Some(PathBuf::from(args.next().ok_or("--dictionary needs a path")?))
+            }
             other => return Err(format!("unknown argument {other:?}").into()),
         }
     }
+
+    // ---- The vocabulary the examples are linked to, and the analyser --------
+    if !words_path.exists() {
+        return Err(format!(
+            "missing {} — run pnpm run prepare-words first: the artifact decides which of a \
+             sentence's words the course teaches, and there is nothing to link to without it",
+            words_path.display()
+        )
+        .into());
+    }
+    let words = WordDataset::from_gzip_bytes(&std::fs::read(&words_path)?)
+        .map_err(|e| format!("{}: {e}", words_path.display()))?;
+
+    let dictionary_dir = match dictionary {
+        Some(dir) => dir,
+        None => find_dictionary(&repo_root).ok_or_else(|| {
+            format!(
+                "no UniDic dictionary under {} — run scripts/fetch-unidic.sh once (it downloads \
+                 about 134 MB and builds a dictionary from it), or pass --dictionary",
+                repo_root.join(".lindera").display()
+            )
+        })?,
+    };
+    let dictionary = load_dictionary(dictionary_dir.to_string_lossy().as_ref())
+        .map_err(|e| format!("could not load the dictionary at {}: {e}", dictionary_dir.display()))?;
+    let segmenter = Segmenter::new(Mode::Normal, dictionary, None);
 
     let meta_path = raw_dir.join("meta.json");
     for name in ["meta.json", "LICENSE", "NOTICE.md"] {
@@ -200,6 +261,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut examples_without_ruby: Vec<String> = Vec::new();
     let mut notes_changed: Vec<String> = Vec::new();
     let mut readings = 0usize;
+    let mut examples_with_words = 0usize;
+    let mut word_links = 0usize;
+    let mut points_with_words = 0usize;
 
     for name in LEVEL_FILES {
         let path = raw_dir.join(name);
@@ -289,10 +353,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
                 ruby_spans += ruby.iter().filter(|part| part.rt.is_some()).count();
+                // Which of the course's words this sentence uses: the analyser's
+                // answer, kept in the sentence's own order and each named once.
+                // Nothing is refused here — a grammar example is deliberately not
+                // held to the vocabulary (invariant 38) — so an example that uses
+                // no word the course teaches simply carries none.
+                let mut sentence_words: Vec<String> = Vec::new();
+                for token in analyse(&segmenter, &source.ja, &words)
+                    .map_err(|e| format!("{}: {:?}: {e}", path.display(), entry.id))?
+                {
+                    if let Some(word) = token.word {
+                        if !sentence_words.contains(&word) {
+                            sentence_words.push(word);
+                        }
+                    }
+                }
+                if !sentence_words.is_empty() {
+                    examples_with_words += 1;
+                    word_links += sentence_words.len();
+                }
                 let example = GrammarExample {
                     ja: source.ja,
                     en: source.en,
                     ruby,
+                    words: sentence_words,
                 };
                 // The invariant that replaces the vocabulary rule: a kanji with no
                 // reading over it is one the learner cannot read, and a grammar
@@ -350,6 +434,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 tags: entry.tags,
                 examples,
             });
+            if points
+                .last()
+                .is_some_and(|point: &GrammarPoint| !point.words().is_empty())
+            {
+                points_with_words += 1;
+            }
         }
     }
 
@@ -380,6 +470,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         version: meta.version.clone(),
         licence: LICENCE.to_string(),
         retrieved: retrieved_date(&raw_dir),
+        analyser: format!("lindera {LINDERA_VERSION}"),
+        dictionary: UNIDIC_VERSION.to_string(),
         selection: SELECTION.to_string(),
         modifications: MODIFICATIONS.to_string(),
     };
@@ -428,6 +520,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("  readings               {readings} patterns carry a kana reading");
     println!("  tags                   {} distinct", tags_seen.len());
     println!(
+        "  words                  {points_with_words} of {} patterns have a linked word; \
+         {examples_with_words} of {examples_total} examples use one, {word_links} links",
+        dataset.len(),
+    );
+    println!(
+        "  analyser               lindera {LINDERA_VERSION} with {UNIDIC_VERSION}"
+    );
+    println!(
         "  notes                  {} of {} carry one; {} had level references removed",
         dataset.points().iter().filter(|p| p.notes.is_some()).count(),
         dataset.len(),
@@ -457,4 +557,22 @@ fn retrieved_date(raw_dir: &std::path::Path) -> String {
         }
     }
     "unknown".to_string()
+}
+
+/// Find the built dictionary under `<root>/.lindera/`.
+///
+/// The dictionary sits at `.lindera/<crate version>-fmt<format version>/lindera-unidic`,
+/// where the last component is `lindera-unidic`'s own `FetchParams::output_dir` and
+/// the middle one is a version this crate does not name. So it is found rather than
+/// spelled out, as `prepare-passages` and `prepare-phrases` do.
+fn find_dictionary(root: &Path) -> Option<PathBuf> {
+    let cache = root.join(".lindera");
+    let entries = std::fs::read_dir(cache).ok()?;
+    for entry in entries.flatten() {
+        let candidate = entry.path().join("lindera-unidic");
+        if candidate.join("metadata.json").is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }

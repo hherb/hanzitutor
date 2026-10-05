@@ -430,7 +430,7 @@
       two-screen arrangement as the vocabulary's and the passages', for the same
       reason.
     -->
-    <GrammarPanel bind:stage={grammarStage} {voice} />
+    <GrammarPanel bind:stage={grammarStage} {voice} onkanji={openKanji} />
   {:else if view === "read"}
     <PassagePanel bind:stage={readStage} {voice} />
   {:else if view === "start"}

@@ -56,13 +56,31 @@
 //! [`parse_furigana`] and checked at build time, so a learner can always read what
 //! is shown even where there is no word card to open. The measurements are in
 //! `tests/grammar_artifact.rs`.
+//!
+//! # And the link back to the vocabulary, which is the analyser's
+//!
+//! The one thing a grammar course cannot say on its own is **which of the words it
+//! shows the learner already has**. Every pattern's sentences are stored with the
+//! course words they use ([`GrammarExample::words`]), so a pattern's stage can list
+//! the vocabulary it is built on and open each word's own card — the tie
+//! `ROADMAP_NIHONGO.md`'s known weak spots called for, and the reason this artifact
+//! is the third one `prepare-grammar` writes with the analyser rather than the
+//! second one it writes without. The link is UniDic's because the corpus's furigana
+//! is not a word boundary: the runtime rule was measured at 405 disagreements over
+//! the 1,526 examples, several of them fragments (ご飯 out of 朝ご飯, 買い out of
+//! 買い物, 出 out of 出かける). The furigana the screen draws is still the corpus's
+//! own; only the word list comes from the analyser.
 
 use serde::{Deserialize, Serialize};
 
 use crate::words::{is_kanji, Ruby};
 
 /// Magic bytes at the head of a grammar artifact, checked before decoding.
-pub const GRAMMAR_ARTIFACT_MAGIC: &[u8; 8] = b"GRAMM001";
+///
+/// **Version 2 (`GRAMM002`)**: an example carries the course words its sentence
+/// uses, which is a field the first format did not have — see
+/// [`GrammarExample::words`].
+pub const GRAMMAR_ARTIFACT_MAGIC: &[u8; 8] = b"GRAMM002";
 
 /// One example sentence: the Japanese, its English, and the furigana the corpus
 /// wrote over it.
@@ -86,6 +104,25 @@ pub struct GrammarExample {
     /// `prepare-grammar` refuses to write are an example with a kanji the markup
     /// does not cover, and a markup that does not spell the sentence.
     pub ruby: Vec<Ruby>,
+    /// The course words this sentence uses, by the vocabulary's own `text`, in the
+    /// order they appear. Empty for a sentence that uses none (3 of the 1,526).
+    ///
+    /// **This is the link between the grammar course and the vocabulary, and it is
+    /// the analyser's rather than the corpus's.** The obvious rule — a word whose
+    /// written form and reading are a run of the corpus's own ruby spans — was
+    /// measured and rejected: over the 1,526 examples it produced **405** matches
+    /// the analyser does not agree with, and the disagreements are not near-misses.
+    /// `朝|あさ` + `ご` + `飯|はん` spells a span run that equals ご飯, so ご飯 was
+    /// "used" by a sentence whose word is 朝ご飯; 買い came out of 買い物 and 出 out of
+    /// 出かける. The corpus's furigana marks readings, not word boundaries, and a
+    /// learner-facing link must be a word rather than a fragment — so the link is
+    /// UniDic's segmentation, done once at build time by `prepare-grammar` (which is
+    /// why that binary needs the `tokenize` feature) and stored here.
+    ///
+    /// The sentence **as drawn is still the corpus's own**, ruby and all: what the
+    /// analyser supplies is which words are in it, never a reading over it
+    /// (invariant 38's promise, one layer over).
+    pub words: Vec<String>,
 }
 
 impl GrammarExample {
@@ -200,6 +237,46 @@ impl GrammarPoint {
     pub fn examples(&self) -> impl Iterator<Item = &GrammarExample> {
         self.examples.iter()
     }
+
+    /// Every course word this point's sentences use, each named once, in the order
+    /// the course meets them: the first sentence's words first.
+    ///
+    /// The union of [`GrammarExample::words`], which is what a screen lists beside
+    /// the sentences — a pattern's vocabulary, so that the grammar course and the
+    /// words course are the same course read two ways. The order is the sentences'
+    /// rather than the vocabulary's ladder on purpose: these are the words *of this
+    /// point*, and re-sorting them by band would draw the rarest word of a beginner
+    /// pattern first.
+    pub fn words(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for example in &self.examples {
+            for word in &example.words {
+                if !out.contains(&word.as_str()) {
+                    out.push(word);
+                }
+            }
+        }
+        out
+    }
+
+    /// The kanji the pattern itself is written with, in the order they appear and
+    /// each once.
+    ///
+    /// What a screen can offer to open on the character board: 反 in `〜に反して` is
+    /// the character the pattern turns on, and a learner who meets the pattern here
+    /// can go and get that character's card. Nothing here decides whether the
+    /// character is *taught* — the corpus writes a few outside the jōyō set, and
+    /// whoever draws the card is what filters them (the app's own dataset is the
+    /// authority, exactly as `words_of_kanji` refuses a character it does not hold).
+    pub fn characters(&self) -> Vec<char> {
+        let mut out: Vec<char> = Vec::new();
+        for ch in self.pattern.chars().filter(|ch| is_kanji(*ch)) {
+            if !out.contains(&ch) {
+                out.push(ch);
+            }
+        }
+        out
+    }
 }
 
 /// Where the grammar came from, and what was done to it.
@@ -221,6 +298,17 @@ pub struct GrammarSource {
     pub licence: String,
     /// The date `scripts/fetch-openjlpt.sh` recorded, or `unknown`.
     pub retrieved: String,
+    /// The analyser that read each example's vocabulary, e.g. `lindera 6.2`.
+    ///
+    /// Recorded for the reason the passages and the phrases record their own: the
+    /// word link is not the corpus's, so the artifact must be able to say what
+    /// produced it. Which analyser and which dictionary are part of what the
+    /// artifact *is*.
+    #[serde(default)]
+    pub analyser: String,
+    /// The dictionary the analyser segmented with, e.g. `unidic-mecab-2.1.2`.
+    #[serde(default)]
+    pub dictionary: String,
     /// The selection rule in one sentence, so the artifact describes its own cut.
     pub selection: String,
     /// What was changed on the way in, as the share-alike licence requires.
@@ -548,6 +636,7 @@ mod tests {
             ja: ja.to_string(),
             en: "t".to_string(),
             ruby: parse_furigana(ja, markup).expect("parses"),
+            words: Vec::new(),
         }
     }
 
@@ -613,6 +702,7 @@ mod tests {
             ja: "これはペンです。".to_string(),
             en: "t".to_string(),
             ruby: Vec::new(),
+            words: Vec::new(),
         };
         assert!(!kana.has_kanji());
         assert!(kana.kanji_without_ruby().is_empty());
@@ -622,8 +712,43 @@ mod tests {
             ja: "学生です。".to_string(),
             en: "t".to_string(),
             ruby: vec![Ruby::new("学生です。", None)],
+            words: Vec::new(),
         };
         assert_eq!(uncovered.kanji_without_ruby(), vec!['学', '生']);
+    }
+
+    #[test]
+    fn a_points_words_are_its_sentences_words_each_named_once_in_their_order() {
+        let mut p = point("wa", "〜は", &["particle"]);
+        p.examples = vec![
+            GrammarExample {
+                words: vec!["私".into(), "学生".into()],
+                ..example("私は学生です。", "{私|わたし}は{学生|がくせい}です。")
+            },
+            GrammarExample {
+                words: vec!["学生".into(), "本".into()],
+                ..example("この本はおもしろいです。", "この{本|ほん}はおもしろいです。")
+            },
+        ];
+        assert_eq!(p.words(), vec!["私", "学生", "本"], "the union, in the sentences' order");
+
+        // A point whose sentences use no word the course teaches has none.
+        assert!(point("ka", "〜か", &["particle"]).words().is_empty());
+    }
+
+    #[test]
+    fn a_points_characters_are_the_kanji_of_the_pattern_itself() {
+        assert!(
+            point("wa", "〜は", &["particle"]).characters().is_empty(),
+            "a kana pattern is written with no character"
+        );
+        assert_eq!(point("ni-hanshite", "〜に反して", &["contrast"]).characters(), vec!['反']);
+        assert_eq!(point("yotei", "〜予定", &["plan"]).characters(), vec!['予', '定']);
+        assert_eq!(
+            point("yotei", "〜予定 / 〜の予定", &["plan"]).characters(),
+            vec!['予', '定'],
+            "a character the pattern writes twice is offered once"
+        );
     }
 
     #[test]
@@ -759,6 +884,8 @@ mod tests {
                 version: "0.3.0".to_string(),
                 licence: "CC BY-SA 4.0".to_string(),
                 retrieved: "2026-10-05".to_string(),
+                analyser: "lindera 6.2".to_string(),
+                dictionary: "unidic-mecab-2.1.2".to_string(),
                 selection: "one rule".to_string(),
                 modifications: "another".to_string(),
             },

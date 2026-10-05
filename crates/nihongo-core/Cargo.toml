@@ -80,10 +80,12 @@ path = "src/bin/prepare_phrases.rs"
 required-features = ["tokenize"]
 
 # The grammar course, imported from OpenJLPT rather than written here. Behind
-# `prepare` rather than `tokenize` on purpose: the corpus carries its own furigana
-# markup for every kanji, so nothing has to be segmented and the analyser stays out
-# of this pipeline. See `grammar.rs` and ROADMAP_NIHONGO.md N19.
+# `tokenize`, and that changed at N21: the examples as drawn are still the corpus's
+# own furigana markup, but each sentence now records which of the course's words it
+# uses, and that link has to be the analyser's — the corpus's furigana marks
+# readings, not word boundaries, and the rule built on it was measured at 405
+# disagreements over the 1,526 examples. See `grammar.rs` and ROADMAP_NIHONGO.md N21.
 [[bin]]
 name = "prepare-grammar"
 path = "src/bin/prepare_grammar.rs"
-required-features = ["prepare"]
+required-features = ["tokenize"]

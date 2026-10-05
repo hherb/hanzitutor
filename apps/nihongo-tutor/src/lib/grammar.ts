@@ -101,3 +101,34 @@ export function positionsOnPage(offset: number, count: number): number[] {
 export function rowLabel(point: GrammarPoint): string {
   return `${point.pattern} — ${point.meaning}`;
 }
+
+/**
+ * What the stage says above the words a pattern's sentences use.
+ *
+ * The link is the artifact's (`GrammarLink`, written by `prepare-grammar` from
+ * UniDic's segmentation), and this line is what makes it a claim rather than a list:
+ * *"12 words this course teaches appear in these sentences"* says both what the
+ * words are and whose they are — the course's, not the corpus's.
+ *
+ * A count of none is stated rather than left blank. The shipped artifact has no such
+ * pattern (all 526 have at least one linked word), but a screen that says nothing
+ * about an empty list is the "filter that found nothing looks like a filter that
+ * matches nothing" failure this project has met before.
+ */
+export function wordsNote(count: number): string {
+  if (count <= 0) return "No word this course teaches appears in these sentences.";
+  if (count === 1) return "One word this course teaches appears in these sentences:";
+  return `${count} words this course teaches appear in these sentences:`;
+}
+
+/**
+ * What the stage says above the characters a pattern itself is written with.
+ *
+ * Empty for a kana pattern, which has no character to offer: the row is then not
+ * drawn at all rather than drawn saying nothing, because there is nothing to open.
+ */
+export function charactersNote(count: number): string {
+  if (count <= 0) return "";
+  if (count === 1) return "The pattern is written with one character this course teaches:";
+  return `The pattern is written with ${count} characters this course teaches:`;
+}

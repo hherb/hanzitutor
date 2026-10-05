@@ -57,16 +57,19 @@ pnpm run prepare-passages      # needs the words artifact — it holds the passa
 ./scripts/fetch-tatoeba.sh     # once: ~34 MB of Tatoeba's Japanese exports, into data/raw/tatoeba/
 pnpm run prepare-phrases       # needs the words artifact too — it drops what the course cannot read
 ./scripts/fetch-openjlpt.sh    # once: ~760 KB of OpenJLPT's grammar dataset, into data/raw/openjlpt/
-pnpm run prepare-grammar       # no analyser and no other artifact — the corpus brings its own furigana
+pnpm run prepare-grammar       # needs UniDic and the words artifact too: it links each example to the course's words
 ```
 
 `fetch-unidic.sh` and `fetch-tatoeba.sh` are separate from `fetch-data.sh` on
 purpose, and so is the `tokenize` feature: the analyser is 100-odd crates and a
-134 MB dictionary that only the two text pipelines need, and nothing that ships
-depends on either. Neither fetch is needed to build or to test the app — both
-artifacts are committed — and lindera's build script downloads **nothing** unless
-`fetch-unidic.sh` names a cache directory, so no ordinary `cargo test` or
-`cargo clippy` ever touches the network.
+134 MB dictionary that only the **three** text pipelines need, and nothing that
+ships depends on any of them. (The third is `prepare-grammar`, which joined them at
+N21 — the examples as drawn are the corpus's own, but the link from a sentence to
+the course's words is UniDic's, because the corpus's furigana marks readings rather
+than word boundaries. Invariant 40 has the measurement that decided it.) Neither
+fetch is needed to build or to test the app — every artifact is committed — and
+lindera's build script downloads **nothing** unless `fetch-unidic.sh` names a cache
+directory, so no ordinary `cargo test` or `cargo clippy` ever touches the network.
 
 `prepare-phrases` reads what `fetch-tatoeba.sh` unpacked and **drops** rather than
 refuses (invariant 37): it wants `jpn_sentences_detailed.tsv`, `jpn-eng_links.tsv`,
@@ -112,11 +115,11 @@ nothing complains.
 ## 2. What already works
 
 Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor -p
-hanzi-voice` is **441 tests** — 264 in `nihongo-core` (178 in the crate's own suite,
-which gains two more when the `tokenize` feature is on, and 86 across its artifact
-tests), 148 in `nihongo-tutor` (78 in the app's suite, 56 in `ipc_contract`, 12
+hanzi-voice` is **448 tests** — 269 in `nihongo-core` (180 in the crate's own suite,
+which gains two more when the `tokenize` feature is on, and 89 across its artifact
+tests), 150 in `nihongo-tutor` (79 in the app's suite, 57 in `ipc_contract`, 12
 notices, and 2 doc-tests) and 29 in `hanzi-voice`; the frontend's are counted
-separately below. `pnpm run test:web` runs 225, of which **156** are this app's.
+separately below. `pnpm run test:web` runs 228, of which **159** are this app's.
 
 | | |
 | --- | --- |
@@ -143,6 +146,7 @@ separately below. `pnpm run test:web` runs 225, of which **156** are this app's.
 | Phrases | 1,400 imported from Tatoeba — **200 in each of the seven bands**, 6,025 tokens, 152 named contributors, 54 KB; every kanji-bearing word taught, the band is the hardest word's, and every sentence carries its id, its contributor and its licence on screen (invariant 37) |
 | Grammar | **526 patterns imported from OpenJLPT** (0.3.0, CC BY-SA 4.0) — the form each is built from, the note on nuance, and 1,526 sentences with 6,591 ruby spans; 107 patterns carry a kana reading, 70 tags, 524 notes (38 with their level references removed), 16 examples with no kanji. The corpus's JLPT levels are **dropped**, and the order is its teaching order rather than a ladder: levelling a pattern by the hardest character in its pattern *and* its examples put **344 of the 526** in band 7 and 2 in band 1 (invariant 38) |
 | Grammar drill | **363 of the 526 patterns can be asked**, from **903 of the 1,526 sentences** — the corpus's own sentence with the pattern's own text taken out, three patterns to choose between, weighted by what this learner misses and remembered in this app's own `grammar.json`; every option is a pattern of the corpus, the furigana is its own, and `Hear it` speaks the sentence **only after** it is answered (invariants 27 and 39) |
+| Pattern vocabulary | **526 of 526 patterns** name a word the course teaches, over **1,523 of the 1,526 sentences** and **8,151 links** (7,345 once per pattern, 28 the most); the words its sentences use open their own cards, and the **107 patterns written with a kanji** offer their **143 characters** — all jōyō — on the kanji board. The word link is **UniDic's**, not the corpus's: the furigana rule was measured at 405 disagreements over the 1,526 sentences (invariant 40) |
 | Words on a card | 16,073 words over 2,136 characters — 一 in 223, 人 in 218, and **57 characters in none**; a page of 12, in course order (invariant 28) |
 | One reading | **はし is 橋, 端 and 箸 and かみ is five words** (上 紙 神 加味 髪) — the homophones the **Start here** screen argues with, drawn from the artifact rather than typed into the interface (invariant 32) |
 | Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
@@ -150,9 +154,10 @@ separately below. `pnpm run test:web` runs 225, of which **156** are this app's.
 | Bundle | built at N9 as `Kana Tutor.app`, 15.25 MiB, and **rebuilt after the N10 rename as `Nihongo Tutor.app`** — 15 MiB, `codesign --verify --deep --strict` clean, `Identifier=com.hanzitutor.kana`, Team `X5DWXB4283`, and all ten notices world-readable. The `.dmg` needs Tauri's own `bundle_dmg.sh` run outside the sandbox (trap 21); the N10 one is **7,957,111 bytes**, `hdiutil verify` checksum VALID, signed `Identifier=Nihongo Tutor_0.1.0_aarch64`, and mounting it shows `Nihongo Tutor.app` plus the `Applications` link with the inner app still passing `--deep --strict`. The N9 figures were 15.25 MiB and an 8,186,456-byte image; the icon N9 drew has since been **redesigned at N14** — white field, the flag's red あ — and both the desktop set and the iOS set were regenerated from the new master, so a build from this tree wears a different face than the 15 MiB one described here; `/Applications/Kana Tutor.app` is still the N9 install, and the N10 build has not been installed there |
 | Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review", and the kana course seen on the device at N13. **Rebuilt and reinstalled at N18** with the same recipe, on **both** devices — HHIP1 and Horst's 12.9-inch iPad — and the Phrases screen was then looked at on each by the maintainer, which is what closed the last "measured but never seen" screen in the app. See §5, "Building for iOS", for the three things `tauri ios init` does not provide |
 | Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Phrases, Grammar, Read, Review, where **six screens are each two screens**: the course and the thing it opens — Kanji and Practice open a board, Radicals a family, Words a card, Grammar a pattern, Read a passage (invariants 33, 34, 35 and 38). **Phrases is not one of them**: a phrase's card opens under the row it was tapped in, so there is no second screen to step aside for (invariant 37). **Start here** and Licences hang off the footer, in neither course (invariant 31). At 980×760 the seven tabs sit on one line; at a phone's width they wrap after `Phrases`, leaving `Grammar · Read · Review` on a second line, with no page overflow |
-| Tests | nihongo-core 264, nihongo-tutor 148, hanzi-voice 29, frontend 156 of the 225 |
-| Artifact | kana 70,917, kanji 3,236,713, words 601,816, passages 502, phrases 53,945 and grammar 203,019 bytes — all gzip + magic + postcard, all six embedded with `include_bytes!` |
+| Tests | nihongo-core 269, nihongo-tutor 150, hanzi-voice 29, frontend 159 of the 228 |
+| Artifact | kana 70,917, kanji 3,236,713, words 601,816, passages 502, phrases 53,945 and grammar **226,452** bytes — all gzip + magic + postcard, all six embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
+| Grammar format | version 2 (`GRAMM002`): an example carries the course words its sentence uses (invariant 40) |
 | Learner data | four files, `confusions.json`, `grammar.json`, `review.json` and `prefs.json`, in the app's own data directory (invariant 15) |
 | Version | both crates 0.1.0, and the app's to match |
 
@@ -348,6 +353,25 @@ a stage, which put the drill's own way back at y=371 on a phone, and the explana
 the way on, which put `Next question` at y=871). No person has looked at the drill either,
 so a reader owes it the same reading the grammar screen is owed.
 
+**And N21 is the tie the grammar course was still missing: what its sentences are
+made of.** N19 gave the patterns a screen and N20 made the screen ask, and both left
+the same hole — the course was imported text sitting beside a vocabulary it never
+mentioned. Every pattern's stage now lists **the words this course teaches that its own
+sentences use** (526 of 526 patterns, 1,523 of 1,526 sentences, 8,151 links, 7,345
+once per pattern) and **the characters the pattern itself is written with** (107
+patterns, 143 characters, every one jōyō); each word opens its own card and each
+character opens the kanji board. The word link is the **analyser's**, not the corpus's,
+and the obvious rule was built and rejected first: the corpus's furigana marks readings
+rather than word boundaries, so a run of its ruby spans that spells ご飯 matched inside
+朝ご飯, 買い inside 買い物 and 出 inside 出かける — 405 disagreements with UniDic over the
+1,526 sentences. `prepare-grammar` therefore joined the passages and the phrases behind
+`tokenize` and now reads the committed words artifact too; the artifact is format 2
+(`GRAMM002`, 226,452 bytes), and the sentences as drawn are still the corpus's own.
+Invariant 40 is the rule. It was driven over §5's DOM probe (0 active displays) at
+980×760 and at 390×812 — the section's two labels, the character chip 反, 18 word chips,
+the word card 大方 opened and closed, and 反 on the kanji board — and **no person has
+looked at it**, so it is owed the reading the grammar screen and the drill are owed.
+
 **The kana chart is the one screen that is not a lesson, and the drill now has five
 exercises over one question shape.** The chart draws the gojūon grid row by row —
 16 rows of five columns, with the nine slots the language never filled left as
@@ -484,12 +508,14 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
   src/phrases.rs         (550)    Phrase, PhraseToken, PhraseDataset, the artifact
                                   magic and `band_from` (a phrase is as hard as its
                                   hardest word) — the graded-phrase half, N18
-  src/grammar.rs         (787)    GrammarPoint, GrammarExample, GrammarDataset, the
+  src/grammar.rs         (914)    GrammarPoint, GrammarExample, GrammarDataset, the
                                   artifact format, `parse_furigana` (the corpus's own
                                   ruby markup, parsed and never composed) and
                                   `strip_level_references` — the grammar course, N19,
-                                  invariant 38
-  src/grammar_drill.rs  (1144)    the practice half, N20: the lumps of a stored pattern
+                                  invariant 38 — plus an example's `words` (the course
+                                  words its sentence uses, the analyser's link, N21,
+                                  invariant 40) and a point's `words()`/`characters()`
+  src/grammar_drill.rs  (1145)    the practice half, N20: the lumps of a stored pattern
                                   (bracketed groups read as optional elements or as the
                                   corpus's glosses), the blank rule and its furigana
                                   guard, what makes a distractor safe and what makes it
@@ -542,11 +568,13 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
   src/bin/prepare_passages.rs(357) lindera + UniDic → the segmented passages.
                                   Needs `--features nihongo-core/tokenize` and
                                   scripts/fetch-unidic.sh to have run once
-  src/bin/prepare_grammar.rs(444) OpenJLPT's five level files + its meta.json → the
-                                  grammar artifact. **No analyser**: the corpus brings
-                                  its own furigana, so this is `prepare` and not
-                                  `tokenize`, and it fails rather than warns when the
-                                  corpus's own count disagrees with what was read
+  src/bin/prepare_grammar.rs(578) OpenJLPT's five level files + its meta.json →
+                                  the grammar artifact, with the committed words
+                                  artifact and UniDic's segmentation of every example
+                                  beside them — behind `tokenize` since N21, because
+                                  the word link cannot come from the corpus's own
+                                  furigana (invariant 40). Still fails rather than
+                                  warns when the corpus's own count disagrees
   src/bin/prepare_phrases.rs(901) Tatoeba's exports + UniDic + the words artifact
                                   → the graded phrases and the notice that
                                   attributes them. **Drops** where
@@ -575,14 +603,17 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   pinning the homophones はし and かみ (invariant 32)
   tests/passages_artifact.rs(247) 9 tests over the committed passages, including
                                   that they still match data/passages/*.txt
-  tests/grammar_artifact.rs(337)  10 tests over the committed grammar: the counts, the
+  tests/grammar_artifact.rs(613)  13 tests over the committed grammar: the counts, the
                                   furigana-over-every-kanji invariant, the ruby
                                   reassembly, the no-level obligation, the teaching
                                   order, the field shapes, the search, the source
-                                  record, and the drill's own reach — 363 patterns over
+                                  record, the drill's own reach — 363 patterns over
                                   903 sentences, the blank over all of them and the 34
                                   sentences a second point could also fill — N20,
-                                  invariant 39
+                                  invariant 39 — and the vocabulary link: every linked
+                                  word a word the words artifact teaches, named once,
+                                  the reach of the link pinned, and every pattern
+                                  character jōyō — N21, invariant 40
   tests/phrases_artifact.rs(368)  11 tests over the committed phrases: the
                                   vocabulary invariant, the band recomputed from
                                   the words artifact, **the attribution** (no `\N`,
@@ -604,7 +635,7 @@ scripts/fetch-tatoeba.sh          fetches Tatoeba's Japanese exports into
                                   ships or tests needs it
 
 apps/nihongo-tutor/               the app
-  src-tauri/src/lib.rs  (2900)    AppState, the speaker, the chart and the 31
+  src-tauri/src/lib.rs  (3657)    AppState, the speaker, the chart and the 32
                                   commands, all thin — and the one place a kana is
                                   graded through `nihongo_core::grade_kana` rather
                                   than the shared engine — invariant 30 —
@@ -618,22 +649,24 @@ apps/nihongo-tutor/               the app
                                   patterns this learner misses — N20). One generic
                                   read/write pair, because the ritual is the same for
                                   all four — invariant 15
-  src-tauri/src/licences.rs(157)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (1803)  56 tests locking the JSON the webview
+  src-tauri/src/licences.rs(277)  the notice catalogue, with the text compiled in
+  src-tauri/tests/ipc_contract.rs (1859)  57 tests locking the JSON the webview
                                   reads *and the arguments it posts* (invariant 14),
                                   including the `joined` field a joined kana crosses
                                   with — invariant 30 — its empty twin on a kanji,
                                   the `section` both queue halves are asked for, and
                                   the `{ reading, offset, limit }` the Start screen
-                                  posts (invariant 32), and the grammar question's own
+                                  posts (invariant 32), the grammar question's own
                                   shape with both halves of the answer it records
-                                  (invariant 39)
+                                  (invariant 39), and the `{ id }` a pattern's links
+                                  are asked for, down to the keys a word card reads
+                                  (invariant 40)
   src-tauri/tests/licences.rs     (246)  the three-way notice check
   src-tauri/licences/AnimCJK-COPYING.txt  the one notice specific to this app
   src-tauri/licences/OPENJLPT-grammar.txt the grammar course's own notice: what was
                                   taken, what was dropped and what was changed, as
                                   CC BY-SA 4.0 §3(a)(1)(B) asks
-  src/App.svelte         (465)    the two courses and the switch between them, the
+  src/App.svelte         (485)    the two courses and the switch between them, the
                                   `chromeVisible` that stands the switch and the tab
                                   row aside while any of the six two-screen panels
                                   has a stage up (33, 34, 35) — the lookup that
@@ -716,18 +749,25 @@ apps/nihongo-tutor/               the app
   src/lib/PassageStage.svelte(271)  **the passage stage**: one passage with furigana,
                                   a tap on any word, and the tapped word's card
                                   below it — N7, N15, invariant 35
-  src/lib/GrammarPanel.svelte(502)  **the grammar course**: the search box, a page of
+  src/lib/GrammarPanel.svelte(510)  **the grammar course**: the search box, a page of
                                   20 patterns with the position each sits at, the
                                   pager, and **two stages** — the pattern a row opens
                                   (N19, invariant 38) and the drill (N20, invariant
                                   39), either of which is the whole screen. The header
-                                  says whose order this is not
-  src/lib/GrammarStage.svelte(305)  **the pattern stage**: the pattern with its kana
+                                  says whose order this is not — and it hands the
+                                  stage the `onkanji` the app gave it, because the
+                                  board a character opens belongs to the other course
+                                  (N21)
+  src/lib/GrammarStage.svelte(492)  **the pattern stage**: the pattern with its kana
                                   reading and romaji, its meaning, the form it is
                                   built from, its example sentences with their
                                   furigana and a `Hear it` each, the note, the tags,
                                   and arrows that step the **course** rather than the
-                                  page — N19, invariant 38
+                                  page — N19, invariant 38 — and, under the
+                                  sentences, **the words this course teaches that they
+                                  use** as chips that open each word's own card, with
+                                  the pattern's own characters above them opening the
+                                  kanji board — N21, invariant 40
   src/lib/GrammarDrill.svelte(435)  **the grammar drill**: the corpus's sentence with
                                   its pattern's text taken out, three patterns to
                                   choose between, the verdict and the reveal behind
@@ -740,11 +780,11 @@ apps/nihongo-tutor/               the app
                                   line, the session's score, the record's sentence
                                   and the pool note — invariant 39
   src/lib/grammarDrill.test.ts(151)  run by the ROOT project's vitest
-  src/lib/grammar.ts     (103)     the grammar course's arithmetic, as pure functions:
+  src/lib/grammar.ts     (134)     the grammar course's arithmetic, as pure functions:
                                   the page size, `positionLabel`, `searchNote` (which
                                   says when a list is not all of the matches), `stepTo`
                                   and `pageOf` — the arrows' rule — invariant 38
-  src/lib/grammar.test.ts(140)     run by the ROOT project's vitest
+  src/lib/grammar.test.ts(167)     run by the ROOT project's vitest
   src/lib/PhrasesPanel.svelte(391)  **the phrases screen**: the seven band chips,
                                    one band of graded sentences with a reading over
                                    every kanji, the English under each, a `Hear it`
@@ -788,13 +828,13 @@ apps/nihongo-tutor/               the app
                                   (36)
   src/lib/board.test.ts   (150)   run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
-  src/lib/types.ts       (617)    the IPC shapes, `Character = Drawable`, the
+  src/lib/types.ts       (840)    the IPC shapes, `Character = Drawable`, the
                                   chart's slots as `(string | null)[]`, the
                                   `Prefs` the remembered course crosses in,
                                   `WordsOfReading` for the Start screen — invariant 32
                                   — and `KanaPick`, the script-carrying request that
                                   opens the kana stage — invariant 34
-  src/lib/api.ts         (345)    one wrapper per command
+  src/lib/api.ts         (445)    one wrapper per command
 
 crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
                                   part's data layer
@@ -814,12 +854,16 @@ files, the six kanji files (`KanjiPanel`, `KanjiPractice`, `Icon`,
 (`KanaPanel`, `KanaPractice`, `KanaCanvas`, `kana.ts`, `kana.test.ts`), the six
 N15 touched (`RadicalsPanel`, `RadicalStage`, `VocabularyPanel`, `WordStage`,
 `PassagePanel`, `PassageStage`), the two N16 touched (`board.ts`, `board.test.ts`,
-plus the two stages above), and the three N17 touched (`review.ts`,
-`review.test.ts`, `ReviewPanel`) —
+plus the two stages above), the three N17 touched (`review.ts`,
+`review.test.ts`, `ReviewPanel`), the three N18–N20 touched (`phrases.ts`,
+`GrammarPanel`, `GrammarDrill`) and N21's thirteen (`grammar.rs`,
+`prepare_grammar.rs`, `grammar_artifact.rs`, `lib.rs`, `ipc_contract.rs`,
+`licences.rs`, `GrammarPanel`, `GrammarStage`, `grammar.ts`, `grammar.test.ts`,
+`types.ts`, `api.ts`, `App.svelte`) —
 and were last checked while writing invariants 26 and 27 for the rest; a few of the
 earlier numbers were stale even then, which is worth knowing before treating one as
-a measurement. N15's own six, N16's two and N17's three were counted from the tree
-they wrote.
+a measurement. N15's own six, N16's two, N17's three and N21's batch were counted
+from the tree they wrote.
 
 `src-tauri/gen/schemas/` is committed, as it is for the other two apps.
 
@@ -2092,8 +2136,11 @@ decisions rather than implementation, and the first is a licence one.
   `prepare-grammar` **refuses to write** an example whose markup does not spell its sentence
   or whose kanji it does not cover, and **no reading is composed and no alignment is
   derived** — invariant 21's rule, one step out. The screen shows the ruby, keeps the words
-  in an example untappable, and says so. It is the one shipped screen whose text is not held
-  to the vocabulary, and it is recorded rather than quietly true.
+  **in an example** untappable, and says so. It is the one shipped screen whose text is not
+  held to the vocabulary, and it is recorded rather than quietly true. **N21 added a list
+  beside the sentences without weakening this**: the words there are the course's own, found
+  by the analyser and listed under the examples rather than made tappable inside them, and
+  each opens its own card as any other word list does. See invariant 40.
 * **It is two screens like the rest, and the arrows step the course rather than the page.**
   `GrammarPanel` is the course (search box, page of 20, pager) and `GrammarStage` is one
   pattern, so `STAGE_VIEWS` is **six** — a sixth means `nav.ts`, `App.svelte` and
@@ -2180,6 +2227,46 @@ the fourth file.
   since `grammar.bin.gz` is untouched — and the OpenJLPT notice and `LICENSES.md` say so
   rather than leaving a licensor to notice.
 
+### 40. **A grammar example's words are the analyser's, and the artifact records them beside the sentence.**
+
+N21's rule, and the one that ties the grammar course to the vocabulary it had been sitting
+beside since N19. `GrammarExample::words` is a `Vec<String>` of the course's own word
+`text`s, written by `prepare-grammar` from UniDic's segmentation, and
+`GrammarPoint::words()`/`characters()` are what the screen reads. Four things are decisions
+rather than implementation.
+
+* **The link is the analyser's, because the corpus's furigana is not a word boundary.** The
+  obvious rule — a course word is used by a sentence when its written form and reading are a
+  run of the corpus's own ruby spans — was **built, run over all 1,526 examples and
+  rejected**: against UniDic it agreed **2,622** times and disagreed **405**, and the
+  disagreements are fragments a learner would read as wrong words. `{朝|あさ}ご{飯|はん}`
+  spells a run that equals ご飯 inside 朝ご飯; `{買|か}い{物|もの}` gives 買い from 買い物;
+  `{出|で}か…` gives 出 from 出かける. **Do not replace the stored link with a furigana
+  rule**, however tempting the corpus's markup makes it.
+* **`prepare-grammar` is therefore behind `tokenize`, and it needs the words artifact.**
+  It was the one text pipeline that needed no analyser, and that is the cost this milestone
+  paid: a rebuild now needs `scripts/fetch-unidic.sh` to have run and the committed
+  `words.bin.gz` to be present, exactly as `prepare-passages` and `prepare-phrases` do. The
+  shipped artifact is still committed, and nothing a learner installs has a tokeniser in it.
+* **The artifact carries the link beside the corpus's text, and the text is unchanged.** An
+  example is stored and drawn exactly as OpenJLPT wrote it, with the corpus's own ruby over
+  it; `words` is an index over the sentence rather than a reading composed for it (invariant
+  21 holds), and `GrammarExample` is not held to the vocabulary by it — three sentences use
+  no course word at all and carry an empty list. The artifact is **format 2 (`GRAMM002`)**,
+  and the share-alike notices state the index rather than let a licensor find it: the
+  OpenJLPT notice counts it among the modifications, `LICENSES.md` and the analyser notice
+  name the grammar artifact as the third one UniDic informs.
+* **Both halves reach whole cards or are not offered.** A linked word is resolved to its
+  record before it crosses the IPC, and every one of the **8,151** links is a word the words
+  artifact teaches — `tests/grammar_artifact.rs` asserts that over the committed pair, which
+  is why the command can skip a missing text defensively without a screen ever seeing one. A
+  pattern's characters are filtered against the app's own kanji dataset (invariant 13's rule),
+  and all **143** across the **107** patterns that carry one are jōyō, so no chip is dead.
+
+**Where the numbers are:** the module documentation of `grammar.rs` for the rejected rule,
+`ROADMAP_NIHONGO.md` N21 for the measurement table and the live run, and
+`tests/grammar_artifact.rs` for the three tests that pin the reach of the link.
+
 ---
 
 ## 5. The verification loop
@@ -2215,13 +2302,15 @@ the committed artifacts would be the only Rust in the tree that no lint ever see
 `pnpm run check:rust` (what CI runs, see `.github/workflows/ci.yml`) spell it out
 rather than relying on `--all-targets`.
 
-**`tokenize` is the one feature deliberately left out of that list** (invariants 22
-and 37): `prepare-passages` and `prepare-phrases` need `lindera`, which is 100-odd
-crates for two binaries whose output is committed and whose tests need no analyser
-at all. Lint them by name when you touch either — `cargo clippy -p nihongo-core
---features nihongo-core/tokenize --all-targets -- -D warnings` — and note that
-enabling it still downloads nothing, because lindera's build script is inert unless
-`LINDERA_BUILD_DICTIONARY_CACHE_DIR` is set.
+**`tokenize` is the one feature deliberately left out of that list** (invariants 22,
+37 and 40): `prepare-passages`, `prepare-phrases` and — since N21 — `prepare-grammar`
+need `lindera`, which is 100-odd crates for three binaries whose output is committed
+and whose tests need no analyser at all. Lint them by name when you touch any of them
+— `cargo clippy -p nihongo-core --features nihongo-core/tokenize --all-targets -- -D
+warnings` — and note that enabling it still downloads nothing, because lindera's
+build script is inert unless `LINDERA_BUILD_DICTIONARY_CACHE_DIR` is set. **A change
+to `prepare-grammar` is the easiest of the three to leave unlinted**, because a plain
+`cargo clippy --workspace` no longer compiles it at all.
 
 `apps/nihongo-tutor/src/lib/board.test.ts` is picked up by the **root** project's
 vitest, through the `include` list in `vitest.config.ts`. The app itself installs
@@ -2331,8 +2420,10 @@ pnpm run prepare-passages
 `prepare-grammar` prints its own, and they are the numbers `tests/grammar_artifact.rs`
 pins: **OpenJLPT 0.3.0, 526 points from n5:81 n4:98 n3:101 n2:123 n1:123, 1,526 examples
 with 6,591 ruby spans (16 with no kanji to annotate), 107 patterns with a kana reading,
-70 distinct tags, 524 notes of which 38 had level references removed, artifact 203,019
-bytes from 535 KB**. It refuses to write when an id repeats, when a pattern with a kanji
+70 distinct tags, 524 notes of which 38 had level references removed, 526 of 526 patterns
+with a linked word with 1,523 of 1,526 examples using one and 8,151 links, artifact
+226,452 bytes from 591 KB** — and it needs the analyser, the dictionary and the committed
+words artifact, which is why it is behind `tokenize` and why the lint above names it. It refuses to write when an id repeats, when a pattern with a kanji
 has no reading, when a tag is empty, when a point carries fewer than two examples, when an
 example's markup does not spell its sentence, when a kanji has no reading over it, or when
 the corpus's own `meta.json` count disagrees with what was read. A rebuild should be
@@ -3510,7 +3601,7 @@ in by `include_str!` and copied into the bundle as plain text:
 | `ccbysa` | the CC BY-SA 4.0 legal code those dictionaries are under |
 | `jmdict-furigana` | the furigana alignments, and that none is invented here |
 | `jmdict-furigana-mit` | the MIT text the notice above must accompany |
-| `unidic` | UniDic's segmentation of the passages, and that no dictionary entry is redistributed |
+| `unidic` | UniDic's segmentation of the passages, the phrases and the grammar's word links (all three named since N21), and that no dictionary entry is redistributed |
 | `lgpl` | the licence the kana SVGs and the kana `graphics` file are under |
 | `arphic` | the other licence that file could be under, per invariant 12 |
 | `tatoeba` | the 1,400 graded phrases — the sentences, their translations and the contributors the licence requires to be named. **Generated by the pipeline**, not typed, because it names 152 of them (invariant 37) |
@@ -3591,20 +3682,23 @@ assumed to be covered by the Chinese one.
   covers more than the thirteen. What is not built is a matrix: a screen that shows
   the learner what they mix up, or a drill that can *discover* a fourteenth kana
   pair. The record is there to build both on.
-* **Grammar and particles — built at N19 and N20, and this bullet is kept rather
-  than deleted.** It said "Kanji won't teach you to read" is the defining Japanese
-  failure mode, and that a tutor without grammar teaches characters rather than
-  reading; N11's Start screen said *why* the kana carry the grammar and taught none
-  of it. The **Grammar** screen now carries **526 patterns imported from OpenJLPT**,
-  each with the form it is built from, a note on nuance and two or three annotated
-  sentences, in one course order with a search box (invariant 38), and its second
-  stage **asks**: one of the corpus's own sentences with the pattern's own text taken
-  out, three patterns to choose between, weighted by what this learner misses, and
-  remembered in `grammar.json` — **363 of the 526 patterns** can be asked that way
-  (invariant 39). What is still missing is the two halves a drill of this shape does
-  not reach: nothing asks a learner to **produce** a sentence with a pattern, and
-  nothing links a pattern to the words and characters that trigger it. Both would
-  need their own attempt source, the way the review queue needed the board.
+* **Grammar and particles — built at N19, N20 and N21, and this bullet is kept
+  rather than deleted.** It said "Kanji won't teach you to read" is the defining
+  Japanese failure mode, and that a tutor without grammar teaches characters rather
+  than reading; N11's Start screen said *why* the kana carry the grammar and taught
+  none of it. The **Grammar** screen now carries **526 patterns imported from
+  OpenJLPT**, each with the form it is built from, a note on nuance and two or three
+  annotated sentences, in one course order with a search box (invariant 38), and its
+  second stage **asks**: one of the corpus's own sentences with the pattern's own text
+  taken out, three patterns to choose between, weighted by what this learner misses,
+  and remembered in `grammar.json` — **363 of the 526 patterns** can be asked that way
+  (invariant 39). **N21 built the other half of this bullet's second sentence**: a
+  pattern's stage now lists the words this course teaches that its own sentences use
+  (526 of 526 patterns, 8,151 links) and the characters the pattern is written with
+  (107 patterns, 143 characters), each opening the card behind it — so a pattern *is*
+  tied to the words and characters it turns on (invariant 40). What is still missing
+  is **production**: nothing asks a learner to build a sentence with a pattern, which
+  would need its own attempt source the way the review queue needed the board.
 * **The kana course in the kanji course's new shape — built.** N12 split the kanji
   screen in two because a phone made one page unusable, and the same complaint
   applied to Practice: on a phone the lesson list and the kana grid came before the

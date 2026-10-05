@@ -28,12 +28,29 @@
    * synthesiser should be asked to read. This is invariant 37's precedent applied
    * here — a whole sentence has no ambiguous reading to choose between, which is
    * why the sentence itself may be handed to the voice where a bare kanji may not.
+   *
+   * ## In the course's words, and the pattern's own characters
+   *
+   * The grammar course is imported text, and until now it was an island of it: a
+   * learner met 526 patterns in sentences made of words the course teaches and was
+   * never shown which. The section under the examples is that tie. **The words** are
+   * the ones this pattern's own sentences use, from the artifact's own link — UniDic's
+   * segmentation, written at build time because the corpus's furigana marks readings
+   * rather than word boundaries (`nihongo_core::grammar` measured the difference) —
+   * and each opens the word's own card, the same one `Words`, `Read` and `Phrases`
+   * show. **The characters** are the ones the pattern itself is written with, and
+   * each opens that character on the kanji board.
+   *
+   * Neither is computed here: the words arrive resolved and the characters arrive
+   * filtered to the jōyō set, so a tap always has somewhere to go.
    */
   import Icon from "./Icon.svelte";
   import SpeakButton from "./SpeakButton.svelte";
-  import type { GrammarPoint } from "./types";
+  import WordCard from "./WordCard.svelte";
+  import * as api from "./api";
+  import type { GrammarLinks, GrammarPoint } from "./types";
   import type { VoiceStatus } from "./speech";
-  import { positionLabel } from "./grammar";
+  import { charactersNote, positionLabel, wordsNote } from "./grammar";
   import { needsRuby } from "./words";
 
   interface Props {
@@ -52,10 +69,55 @@
     /** Whether each arrow can be followed — the course's ends, not the page's. */
     canPrev: boolean;
     canNext: boolean;
+    /**
+     * Open a character on the kanji board, asked of the app rather than done here.
+     *
+     * The board belongs to the other course, so this stage cannot draw it: the
+     * radicals screen's "write it on the board" travels by the same road
+     * (invariant 33's arrangement, one course over).
+     */
+    onkanji: (ch: string) => void;
   }
 
-  let { point, position, total, voice, onleave, onstep, canPrev, canNext }: Props =
+  let { point, position, total, voice, onleave, onstep, canPrev, canNext, onkanji }: Props =
     $props();
+
+  /** What the pattern links to, or `null` until the answer arrives. */
+  let links = $state<GrammarLinks | null>(null);
+  /** The word whose card is open under the chips, by its text. */
+  let opened = $state<string | null>(null);
+  let linkError = $state<string | null>(null);
+
+  /**
+   * A ticket per fetch, so an answer cannot land on the pattern after it.
+   *
+   * The panel keys this stage on the pattern's id, so in practice one stage sees one
+   * point; the ticket is here because the arrows can outrun a round trip, and a list
+   * of words drawn under the wrong pattern is a wrong answer rather than a slow one.
+   */
+  let ticket = 0;
+
+  $effect(() => {
+    const id = point.id;
+    const mine = ++ticket;
+    links = null;
+    opened = null;
+    linkError = null;
+    void (async () => {
+      try {
+        const answer = await api.grammarLinks(id);
+        if (mine !== ticket) return;
+        links = answer;
+      } catch (e) {
+        if (mine === ticket) linkError = String(e);
+      }
+    })();
+  });
+
+  /** The word whose card is open, if any — one lookup, and `null` while it closes. */
+  const openedWord = $derived(
+    opened === null ? null : (links?.words.find((word) => word.text === opened) ?? null),
+  );
 </script>
 
 <section class="stage">
@@ -123,6 +185,62 @@
       </article>
     {/each}
   </section>
+
+  <!--
+    The tie to the rest of the course, under the sentences it comes from. Hidden
+    until the answer arrives rather than drawn empty: a section that appears with a
+    list in it is honest about a slow round trip, and one that draws its heading
+    first would flash a claim about a count it does not have.
+  -->
+  {#if linkError}
+    <p class="error" role="alert">{linkError}</p>
+  {:else if links}
+    <section class="links" aria-label="In the course">
+      {#if links.characters.length > 0}
+        <p class="label">{charactersNote(links.characters.length)}</p>
+        <div class="chips">
+          {#each links.characters as ch (ch)}
+            <button
+              class="chip character"
+              lang="ja"
+              title="Open {ch} on the kanji board"
+              onclick={() => onkanji(ch)}
+            >
+              {ch}
+              <span class="hint">kanji</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      <p class="label">{wordsNote(links.words.length)}</p>
+      {#if links.words.length > 0}
+        <div class="chips">
+          {#each links.words as word (word.text)}
+            <button
+              class="chip word"
+              class:open={opened === word.text}
+              lang="ja"
+              title="Open {word.text}'s card"
+              onclick={() => (opened = opened === word.text ? null : word.text)}
+            >
+              {word.text}
+              <span class="hint">{word.reading}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      {#if openedWord}
+        <!-- The word's own card, the same one every other screen opens: its
+             dictionary reading, its band, and the box that asks the learner to type
+             it. -->
+        <div class="card">
+          <WordCard word={openedWord} {voice} />
+        </div>
+      {/if}
+    </section>
+  {/if}
 
   {#if point.notes}
     <p class="note">{point.notes}</p>
@@ -291,6 +409,75 @@
     margin: 0;
     font-size: 0.9rem;
     color: var(--muted);
+  }
+
+  .links {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.2rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--line);
+  }
+
+  .links .label {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* A chip is a word, so it is written the way the word is: 44px tall for a thumb,
+     the kana reading under the text rather than beside it, because a chip is narrow
+     and 大人's reading belongs under the word the way its furigana would. */
+  .chip {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+    min-height: 44px;
+    padding: 5px 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+    font-size: 1rem;
+    cursor: pointer;
+  }
+
+  .chip:hover {
+    border-color: var(--accent);
+  }
+
+  .chip.open {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+
+  .chip .hint {
+    font-size: 0.7rem;
+    color: var(--muted);
+  }
+
+  .chip.character {
+    justify-content: center;
+    align-items: center;
+    font-size: 1.1rem;
+  }
+
+  .card {
+    margin-top: 0.4rem;
+  }
+
+  .error {
+    margin: 0;
+    color: var(--bad);
+    font-size: 0.85rem;
   }
 
   .tags {

@@ -827,6 +827,7 @@ mod tests {
                 Ruby::new("学生", Some("がくせい".into())),
                 Ruby::new("です。", None),
             ],
+            words: Vec::new(),
         };
         let mut point = GrammarPoint {
             id: "cut".into(),

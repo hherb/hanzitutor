@@ -18,6 +18,7 @@ import type {
   DrillTally,
   GradedAttempt,
   GrammarDrillSize,
+  GrammarLinks,
   GrammarPage,
   GrammarQuestion,
   GrammarTally,
@@ -391,6 +392,18 @@ export function recordGrammarAnswer(point: string, picked: string): Promise<Gram
  */
 export function grammarSearch(query: string, limit = 60): Promise<GrammarPage> {
   return invoke<GrammarPage>("grammar_search", { query, limit });
+}
+
+/**
+ * What one pattern links to: the words its sentences use, and its own characters.
+ *
+ * The link is the artifact's — `prepare-grammar` wrote it from UniDic's segmentation
+ * of the corpus's own sentences — so this is a read, not a decision about what a
+ * word is. An unknown id is an error rather than an empty answer, because a pattern
+ * with no links and a pattern that is not in the course would draw the same screen.
+ */
+export function grammarLinks(id: string): Promise<GrammarLinks> {
+  return invoke<GrammarLinks>("grammar_links", { id });
 }
 
 /**

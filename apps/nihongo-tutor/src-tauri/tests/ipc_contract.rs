@@ -962,6 +962,62 @@ fn the_search_the_interface_posts_is_read_the_way_the_command_reads_it() {
     );
 }
 
+/// The pattern's links, as the grammar stage reads them.
+///
+/// The screen draws one list of words and one row of characters from this, and
+/// every word is handed straight to the word card — so the contract is not only the
+/// top-level keys: a word has to cross with everything `WordCard` reads, and a
+/// character has to be one the board can open. The rule that puts the words in the
+/// artifact is `nihongo_core::grammar`'s; this is what the webview is given.
+#[test]
+fn a_patterns_links_cross_with_the_words_and_characters_the_stage_draws() {
+    let links = state().grammar_links("wa").expect("〜は is in the course");
+    assert_eq!(links.id, "wa");
+
+    let value = serde_json::to_value(&links).expect("serialises");
+    assert_eq!(keys(&value), vec!["characters", "id", "words"]);
+    assert_eq!(value["characters"], json!([]), "〜は is written with no kanji");
+
+    let words = value["words"].as_array().expect("a list of words");
+    assert_eq!(
+        words
+            .iter()
+            .map(|word| word["text"].as_str().expect("a text"))
+            .collect::<Vec<_>>(),
+        vec!["私", "学生", "今日", "天気", "良い", "本", "面白い"],
+    );
+    assert_eq!(
+        keys(&words[0]),
+        vec!["band", "bandName", "furigana", "meaning", "nf", "reading", "text"],
+        "a word crosses in the shape the card is written against"
+    );
+    assert_eq!(words[0]["reading"], "わたし");
+    assert!(
+        words[0]["bandName"].as_str().is_some_and(|name| !name.is_empty()),
+        "the band crosses with its name, so the card never maps a number to a claim"
+    );
+
+    // A pattern written with a kanji offers it, and every character offered is one
+    // the board can actually draw (invariant 13, one screen over).
+    let hanshite = state().grammar_links("ni-hanshite").expect("〜に反して is in the course");
+    assert_eq!(hanshite.characters, vec!["反".to_string()]);
+    assert!(!hanshite.words.is_empty());
+
+    // The argument the interface posts: `invoke("grammar_links", { id })`.
+    #[derive(Deserialize)]
+    struct Args {
+        id: String,
+    }
+    let posted = json!({ "id": "ni-hanshite" });
+    let args: Args = serde_json::from_value(posted).expect("deserialises");
+    assert_eq!(state().grammar_links(&args.id).expect("resolves").id, args.id);
+
+    // An id that names nothing is an error rather than an empty answer: a pattern
+    // with no links and a pattern that is not in the course would draw the same
+    // screen, and only one of them is a bug.
+    assert!(state().grammar_links("no-such-pattern").is_err());
+}
+
 #[test]
 fn the_grammar_a_learner_is_shown_names_no_jlpt_level() {
     // Invariant 20 on the third imported dataset: the corpus labels every point

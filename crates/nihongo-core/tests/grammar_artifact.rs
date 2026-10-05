@@ -18,13 +18,18 @@
 //! * **the order is the corpus's teaching order**, not a sort: the five level files
 //!   read as one course, which is what the screen offers instead of a band the
 //!   measurement rejected (344 of 526 points would land in band 7 — see
-//!   `grammar.rs`).
+//!   `grammar.rs`);
+//! * **the vocabulary link is real**: every word a sentence is recorded as using is
+//!   a word the committed words artifact teaches, each is named once, and the reach
+//!   of the link (526 patterns, 1,523 sentences, 8,151 links) is pinned. This is the
+//!   one cross-artifact assertion here: the two are committed separately and either
+//!   can be rebuilt alone.
 //!
 //! The counts are pinned because they are what catch the corpus moving. A rebuild
 //! that changes them is a deliberate commit, and the numbers `prepare-grammar`
 //! prints are what say why they changed.
 
-use nihongo_core::{is_kanji, GrammarDataset, GrammarPoint};
+use nihongo_core::{is_kanji, GrammarDataset, GrammarPoint, KanjiDataset, WordDataset};
 
 fn dataset() -> GrammarDataset {
     GrammarDataset::from_gzip_bytes(include_bytes!("../data/grammar.bin.gz"))
@@ -333,6 +338,177 @@ fn the_artifact_records_where_the_corpus_came_from_and_what_was_changed() {
         source.modifications.contains("furigana"),
         "parsing the corpus's markup into ruby segments is a change too: {:?}",
         source.modifications
+    );
+    assert!(
+        source.modifications.contains("UniDic"),
+        "the word link is not the corpus's, so the artifact has to say where it came \
+         from: {:?}",
+        source.modifications
+    );
+    assert!(
+        source.analyser.starts_with("lindera"),
+        "the analyser that read the examples' vocabulary is part of what this \
+         artifact is: {:?}",
+        source.analyser
+    );
+    assert!(
+        source.dictionary.starts_with("unidic"),
+        "and so is the dictionary it read them with: {:?}",
+        source.dictionary
+    );
+}
+
+/// The vocabulary link: every word a sentence is recorded as using is a word the
+/// course teaches, and each is recorded once.
+///
+/// This is the assertion behind the screen's promise. `prepare-grammar` links a
+/// sentence to the course's vocabulary through UniDic, and the app draws that link
+/// as a list of words whose cards it can open — so a text here that is not in the
+/// words artifact is a row the app would have to drop, and a text named twice is a
+/// row drawn twice. Both are cross-artifact facts, which is why they are checked
+/// here rather than in `prepare-grammar` alone: the two artifacts are committed
+/// separately and either can be rebuilt on its own.
+#[test]
+fn every_linked_word_is_one_the_course_teaches_and_is_named_once() {
+    let words = WordDataset::from_gzip_bytes(include_bytes!("../data/words.bin.gz"))
+        .expect("the committed words artifact decodes");
+    let dataset = dataset();
+    let mut links = 0usize;
+    for point in dataset.points() {
+        for example in point.examples() {
+            let mut seen: Vec<&str> = Vec::new();
+            for word in &example.words {
+                assert!(
+                    words.of_text(word).is_some(),
+                    "{}: {:?} is linked to {word:?}, which the vocabulary does not teach",
+                    point.id,
+                    example.ja
+                );
+                assert!(
+                    !seen.contains(&word.as_str()),
+                    "{}: {word:?} is named twice for {:?}",
+                    point.id,
+                    example.ja
+                );
+                seen.push(word);
+                links += 1;
+            }
+        }
+    }
+    assert_eq!(links, 8151, "the links the shipped artifact holds");
+}
+
+/// How far the link reaches, pinned — because "the grammar course and the words
+/// course are one course read two ways" is a claim about numbers.
+///
+/// **526 of the 526** patterns have at least one linked word, **1,523 of the 1,526**
+/// sentences use one (three are made of words this course does not teach), the
+/// per-sentence lists add up to **8,151** links, the union a pattern shows is
+/// **7,345** words, and the most one pattern lists is **28**. A rebuild that moves
+/// any of them has either changed the analyser, the vocabulary or the corpus, and
+/// this is where that is a decision rather than a diff.
+#[test]
+fn the_vocabulary_link_reaches_the_whole_course() {
+    let dataset = dataset();
+    let with_words = dataset
+        .points()
+        .iter()
+        .filter(|point| !point.words().is_empty())
+        .count();
+    assert_eq!(with_words, 526, "every pattern's sentences use a word of the course");
+
+    let examples_with_words = dataset
+        .points()
+        .iter()
+        .flat_map(|point| point.examples())
+        .filter(|example| !example.words.is_empty())
+        .count();
+    assert_eq!(examples_with_words, 1523, "of the 1,526 sentences");
+
+    let stored: usize = dataset
+        .points()
+        .iter()
+        .flat_map(|point| point.examples())
+        .map(|example| example.words.len())
+        .sum();
+    assert_eq!(stored, 8151);
+    let union: usize = dataset.points().iter().map(|point| point.words().len()).sum();
+    assert_eq!(union, 7345, "the same links, each word named once per pattern");
+    assert_eq!(
+        dataset.points().iter().map(|point| point.words().len()).max(),
+        Some(28),
+        "the longest list one pattern draws"
+    );
+
+    // The union is the sentences' lists, in the sentences' order, each name once —
+    // the rule `GrammarPoint::words` states, re-derived here so a change to it is a
+    // failing test rather than a quietly different screen.
+    for point in dataset.points() {
+        let mut expected: Vec<&str> = Vec::new();
+        for example in point.examples() {
+            for word in &example.words {
+                if !expected.contains(&word.as_str()) {
+                    expected.push(word);
+                }
+            }
+        }
+        assert_eq!(point.words(), expected, "{}", point.id);
+    }
+
+    // A beginner pattern, by name, so the shape of the link is legible in the test:
+    // 〜は's three sentences are built from words the course teaches.
+    let wa = dataset.get("wa").expect("〜は is in the corpus");
+    assert_eq!(
+        wa.examples[0].words,
+        vec!["私".to_string(), "学生".to_string()],
+        "私 and 学生, in the order the sentence says them"
+    );
+    assert_eq!(
+        wa.words(),
+        vec!["私", "学生", "今日", "天気", "良い", "本", "面白い"],
+        "and the pattern's own list is those three sentences' words, each once"
+    );
+}
+
+/// The other half of the link: the kanji a pattern is written with are characters
+/// the app can actually open, which is a fact about the corpus rather than a hope —
+/// all 143 of them are in the jōyō set.
+#[test]
+fn every_character_a_pattern_is_written_with_can_be_opened() {
+    let kanji = KanjiDataset::from_gzip_bytes(include_bytes!("../data/kanji.bin.gz"))
+        .expect("the committed kanji artifact decodes");
+    let dataset = dataset();
+    let mut with_characters = 0usize;
+    let mut total = 0usize;
+    let mut outside: Vec<String> = Vec::new();
+    for point in dataset.points() {
+        let expected: Vec<char> = {
+            let mut seen: Vec<char> = Vec::new();
+            for ch in point.pattern.chars().filter(|ch| is_kanji(*ch)) {
+                if !seen.contains(&ch) {
+                    seen.push(ch);
+                }
+            }
+            seen
+        };
+        assert_eq!(point.characters(), expected, "{}", point.id);
+        if expected.is_empty() {
+            continue;
+        }
+        with_characters += 1;
+        for ch in &expected {
+            total += 1;
+            if kanji.get(*ch).is_none() {
+                outside.push(format!("{} writes {ch}", point.pattern));
+            }
+        }
+    }
+    assert_eq!(with_characters, 107, "the patterns written with a kanji");
+    assert_eq!(total, 143, "characters across those patterns, each counted once");
+    assert!(
+        outside.is_empty(),
+        "a pattern writing a character outside the jōyō set would offer a card the \
+         board cannot open: {outside:?}"
     );
 }
 
