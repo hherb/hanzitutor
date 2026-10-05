@@ -2177,11 +2177,23 @@ APPLE_DEVELOPMENT_TEAM=X5DWXB4283 TAURI_ROOT="$PWD" \
 cd src-tauri/gen/apple/build && mkdir -p payload && cd payload
 unzip -q "../arm64/Nihongo Tutor.ipa"    # a copy also lives beside the .dmg:
                                          # .cargo-target/release/bundle/ios/
-D=00008110-0010252A0293801E               # HHIP1; `xcrun devicectl list devices`
+D=00008110-0010252A0293801E               # HHIP1, the iPhone 13 Pro Max
+P=00008103-001904501153001E               # Horst's iPad; `xcrun devicectl list devices`
 xcrun devicectl device install app --device "$D" "Payload/Nihongo Tutor.app"
 xcrun devicectl device process launch --device "$D" com.hanzitutor.kana
 xcrun devicectl device capture screenshot --device "$D" --destination /tmp/phone.png
 ```
+
+**A device that has never been paired is visible but not installable**, and that is
+not one of this app's own three things — it is the first thing to check when a second
+device joins. An iPad attached for the first time showed `available` in
+`xcrun devicectl list devices` where the phone showed `available (paired)`, and the
+install answered *"The device must be paired before it can be connected"*
+(`RemotePairingError 2`), which names neither the device nor the fix. `xcrun devicectl
+manage pair --device <UDID>` pairs it in one step — no Xcode window, no prompt — and
+the install then proceeds. The word to read in the listing is `(paired)`; one build
+serves both devices while the profile is the team's wildcard, which is what
+`ios build --ci` picks.
 
 Three things are this app's own, and the first two are the ones that stop a build:
 
