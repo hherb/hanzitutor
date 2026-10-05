@@ -50,6 +50,7 @@ references for no gain.
 | **N15** | **The last three screens, and a thumb's width** | **Shipped.** N13 left the Radicals, Words and Read screens one column each and named them as the next piece of the same work; each is now a course screen plus a stage, the chrome steps aside for all five two-screen panels (`STAGE_VIEWS`), and the arrows and Grade grew to the 44px a finger needs in both stages. See the milestone for the 13px overflow the phone measurement found in the app's own tab row — a bug none of the three new screens had. |
 | **N16** | **The verdict's own way on** | **Shipped.** Found in N15's first device trials, on an iPhone and an iPad: after grading, the way on was the lesson's arrows in the top corner. The primary control under the board is now the verdict's own way on — `Next` once something has been judged, `Finish` at the end of a lesson, `Grade` again for a radical — while the corner arrows go on skipping. One rule in `board.ts` (`afterGrade`), used by both stages. |
 | **N17** | **The queue's own end** | **Shipped.** The Review queue, asked for the same day: its list of what is due is *above* its board, so the next character was a scroll away. The same control is now the way on there too — `Next`, and **`Nothing due`** when the queue is empty, which is the maintainer's wording because an empty queue is a state rather than the stage's `finish`. `afterGradeInQueue` plus `review.ts`'s `nextDue`/`hasNextDue`, and a measured run against a real `review.json` whose three cards SM-2'd from 1–3 October to 13 October. |
+| **N18** | **Graded phrases: reading at your level** | **Shipped.** The counterpart of Hanzi Tutor's Phrases screen: **1,400 Japanese sentences imported from Tatoeba**, every one held to the vocabulary the course teaches, levelled on this project's own ladder, with a reading over every kanji and the system voice. `prepare-phrases` imports and filters them; the Phrases screen in the kanji course draws one band at a time. See the milestone for the funnel, for the licence measurement that corrected N7, and for the **107 sentences whose contributor the export did not name** — which the first run shipped, and which the research found and this now refuses to. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -968,15 +969,21 @@ carry no ruby — **gathered, never invented**.
 `crates/nihongo-core/data/passages.bin.gz` — **three passages, 502 bytes**, with the
 text and the English glosses in `data/passages/*.txt` where a person can edit them,
 and 9 tests in `tests/passages_artifact.rs`. They are **written for this course**,
-which is a decision rather than a default: Tatoeba is per-sentence licensed (some
-CC0, some BY, some **ND**, which would have to be filtered at import) and gives
-sentences rather than passages; Aozora Bunko is free but is pre-1930s literary
-Japanese that uses none of this vocabulary; Wikipedia is modern and unlevelled.
-Writing them removes the licence question and buys the property none of the corpora
-have: **the text is held to the vocabulary the course teaches, and asserted**.
+which is a decision rather than a default: Tatoeba gives **sentences** rather than
+passages and carries no difficulty signal at all — Tatoeba's own position is that
+its collection "is not fundamentally sorted" — Aozora Bunko is free but is
+pre-1930s literary Japanese that uses none of this vocabulary, and Wikipedia is
+modern and unlevelled. Writing them buys the property none of the corpora have:
+**the text is held to the vocabulary the course teaches, and asserted**.
 `prepare-passages` refuses to write an artifact containing a kanji the words
 artifact does not hold, and a test re-checks it against the committed artifact, so a
 passage edited afterwards fails rather than shipping.
+
+*N18 corrects one clause of the paragraph above.* It said Tatoeba was "some CC0,
+some BY, some **ND**"; the ND part was wrong, and the corpus's own API enumerates
+its sentence licences as CC BY 2.0 FR, CC0 1.0 and `PROBLEM` only — see N18. The
+decision stands on the sentence/passage and difficulty grounds, not on the licence,
+and N18 is where Tatoeba is used for what it is good at.
 
 **The analyser runs at build time**, and that is what keeps the app's promise: the
 artifact carries the segmentation, so the shipped app holds no tokeniser, no
@@ -1961,6 +1968,165 @@ verification layers are green. **What is not changed**: the schedule and its fil
 queues (invariant 31), the joined-stroke line and what may be handed to the voice. The
 panel still shows one course's queue, and its own list of what is due is still the way to
 *choose* a character rather than the way to move on.
+
+---
+
+## N18 — Graded phrases: reading at your level
+
+The counterpart of Hanzi Tutor's Phrases screen, and the first thing in this app whose
+**text is not this project's**. The Read screen shipped three passages written here, which
+is a good long form and a bad ladder: a learner who can read `あさ` has nothing between it
+and a passage that uses 秘密. Hanzi Tutor's answer is a Phrases screen — a corpus of graded
+sentences with their readings and their translations — and this is the same idea, built on
+what this course already has.
+
+**The screen.** A new **Phrases** tab in the kanji course, between `Words` and `Read` — a
+word, then a sentence made of words the course teaches, then a passage. It is **one screen
+and not two**, and that is a decision rather than an omission: a phrase's word card opens
+*under the row that was tapped*, so there is no second screen for the app to take its chrome
+off for, and `STAGE_VIEWS` deliberately does not grow (invariants 33–35, and `nav.test.ts`
+asserts Phrases is not one of them). Seven band chips, the same seven and the same names the
+Words screen uses, because it is the same ladder; 200 rows in each; every row is the sentence
+with a reading over each kanji, the English under it, a `Hear it` control, and — new for this
+app — **its own attribution**: `Tatoeba #11910517 · bunbuku · CC BY 2.0 FR`. Tapping a
+tappable word opens that word's card below the row, exactly as the Read screen does.
+
+### The corpus, and the funnel that produced it
+
+**Tatoeba, imported rather than written, and held to the same vocabulary the passages are.**
+`crates/nihongo-core/data/phrases.bin.gz` is **1,400 sentences, 6,025 tokens, 54 KB
+compressed**, from **152 named contributors**. `scripts/fetch-tatoeba.sh` downloads ~34 MB of
+the corpus's per-language exports (gitignored, with URL, `Last-Modified` and SHA-256 of each
+recorded in `data/raw/tatoeba/PROVENANCE.txt`), and `prepare-phrases` — behind the same
+`tokenize` feature `prepare-passages` uses, sharing the analyser in
+`nihongo-core::segment` so a word cannot be read two ways on two screens — prints the funnel
+it produced:
+
+| step | measured |
+| --- | --- |
+| sentences read | 248,924 |
+| …with an English translation | 232,819 |
+| …and a named contributor | 134,087 |
+| …not tagged `not a sentence` / `@possible copyright infringement` | 134,051 |
+| …of the right shape | 121,787 |
+| …every kanji known to the vocabulary *before* analysing | 118,609 |
+| …segmented and every kanji-bearing word taught | 102,846 |
+| **shipped, 200 per band** | **1,400** |
+
+Two differences from `prepare-passages` are the whole design. The first is that **it drops
+where the passage pipeline refuses**: a passage is written here and can be fixed, an imported
+sentence cannot be, so the vocabulary rule is enforced by throwing the sentence away and
+reporting how many went. The second is that the artifact's band is **recomputed by
+`tests/phrases_artifact.rs`** from the committed vocabulary, so the ladder a screen groups by
+cannot drift from the words it claims to be levelled against — a phrase's band is its hardest
+word's, which is 私 making `私は学生です` a band-6 sentence, and that is the app's own word
+ladder rather than a second one.
+
+### The licence, and the 107 sentences that had to go
+
+The research into the corpus found four things, and **one of them was a bug in this
+milestone's first run**:
+
+* **There is no per-sentence licence column in any per-language export.** Tatoeba's own API
+  enumerates the complete set — `CC BY 2.0 FR`, `CC0 1.0`, `PROBLEM` — and the Japanese counts
+  are 249,077 / 2 / 0. **No NoDerivatives or NonCommercial variant of a sentence exists**, and
+  N7's, `LICENSES.md`'s and `passages.rs`'s claim that there was one was wrong; all three now
+  say so and point here. NonCommercial occurs only on *audio* (20% of rows are CC BY-NC 4.0 and
+  79% carry no reuse licence), which is why nothing is bundled and nothing is downloaded.
+* **42.7% of the sentences the filter would otherwise keep name no contributor** — the export
+  writes the literal string `\N` — and CC BY 2.0 FR's single condition is that the author be
+  named. The first run of this pipeline shipped 107 phrases attributed to a contributor called
+  `\N`. They are now excluded at import, which costs nothing: ~121,000 candidates do name one.
+  `tests/phrases_artifact.rs` fails on `\N`, an empty author, or a licence outside the
+  corpus's set, and `licences.rs`'s new test checks the other direction — that **every phrase
+  the app can reach is named in the notice under its own contributor**, and nothing else is.
+* **Tatoeba has furigana and this project does not use it.** `jpn_transcriptions.tsv` covers
+  100% of sentences, but 56.5% is unreviewed MeCab output; `prepare-phrases` computes its own
+  readings with UniDic and this project's vocabulary instead, which is the same analyser the
+  passages use.
+* **Tatoeba has no difficulty grading at all.** Its own position is that the collection "is
+  not fundamentally sorted", and of the 397 Japanese tags not one is a level. The band had to
+  be derived, which is what `words.rs`'s ladder already does.
+
+The notice is `licences/TATOEBA-phrases.txt`, generated by the pipeline (so it cannot go
+stale), catalogued as `tatoeba`, compiled in and copied into the bundle, and one line per
+contributor with the sentence ids taken from them. `LICENSES.md` carries the measurement, the
+modification statement CC BY §3(a) asks for, and the refresh procedure.
+
+### What was measured, rather than assumed
+
+Driven over §5's DOM probe with the app running (0 active displays, so the HTTP report is the
+truth and a `-l` capture would have been a frozen frame):
+
+| step | measured |
+| --- | --- |
+| the tab row | `Kanji · Radicals · Words · Phrases · Read · Review`, 6 tabs, **441px** wide together |
+| at full width | one line, `scrollWidth == clientWidth`, no page overflow |
+| at the 480px minimum window and at a 390px phone | **two lines**, `scrollWidth == clientWidth` — the wrap N15's comment relies on, and no horizontal scroll at either |
+| the Phrases tab | heading `Phrases`, `1,400 short sentences…`, the ladder said to be ours and not the JLPT's |
+| the chips | 7, every one `200` |
+| band 1, row 0 | `10月つきだよ。` / `It's October.` / `Tatoeba #11910517 · bunbuku · CC BY 2.0 FR`, one `<ruby>`, `rt=つき` |
+| tapping a word | the card for **一** opened under the row — `いち`, `one; 1`, `kyōiku 1`, `nf33` — because UniDic's lexeme for the digit `1` is 一 |
+| band 7, row 0 | `12歳さいです。` / `I'm twelve years old.` / `Tatoeba #3488407 · arnab` |
+| `Hear it` | the press reached Rust with the sentence itself (`speak "12歳です。"` in the dev log), which is the one place this screen differs from N1/N27's rule: what is spoken is the **sentence as written**, not a kana reading, because a sentence has no ambiguous reading to choose and the synthesiser needs the kanji to read it at all |
+
+**And then it was looked at, on two devices.** A probe reporting a screen is not a person seeing
+it, and this session had no display at all — so the app was built for iOS with §5's recipe and
+installed on the **iPhone 13 Pro Max and the 12.9-inch iPad**, and the maintainer reviewed the
+screen on both. It "looks good on device", which settles the two things the probe could not: the
+spacing between a sentence and its translation, and whether a 200-row band scrolls acceptably.
+Two things the device did show that the probe had only predicted: the six-tab row **wraps on the
+phone** — the break falls after `Read`, leaving `Review` alone on a second line — and it sits on
+one line on the iPad in landscape. Adding a tab is what bought that, it is the wrap the
+stylesheet's own comment chose over a scrolling row in N15, and it was accepted on sight.
+
+**Tests.** 11 in `tests/phrases_artifact.rs` over the committed artifact and the committed
+vocabulary (the invariant, the band recomputation, the attribution, the shape, the order,
+uniqueness, the source record), 7 in `phrases.rs`, 6 in `phrases.test.ts`, 2 in
+`ipc_contract.rs` (the chips and the band, keys and shapes) plus the stats key, 2 in
+`lib.rs`, 3 in `licences.rs` including the attribution cross-check, and `nav.test.ts` grew the
+tab and the non-stage assertion. The four verification layers are green, and clippy was run
+against `nihongo-core/tokenize` by name, which is now **two** binaries rather than one.
+
+**What is not changed:** the vocabulary, its bands and their derivation (invariant 20); the
+passages and their pipeline; the review schedule (invariant 15); what may be handed to the
+voice (invariant 27) — the phrase screen passes a sentence, and that is recorded above as a
+deliberate exception with its reason; and `STAGE_VIEWS`.
+
+### Sources considered and not used
+
+Recorded because "why not this?" is the question the next person asks, and three sources were
+looked at properly rather than waved away. The measurements, the verbatim licence wording and
+the provenance chains are in
+**[docs/research/JAPANESE_DATA_SOURCE_EVALUATIONS.md](docs/research/JAPANESE_DATA_SOURCE_EVALUATIONS.md)**;
+what follows is the verdict.
+
+* **[OpenJLPT](https://github.com/evanclan/OpenJLPT)** — 7,811 words and 2,383 kanji levelled
+  N5–N1, 526 grammar points, and 12,615 example sentences. Measured: **every one of those
+  sentences is already in the Tatoeba export this milestone imports**, so it adds curation and
+  levels, not text — and its levels come from Jonathan Waller's lists, which
+  `docs/research/JAPANESE_TUTOR_FEASIBILITY.md` §6.4 already rules out shipping ("a downstream
+  grant cannot launder the underlying list": tanos.co.uk now does not resolve at all, and
+  Waller's own unversioned "CC BY" is version-bumped to 4.0 by downstream repackagers). **Its
+  grammar dataset is a different matter** — 526 points whose explanations are OpenJLPT's own
+  contributions rather than a laundered list — and grammar is the largest gap in the product
+  (see "Known weak spots"). That is the candidate for a later milestone, not this one.
+* **[jkindrix/japanese-language-data](https://github.com/jkindrix/japanese-language-data)** —
+  a CC BY-SA 4.0 aggregation with unusually good provenance hygiene. Measured against what
+  this app already embeds, most of it is **zero delta** (JMdict/KANJIDIC2, furigana,
+  KanjiVG strokes, radicals, 13,220 JMdict `exp` entries). The two real additions are
+  **pitch accent** (124,011 entries, Kanjium CC BY-SA 4.0 verified — which is also N5's
+  blocker, so this is a lead for N5 rather than for phrases) and **register-specific
+  frequency**. Its 595 grammar points are **0 reviewed** by its own manifest
+  (`native_speaker_reviewed: 0`) and its README says "not authoritative", so they are not
+  shippable as teaching content.
+* **[bunkocommons.org](https://bunkocommons.org/)** — **not usable.** One individual grants
+  CC BY-SA 4.0 over word lists selected from GENKI, Minna no Nihongo and Tobira — named in the
+  site's own `author` fields — and a copyrighted online novel; his own announcement says
+  "there is only 1 user (that's me)". There is no licence file and no terms page at all, the
+  grammar pages are unattributed, and the only audio link is a 404. A downstream CC grant
+  cannot launder an upstream work whose rights-holder never licensed it, which is the same
+  rule that rules out OpenJLPT's levels.
 
 ---
 

@@ -156,6 +156,16 @@ fn the_texts_are_the_real_licences_and_not_placeholders() {
         ("jmdict-furigana", &["JmdictFurigana", "Doublevil", "MIT"]),
         ("jmdict-furigana-mit", &["MIT License", "Copyright (c) 2025 Doublevil"]),
         ("unidic", &["UniDic Consortium", "lindera", "BSD"]),
+        (
+            "tatoeba",
+            &[
+                "Tatoeba",
+                "CC BY 2.0 FR",
+                "https://tatoeba.org",
+                "Attribution",
+                "unchanged",
+            ],
+        ),
     ];
 
     for (id, needles) in expectations {
@@ -296,6 +306,79 @@ fn the_licences_command_returns_the_catalogue() {
     let from_command = nihongo_tutor_lib::licence_notices();
     assert_eq!(from_command.len(), notices().len());
     assert_eq!(from_command[0].id, notices()[0].id);
+}
+
+/// **The phrases' attribution, checked against the phrases themselves.**
+///
+/// CC BY 2.0 FR requires the author of each sentence to be named, and the app names
+/// them in the Tatoeba notice rather than on every row. That makes the notice a
+/// *data* file as well as a licence one, and this is the test that keeps the two in
+/// step: every phrase the artifact ships must appear in the list under its own
+/// contributor, and the list must account for all of them.
+///
+/// It reads the notice text the app compiles in, and the phrases through the app's
+/// own commands — `phrase_bands` and `phrases_in_band` — so the check is over exactly
+/// what a learner can reach.
+#[test]
+fn every_shipped_phrase_is_attributed_in_the_notice() {
+    let notice = notices()
+        .iter()
+        .find(|n| n.id == "tatoeba")
+        .expect("a Tatoeba notice");
+
+    let mut attributed: BTreeSet<(String, u32)> = BTreeSet::new();
+    let mut in_attribution = false;
+    for line in notice.text.lines() {
+        if line.trim() == "Attribution" {
+            in_attribution = true;
+            continue;
+        }
+        if !in_attribution {
+            continue;
+        }
+        let mut columns = line.split('\t');
+        let (Some(author), Some(ids)) = (columns.next(), columns.next()) else {
+            // The heading's own underline and the blank line under it.
+            continue;
+        };
+        for id in ids.split_whitespace() {
+            if let Ok(id) = id.parse::<u32>() {
+                attributed.insert((author.to_string(), id));
+            }
+        }
+    }
+    assert!(
+        !attributed.is_empty(),
+        "the Tatoeba notice lists no contributors, so nothing is attributed"
+    );
+
+    let state = nihongo_tutor_lib::AppState::load();
+    let mut checked = 0usize;
+    for band in state.phrase_bands() {
+        for phrase in state.phrases_in_band(band.band) {
+            assert!(
+                attributed.contains(&(phrase.author.clone(), phrase.id)),
+                "phrase #{} by {} ships but is not named in the notice",
+                phrase.id,
+                phrase.author
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(
+        checked,
+        state.stats().phrases,
+        "the commands offer a different number of phrases than the app reports"
+    );
+    assert_eq!(checked, 1_400, "the corpus moved; see the funnel in the roadmap");
+    assert_eq!(
+        attributed.len(),
+        checked,
+        "the notice names {} sentences but {} ship — a stale attribution file, \
+         regenerate it with `pnpm run prepare-phrases`",
+        attributed.len(),
+        checked
+    );
 }
 
 #[test]

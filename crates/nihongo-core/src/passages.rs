@@ -3,13 +3,14 @@
 //!
 //! # Why the passages are written here rather than taken from a corpus
 //!
-//! Tatoeba is per-sentence licensed — some CC0, some BY, some **ND**, which would
-//! have to be filtered at import — and gives sentences rather than passages.
-//! Aozora Bunko is genuinely free but is pre-1930s literary Japanese, which uses
-//! none of this course's vocabulary. Wikipedia is modern and unlevelled. Writing
-//! them here costs writing and removes the licence question, and it buys the one
-//! property none of the corpora have: **the text can be held to the vocabulary the
-//! course actually teaches**, which is asserted rather than hoped for — see
+//! Tatoeba gives sentences rather than passages and carries no difficulty signal at
+//! all — its own position is that the collection "is not fundamentally sorted" — and
+//! it is now what the *phrases* artifact is imported from, where short sentences are
+//! what is wanted. Aozora Bunko is genuinely free but is pre-1930s literary
+//! Japanese, which uses none of this course's vocabulary. Wikipedia is modern and
+//! unlevelled. Writing the passages here costs writing, and it buys the one property
+//! none of the corpora have: **the text can be held to the vocabulary the course
+//! actually teaches**, which is asserted rather than hoped for — see
 //! [`Passage::kanji_without_a_word`] and `prepare-passages`, which refuses to write
 //! an artifact whose passages use a kanji the words artifact does not hold.
 //!

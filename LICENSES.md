@@ -751,10 +751,16 @@ answered below because the segmentation is derived from it.
 Written for the course, in `crates/nihongo-core/data/passages/*.txt`, and held to
 the vocabulary by `prepare-passages`, which refuses to write an artifact containing
 a kanji the words artifact does not teach. `ROADMAP_NIHONGO.md` N7 records why
-corpora were rejected: Tatoeba is per-sentence licensed (some CC0, some BY, some
-**ND**) and gives sentences rather than passages; Aozora Bunko is free but is
-pre-1930s literary Japanese that uses none of this course's vocabulary; Wikipedia is
-modern and unlevelled. Writing them costs writing and removes the question.
+corpora were rejected: Tatoeba gives **sentences** rather than passages and carries
+no difficulty signal whatever; Aozora Bunko is free but is pre-1930s literary
+Japanese that uses none of this course's vocabulary; Wikipedia is modern and
+unlevelled. Writing them costs writing and removes the question.
+
+The licence half of N7's reasoning was wrong and is corrected here: Tatoeba's
+Japanese sentences are **CC BY 2.0 FR with a two-sentence CC0 part and no
+NoDerivatives variant at all**, as the phrases section below measures. What rules
+Tatoeba out for *passages* is that it does not have any — see
+"The phrases — Tatoeba, CC BY 2.0 FR" below, which is what Tatoeba is used for.
 
 ### UniDic and lindera — what the segmentation is derived from
 
@@ -815,6 +821,109 @@ than from NINJAL, and lindera verifies that hash before it will build anything.
 step, so the shipped app carries the artifact and no Japanese dictionary, no
 tokeniser and no network path — which is the same promise the rest of the app
 makes, kept by moving the cost to the build.
+
+### The phrases — Tatoeba, CC BY 2.0 FR, and what the export does not carry
+
+`crates/nihongo-core/data/phrases.bin.gz` — **1,400 Japanese sentences, from 152
+contributors, 54 KB** — is the one artifact in this repository whose *text is not
+this project's*. It is imported from [Tatoeba](https://tatoeba.org) by
+`prepare-phrases`, segmented with the same analyser the passages use, levelled on
+this project's own ladder, and packed with the English translation the corpus pairs
+with each sentence.
+
+**The licence, measured rather than assumed.** The per-language exports carry **no
+per-sentence licence column** — `jpn_sentences_detailed.tsv` is
+`id, lang, text, username, date_added, date_last_modified`, six fields and no
+licence — so two sources were used instead, and they agree:
+
+* Tatoeba's own downloads page: *"These files are released under CC BY 2.0 FR."* and
+  *"A part of our sentences are also available under CC0 1.0."*
+* Tatoeba's API, whose parameter validation **enumerates the complete set** of
+  licences a sentence can carry: `CC BY 2.0 FR`, `CC0 1.0` and `PROBLEM`. Filtering
+  by each and reading its total gives **CC BY 2.0 FR 249,077 · CC0 1.0 2 ·
+  PROBLEM 0** for Japanese.
+
+So there is **no NoDerivatives and no NonCommercial variant of a Tatoeba sentence
+text at all** — the earlier note in this file that Tatoeba is "some CC0, some BY,
+some ND" was wrong, and it is corrected here — and both licences permit
+redistribution and adaptation. (NonCommercial does occur on Tatoeba *audio*; 79% of
+the Japanese audio rows carry no reuse licence at all and a further 20% are
+CC BY-NC 4.0, which is why **no audio is bundled and none is downloaded**. The
+phrases are spoken by the system voice, which is the machine's.)
+
+**What was changed, as CC BY 2.0 FR §3(a) requires.** The text of every sentence is
+unchanged. This project adds a word segmentation, a reading over every kanji, a band
+on its own ladder, and the selection itself — and it **leaves sentences out**: those
+that are not one short sentence, those whose vocabulary the course does not teach,
+those the community tagged `not a sentence` or `@possible copyright infringement`,
+and — the one that matters legally — **every sentence whose contributor the export
+does not name**.
+
+**Attribution, and the 42.7% that cannot be attributed.** CC BY 2.0 FR's single
+condition is that *"the name of the author is cited"*, and Tatoeba's own terms of
+use repeat it: *"in the case of a CC-BY license, it is your responsibility to quote
+the author of the sentence."* The export writes the literal two-character string
+`\N` for a contributor it does not have, and **97,206 of the 227,643 Japanese
+sentences that otherwise qualify are in that state — 42.7%**. Those are not
+shipped, which is why the artifact holds 1,400 of a possible ~121,000: a corpus
+with a hole in its attribution is not worth having when the filter has a hundred
+thousand candidates that name their author.
+
+The sentences that do ship are attributed in two places, and both travel in the
+bundle:
+
+* **on screen**, per row: Tatoeba's sentence id, the contributor and the licence —
+  `Tatoeba #11910517 · bunbuku · CC BY 2.0 FR`;
+* **in the notice**, per contributor:
+  `apps/nihongo-tutor/src-tauri/licences/TATOEBA-phrases.txt`, generated by the
+  pipeline, catalogued as `tatoeba`, compiled into the binary and copied into
+  `Resources/licences/`. Every phrase's id is also in the artifact, so a sentence
+  can be found at `https://tatoeba.org/en/sentences/show/<id>`.
+
+`tests/phrases_artifact.rs` asserts the first half (every shipped sentence names a
+contributor and carries a licence in the corpus's set) and
+`apps/nihongo-tutor/src-tauri/tests/licences.rs` asserts the second: **every phrase
+the app can reach is named in the notice under its own contributor**, and the notice
+names nothing else.
+
+**What this project declined to take from Tatoeba.** The corpus also publishes
+furigana (`jpn_transcriptions.tsv`, `[漢字|かんじ]` for 100% of sentences) and
+difficulty — and neither is used. The furigana is **56.5% unreviewed machine
+output** from a MeCab run, where `prepare-phrases` computes its own readings with
+UniDic and this project's own vocabulary, which is both reviewed-by-construction and
+the same analyser the passages use, so a word cannot be read two ways in two screens.
+Difficulty does not exist in the corpus at all: Tatoeba states that its collection
+"is not fundamentally sorted", and of the Japanese tag set's 397 values not one is a
+level. The band on each phrase is this project's, exactly as a word's is.
+
+**The one check this file cannot make for you.** The 289 MiB all-languages
+`sentences_detailed.tar.bz2` is the only export that carries a licence column; the
+per-language file holds the identical Japanese subset for about 1.5% of the size, so
+the copy is not downloaded. If a stricter reading of the licence is ever wanted, the
+per-sentence check is Tatoeba's API (`GET /unstable/sentences?lang=jpn&license=…`),
+and it is what produced the table above.
+
+**Refreshing it, since the exports are weekly and are not pinned by hash.** Unlike
+the dictionaries, there is no immutable release to pin:
+```bash
+./scripts/fetch-tatoeba.sh          # ~34 MB, records URL/date/size/sha256 per file
+pnpm run prepare-phrases            # rewrites the artifact and the notice
+cargo test -p nihongo-core --test phrases_artifact
+```
+
+`data/raw/tatoeba/PROVENANCE.txt` records what was fetched, and the artifact records
+the export's own `Last-Modified` date and the selection rule, so a rebuild from a
+different week *says* it is from a different week. The pinned counts in
+`tests/phrases_artifact.rs` are what fail when it moves; the funnel
+`prepare-phrases` prints is what says why.
+
+**Three other sources were evaluated and not taken** — OpenJLPT (whose 12,615 example
+sentences turned out to be sentences this import already has, and whose N5–N1 levels rest on
+an unverified upstream grant), `jkindrix/japanese-language-data` (usable, but most of it is
+data this app already embeds), and `bunkocommons.org` (not licensable: one individual granting
+CC BY-SA 4.0 over word lists selected from commercial textbooks). The measurements and the
+verbatim licence wording are in
+[docs/research/JAPANESE_DATA_SOURCE_EVALUATIONS.md](docs/research/JAPANESE_DATA_SOURCE_EVALUATIONS.md).
 
 ## Before you distribute
 

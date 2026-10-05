@@ -1605,7 +1605,11 @@ voicing contrasts (か against が, は against ば and ぱ). A **Start here** s
 neither course, reachable from the footer — explains before the first lesson why the
 characters carry the meaning and the kana carry both the sound and the grammar, and
 demonstrates from the app's own vocabulary that one reading names several words
-(はし is 橋, 端 and 箸). It keeps its own learner data
+(はし is 橋, 端 and 箸). A **Phrases** screen in the kanji course offers **1,400
+graded sentences imported from Tatoeba**, 200 in each of the seven bands, each held
+to the words the course teaches and shown with a reading over every kanji, its
+English and its own attribution — CC BY 2.0 FR is why each row names its sentence id
+and its contributor. It keeps its own learner data
 — a tally per pair and an SM-2 review schedule, in its own files, never a shared
 store. It versions itself at 0.1.0 and has its own handover and roadmap —
 **[HANDOVER_NIHONGO.md](HANDOVER_NIHONGO.md)** and

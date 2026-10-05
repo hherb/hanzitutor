@@ -76,6 +76,7 @@ fn dataset_stats_crosses_as_camel_case() {
             "kyoiku",
             "lessons",
             "passages",
+            "phrases",
             "radicals",
             "strokes",
             "words"
@@ -87,6 +88,7 @@ fn dataset_stats_crosses_as_camel_case() {
     assert_eq!(stats["strokes"], 516);
     assert_eq!(stats["words"], 16_073, "the vocabulary the app embeds");
     assert_eq!(stats["passages"], 3);
+    assert_eq!(stats["phrases"], 1_400, "the graded phrases the app embeds");
     assert_eq!(stats["kanji"], 2_136, "the jōyō set the app embeds");
     assert_eq!(stats["kyoiku"], 1_026, "grades 1 to 6");
     assert_eq!(stats["radicals"], 214);
@@ -723,6 +725,103 @@ fn a_passage_crosses_with_its_tokens_and_their_links() {
             assert!(token.get(key).is_some(), "a token is missing {key}: {token}");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The graded phrases: the ladder, and one band of it.
+//
+// The same two halves as the vocabulary's — the band chips with their counts, then
+// the rows — because it is the same ladder and the same screen shape. What is
+// different is that a phrase is *attributed*: the id, the contributor and the
+// licence cross with it, since CC BY 2.0 FR requires the author to be named and the
+// screen names them per row.
+
+#[test]
+fn the_phrase_ladder_crosses_with_the_counts_the_chips_draw() {
+    let bands = state().phrase_bands();
+    assert_eq!(bands.len(), 7, "the ladder is the vocabulary's, all seven bands");
+    let value = serde_json::to_value(&bands).expect("serialises");
+    for key in ["band", "name", "phrases"] {
+        assert!(value[0].get(key).is_some(), "a band is missing {key}: {}", value[0]);
+    }
+    assert_eq!(value[0]["band"], 1);
+    assert_eq!(
+        value[0]["name"], "kyōiku 1",
+        "the names are `nihongo_core::band_name`'s, so the two screens cannot disagree"
+    );
+    assert_eq!(value[0]["phrases"], 200, "every band is capped and full");
+
+    assert_eq!(
+        bands.iter().map(|band| band.phrases).sum::<usize>(),
+        state().stats().phrases,
+        "the chips account for every phrase the app says it ships"
+    );
+}
+
+#[test]
+fn a_band_of_phrases_crosses_with_its_tokens_and_its_attribution() {
+    let phrases = state().phrases_in_band(1);
+    assert_eq!(phrases.len(), 200);
+
+    let value = serde_json::to_value(&phrases[0]).expect("serialises");
+    assert_eq!(
+        keys(&value),
+        vec!["author", "english", "id", "licence", "text", "tokens"],
+        "the row is the sentence, its translation, its words and its attribution"
+    );
+    assert!(value["id"].is_u64());
+    assert_eq!(value["licence"], "CC BY 2.0 FR");
+    assert!(
+        !value["author"].as_str().expect("an author").is_empty(),
+        "CC BY 2.0 FR requires the author to be named, so a row without one is a bug"
+    );
+
+    // Shortest first inside a band: the order the pipeline capped in, and the order
+    // a reading ladder wants.
+    let lengths: Vec<usize> = phrases.iter().map(|p| p.text.chars().count()).collect();
+    assert!(
+        lengths.windows(2).all(|pair| pair[0] <= pair[1]),
+        "the phrases of a band are shortest first: {lengths:?}"
+    );
+
+    // The token shape a tap depends on, and a reading over a kanji.
+    let with_kanji = phrases
+        .iter()
+        .find(|p| p.tokens.iter().any(|t| t.rt.is_some()))
+        .expect("a band-1 phrase with a kanji in it");
+    let token = with_kanji
+        .tokens
+        .iter()
+        .find(|t| t.rt.is_some())
+        .expect("the token that has the reading");
+    assert!(
+        token.word.is_some(),
+        "{:?} has a kanji but no card to open, which the pipeline refuses to ship",
+        token.surface
+    );
+    assert!(
+        with_kanji.text.contains(&token.surface),
+        "the tokens spell the sentence"
+    );
+
+    // Every token has all three keys, so the screen never reads `undefined`.
+    for phrase in &phrases {
+        for token in &phrase.tokens {
+            for key in ["surface", "rt", "word"] {
+                assert!(
+                    serde_json::to_value(token)
+                        .expect("serialises")
+                        .get(key)
+                        .is_some(),
+                    "a token is missing {key}"
+                );
+            }
+        }
+    }
+
+    // A band the corpus did not fill answers with an empty list rather than failing,
+    // which is what the disabled chip relies on.
+    assert!(state().phrases_in_band(9).is_empty());
 }
 
 // ---------------------------------------------------------------------------

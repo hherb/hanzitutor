@@ -137,6 +137,8 @@ export interface DatasetStats {
   words: number;
   /** How many reading passages are shipped. */
   passages: number;
+  /** How many graded phrases are shipped. */
+  phrases: number;
   strokes: number;
   /** How many jōyō kanji the artifact holds. */
   kanji: number;
@@ -412,12 +414,56 @@ export interface PassageToken {
   word: string | null;
 }
 
+/**
+ * One word of a graded phrase.
+ *
+ * The same three fields as a passage token, and deliberately the same Rust type on
+ * the other side (`TokenView`): both artifacts are segmented by the same analyser
+ * in `nihongo_core::segment`, so a token is a token and there is no second shape to
+ * keep in step.
+ */
+export type PhraseToken = PassageToken;
+
 /** One passage, segmented. */
 export interface PassageView {
   key: string;
   title: string;
   gloss: string | null;
   lines: PassageToken[][];
+}
+
+/** One band of the phrase ladder, as the Phrases screen offers it. */
+export interface PhraseBandView {
+  band: number;
+  /** What the band is called — the vocabulary's own names, because it is its ladder. */
+  name: string;
+  phrases: number;
+}
+
+/**
+ * One graded phrase.
+ *
+ * `id`, `author` and `licence` are the attribution the corpus's licence requires to
+ * travel with the sentence: the id is Tatoeba's, so the original can be found at
+ * `https://tatoeba.org/en/sentences/show/<id>`, and the other two are what CC BY
+ * 2.0 FR asks to be named. The screen shows them rather than keeping them for the
+ * licence file alone.
+ *
+ * The phrase's **band is not here**: the screen asks for one band at a time and
+ * draws it under that band's chip, so a band on every row would repeat one word
+ * down the list.
+ */
+export interface PhraseView {
+  /** Tatoeba's sentence id. */
+  id: number;
+  /** The sentence as written, including its final punctuation. */
+  text: string;
+  /** The English translation the corpus pairs with it. */
+  english: string;
+  author: string;
+  licence: string;
+  /** The words, in order; their surfaces spell `text`. */
+  tokens: PhraseToken[];
 }
 
 /** One lesson of the kanji course, as the sidebar lists it. */

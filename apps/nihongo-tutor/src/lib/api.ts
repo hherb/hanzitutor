@@ -24,6 +24,8 @@ import type {
   LicenceNotice,
   PassageSummary,
   PassageView,
+  PhraseBandView,
+  PhraseView,
   Point,
   Prefs,
   RadicalFamilyView,
@@ -304,6 +306,29 @@ export function passages(): Promise<PassageSummary[]> {
 /** One passage, segmented, with a reading over every kanji. */
 export function passage(key: string): Promise<PassageView> {
   return invoke<PassageView>("passage", { key });
+}
+
+/**
+ * The bands the graded phrases are levelled into, with their counts.
+ *
+ * Every band comes back even when the corpus filled none of it, so the screen can
+ * draw the same seven chips it draws for the vocabulary and let the counts say
+ * which are empty. The names are `nihongo_core::band_name`'s, because it is the
+ * same ladder a word's band comes from — a phrase's band is its hardest word's.
+ */
+export function phraseBands(): Promise<PhraseBandView[]> {
+  return invoke<PhraseBandView[]>("phrase_bands");
+}
+
+/**
+ * One band's graded phrases, shortest first.
+ *
+ * Not paged, and that is a property of the data rather than a shortcut:
+ * `prepare-phrases` caps each band when it builds the artifact, so a band is
+ * already the size of a list the screen can draw.
+ */
+export function phrasesInBand(band: number): Promise<PhraseView[]> {
+  return invoke<PhraseView[]>("phrases_in_band", { band });
 }
 
 /**

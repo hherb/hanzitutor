@@ -23,6 +23,7 @@
   import KanjiPanel from "./lib/KanjiPanel.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import PassagePanel from "./lib/PassagePanel.svelte";
+  import PhrasesPanel from "./lib/PhrasesPanel.svelte";
   import RadicalsPanel from "./lib/RadicalsPanel.svelte";
   import ReviewPanel from "./lib/ReviewPanel.svelte";
   import StartPanel from "./lib/StartPanel.svelte";
@@ -411,6 +412,14 @@
     />
   {:else if view === "words"}
     <VocabularyPanel bind:stage={wordsStage} {voice} />
+  {:else if view === "phrases"}
+    <!--
+      No `stage` binding: a phrase's word card opens under the row it was tapped in,
+      so this screen never becomes a stage and the app's chrome stays where it is
+      (`nav.ts`'s `STAGE_VIEWS` is the list of screens that do, and `nav.test.ts`
+      asserts Phrases is not one of them).
+    -->
+    <PhrasesPanel {voice} />
   {:else if view === "read"}
     <PassagePanel bind:stage={readStage} {voice} />
   {:else if view === "start"}

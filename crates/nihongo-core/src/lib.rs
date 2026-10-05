@@ -40,8 +40,15 @@ pub mod input;
 pub mod kana;
 pub mod kanji;
 pub mod passages;
+pub mod phrases;
 pub mod readings;
 pub mod review;
+// The analyser half that the passages and the phrases share, so that a word in one
+// and the same word in the other cannot come out read two ways. Behind `tokenize`
+// with the `lindera` dependency it uses: the analysis runs at build time and the
+// app ships no tokeniser.
+#[cfg(feature = "tokenize")]
+pub mod segment;
 pub mod variants;
 pub mod words;
 
@@ -88,4 +95,7 @@ pub use words::{
 pub use passages::{
     parse_passage, Passage, PassageDataset, PassageToken, PassagesArtifact, PassagesSource,
     PASSAGES_ARTIFACT_MAGIC,
+};
+pub use phrases::{
+    Phrase, PhraseDataset, PhraseToken, PhrasesArtifact, PhrasesSource, PHRASES_ARTIFACT_MAGIC,
 };

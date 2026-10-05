@@ -28,8 +28,17 @@ export type Section = "kana" | "kanji";
 /** The screens of the kana course. */
 export type KanaView = "practice" | "chart" | "drill" | "review";
 
-/** The screens of the kanji course. */
-export type KanjiView = "kanji" | "radicals" | "words" | "read" | "review";
+/**
+ * The screens of the kanji course.
+ *
+ * `Phrases` sits between `Words` and `Read` because that is the order a learner
+ * meets the language in — a word, then a sentence made of words the course teaches,
+ * then a passage — and because it is the one screen whose content is *imported*
+ * rather than written here, so the sequence Words → Phrases → Read is also the
+ * sequence from "we chose every item" to "we chose every item in it but the
+ * sentences are someone else's".
+ */
+export type KanjiView = "kanji" | "radicals" | "words" | "phrases" | "read" | "review";
 
 /** Every screen, including the two that belong to neither course. */
 export type View = KanaView | KanjiView | "licences" | "start";
@@ -109,6 +118,7 @@ export const COURSES: readonly Course[] = [
       { id: "kanji", label: "Kanji" },
       { id: "radicals", label: "Radicals" },
       { id: "words", label: "Words" },
+      { id: "phrases", label: "Phrases" },
       { id: "read", label: "Read" },
       { id: "review", label: "Review" },
     ],

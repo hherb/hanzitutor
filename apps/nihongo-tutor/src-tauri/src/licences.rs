@@ -190,6 +190,27 @@ pub const NOTICES: &[LicenceNotice] = &[
         text: include_str!("../licences/ANALYSER-UniDic-lindera.txt"),
     },
     LicenceNotice {
+        id: "tatoeba",
+        title: "Tatoeba — the graded phrases",
+        licence: "CC BY 2.0 FR",
+        source: "https://tatoeba.org (terms: https://tatoeba.org/en/terms_of_use)",
+        covers: "The text of every sentence on the Phrases screen and the English \
+                 translation shown under it, imported from Tatoeba's per-language \
+                 exports, filtered and compacted into `phrases.bin.gz`. The text of \
+                 each sentence is unchanged; this app adds a word segmentation, a \
+                 reading over every kanji, a level on its own ladder, and modifies \
+                 nothing else — and it leaves out every sentence whose contributor \
+                 the export does not name, because CC BY 2.0 FR requires the author \
+                 to be named. The sentences are contributed under CC BY 2.0 FR, \
+                 except the two the corpus lists as CC0 1.0; there is no \
+                 NoDerivatives or NonCommercial variant of a Tatoeba sentence. The \
+                 notice text this points at lists every contributor whose sentences \
+                 ship, with the sentence ids taken from them.",
+        file: "apps/nihongo-tutor/src-tauri/licences/TATOEBA-phrases.txt",
+        bundle_path: "licences/TATOEBA-phrases.txt",
+        text: include_str!("../licences/TATOEBA-phrases.txt"),
+    },
+    LicenceNotice {
         id: "lgpl",
         title: "GNU Lesser General Public License",
         licence: "LGPL-3.0-or-later",

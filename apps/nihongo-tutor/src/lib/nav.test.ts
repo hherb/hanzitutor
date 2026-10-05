@@ -32,6 +32,7 @@ const ALL_VIEWS: View[] = [
   "kanji",
   "radicals",
   "words",
+  "phrases",
   "read",
   "licences",
   "start",
@@ -146,9 +147,12 @@ describe("the screens that are two screens", () => {
   });
 
   it("leave the screens that are one thing alone", () => {
-    // The chart, the drill and the review queue each draw one screen with nothing
-    // to open inside them, and Review is the screen two courses share.
-    for (const view of ["chart", "drill", "review"] as View[]) {
+    // The chart, the drill, the phrase list and the review queue each draw one
+    // screen with nothing to open inside them, and Review is the screen two courses
+    // share. Phrases is here rather than in `STAGE_VIEWS` on purpose: a phrase's
+    // card opens *under the row it was tapped in*, so there is no second screen for
+    // the app to take its chrome off for.
+    for (const view of ["chart", "drill", "review", "phrases"] as View[]) {
       expect(hasStage(view), view).toBe(false);
     }
   });
@@ -162,6 +166,7 @@ describe("courseOf", () => {
       "kanji",
       "radicals",
       "words",
+      "phrases",
       "read",
       "review",
     ]);

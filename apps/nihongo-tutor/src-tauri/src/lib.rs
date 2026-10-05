@@ -26,8 +26,9 @@ use nihongo_core::{
     normalise_to_hiragana, now_iso8601, off_grid, parse_decomposition,
     queue as build_review_queue, reading, split_key, to_kana, to_kana_in, yoon as build_yoon,
     Confusable, ConfusionLog, Decomposition, DrillKind, DrillPair, DueItem, GradeOptions,
-    GradeReport, KanaDataset, Kanji, KanjiDataset, Passage, PassageDataset, PassageToken, Point,
-    Row, Ruby, Script, Section, Word, WordDataset, KANJI_LESSON_SIZE, ROWS, VOWEL_COLUMNS,
+    GradeReport, KanaDataset, Kanji, KanjiDataset, Passage, PassageDataset, PassageToken, Phrase,
+    PhraseDataset, Point, Row, Ruby, Script, Section, Word, WordDataset, KANJI_LESSON_SIZE, ROWS,
+    VOWEL_COLUMNS,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -40,7 +41,7 @@ use tauri::{Manager, State};
 /// what this learner gets wrong, the schedule of what comes back, how the
 /// interface was left, and the voice.
 ///
-/// All four artifacts are **embedded** — `include_bytes!`, not read from a path —
+/// All five artifacts are **embedded** — `include_bytes!`, not read from a path —
 /// so there is no data directory to find, no file to go missing, and no filesystem
 /// permission for the webview to hold. The kanji artifact is the largest at 3.2 MB
 /// and carries the course, the radical table and the geometry the board draws a
@@ -50,6 +51,11 @@ pub struct AppState {
     kanji: KanjiDataset,
     words: WordDataset,
     passages: PassageDataset,
+    /// The graded phrases: sentences imported from Tatoeba, segmented and levelled
+    /// at build time like the passages and held to the same vocabulary. The
+    /// segmentation, the reading over every kanji and the band are all in the
+    /// artifact, so the app renders them and nothing here tokenises anything.
+    phrases: PhraseDataset,
     /// Behind a `Mutex` because Tauri hands every command a shared `&AppState`
     /// and recording an answer is a write. Contention is nil: one learner, one
     /// window, and a lock held for the microseconds a JSON write takes.
@@ -115,6 +121,8 @@ impl AppState {
                 .expect("the committed words artifact decodes"),
             passages: PassageDataset::from_gzip_bytes(artifact!("passages.bin.gz"))
                 .expect("the committed passages artifact decodes"),
+            phrases: PhraseDataset::from_gzip_bytes(artifact!("phrases.bin.gz"))
+                .expect("the committed phrases artifact decodes"),
             drill: Mutex::new(drill),
             review: Mutex::new(review),
             prefs: Mutex::new(prefs),
@@ -213,6 +221,7 @@ impl AppState {
             lessons: lesson_count,
             words: self.words.len(),
             passages: self.passages.len(),
+            phrases: self.phrases.len(),
             strokes: self
                 .kana
                 .kana()
@@ -907,6 +916,34 @@ impl AppState {
             .map(passage_view)
             .ok_or_else(|| format!("{key} is not one of the passages"))
     }
+
+    /// The bands the phrases are levelled into, with the counts a screen shows.
+    ///
+    /// The same ladder the vocabulary uses, and the same names, because it is the
+    /// same derivation: a phrase's band is the band of its hardest word, so a
+    /// "kyōiku 3" phrase is one whose hardest word is a kyōiku-3 word. Every band is
+    /// present even when the corpus filled none of it, so a screen drawing a chip
+    /// per band does not have to know which ones the import happened to reach.
+    pub fn phrase_bands(&self) -> Vec<PhraseBandView> {
+        self.phrases
+            .band_counts()
+            .into_iter()
+            .map(|(band, phrases)| PhraseBandView {
+                band,
+                name: band_name(band).to_string(),
+                phrases,
+            })
+            .collect()
+    }
+
+    /// One band's phrases, shortest first.
+    ///
+    /// Not paged, and deliberately: the corpus itself caps each band
+    /// (`prepare-phrases --per-band`), so a band is already the size of a list a
+    /// screen can draw, and a page of a page would be two bounds to explain.
+    pub fn phrases_in_band(&self, band: u8) -> Vec<PhraseView> {
+        self.phrases.of_band(band).map(phrase_view).collect()
+    }
 }
 
 /// The largest page a caller may ask for.
@@ -943,12 +980,30 @@ fn passage_view(passage: &Passage) -> PassageView {
             .iter()
             .map(|line| {
                 line.iter()
-                    .map(|token: &PassageToken| PassageTokenView {
+                    .map(|token: &PassageToken| TokenView {
                         surface: token.surface.clone(),
                         rt: token.rt.clone(),
                         word: token.word.clone(),
                     })
                     .collect()
+            })
+            .collect(),
+    }
+}
+
+fn phrase_view(phrase: &Phrase) -> PhraseView {
+    PhraseView {
+        id: phrase.id,
+        text: phrase.text.clone(),
+        english: phrase.english.clone(),
+        author: phrase.author.clone(),
+        licence: phrase.licence.clone(),
+        tokens: phrase
+            .tokens()
+            .map(|token| TokenView {
+                surface: token.surface.clone(),
+                rt: token.rt.clone(),
+                word: token.word.clone(),
             })
             .collect(),
     }
@@ -967,6 +1022,8 @@ pub struct DatasetStats {
     pub words: usize,
     /// How many reading passages are shipped.
     pub passages: usize,
+    /// How many graded phrases are shipped.
+    pub phrases: usize,
     pub strokes: usize,
     /// How many jōyō kanji the artifact holds.
     pub kanji: usize,
@@ -1294,13 +1351,18 @@ pub struct PassageView {
     pub key: String,
     pub title: String,
     pub gloss: Option<String>,
-    pub lines: Vec<Vec<PassageTokenView>>,
+    pub lines: Vec<Vec<TokenView>>,
 }
 
-/// One word of a passage.
+/// One word of a text a screen draws — a passage line or a phrase.
+///
+/// One type for both because it is one shape produced by one rule: the passages and
+/// the phrases are segmented by the same code in `nihongo_core::segment`, so a
+/// "passage token" and a "phrase token" would be two names for the same three
+/// fields and a second thing to keep in step.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct PassageTokenView {
+pub struct TokenView {
     pub surface: String,
     /// The reading to draw over it, in hiragana; `null` for kana, which needs no
     /// ruby.
@@ -1308,6 +1370,46 @@ pub struct PassageTokenView {
     /// The vocabulary word this token is, when it is one, so a tap can open its
     /// card. The dictionary form: 行き links to 行く.
     pub word: Option<String>,
+}
+
+/// One band of the phrase ladder, as the Phrases screen offers it.
+///
+/// The same shape as [`BandView`] with the count of phrases where that one has the
+/// count of words — and the same names, because it is the same ladder.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PhraseBandView {
+    pub band: u8,
+    pub name: String,
+    pub phrases: usize,
+}
+
+/// One graded phrase, as the Phrases screen draws it.
+///
+/// `id`, `author` and `licence` are the attribution the corpus's licence requires
+/// to travel with the sentence: the id is Tatoeba's, so the original can be found
+/// and cited, and the other two are what CC BY 2.0 FR asks to be named. They are
+/// sent to the interface rather than kept in the artifact alone so every row can
+/// say where it came from.
+///
+/// The phrase's **band is not here**, and that is deliberate: the screen asks for
+/// one band at a time and draws it under the band's own chip, so a band on every
+/// row would be the same word repeated down the list. The band is in the artifact,
+/// where the artifact test recomputes it.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PhraseView {
+    /// Tatoeba's sentence id.
+    pub id: u32,
+    /// The sentence as written, including its final punctuation.
+    pub text: String,
+    /// The English translation the corpus pairs with it.
+    pub english: String,
+    /// The contributor the corpus names.
+    pub author: String,
+    /// The licence the sentence is under.
+    pub licence: String,
+    pub tokens: Vec<TokenView>,
 }
 
 /// The result of checking a typed romaji answer.
@@ -1657,6 +1759,18 @@ fn passage(state: State<'_, AppState>, key: String) -> Result<PassageView, Strin
     state.passage(&key)
 }
 
+/// The bands the graded phrases are levelled into, with their counts.
+#[tauri::command]
+fn phrase_bands(state: State<'_, AppState>) -> Vec<PhraseBandView> {
+    state.phrase_bands()
+}
+
+/// One band's graded phrases, shortest first.
+#[tauri::command]
+fn phrases_in_band(state: State<'_, AppState>, band: u8) -> Vec<PhraseView> {
+    state.phrases_in_band(band)
+}
+
 /// Hear `text` in the system's Japanese voice, cutting off anything already being
 /// said.
 ///
@@ -1797,6 +1911,8 @@ pub fn run() {
             check_word,
             passages,
             passage,
+            phrase_bands,
+            phrases_in_band,
             speak,
             stop_speaking,
             voice,
@@ -2545,6 +2661,84 @@ mod tests {
         // interface should not have asked for is clamped.
         assert!(state.words_in_band(1, page.total, 10).words.is_empty());
         assert!(state.words_in_band(1, 0, 10_000).words.len() <= 200);
+    }
+
+    /// **The phrase ladder, which is the vocabulary's.** Same seven bands, same
+    /// names, same derivation — the third screen to read a phrase's band as its
+    /// hardest word, and the reason the two screens cannot disagree about what
+    /// "kyōiku 3" means.
+    #[test]
+    fn the_phrase_ladder_is_the_vocabularys_with_its_own_counts() {
+        let state = state();
+        let bands = state.phrase_bands();
+        assert_eq!(bands.len(), 7);
+        assert_eq!(
+            bands.iter().map(|band| band.phrases).sum::<usize>(),
+            state.phrases.len()
+        );
+        assert_eq!(bands[0].band, 1);
+        assert_eq!(bands[0].name, "kyōiku 1");
+        assert_eq!(bands[6].name, "jōyō beyond the school grades");
+        for band in &bands {
+            assert!(
+                !band.name.to_ascii_uppercase().contains("JLPT"),
+                "the ladder is derived, not the JLPT's: {:?}",
+                band.name
+            );
+        }
+        // Unlike the vocabulary, a band *can* be empty: the corpus is filtered, not
+        // authored, so nothing guarantees a band 1 exists. This build happens to
+        // fill all seven, which is what the artifact test pins.
+        assert!(bands.iter().all(|band| band.phrases > 0));
+    }
+
+    /// A phrase, as a row draws it: the sentence, its words, its translation and its
+    /// attribution. The band is deliberately absent — the screen asks for one band at
+    /// a time and draws it under that band's chip.
+    #[test]
+    fn a_band_of_phrases_carries_what_a_row_draws() {
+        let state = state();
+        let phrases = state.phrases_in_band(1);
+        assert_eq!(phrases.len(), 200, "every band is capped and full");
+
+        let first = &phrases[0];
+        assert!(!first.text.is_empty());
+        assert!(!first.english.is_empty());
+        assert!(!first.author.is_empty());
+        assert_eq!(first.licence, "CC BY 2.0 FR");
+        assert!(!first.tokens.is_empty());
+
+        // Every kanji-bearing word is one the course teaches, which is what makes the
+        // tap work — the invariant the artifact test proves for all 1,400. A
+        // kanji-bearing token is the one that carries a reading: the artifact test
+        // asserts the two go together, and the vocabulary has no kana-only entry for
+        // a kana token to link to.
+        for phrase in &phrases {
+            for token in &phrase.tokens {
+                if let Some(rt) = token.rt.as_deref() {
+                    assert!(!rt.is_empty(), "#{}: an empty reading", phrase.id);
+                    let word = token.word.as_deref().unwrap_or_else(|| {
+                        panic!("#{}: {:?} has a kanji and no card", phrase.id, token.surface)
+                    });
+                    assert!(
+                        state.words.of_text(word).is_some(),
+                        "#{}: {word:?} is not in the vocabulary",
+                        phrase.id
+                    );
+                }
+            }
+            assert_eq!(
+                phrase.tokens.iter().map(|t| t.surface.as_str()).collect::<String>(),
+                phrase.text,
+                "#{}'s tokens do not spell its text",
+                phrase.id
+            );
+        }
+
+        // Shortest first, and a band the corpus did not fill answers with nothing.
+        let lengths: Vec<usize> = phrases.iter().map(|p| p.text.chars().count()).collect();
+        assert!(lengths.windows(2).all(|w| w[0] <= w[1]), "{lengths:?}");
+        assert!(state.phrases_in_band(9).is_empty());
     }
 
     /// **The character card's vocabulary list.** A page of what

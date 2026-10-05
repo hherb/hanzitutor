@@ -39,10 +39,11 @@ pnpm --dir apps/nihongo-tutor run dev      # dev server on :1422, and the window
 There is no data step. `crates/nihongo-core/data/kana.bin.gz` is committed
 (70,917 bytes, 177 kana) precisely so that it does not need one — see invariant 1
 — and so are `kanji.bin.gz` (3,236,713 bytes, 2,136 jōyō kanji, their geometry and
-the 214 radical head forms — invariant 24) and `words.bin.gz`
-(601,816 bytes, 16,073 words), which are the same decision made again for much
-larger files (invariants 16 and 20). The vocabulary inputs are 118 MB of JSON,
-63 MB of XML and 33 MB of furigana; none of it is needed to build or to test.
+the 214 radical head forms — invariant 24), `words.bin.gz`
+(601,816 bytes, 16,073 words) and `phrases.bin.gz` (54 KB, 1,400 graded sentences,
+from Tatoeba), which are the same decision made again for much larger files
+(invariants 16, 20 and 37). The vocabulary inputs are 118 MB of JSON, 63 MB of XML
+and 33 MB of furigana; none of it is needed to build or to test.
 
 If you *do* need to regenerate them, that is the one path that fetches:
 
@@ -53,13 +54,25 @@ pnpm run prepare-kanji
 pnpm run prepare-words         # needs the kanji artifact first — it decides what is teachable
 ./scripts/fetch-unidic.sh      # once only: 134 MB of UniDic, built into .lindera/
 pnpm run prepare-passages      # needs the words artifact — it holds the passages to it
+./scripts/fetch-tatoeba.sh     # once: ~34 MB of Tatoeba's Japanese exports, into data/raw/tatoeba/
+pnpm run prepare-phrases       # needs the words artifact too — it drops what the course cannot read
 ```
 
-`fetch-unidic.sh` is separate from `fetch-data.sh` on purpose, and so is the
-`tokenize` feature: the analyser is 100-odd crates and a 134 MB dictionary that only
-the passage pipeline needs, and nothing that ships depends on it. lindera's build
-script downloads **nothing** unless that script names a cache directory, so no
-ordinary `cargo test` or `cargo clippy` ever touches the network.
+`fetch-unidic.sh` and `fetch-tatoeba.sh` are separate from `fetch-data.sh` on
+purpose, and so is the `tokenize` feature: the analyser is 100-odd crates and a
+134 MB dictionary that only the two text pipelines need, and nothing that ships
+depends on either. Neither fetch is needed to build or to test the app — both
+artifacts are committed — and lindera's build script downloads **nothing** unless
+`fetch-unidic.sh` names a cache directory, so no ordinary `cargo test` or
+`cargo clippy` ever touches the network.
+
+`prepare-phrases` reads what `fetch-tatoeba.sh` unpacked and **drops** rather than
+refuses (invariant 37): it wants `jpn_sentences_detailed.tsv`, `jpn-eng_links.tsv`,
+`eng_sentences.tsv` and `jpn_tags.tsv`, writes `data/phrases.bin.gz`, and rewrites
+`apps/nihongo-tutor/src-tauri/licences/TATOEBA-phrases.txt` from what it kept —
+which is why that notice is generated rather than typed. `--show N` prints a sample
+of each band for a human rebuilding it; the funnel it prints is what says whether
+the cut was reasonable.
 
 `fetch-data.sh` pulls three things for the Japanese part, into `data/raw/`
 (which is gitignored): `graphicsJaKana.txt`, 177 SVGs under `svgsJaKana/`, and
@@ -96,11 +109,11 @@ nothing complains.
 
 ## 2. What already works
 
-Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **331
-tests** — every `#[test]` in the two suites (206 in `nihongo-core`, 125 in
+Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **357
+tests** — every `#[test]` in the two suites (227 in `nihongo-core`, 130 in
 `nihongo-tutor`), plus two doc-tests (`lib.rs`'s and `variants.rs`'s);
 the frontend's are counted separately below.
-`pnpm run test:web` runs 187, of which **118** are this app's.
+`pnpm run test:web` runs 193, of which **124** are this app's.
 `cargo test -p hanzi-voice`, the shared crate the audio half lives in, is 29.
 
 | | |
@@ -125,15 +138,16 @@ the frontend's are counted separately below.
 | Bands | 585 / 1,781 / 2,408 / 2,232 / 2,412 / 1,834 / 4,821 — this project's ladder, not the JLPT's (invariant 20) |
 | Furigana | 16,022 of 16,073 aligned (99.7%); the other 51 carry their reading and no ruby |
 | Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
+| Phrases | 1,400 imported from Tatoeba — **200 in each of the seven bands**, 6,025 tokens, 152 named contributors, 54 KB; every kanji-bearing word taught, the band is the hardest word's, and every sentence carries its id, its contributor and its licence on screen (invariant 37) |
 | Words on a card | 16,073 words over 2,136 characters — 一 in 223, 人 in 218, and **57 characters in none**; a page of 12, in course order (invariant 28) |
 | One reading | **はし is 橋, 端 and 箸 and かみ is five words** (上 紙 神 加味 髪) — the homophones the **Start here** screen argues with, drawn from the artifact rather than typed into the interface (invariant 32) |
 | Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
-| Notices | 10 — five of them added at N9, when the EDRDG, JmdictFurigana and UniDic obligations that had been recorded in `LICENSES.md` since N6 and N7 were found to satisfy nothing in the bundle (§8) |
+| Notices | 11 — five of them added at N9, when the EDRDG, JmdictFurigana and UniDic obligations that had been recorded in `LICENSES.md` since N6 and N7 were found to satisfy nothing in the bundle (§8), and the Tatoeba one at N18, which is **generated by the pipeline** rather than typed because it names 152 contributors |
 | Bundle | built at N9 as `Kana Tutor.app`, 15.25 MiB, and **rebuilt after the N10 rename as `Nihongo Tutor.app`** — 15 MiB, `codesign --verify --deep --strict` clean, `Identifier=com.hanzitutor.kana`, Team `X5DWXB4283`, and all ten notices world-readable. The `.dmg` needs Tauri's own `bundle_dmg.sh` run outside the sandbox (trap 21); the N10 one is **7,957,111 bytes**, `hdiutil verify` checksum VALID, signed `Identifier=Nihongo Tutor_0.1.0_aarch64`, and mounting it shows `Nihongo Tutor.app` plus the `Applications` link with the inner app still passing `--deep --strict`. The N9 figures were 15.25 MiB and an 8,186,456-byte image; the icon N9 drew has since been **redesigned at N14** — white field, the flag's red あ — and both the desktop set and the iOS set were regenerated from the new master, so a build from this tree wears a different face than the 15 MiB one described here; `/Applications/Kana Tutor.app` is still the N9 install, and the N10 build has not been installed there |
-| Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review", and the kana course seen on the device at N13. See §5, "Building for iOS", for the three things `tauri ios init` does not provide |
-| Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Read, Review, where **five screens are each two screens**: the course and the thing it opens — Kanji and Practice open a board, Radicals a family, Words a card, Read a passage (invariants 33, 34 and 35). **Start here** and Licences hang off the footer, in neither course (invariant 31) |
-| Tests | nihongo-core 206, nihongo-tutor 125, hanzi-voice 29, frontend 118 of the 187 |
-| Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
+| Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review", and the kana course seen on the device at N13. **Rebuilt and reinstalled at N18** with the same recipe, on **both** devices — HHIP1 and Horst's 12.9-inch iPad — and the Phrases screen was then looked at on each by the maintainer, which is what closed the last "measured but never seen" screen in the app. See §5, "Building for iOS", for the three things `tauri ios init` does not provide |
+| Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Phrases, Read, Review, where **five screens are each two screens**: the course and the thing it opens — Kanji and Practice open a board, Radicals a family, Words a card, Read a passage (invariants 33, 34 and 35). **Phrases is not one of them**: a phrase's card opens under the row it was tapped in, so there is no second screen to step aside for (invariant 37). **Start here** and Licences hang off the footer, in neither course (invariant 31) |
+| Tests | nihongo-core 227, nihongo-tutor 130, hanzi-voice 29, frontend 124 of the 193 |
+| Artifact | kana 70,917, kanji 3,236,713, words 601,816, passages 502 and phrases 53,945 bytes — all gzip + magic + postcard, all five embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | three files, `confusions.json`, `review.json` and `prefs.json`, in the app's own data directory |
 | Version | both crates 0.1.0, and the app's to match |
@@ -160,7 +174,20 @@ desktop window still has not. **N12's stage has now been seen on the phone too**
 the maintainer drove it, and its two screenshots are what produced the two
 corrections after it (the chrome stepping aside and the meaning folding in). The
 rule that remains: a screen that has only been *measured* has not been seen, and a
-reader finds what a probe cannot.
+reader finds what a probe cannot. **The Phrases screen (N18) was measured first and
+then seen on two devices**, and the two halves are worth keeping apart. The session
+that built it had 0 active displays, so a `-l` capture would have been a frozen
+frame (§5) and everything was driven over the DOM probe instead: the tab, all seven
+chips, 200 rows in band 1 and in band 7, a tap that opened a word card, and the
+`Hear it` press that reached Rust with the sentence itself — and the six-tab row
+measured at 441px, one line at full width and **two lines with no horizontal
+overflow** at both the 480px minimum window and a 390px phone. It was then built for
+iOS, installed on the iPhone 13 Pro Max and the 12.9-inch iPad, and **looked at by
+the maintainer on both**, which is what answered the two things the probe could not:
+the space between a sentence and its translation reads well, and a 200-row band
+scrolls acceptably. The six-tab wrap is real on the phone — the row breaks after
+`Read`, leaving `Review` alone on a second line — and was accepted as the cost of the
+tab; on the iPad in landscape all six sit on one line.
 
 **And it has been heard.** N1 put the machine's own Japanese voice behind a button
 and the `h` key, and behind **every reading on a kanji card** — so a character can
@@ -405,6 +432,17 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   screen argues with
   src/passages.rs        (387)    Passage, PassageToken, PassageDataset and the
                                   source-file parser — the reading half, N7
+  src/phrases.rs         (550)    Phrase, PhraseToken, PhraseDataset, the artifact
+                                  magic and `band_from` (a phrase is as hard as its
+                                  hardest word) — the graded-phrase half, N18
+  src/segment.rs         (161)    the analyser half **both** text pipelines share:
+                                  `analyse`, plus the two rules that are traps —
+                                  which vocabulary word a token is (`lexeme`, so
+                                  食べた links to 食べる) and which UniDic field to
+                                  read a reading from (the base form's `reading` for
+                                  an uninflected word, the surface's
+                                  `phonological_surface_form` for an inflected one).
+                                  Behind `tokenize`
   src/readings.rs        (386)    Hepburn and Kunrei-shiki, and the enumeration
                                   hiragana_with_readings the input table is built from
   src/curriculum.rs     (1030)    the gojūon rows **as five-slot grids**, the
@@ -441,12 +479,22 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
   src/bin/prepare_passages.rs(357) lindera + UniDic → the segmented passages.
                                   Needs `--features nihongo-core/tokenize` and
                                   scripts/fetch-unidic.sh to have run once
+  src/bin/prepare_phrases.rs(901) Tatoeba's exports + UniDic + the words artifact
+                                  → the graded phrases and the notice that
+                                  attributes them. **Drops** where
+                                  `prepare-passages` refuses (invariant 37); same
+                                  feature and dictionary, plus
+                                  scripts/fetch-tatoeba.sh once. `--show N` prints a
+                                  sample of each band
   data/kana.bin.gz                COMMITTED, 70,917 bytes
   data/kanji.bin.gz               COMMITTED, 3,236,713 bytes (format v2)
   data/words.bin.gz               COMMITTED, 601,816 bytes
   data/passages/*.txt             COMMITTED: the passage text and its glosses,
                                   which is what a person edits
   data/passages.bin.gz            COMMITTED, 502 bytes — the segmentation
+  data/phrases.bin.gz             COMMITTED, 53,945 bytes — 1,400 imported
+                                  sentences, 200 per band, each with its id, its
+                                  contributor, its licence and its tokens
   tests/kana_artifact.rs (261)    12 tests over the committed kana artifact
   tests/kanji_artifact.rs(841)    26 tests over the committed kanji artifact: the
                                   whole grade reconciliation, the 214-radical
@@ -456,10 +504,20 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   pinning the homophones はし and かみ (invariant 32)
   tests/passages_artifact.rs(247) 9 tests over the committed passages, including
                                   that they still match data/passages/*.txt
+  tests/phrases_artifact.rs(368)  11 tests over the committed phrases: the
+                                  vocabulary invariant, the band recomputed from
+                                  the words artifact, **the attribution** (no `\N`,
+                                  no empty author, no foreign licence), the shape
+                                  the selection promises, and the order
 
 scripts/fetch-unidic.sh           fetches and builds the UniDic dictionary into
                                   .lindera/ (gitignored). 134 MB down, 190 MB
                                   built, and the only thing that needs either
+scripts/fetch-tatoeba.sh          fetches Tatoeba's Japanese exports into
+                                  data/raw/tatoeba/ (gitignored, ~34 MB down, 170
+                                  MB unpacked) and records URL, date, size and
+                                  SHA-256 per file in PROVENANCE.txt. Nothing that
+                                  ships or tests needs it
 
 apps/nihongo-tutor/               the app
   src-tauri/src/lib.rs  (2900)    AppState, the speaker, the chart and the 31
@@ -568,6 +626,17 @@ apps/nihongo-tutor/               the app
   src/lib/PassageStage.svelte(271)  **the passage stage**: one passage with furigana,
                                   a tap on any word, and the tapped word's card
                                   below it — N7, N15, invariant 35
+  src/lib/PhrasesPanel.svelte(391)  **the phrases screen**: the seven band chips,
+                                   one band of graded sentences with a reading over
+                                   every kanji, the English under each, a `Hear it`
+                                   control and the sentence's own attribution
+                                   (`Tatoeba #id · contributor · licence`), and a
+                                   tapped word's card opening under its own row.
+                                   **Not a stage** — invariant 37
+  src/lib/phrases.ts       (46)     the screen's two rules, as pure functions: which
+                                   band to open on when the corpus left one empty,
+                                   and the attribution line
+  src/lib/phrases.test.ts  (66)     run by the ROOT project's vitest
   src/lib/WordCard.svelte(265)      one word: its furigana, its reading, its band
   src/lib/SpeakButton.svelte(168)   the one "Hear it" control: a button for the
                                   three standalone callers, and a link for a
@@ -1802,6 +1871,56 @@ similar as in HanziTutor — the top 'next' is for skipping a character."*
   * `hasNextDue` asks the **queue** rather than the page, so a queue with more due than one
     page holds does not read "nothing due" over characters nobody has fetched yet.
 
+### 37. **A phrase is imported, so it is filtered and attributed — and `\N` is a contributor's name if nobody stops it.**
+
+The Phrases screen is the one place in this app whose text is somebody else's, and the three
+rules below are what make that safe to ship. N18 is the milestone; `phrases.rs`,
+`prepare_phrases.rs` and `tests/phrases_artifact.rs` are the code.
+
+* **The vocabulary rule is enforced by dropping, not by refusing.** Invariant 22 makes
+  `prepare-passages` *refuse to write* an artifact with a kanji the vocabulary does not teach,
+  because a passage is written here and can be edited until it passes. An imported sentence
+  cannot be edited, only kept or thrown away, so `prepare-phrases` throws it away and prints
+  the funnel that says how many went and why. **The promise to the learner is identical** —
+  every kanji-bearing token in the artifact is a word with a card — and it is checked the same
+  way: `tests/phrases_artifact.rs` recomputes it against the committed vocabulary, so an
+  artifact rebuilt with a looser filter fails rather than shipping.
+* **A phrase's band is its hardest word's, and the artifact's stored band is recomputed by the
+  test.** There is one ladder in this app (invariant 20) and the phrases do not get a second
+  one: a band-6 phrase is one whose hardest word is a band-6 word, which is why 私 puts
+  `私は学生です` in band 6. `Phrase::band_from` is the single rule, called by the pipeline and
+  by the test, and the Phrases screen's chips carry the same seven names the Words screen's do.
+* **Every shipped sentence names its contributor, and `\N` is not a name.** CC BY 2.0 FR's one
+  condition is that the author be cited, and Tatoeba's export writes the **literal two-character
+  string `\N`** for a contributor it does not have — `\N` rather than an empty field, so a
+  parser that skips empties carries it into the artifact and publishes a contributor called
+  `\N`. **42.7% of the Japanese sentences the filter would otherwise keep are in that state**
+  (97,206 of 227,643), and the first run of this pipeline shipped 107 of them before the
+  corpus research caught it. They are excluded at import; there is no shortage, because about
+  121,000 candidates do name one. Three tests hold it: `phrases_artifact.rs` fails on `\N`, an
+  empty author, or a licence outside the corpus's set; `licences.rs`'s
+  `every_shipped_phrase_is_attributed_in_the_notice` asserts that every phrase reachable
+  through the app's own commands is named in `TATOEBA-phrases.txt` under its own contributor
+  and that the notice names nothing extra; and the screen shows the same three facts per row.
+* **The licence facts, because they are counter-intuitive and two of them correct earlier
+  writing here.** Tatoeba's *sentences* are `CC BY 2.0 FR` or `CC0 1.0` and **nothing else** —
+  the corpus's API enumerates its own allowed set, and its Japanese counts are
+  249,077 / 2 / 0. There is **no NoDerivatives and no NonCommercial sentence**, so N7's,
+  `LICENSES.md`'s and `passages.rs`'s old "some ND" claim was wrong and is corrected in all
+  three. NonCommercial exists only on **audio** (1,282 rows CC BY-NC 4.0, 5,111 with no reuse
+  licence at all), which is why no audio is bundled or downloaded — the phrases are spoken by
+  the system voice. The per-language exports carry **no licence column at all**, which is why
+  the licence rests on the corpus's statement plus `jpn_sentences_CC0.tsv`; the only file with
+  a column is the 289 MiB all-languages one, and `LICENSES.md` records the API check it
+  stands in for.
+* **The screen is one screen, and it speaks the sentence.** A phrase's word card opens *under
+  the row that was tapped*, so there is no stage and `STAGE_VIEWS` does not grow (invariants
+  33–35) — `nav.test.ts` asserts Phrases is not in it. And the `Hear it` control passes the
+  **sentence as written**, not a kana reading: invariant 27 exists because a bare kanji has
+  several readings the app has no business choosing between, whereas a sentence has none to
+  choose — and the synthesiser needs the kanji to read it at all. That is the one place this
+  file's "what may be handed to the voice" widened, and it widened with a reason.
+
 ## 5. The verification loop
 
 Four layers, cheapest first. All of them are worth running before a commit that
@@ -1835,10 +1954,11 @@ the committed artifacts would be the only Rust in the tree that no lint ever see
 `pnpm run check:rust` (what CI runs, see `.github/workflows/ci.yml`) spell it out
 rather than relying on `--all-targets`.
 
-**`tokenize` is the one feature deliberately left out of that list** (invariant 22):
-`prepare-passages` needs `lindera`, which is 100-odd crates for a binary whose
-output is committed and whose tests need no analyser at all. Lint it by name when
-you touch it — the command is in "Regenerating the artifacts" above — and note that
+**`tokenize` is the one feature deliberately left out of that list** (invariants 22
+and 37): `prepare-passages` and `prepare-phrases` need `lindera`, which is 100-odd
+crates for two binaries whose output is committed and whose tests need no analyser
+at all. Lint them by name when you touch either — `cargo clippy -p nihongo-core
+--features nihongo-core/tokenize --all-targets -- -D warnings` — and note that
 enabling it still downloads nothing, because lindera's build script is inert unless
 `LINDERA_BUILD_DICTIONARY_CACHE_DIR` is set.
 
@@ -1947,7 +2067,22 @@ naming the tokens. It needs the dictionary first:
 pnpm run prepare-passages
 ```
 
-To lint or test the passage pipeline you have to ask for its feature, because
+`prepare-phrases` prints a **funnel** rather than a summary, because its cut is the
+thing worth reading — 248,924 sentences read, 232,819 with a translation, 134,087
+with a named contributor, 121,787 of the right shape, 118,609 whose kanji are all
+known before the analyser is asked, 102,846 that survive segmentation, and **1,400
+shipped, 200 in each band** — followed by every reason a sentence was dropped and
+how many went that way. `tests/phrases_artifact.rs` pins the counts; `--show N`
+prints a sample of each band so a person rebuilding it can see what the numbers
+mean. It needs the same dictionary, plus the corpus:
+
+```bash
+./scripts/fetch-unidic.sh      # once, if the passages have not been built yet
+./scripts/fetch-tatoeba.sh     # once: ~34 MB down, 170 MB unpacked
+pnpm run prepare-phrases
+```
+
+To lint or test a text pipeline you have to ask for its feature, because
 `pnpm test` and `pnpm run check:rust` deliberately do not:
 
 ```bash

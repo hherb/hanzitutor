@@ -67,3 +67,14 @@ required-features = ["prepare"]
 name = "prepare-passages"
 path = "src/bin/prepare_passages.rs"
 required-features = ["tokenize"]
+
+# The graded phrases, imported from Tatoeba rather than written here, segmented by
+# the same analyser the passages use and held to the same vocabulary — but by
+# dropping a sentence the course cannot read rather than by refusing to write, since
+# an imported sentence cannot be fixed. Behind `tokenize` for the passages' reason,
+# and it reads what `scripts/fetch-tatoeba.sh` fetched. See `phrases.rs` and
+# ROADMAP_NIHONGO.md N18.
+[[bin]]
+name = "prepare-phrases"
+path = "src/bin/prepare_phrases.rs"
+required-features = ["tokenize"]

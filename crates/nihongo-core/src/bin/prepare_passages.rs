@@ -27,7 +27,6 @@
 //! been run once, and `pnpm run prepare-words` for the vocabulary it checks
 //! against).
 
-use std::borrow::Cow;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -37,11 +36,11 @@ use nihongo_core::passages::{
     parse_passage, Passage, PassageToken, PassagesArtifact, PassageDataset, PassagesSource,
     PASSAGES_ARTIFACT_MAGIC,
 };
-use nihongo_core::{is_kanji, normalise_to_hiragana, WordDataset};
+use nihongo_core::segment::analyse;
+use nihongo_core::WordDataset;
 use lindera::dictionary::load_dictionary;
 use lindera::mode::Mode;
 use lindera::segmenter::Segmenter;
-use lindera::token::Token;
 
 /// The analyser this pipeline segments with, and the dictionary it uses.
 ///
@@ -153,39 +152,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .first()
                 .map(|token| token.surface.clone())
                 .unwrap_or_default();
-            let mut analysed = segmenter
-                .segment(Cow::Borrowed(text.as_str()))
-                .map_err(|e| format!("{}: could not segment {text:?}: {e}", file.display()))?;
+            let analysed = analyse(&segmenter, &text, &words)
+                .map_err(|e| format!("{}: {e}", file.display()))?;
 
             let mut out_line: Vec<PassageToken> = Vec::new();
-            for token in analysed.iter_mut() {
-                let surface = token.surface.to_string();
-                if surface.trim().is_empty() {
-                    continue;
+            for token in analysed {
+                let has_kanji = token.has_kanji();
+                if has_kanji && token.word.is_none() {
+                    unknown_kanji.push(format!("{} (in {})", token.surface, skeleton.title));
                 }
-                let word = word_for(token, &surface, &words);
-                let has_kanji = surface.chars().any(is_kanji);
-                let rt = if has_kanji {
-                    reading_for(token, &surface, word.as_deref(), &words)
-                } else {
-                    None
-                };
-                if has_kanji && word.is_none() {
-                    unknown_kanji.push(format!("{surface} (in {})", skeleton.title));
-                }
-                if has_kanji && rt.is_none() {
+                if has_kanji && token.rt.is_none() {
                     return Err(format!(
                         "{}: {:?} has a kanji but the analyser gave no reading for it",
                         file.display(),
-                        surface
+                        token.surface
                     )
                     .into());
                 }
                 tokens += 1;
-                if word.is_some() {
+                if token.word.is_some() {
                     linked += 1;
                 }
-                out_line.push(PassageToken { surface, rt, word });
+                out_line.push(PassageToken {
+                    surface: token.surface,
+                    rt: token.rt,
+                    word: token.word,
+                });
             }
             if !out_line.is_empty() {
                 lines.push(out_line);
@@ -258,83 +250,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("  keys                   {}", per_passage.join(" "));
     Ok(())
-}
-
-/// The vocabulary word a token is, if it is one.
-///
-/// The link is to the word's **dictionary form**, which is what the analyser calls
-/// the lexeme: a passage that says 食べた links to 食べる, and 行きます to 行く,
-/// because those are the entries the course teaches. Matching the surface first
-/// would work for nouns and nouns only.
-fn word_for(token: &mut Token<'_>, surface: &str, words: &WordDataset) -> Option<String> {
-    let lexeme = token.get("lexeme").map(str::to_string);
-    for candidate in [lexeme.as_deref(), Some(surface)].into_iter().flatten() {
-        if let Some(word) = words.of_text(candidate) {
-            return Some(word.text.clone());
-        }
-    }
-    None
-}
-
-/// The reading to draw over a token, in hiragana.
-///
-/// **Which field to read is not obvious, and getting it wrong renders the wrong
-/// ruby.** UniDic publishes two candidates and neither is right on its own:
-///
-/// * `reading` is the reading of the **base form** for an inflected word — 行き
-///   gives イク and 食べ gives タベル — which would draw 行き(いく) and
-///   食べ(たべる)ます. For a word that is not inflected it is the surface's own
-///   reading, and written the conventional way: 今日 gives キョウ and the particle
-///   は gives ハ.
-/// * `phonological_surface_form` is the surface's, but in *pronunciation*
-///   notation: 行き gives イキ and 食べ gives タベ, which is right, while 今日 gives
-///   キョー and は gives ワ, which is not — は is written は and read は however it
-///   is pronounced.
-///
-/// So the rule follows from that: when the surface **is** the base form, take
-/// `reading`; when it is inflected, take the surface's pronunciation. UniDic says
-/// which is which through `orthographic_surface_form` and
-/// `orthographic_base_form`, which this compares rather than inferring from the
-/// part of speech.
-///
-/// UniDic writes `*` for a reading it does not have, and katakana for the ones it
-/// does, so the result is folded to hiragana — the artifact's readings and its
-/// furigana are hiragana throughout, and a screen should not have to know which of
-/// the two it is looking at. When the analyser has no reading at all and the token
-/// is a vocabulary word, that word's own reading is exactly right, so the fallback
-/// is a fact rather than a guess.
-fn reading_for(
-    token: &mut Token<'_>,
-    surface: &str,
-    word: Option<&str>,
-    words: &WordDataset,
-) -> Option<String> {
-    // A word written exactly as the course writes it takes the course's own
-    // reading, so that a passage and the word card behind it cannot disagree —
-    // UniDic reads 私 as わたくし and the vocabulary says わたし, and both are
-    // correct Japanese, which is precisely why one of them has to win here.
-    if let Some(word) = word.and_then(|text| words.of_text(text)) {
-        if word.text == surface {
-            return Some(word.reading.clone());
-        }
-    }
-
-    let surface_form = token.get("orthographic_surface_form").map(str::to_string);
-    let base_form = token.get("orthographic_base_form").map(str::to_string);
-    let inflected = matches!((&surface_form, &base_form), (Some(surface), Some(base)) if surface != base);
-    let field = if inflected {
-        "phonological_surface_form"
-    } else {
-        "reading"
-    };
-
-    let from_analyser = token
-        .get(field)
-        .map(str::trim)
-        .filter(|reading| !reading.is_empty() && *reading != "*")
-        .map(normalise_to_hiragana);
-
-    from_analyser.or_else(|| word.and_then(|text| words.of_text(text).map(|w| w.reading.clone())))
 }
 
 /// Find the built dictionary under `<root>/.lindera/`.
