@@ -36,6 +36,7 @@
 
 pub mod curriculum;
 pub mod drill;
+pub mod grammar;
 pub mod input;
 pub mod kana;
 pub mod kanji;
@@ -56,6 +57,10 @@ pub use curriculum::{
     confusions_for, grade_name, kanji_lessons, lessons, off_grid, to_hiragana, to_katakana, yoon,
     Confusable, KanjiLesson, Lesson, Row, Yoon, CHOONPU, CONFUSABLE, KANJI_LESSON_SIZE,
     KATAKANA_ONLY, RARE_KANA, ROWS, SMALL_KANA, VOWEL_COLUMNS,
+};
+pub use grammar::{
+    parse_furigana, strip_level_references, FuriganaError, GrammarArtifact, GrammarDataset,
+    GrammarExample, GrammarPoint, GrammarSource, GRAMMAR_ARTIFACT_MAGIC,
 };
 pub use drill::{
     confusion_pairs, find_pair, key_of, pair_key, split_key, voicing_pairs, yoon_pairs, ConfusionLog,

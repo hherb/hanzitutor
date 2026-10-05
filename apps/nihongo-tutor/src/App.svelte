@@ -18,6 +18,7 @@
    * grades a Chinese character.
    */
   import ConfusionDrill from "./lib/ConfusionDrill.svelte";
+  import GrammarPanel from "./lib/GrammarPanel.svelte";
   import KanaChart from "./lib/KanaChart.svelte";
   import KanaPanel from "./lib/KanaPanel.svelte";
   import KanjiPanel from "./lib/KanjiPanel.svelte";
@@ -110,6 +111,7 @@
   let kanjiStage = $state(false);
   let radicalsStage = $state(false);
   let wordsStage = $state(false);
+  let grammarStage = $state(false);
   let readStage = $state(false);
 
   /**
@@ -263,6 +265,8 @@
         return radicalsStage;
       case "words":
         return wordsStage;
+      case "grammar":
+        return grammarStage;
       case "read":
         return readStage;
       default:
@@ -420,6 +424,13 @@
       asserts Phrases is not one of them).
     -->
     <PhrasesPanel {voice} />
+  {:else if view === "grammar"}
+    <!--
+      The grammar course, and the stage one of its patterns opens: the same
+      two-screen arrangement as the vocabulary's and the passages', for the same
+      reason.
+    -->
+    <GrammarPanel bind:stage={grammarStage} {voice} />
   {:else if view === "read"}
     <PassagePanel bind:stage={readStage} {voice} />
   {:else if view === "start"}

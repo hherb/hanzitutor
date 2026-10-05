@@ -51,14 +51,20 @@ references for no gain.
 | **N16** | **The verdict's own way on** | **Shipped.** Found in N15's first device trials, on an iPhone and an iPad: after grading, the way on was the lesson's arrows in the top corner. The primary control under the board is now the verdict's own way on — `Next` once something has been judged, `Finish` at the end of a lesson, `Grade` again for a radical — while the corner arrows go on skipping. One rule in `board.ts` (`afterGrade`), used by both stages. |
 | **N17** | **The queue's own end** | **Shipped.** The Review queue, asked for the same day: its list of what is due is *above* its board, so the next character was a scroll away. The same control is now the way on there too — `Next`, and **`Nothing due`** when the queue is empty, which is the maintainer's wording because an empty queue is a state rather than the stage's `finish`. `afterGradeInQueue` plus `review.ts`'s `nextDue`/`hasNextDue`, and a measured run against a real `review.json` whose three cards SM-2'd from 1–3 October to 13 October. |
 | **N18** | **Graded phrases: reading at your level** | **Shipped.** The counterpart of Hanzi Tutor's Phrases screen: **1,400 Japanese sentences imported from Tatoeba**, every one held to the vocabulary the course teaches, levelled on this project's own ladder, with a reading over every kanji and the system voice. `prepare-phrases` imports and filters them; the Phrases screen in the kanji course draws one band at a time. See the milestone for the funnel, for the licence measurement that corrected N7, and for the **107 sentences whose contributor the export did not name** — which the first run shipped, and which the research found and this now refuses to. |
+| **N19** | **Grammar: the patterns at last** | **Shipped.** The largest gap the roadmap named: particles, the copula and every ending are kana, so a learner who finished the kana course had unlocked the grammar and been given nothing to use it on. **526 patterns imported from OpenJLPT**, each with the form it is built from, the note that says how it differs from a similar one, and two or three sentences with a reading over every kanji — in one course order rather than a ladder, because the measurement put 344 of the 526 in the top band, and with the corpus's JLPT levels dropped rather than shown. See the milestone for the licence work that decided it. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
-Three things are deliberately **not** milestones. Two are recorded as known weak
-spots below — the grading tolerances never re-fitted for kana, and grammar, which
-is the largest gap in the product rather than in the kana course. The third was the
-set of three interface surfaces nobody had watched; that one is done, and it found
-two bugs rather than none (see "Cross-cutting polish").
+Two things are deliberately **not** milestones. One is recorded as a known weak
+spot below — the grading tolerances never re-fitted for kana. The other was the set
+of three interface surfaces nobody had watched; that one is done, and it found two
+bugs rather than none (see "Cross-cutting polish").
+
+**Grammar was the third, and N19 is where it stopped being one.** It was called the
+largest gap in the product rather than in the kana course, and that is what it
+turned out to be worth doing as a milestone of its own: 526 imported patterns with
+their form, their nuance and their sentences, and a licence chain that had to be
+read before a line of it could ship.
 
 ---
 
@@ -2130,6 +2136,120 @@ what follows is the verdict.
 
 ---
 
+## N19 — Grammar: the patterns at last
+
+`ROADMAP_NIHONGO.md` has called grammar *"the largest gap in the product rather than in the
+kana course"* since N0, and it is not a small claim: particles, the copula and every
+inflectional ending are kana, so a learner who finishes the kana course has unlocked the
+grammar and been given nothing to use it on. N11's Start screen says *why* the kana carry the
+grammar; it teaches none of it. This milestone teaches the patterns.
+
+**The data is imported, and that is the whole licence story.** The source is
+[OpenJLPT](https://github.com/evanclan/OpenJLPT)'s grammar dataset: 526 points, each with the
+pattern, a kana reading where the pattern has a kanji, its romaji, its meaning, the forms it is
+built from, a note on nuance, tags, and two or three example sentences with the corpus's own
+furigana. Its `NOTICE.md` and `sources/grammar/README.md` both state that the explanations and
+**every example sentence were written for OpenJLPT** by its contributors and released under
+**CC BY-SA 4.0** — a rights-holder's own grant, which is exactly what the rest of that
+repository does *not* have. Its vocabulary and kanji levels come from Jonathan Waller's lists
+and are **not taken**; `docs/research/JAPANESE_DATA_SOURCE_EVALUATIONS.md` §1 had already
+reached that verdict, and this milestone is the one it was waiting for.
+
+### The levels are dropped, measured in three places
+
+* **The level is not in the artifact.** `n5.json` … `n1.json` are read as **one course in the
+  order they give** and the `level` field is never read. There has been no official JLPT
+  grammar list since 2010; the corpus's own NOTICE calls its levels *"the consensus of common
+  JLPT preparation materials"*; and `HANDOVER_NIHONGO.md` invariant 20 forbids the interface
+  from implying otherwise.
+* **The level cross-references inside the notes go with it.** 38 of the 524 notes said things
+  like *"softer requests use 〜てくれませんか (N4)"*. Each was changed **only by losing the
+  label**: `までに (N4).` → `までに.`, `Compare N2 〜かのようだ` → `Compare 〜かのようだ`, and
+  *"covered at N3"* → *"covered elsewhere"* — the one construction where deleting the label
+  alone would have left a sentence with a hole in it. `tests/grammar_artifact.rs` asserts that
+  **no shipped text carries a level label at all**, which is the test `words::band_name`'s "no
+  name says JLPT" obligation takes here.
+* **The order is what a screen offers instead**, and it says whose order it is not.
+
+### No band, and the measurement that settled it
+
+The obvious move was to level a grammar point the way a word and a phrase are levelled — by the
+hardest character in its examples, through `words::band_for`. It was measured before it was
+rejected, and the numbers are the reason:
+
+| band | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| points | 2 | 3 | 16 | 39 | 21 | 101 | **344** |
+
+**344 of 526 points land in band 7** and only 2 reach band 1, because an example sentence is
+three times the length of a word and one jōyō-remainder character is enough to put the whole
+pattern on the top rung. A ladder that puts 65% of the course on its highest step is not a
+ladder, so a pattern has no band, and the screen offers one ordered course with a page of 20
+and a search box. The measurement is in `nihongo_core::grammar`'s documentation, and the
+screen's own header says the order is the corpus's rather than the JLPT's.
+
+### The promise that replaces the vocabulary rule
+
+The passages and the phrases guarantee that every kanji-bearing token is a word the course
+teaches, so a tap always has a card behind it (invariant 22). **A grammar example cannot be
+held to that**, and this is the first shipped text in the app that is not: these are the
+corpus's own teaching sentences, chosen to show a pattern rather than to stay inside a
+16,073-word vocabulary, and **557 of the 1,526 examples contain a jōyō-remainder character**
+(245 distinct ones; two examples use a kanji outside the jōyō set entirely — 几 and 嘘, the
+latter in 嘘つき). What is promised instead is the corpus's **furigana**: every example that
+contains a kanji carries a reading over every one of them, parsed from the corpus's own
+markup, and `prepare-grammar` **refuses to write** an example whose markup does not spell its
+sentence or whose kanji the markup does not cover. No reading is invented and no alignment is
+derived, which is invariant 21's rule one step out. The screen states it, and nothing in an
+example opens a word card.
+
+### What shipped, and the numbers
+
+| | |
+| --- | --- |
+| Source | OpenJLPT **0.3.0**, `data/json/grammar/n5…n1.json`, CC BY-SA 4.0 |
+| Points | **526** — n5:81, n4:98, n3:101, n2:123, n1:123 |
+| Examples | **1,526** (474 points with three, 52 with two), **6,591 ruby spans** |
+| Readings | **107** patterns carry a kana reading, and every pattern with a kanji in it has one |
+| Tags | **70** distinct, the corpus's own controlled list |
+| Notes | **524** points carry one; 38 had level references removed |
+| Kanji-free examples | **16**, each carrying one plain segment |
+| Artifact | `grammar.bin.gz`, **203,015 bytes** compressed from 535 KB (38%) — committed |
+| Pipeline | `prepare-grammar`, behind `prepare` and **not** `tokenize`: the corpus brings its own furigana, so no analyser is needed |
+| Fetch | `scripts/fetch-openjlpt.sh` → `data/raw/openjlpt/` + `PROVENANCE.txt` (URL, size, SHA-256 per file) |
+| Screen | A **Grammar** tab between Phrases and Read; `GrammarPanel` is the course (search box, a page of 20, pager) and `GrammarStage` is one pattern |
+| Tests | 8 in `tests/grammar_artifact.rs`, 11 in `grammar.rs`, 5 in `ipc_contract.rs`, 1 in the app's own suite, **14** in `grammar.test.ts` |
+| Notice | the **twelfth**: `licences/OPENJLPT-grammar.txt`, catalogued as `openjlpt` |
+
+### What was measured rather than assumed
+
+Driven over §5's DOM probe with the app running — **0 active displays**, so a `-l` capture
+would have been a frozen frame and the HTTP report was the truth:
+
+| step | measured |
+| --- | --- |
+| the tab row | `Kanji · Radicals · Words · Phrases · Grammar · Read · Review` — **7 tabs**, 907px together at 980×760, one line, no page overflow |
+| at 390×844 | **two lines**, `scrollWidth == clientWidth == 349`, `pageOverflow 0` — the wrap falls after `Phrases`, leaving `Grammar · Read · Review` on the second line |
+| the Grammar tab | `526 patterns, each with the form it is built from…`, the order stated to be the corpus's and not the JLPT's, and the provenance line |
+| the course page | 20 rows, the first `1 / 〜は / wa / as for; marks the topic of the sentence`, pager `page 1 of 27` |
+| the search box | `particle` → *26 patterns match* (24 tagged `particle`, plus 2 whose other text names it); `ni taishite` → one match at **198 of 526**; `てください` → 2; `zzzz` → *No patterns match “zzzz”.* |
+| a result opened | the chrome **absent from the DOM**, the stage at `43 of 526`, 〜てください, `WRITTEN WITH Verb-te + ください`, 3 examples, ruby `少すこ 話はな`, the note ending *…use 〜てくれませんか.* with its `(N4)` gone, tags `request·politeness`, both arrows enabled |
+| `Hear it` | the press reached Rust with **the sentence as written** — `speak "もう少しゆっくり話してください。" -> Ok(())` in the dev log — not the pattern, which no synthesiser should be asked to read |
+| the arrows | next → `44 of 526` 〜ないでください; back → `43 of 526`; both follow the **course**, not the page |
+| the way back | `panel=true chrome=visible`, with the search still on screen |
+
+**Tests.** 8 artifact tests over the committed artifact (the counts, the furigana invariant, the
+ruby reassembly, the no-level obligation, the order, the field shapes, the search, the source
+record), 11 in `grammar.rs` (the markup parser's four refusals, the level stripping, the search,
+the paging, the artifact round trip), 5 in `ipc_contract.rs` (both response shapes and both
+request payloads), 1 in the app's own suite, and 14 frontend tests for the arithmetic the
+arrows and the search note are made of. The four verification layers are green.
+
+**What is not changed:** the vocabulary and its ladder; the passages and the phrases and their
+pipelines; the schedule and its file (invariant 15); what may be handed to the voice — the
+grammar screen passes a whole sentence, which is invariant 37's exception rather than a new
+one; and the joined-stroke rule.
+
 ## Cross-cutting polish
 
 Recorded here rather than as milestones because none of them is a feature.
@@ -2214,11 +2334,17 @@ Recorded here rather than as milestones because none of them is a feature.
   strokes — kanji stroke order is the thing being taught, and the Chinese app has
   always graded its characters that way. A kanji drawn with two strokes joined is
   refused with the taught count, and `joined` is empty for a kanji and a radical.
-* **No grammar, and that is the largest gap in the product.** Particles, the
-  copula and every inflectional ending are kana, so a learner who finishes the
-  kana course has unlocked grammar and been given nothing to use it on. This is
-  not a kana-tutor weakness so much as the reason a kana tutor is not a Japanese
-  tutor.
+* **Grammar — shipped at N19, and this bullet is kept rather than deleted.** It
+  stood here from N0 as the largest gap in the product: particles, the copula and
+  every inflectional ending are kana, so a learner who finished the kana course had
+  unlocked grammar and been given nothing to use it on. The **Grammar** screen now
+  carries **526 patterns imported from OpenJLPT** — each with the form it is built
+  from, a note on nuance, and two or three sentences with a reading over every kanji
+  — in one course order rather than a ladder, with the corpus's JLPT levels dropped.
+  What is still missing is what a *drill* would add: grammar is presented and
+  searchable, but nothing asks the learner to produce or choose a pattern, and
+  nothing ties a pattern to the characters or words that trigger it. That is the next
+  piece, and it would need its own attempt source the way the review queue did.
 * **The 13 confusion pairs are still a fixed list, and the yōon drill did not
   change that.** N3 weighs them by what this learner gets wrong, which is the half
   that was worth having — and N4's second exercise records its 33 yōon contrasts

@@ -157,6 +157,16 @@ fn the_texts_are_the_real_licences_and_not_placeholders() {
         ("jmdict-furigana-mit", &["MIT License", "Copyright (c) 2025 Doublevil"]),
         ("unidic", &["UniDic Consortium", "lindera", "BSD"]),
         (
+            "openjlpt",
+            &[
+                "OpenJLPT",
+                "CC BY-SA 4.0",
+                "ShareAlike",
+                "grammar",
+                "526",
+            ],
+        ),
+        (
             "tatoeba",
             &[
                 "Tatoeba",
@@ -247,6 +257,23 @@ fn the_share_alike_notices_say_what_was_selected_and_changed() {
         fg.text.contains("not derived here") || fg.text.contains("no ruby"),
         "the JmdictFurigana notice must say that no alignment is invented here"
     );
+
+    // OpenJLPT's grammar is the third share-alike source, and the one with the most
+    // to state: the level of every point is dropped, the notes' level references
+    // with it, and the furigana is the corpus's own alignment rather than one
+    // derived here.
+    let grammar = notices()
+        .iter()
+        .find(|n| n.id == "openjlpt")
+        .expect("an OpenJLPT notice");
+    let said = grammar.text.to_lowercase();
+    for needle in ["modified", "dropped", "526", "no reading", "cc by-sa 4.0"] {
+        assert!(
+            said.contains(needle),
+            "the OpenJLPT notice must record what was taken, what was dropped and what \
+             was changed (missing {needle:?}) — CC BY-SA 4.0 §3(a)(1)(B)"
+        );
+    }
 
     let analyser = notices().iter().find(|n| n.id == "unidic").expect("a UniDic notice");
     assert!(

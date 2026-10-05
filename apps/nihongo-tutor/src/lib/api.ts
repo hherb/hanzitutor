@@ -17,6 +17,7 @@ import type {
   DrillQuestion,
   DrillTally,
   GradedAttempt,
+  GrammarPage,
   Kana,
   KanjiLessonView,
   KanjiView,
@@ -329,6 +330,30 @@ export function phraseBands(): Promise<PhraseBandView[]> {
  */
 export function phrasesInBand(band: number): Promise<PhraseView[]> {
   return invoke<PhraseView[]>("phrases_in_band", { band });
+}
+
+/**
+ * One page of the grammar course, in the order the corpus teaches it.
+ *
+ * No band, and that is the data rather than a shortcut: the ladder the vocabulary
+ * and the phrases share puts 344 of these 526 patterns in its top rung, so the
+ * course is one ordered sequence — see `nihongo_core::grammar`. `limit` is clamped
+ * by the command to the largest page it will serve.
+ */
+export function grammarPage(offset = 0, limit = 20): Promise<GrammarPage> {
+  return invoke<GrammarPage>("grammar_page", { offset, limit });
+}
+
+/**
+ * The grammar points a query matches, in course order.
+ *
+ * `total` is how many match altogether and `points` at most `limit` of them, so the
+ * screen can say *"showing the first 60 of 111"* rather than implying the page is
+ * all of them. An empty query matches nothing: the screen draws the course's own
+ * pages while its box is empty.
+ */
+export function grammarSearch(query: string, limit = 60): Promise<GrammarPage> {
+  return invoke<GrammarPage>("grammar_search", { query, limit });
 }
 
 /**

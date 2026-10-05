@@ -139,6 +139,8 @@ export interface DatasetStats {
   passages: number;
   /** How many graded phrases are shipped. */
   phrases: number;
+  /** How many grammar patterns are shipped. */
+  grammar: number;
   strokes: number;
   /** How many jōyō kanji the artifact holds. */
   kanji: number;
@@ -464,6 +466,70 @@ export interface PhraseView {
   licence: string;
   /** The words, in order; their surfaces spell `text`. */
   tokens: PhraseToken[];
+}
+
+/**
+ * One example sentence of a grammar point.
+ *
+ * The ruby is the **corpus's own** markup, parsed at build time and never
+ * composed here: `{私|わたし}は…` is OpenJLPT's alignment, so the app invents no
+ * reading — the rule a word's reading follows, applied to a sentence.
+ */
+export interface GrammarExample {
+  /** The sentence as written, full-width punctuation and all. */
+  ja: string;
+  /** The English translation the corpus pairs with it. */
+  en: string;
+  /** The furigana, in order; the parts spell `ja`. */
+  ruby: Ruby[];
+}
+
+/**
+ * One grammar point, as its card draws it.
+ *
+ * There is **no level and no band** here, and that is the milestone's decision
+ * rather than an omission: the corpus labels every point N5–N1, the JLPT publishes
+ * no official list, and the interface may not imply that it does
+ * (`HANDOVER_NIHONGO.md` invariant 20). The course order is what a screen shows
+ * instead, and `GrammarPage.positionOf` in `grammar.ts` is how it is stated.
+ */
+export interface GrammarPoint {
+  /**
+   * Where the pattern sits in the course, counted from 1.
+   *
+   * Derived from the artifact's order rather than stored in it, and sent so that a
+   * card opened from a search result can say where it is and step along.
+   */
+  position: number;
+  /** The corpus's stable id: a slug of the romaji. */
+  id: string;
+  /** The pattern, e.g. `〜に対して`. */
+  pattern: string;
+  /** The pattern in kana, when the pattern itself contains a kanji. */
+  reading: string | null;
+  /** Modified Hepburn, the corpus's own. */
+  romaji: string;
+  meaning: string;
+  /** What it attaches to: `Noun + に対して`. */
+  formation: string;
+  /** Nuance and register, with the corpus's level cross-references removed. */
+  notes: string | null;
+  /** The corpus's tags, one to three of them. */
+  tags: string[];
+  /** Two or three examples. */
+  examples: GrammarExample[];
+}
+
+/**
+ * One page of the grammar course, or one page of a search.
+ *
+ * `total` is the course's whole size on a page and the number of matches on a
+ * search, so a screen can say where it is either way.
+ */
+export interface GrammarPage {
+  total: number;
+  offset: number;
+  points: GrammarPoint[];
 }
 
 /** One lesson of the kanji course, as the sidebar lists it. */

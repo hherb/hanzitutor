@@ -26,9 +26,9 @@ use nihongo_core::{
     normalise_to_hiragana, now_iso8601, off_grid, parse_decomposition,
     queue as build_review_queue, reading, split_key, to_kana, to_kana_in, yoon as build_yoon,
     Confusable, ConfusionLog, Decomposition, DrillKind, DrillPair, DueItem, GradeOptions,
-    GradeReport, KanaDataset, Kanji, KanjiDataset, Passage, PassageDataset, PassageToken, Phrase,
-    PhraseDataset, Point, Row, Ruby, Script, Section, Word, WordDataset, KANJI_LESSON_SIZE, ROWS,
-    VOWEL_COLUMNS,
+    GradeReport, GrammarDataset, GrammarExample, GrammarPoint, KanaDataset, Kanji, KanjiDataset,
+    Passage, PassageDataset, PassageToken, Phrase, PhraseDataset, Point, Row, Ruby, Script,
+    Section, Word, WordDataset, KANJI_LESSON_SIZE, ROWS, VOWEL_COLUMNS,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -56,6 +56,12 @@ pub struct AppState {
     /// segmentation, the reading over every kanji and the band are all in the
     /// artifact, so the app renders them and nothing here tokenises anything.
     phrases: PhraseDataset,
+    /// The grammar course: patterns imported from OpenJLPT with the examples their
+    /// authors wrote, one ordered sequence rather than a ladder — the corpus's
+    /// levels are dropped, because the interface may not imply that a level here
+    /// is the JLPT's (invariant 20). See `nihongo_core::grammar` for the
+    /// measurement that settled it.
+    grammar: GrammarDataset,
     /// Behind a `Mutex` because Tauri hands every command a shared `&AppState`
     /// and recording an answer is a write. Contention is nil: one learner, one
     /// window, and a lock held for the microseconds a JSON write takes.
@@ -123,6 +129,8 @@ impl AppState {
                 .expect("the committed passages artifact decodes"),
             phrases: PhraseDataset::from_gzip_bytes(artifact!("phrases.bin.gz"))
                 .expect("the committed phrases artifact decodes"),
+            grammar: GrammarDataset::from_gzip_bytes(artifact!("grammar.bin.gz"))
+                .expect("the committed grammar artifact decodes"),
             drill: Mutex::new(drill),
             review: Mutex::new(review),
             prefs: Mutex::new(prefs),
@@ -222,6 +230,7 @@ impl AppState {
             words: self.words.len(),
             passages: self.passages.len(),
             phrases: self.phrases.len(),
+            grammar: self.grammar.len(),
             strokes: self
                 .kana
                 .kana()
@@ -944,6 +953,49 @@ impl AppState {
     pub fn phrases_in_band(&self, band: u8) -> Vec<PhraseView> {
         self.phrases.of_band(band).map(phrase_view).collect()
     }
+
+    /// One page of the grammar course, in the order the corpus teaches it.
+    ///
+    /// Not by band: a pattern has no band, because the ladder the vocabulary and
+    /// the phrases share puts 344 of these 526 points in its top rung — the
+    /// measurement is in `nihongo_core::grammar`'s documentation — so the screen
+    /// offers one ordered course and the page is where a reader is in it.
+    pub fn grammar_page(&self, offset: usize, limit: usize) -> GrammarPageView {
+        let limit = limit.min(MAX_GRAMMAR_PAGE);
+        GrammarPageView {
+            total: self.grammar.len(),
+            offset,
+            points: self
+                .grammar
+                .page(offset, limit)
+                .into_iter()
+                .enumerate()
+                .map(|(i, point)| grammar_view(point, offset + i + 1))
+                .collect(),
+        }
+    }
+
+    /// The grammar points a query matches, in course order and at most `limit` of
+    /// them.
+    ///
+    /// `total` is how many match altogether, so a screen can say *"showing the
+    /// first 60 of 132"* rather than implying that is all there is.
+    pub fn grammar_search(&self, query: &str, limit: usize) -> GrammarPageView {
+        let limit = limit.min(MAX_GRAMMAR_PAGE);
+        GrammarPageView {
+            total: self.grammar.search_total(query),
+            offset: 0,
+            points: self
+                .grammar
+                .search(query, limit)
+                .into_iter()
+                .map(|point| {
+                    let position = self.grammar.position(&point.id).unwrap_or(0);
+                    grammar_view(point, position)
+                })
+                .collect(),
+        }
+    }
 }
 
 /// The largest page a caller may ask for.
@@ -952,6 +1004,14 @@ impl AppState {
 /// boundary, and an unbounded one would let a stray number build a payload the
 /// window cannot draw.
 const MAX_WORD_PAGE: usize = 200;
+
+/// The same bound for the grammar course.
+///
+/// A grammar point is the largest row the app sends — a pattern, its notes and two
+/// or three whole sentences with their furigana — so a page of one is a few
+/// kilobytes where a page of a word is a few hundred bytes, and this is the number
+/// that keeps a stray `limit` from building a payload the window cannot draw.
+const MAX_GRAMMAR_PAGE: usize = 200;
 
 /// Whether a string is kana, for telling a typed reading from typed romaji.
 fn is_kana(ch: char) -> bool {
@@ -1009,6 +1069,29 @@ fn phrase_view(phrase: &Phrase) -> PhraseView {
     }
 }
 
+fn grammar_view(point: &GrammarPoint, position: usize) -> GrammarPointView {
+    GrammarPointView {
+        position,
+        id: point.id.clone(),
+        pattern: point.pattern.clone(),
+        reading: point.reading.clone(),
+        romaji: point.romaji.clone(),
+        meaning: point.meaning.clone(),
+        formation: point.formation.clone(),
+        notes: point.notes.clone(),
+        tags: point.tags.clone(),
+        examples: point.examples().map(grammar_example_view).collect(),
+    }
+}
+
+fn grammar_example_view(example: &GrammarExample) -> GrammarExampleView {
+    GrammarExampleView {
+        ja: example.ja.clone(),
+        en: example.en.clone(),
+        ruby: example.ruby.clone(),
+    }
+}
+
 /// What the course contains.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1024,6 +1107,8 @@ pub struct DatasetStats {
     pub passages: usize,
     /// How many graded phrases are shipped.
     pub phrases: usize,
+    /// How many grammar patterns are shipped.
+    pub grammar: usize,
     pub strokes: usize,
     /// How many jōyō kanji the artifact holds.
     pub kanji: usize,
@@ -1370,6 +1455,72 @@ pub struct TokenView {
     /// The vocabulary word this token is, when it is one, so a tap can open its
     /// card. The dictionary form: 行き links to 行く.
     pub word: Option<String>,
+}
+
+/// One example sentence of a grammar point: the Japanese, the English, and the
+/// furigana the corpus wrote over it.
+///
+/// The ruby parts are the **corpus's own markup**, parsed at build time and never
+/// composed here: `{私|わたし}は…` is OpenJLPT's alignment, so this app invents no
+/// reading — the rule invariant 21 states for a word, applied to a sentence.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GrammarExampleView {
+    /// The sentence as written, full-width punctuation and all.
+    pub ja: String,
+    /// The English translation the corpus pairs with it.
+    pub en: String,
+    /// The furigana, in order; the parts spell `ja`.
+    pub ruby: Vec<Ruby>,
+}
+
+/// One grammar point, as its card draws it.
+///
+/// There is **no level and no band** on this struct, and that is the milestone's
+/// decision rather than an omission: the corpus labels every point N5–N1, the JLPT
+/// publishes no official list, and this app may not imply that it does
+/// (`HANDOVER_NIHONGO.md` invariant 20). What replaces them is the course order,
+/// which the page's `offset` and [`GrammarPageView::total`] describe.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GrammarPointView {
+    /// Where the pattern sits in the course, counted from 1.
+    ///
+    /// Derived from the artifact's order rather than stored in it — the order *is*
+    /// the position — and sent so that a card opened from a search result can say
+    /// where it is and step to the pattern after it.
+    pub position: usize,
+    /// The corpus's stable id: a slug of the romaji.
+    pub id: String,
+    /// The pattern, e.g. `〜に対して`.
+    pub pattern: String,
+    /// The pattern in kana, when the pattern itself contains a kanji.
+    pub reading: Option<String>,
+    /// Modified Hepburn, the corpus's own.
+    pub romaji: String,
+    /// What it means.
+    pub meaning: String,
+    /// What it attaches to.
+    pub formation: String,
+    /// Nuance and register, with the corpus's level cross-references removed.
+    pub notes: Option<String>,
+    /// The corpus's tags, one to three of them.
+    pub tags: Vec<String>,
+    /// Two or three examples.
+    pub examples: Vec<GrammarExampleView>,
+}
+
+/// One page of the grammar course, or one page of a search.
+///
+/// `total` is the whole course's size on a page and the number of matches on a
+/// search, so a screen can say where it is either way; `offset` echoes what was
+/// asked for, so an answer about one page cannot be mistaken for another's.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GrammarPageView {
+    pub total: usize,
+    pub offset: usize,
+    pub points: Vec<GrammarPointView>,
 }
 
 /// One band of the phrase ladder, as the Phrases screen offers it.
@@ -1771,6 +1922,18 @@ fn phrases_in_band(state: State<'_, AppState>, band: u8) -> Vec<PhraseView> {
     state.phrases_in_band(band)
 }
 
+/// One page of the grammar course, in the order the corpus teaches it.
+#[tauri::command]
+fn grammar_page(state: State<'_, AppState>, offset: usize, limit: usize) -> GrammarPageView {
+    state.grammar_page(offset, limit)
+}
+
+/// The grammar points a query matches, in course order.
+#[tauri::command]
+fn grammar_search(state: State<'_, AppState>, query: String, limit: usize) -> GrammarPageView {
+    state.grammar_search(&query, limit)
+}
+
 /// Hear `text` in the system's Japanese voice, cutting off anything already being
 /// said.
 ///
@@ -1913,6 +2076,8 @@ pub fn run() {
             passage,
             phrase_bands,
             phrases_in_band,
+            grammar_page,
+            grammar_search,
             speak,
             stop_speaking,
             voice,
@@ -2739,6 +2904,50 @@ mod tests {
         let lengths: Vec<usize> = phrases.iter().map(|p| p.text.chars().count()).collect();
         assert!(lengths.windows(2).all(|w| w[0] <= w[1]), "{lengths:?}");
         assert!(state.phrases_in_band(9).is_empty());
+    }
+
+    /// **The grammar course.** One ordered sequence rather than a ladder, imported
+    /// text that carries its own furigana, and a search that says how many matches
+    /// there are rather than implying the page is all of them.
+    #[test]
+    fn a_page_of_grammar_opens_on_the_first_pattern_and_a_search_says_how_many() {
+        let state = state();
+        let page = state.grammar_page(0, 20);
+        assert_eq!(page.total, 526);
+        assert_eq!(page.points[0].id, "wa");
+        assert_eq!(page.points[0].pattern, "〜は");
+        assert_eq!(
+            page.points[0].examples[0].ja, "私は学生です。",
+            "the first pattern a course teaches, with the sentence that shows it"
+        );
+
+        // Every example is annotated over every kanji it contains: this is the
+        // promise the grammar screen keeps in place of the vocabulary rule the
+        // phrases are held to, because these sentences are the corpus's own.
+        for point in state.grammar_page(0, 200).points {
+            for example in point.examples {
+                let spelled: String = example.ruby.iter().map(|r| r.ruby.as_str()).collect();
+                assert_eq!(spelled, example.ja, "{}: ruby does not spell it", point.id);
+                for part in &example.ruby {
+                    if part.ruby.chars().any(nihongo_core::words::is_kanji) {
+                        assert!(
+                            part.rt.is_some(),
+                            "{}: {:?} carries a kanji and no reading",
+                            point.id,
+                            part.ruby
+                        );
+                    }
+                }
+            }
+        }
+
+        // A search is bounded and its `total` is the whole match count, which is
+        // what lets the screen say "showing the first 60 of 111".
+        let found = state.grammar_search("particle", 60);
+        assert!(found.total >= 24);
+        assert!(found.points.len() <= 60);
+        assert!(state.grammar_search("", 60).points.is_empty());
+        assert_eq!(state.grammar_search("zzzz", 60).total, 0);
     }
 
     /// **The character card's vocabulary list.** A page of what

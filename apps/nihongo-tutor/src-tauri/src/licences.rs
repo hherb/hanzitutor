@@ -211,6 +211,26 @@ pub const NOTICES: &[LicenceNotice] = &[
         text: include_str!("../licences/TATOEBA-phrases.txt"),
     },
     LicenceNotice {
+        id: "openjlpt",
+        title: "OpenJLPT — the grammar course",
+        licence: "CC BY-SA 4.0",
+        source: "https://github.com/evanclan/OpenJLPT",
+        covers: "The grammar patterns, their meanings, the forms they are built from \
+                 and every example sentence on the Grammar screen, written by \
+                 OpenJLPT's contributors and compacted into `grammar.bin.gz`. Only \
+                 the grammar dataset is taken — not its vocabulary, kanji, sentences \
+                 or levels. The data is **modified**, and the notice states how: the \
+                 N5-N1 level of every point is dropped rather than stored or shown, \
+                 the level cross-references inside 38 notes are removed with the \
+                 label alone, and the corpus's own furigana markup is parsed into \
+                 ruby segments with no reading invented and no alignment derived. \
+                 The share-alike obligation is discharged by this entry, the text it \
+                 points at, and the provenance recorded inside the artifact.",
+        file: "apps/nihongo-tutor/src-tauri/licences/OPENJLPT-grammar.txt",
+        bundle_path: "licences/OPENJLPT-grammar.txt",
+        text: include_str!("../licences/OPENJLPT-grammar.txt"),
+    },
+    LicenceNotice {
         id: "lgpl",
         title: "GNU Lesser General Public License",
         licence: "LGPL-3.0-or-later",

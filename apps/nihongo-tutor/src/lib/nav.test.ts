@@ -33,6 +33,7 @@ const ALL_VIEWS: View[] = [
   "radicals",
   "words",
   "phrases",
+  "grammar",
   "read",
   "licences",
   "start",
@@ -122,11 +123,20 @@ describe("the courses", () => {
 });
 
 describe("the screens that are two screens", () => {
-  it("are the five whose panel opens a stage of its own", () => {
+  it("are the six whose panel opens a stage of its own", () => {
     // Written out rather than derived: a stage is a screen the app takes its own
     // chrome off for, and adding or removing one is a decision rather than a
-    // consequence of a template edit.
-    expect(STAGE_VIEWS).toEqual(["practice", "kanji", "radicals", "words", "read"]);
+    // consequence of a template edit. Grammar joined the five at N19: a pattern's
+    // card is two or three sentences and a paragraph of nuance, which is not a card
+    // to draw under a row of a 526-row list.
+    expect(STAGE_VIEWS).toEqual([
+      "practice",
+      "kanji",
+      "radicals",
+      "words",
+      "grammar",
+      "read",
+    ]);
   });
 
   it("are every screen with a stage, and no other screen has one", () => {
@@ -167,6 +177,7 @@ describe("courseOf", () => {
       "radicals",
       "words",
       "phrases",
+      "grammar",
       "read",
       "review",
     ]);

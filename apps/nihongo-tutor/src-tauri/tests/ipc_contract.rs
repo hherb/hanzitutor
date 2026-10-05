@@ -68,6 +68,7 @@ fn dataset_stats_crosses_as_camel_case() {
     assert_eq!(
         keys(&stats),
         vec![
+            "grammar",
             "hiragana",
             "kana",
             "kanji",
@@ -89,6 +90,7 @@ fn dataset_stats_crosses_as_camel_case() {
     assert_eq!(stats["words"], 16_073, "the vocabulary the app embeds");
     assert_eq!(stats["passages"], 3);
     assert_eq!(stats["phrases"], 1_400, "the graded phrases the app embeds");
+    assert_eq!(stats["grammar"], 526, "the imported grammar patterns");
     assert_eq!(stats["kanji"], 2_136, "the jōyō set the app embeds");
     assert_eq!(stats["kyoiku"], 1_026, "grades 1 to 6");
     assert_eq!(stats["radicals"], 214);
@@ -822,6 +824,165 @@ fn a_band_of_phrases_crosses_with_its_tokens_and_its_attribution() {
     // A band the corpus did not fill answers with an empty list rather than failing,
     // which is what the disabled chip relies on.
     assert!(state().phrases_in_band(9).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// The grammar course: one ordered sequence, imported and attributed.
+//
+// The same two halves as every other family here — the response read with the keys
+// `types.ts` declares, and the request driven with the payload `api.ts` builds.
+
+#[test]
+fn a_page_of_grammar_crosses_with_what_the_course_screen_draws() {
+    let page = state().grammar_page(0, 20);
+    assert_eq!(page.total, 526, "the course's whole size, so a pager can be drawn");
+    assert_eq!(page.offset, 0);
+    assert_eq!(page.points.len(), 20);
+
+    let value = serde_json::to_value(&page).expect("serialises");
+    assert_eq!(keys(&value), vec!["offset", "points", "total"]);
+    assert_eq!(
+        keys(&value["points"][0]),
+        vec![
+            "examples",
+            "formation",
+            "id",
+            "meaning",
+            "notes",
+            "pattern",
+            "position",
+            "reading",
+            "romaji",
+            "tags"
+        ],
+        "a point carries what its card draws, and no level or band (invariant 20)"
+    );
+    assert_eq!(value["points"][0]["position"], 1, "the first pattern is the first");
+    assert_eq!(value["points"][0]["id"], "wa");
+    assert_eq!(value["points"][0]["pattern"], "〜は");
+    assert_eq!(value["points"][0]["romaji"], "wa");
+    assert_eq!(value["points"][0]["reading"], Value::Null, "〜は has no kanji");
+
+    // The example shape a sentence is drawn from, including the ruby.
+    let example = &value["points"][0]["examples"][0];
+    assert_eq!(keys(example), vec!["en", "ja", "ruby"]);
+    assert_eq!(example["ja"], "私は学生です。");
+    assert_eq!(example["ruby"][0]["ruby"], "私");
+    assert_eq!(example["ruby"][0]["rt"], "わたし");
+    assert_eq!(
+        example["ruby"][1]["rt"],
+        Value::Null,
+        "kana needs no reading over it"
+    );
+
+    // The last page is short rather than padded, and past the end is empty.
+    assert_eq!(state().grammar_page(520, 20).points.len(), 6);
+    assert!(state().grammar_page(526, 20).points.is_empty());
+    assert_eq!(state().grammar_page(0, 20).points[0].id, "wa");
+}
+
+#[test]
+fn the_page_of_grammar_the_interface_asks_for_is_read_the_way_the_command_reads_it() {
+    // `api.ts` posts `{ offset, limit }` and nothing else; a renamed or missing one
+    // is `missing field` at run time, and this is the half of the contract a test
+    // that calls the method cannot see (invariant 14).
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Request {
+        offset: usize,
+        limit: usize,
+    }
+
+    let posted = json!({ "offset": 40, "limit": 20 });
+    let request: Request = serde_json::from_value(posted).expect("the interface's payload deserialises");
+    let page = state().grammar_page(request.offset, request.limit);
+    assert_eq!(page.offset, 40);
+    assert_eq!(page.points.len(), 20);
+
+    // And the clamp: a caller may ask for more than a screen can draw, and gets the
+    // largest page the command serves rather than that many rows.
+    assert_eq!(
+        state().grammar_page(0, 10_000).points.len(),
+        200,
+        "the largest page a caller may ask for"
+    );
+}
+
+#[test]
+fn a_search_crosses_with_the_matches_and_how_many_there_are() {
+    let found = state().grammar_search("ni taishite", 60);
+    assert!(found.total >= 1, "the romaji is a way in");
+    assert_eq!(found.points[0].id, "ni-taishite");
+    assert!(
+        found.points[0].position > 1,
+        "a search result knows where it sits in the course, so its card can say so"
+    );
+
+    let value = serde_json::to_value(&found).expect("serialises");
+    assert_eq!(keys(&value), vec!["offset", "points", "total"]);
+    assert_eq!(value["offset"], 0);
+
+    // A search is bounded, and `total` is what says so rather than the list's
+    // length: the screen can then say "showing the first 60 of 111".
+    let bounded = state().grammar_search("は", 30);
+    assert!(bounded.points.len() <= 30);
+    assert!(bounded.total > bounded.points.len());
+
+    // An empty query asks for nothing rather than everything, which is what the
+    // screen relies on while its search box is empty.
+    let empty = state().grammar_search("   ", 30);
+    assert_eq!(empty.total, 0);
+    assert!(empty.points.is_empty());
+
+    // A query nothing matches is an empty page, not an error and not the course.
+    let none = state().grammar_search("zzzz", 30);
+    assert_eq!(none.total, 0);
+    assert!(none.points.is_empty());
+}
+
+#[test]
+fn the_search_the_interface_posts_is_read_the_way_the_command_reads_it() {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Request {
+        query: String,
+        limit: usize,
+    }
+
+    let posted = json!({ "query": "particle", "limit": 60 });
+    let request: Request = serde_json::from_value(posted).expect("deserialises");
+    let found = state().grammar_search(&request.query, request.limit);
+    assert!(found.total >= 24, "every point tagged `particle` is found by its tag");
+    assert!(
+        found
+            .points
+            .iter()
+            .any(|point| point.tags.iter().any(|tag| tag == "particle")),
+        "and the list holds the points themselves"
+    );
+}
+
+#[test]
+fn the_grammar_a_learner_is_shown_names_no_jlpt_level() {
+    // Invariant 20 on the third imported dataset: the corpus labels every point
+    // N5–N1, and none of that reaches the interface — not as a field (the struct
+    // has none) and not inside the text a card draws.
+    let points: Vec<_> = (0..state().stats().grammar)
+        .step_by(200)
+        .flat_map(|offset| state().grammar_page(offset, 200).points)
+        .collect();
+    assert_eq!(points.len(), 526, "the whole course, a page at a time");
+    for point in &points {
+        let value = serde_json::to_value(point).expect("serialises");
+        let text = value.to_string();
+        for label in ["N1", "N2", "N3", "N4", "N5", "JLPT"] {
+            assert!(
+                !text.contains(label),
+                "{} crosses with a level in it: {text}",
+                point.id
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

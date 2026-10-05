@@ -925,6 +925,86 @@ CC BY-SA 4.0 over word lists selected from commercial textbooks). The measuremen
 verbatim licence wording are in
 [docs/research/JAPANESE_DATA_SOURCE_EVALUATIONS.md](docs/research/JAPANESE_DATA_SOURCE_EVALUATIONS.md).
 
+## The grammar course — OpenJLPT, CC BY-SA 4.0, and the levels it does not carry
+
+`crates/nihongo-core/data/grammar.bin.gz` — **526 grammar patterns with 1,526 example
+sentences, 203 KB** — is the second artifact here whose text is not this project's, and
+the first whose **licence chain is the whole question**. It is imported from
+[OpenJLPT](https://github.com/evanclan/OpenJLPT) by `prepare-grammar`.
+
+**Why this source and not the rest of it.** `docs/research/JAPANESE_DATA_SOURCE_EVALUATIONS.md`
+§1 measured the dataset after N18 and reached a narrow verdict: *use its grammar dataset
+when grammar becomes a milestone; do not use it as the phrase corpus, and do not ship its
+levels.* Two different provenances live in one repository:
+
+* its **vocabulary and kanji levels** come from **Jonathan Waller's JLPT lists** —
+  `tanos.co.uk`, which no longer resolves, and whose sharing statement (*"Everything on this
+  site (that I'm not selling), is licenced under Creative Commons "BY""*) is unversioned and
+  merely asserted. Downstream repackagers version-bump it to CC BY 4.0, which is not a grant
+  the rights-holder made. This project does not take it;
+* its **grammar points** are a different work: `NOTICE.md` and `sources/grammar/README.md`
+  both state that the explanations and **every example sentence were written for OpenJLPT**
+  by its contributors and released under **CC BY-SA 4.0**. That is a rights-holder's own
+  grant, which is what makes it usable where the levels are not.
+
+The app takes the grammar and **nothing else** from that repository: no vocabulary, no kanji,
+no sentences (those come from Tatoeba directly, see above), no levels, no KanjiVG diagrams.
+
+**What was changed, as CC BY-SA 4.0 §3(a)(1)(B) requires.** The explanations are the
+corpus's words; four things were done to the data, and the artifact records all four in its
+own `GrammarSource`:
+
+* **The level of every point is dropped.** The five files (`n5.json` … `n1.json`) are read as
+  **one course in the order they give** and the `level` field is never read. The Japan
+  Foundation publishes no official JLPT grammar list, the corpus's own NOTICE calls its
+  levels *"the consensus of common JLPT preparation materials"*, and `HANDOVER_NIHONGO.md`
+  invariant 20 forbids the interface from implying that a level here is the JLPT's;
+* **the level cross-references inside the notes are removed** — a note reading *"softer
+  requests use 〜てくれませんか (N4)"* names a level the app does not carry. **38 of the 524
+  notes** changed, each only by losing the label: `までに (N4).` → `までに.`, `Compare N2
+  〜かのようだ` → `Compare 〜かのようだ`, and *"covered at N3"* → *"covered elsewhere"* (the one
+  construction where deleting the label alone would leave a sentence with a hole in it). No
+  other wording was touched, and `tests/grammar_artifact.rs` asserts that no shipped text
+  carries a level label at all;
+* **the corpus's own furigana markup is parsed into ruby segments** (`{私|わたし}は…` → four
+  segments). **No reading is invented and no alignment is derived**: the alignment is the
+  corpus's, and `prepare-grammar` refuses to write an example whose markup does not spell
+  its sentence or whose kanji the markup does not cover. This is the same refusal
+  invariant 21 records for a word's reading, one step out;
+* the result is re-encoded into `grammar.bin.gz` with the corpus's version recorded in it.
+
+**ShareAlike consequence.** The grammar text stays under CC BY-SA 4.0, and so does
+`grammar.bin.gz` and anything built from it. It does not reach the program code
+(AGPL-3.0), the kana and kanji geometry (Arphic Public License and LGPL-3.0-or-later),
+the dictionary text (EDRDG, also CC BY-SA 4.0), the furigana alignment (JmdictFurigana,
+MIT) or the app's own interface text.
+
+**What the learner is promised instead of the vocabulary rule.** The passages and the
+phrases guarantee that every kanji-bearing token is a word with a card behind it
+(invariant 22). A grammar example cannot be held to that — it is the corpus's own teaching
+sentence, and **557 of its 1,526 examples contain a jōyō-remainder character** — so the
+promise is the corpus's furigana instead: **a reading over every kanji**, checked at build
+time and asserted over the whole artifact. Two examples contain a non-jōyō kanji (几, 嘘),
+and both carry their reading. Nothing on that screen is tappable for a word card, and the
+screen says so.
+
+**Refreshing it, since the dataset is rebuilt monthly.** The raw files come from `main`
+rather than from a tag, so the version is what pins a build:
+
+```bash
+./scripts/fetch-openjlpt.sh         # ~760 KB, records URL/size/sha256 per file
+pnpm run prepare-grammar            # rewrites the artifact
+cargo test -p nihongo-core --test grammar_artifact
+```
+
+`data/raw/openjlpt/PROVENANCE.txt` records what was fetched and on what date.
+`meta.json`'s version (0.3.0 when this was written) is stored in the artifact and asserted
+by `tests/grammar_artifact.rs`, and `prepare-grammar` **fails** when the corpus's own
+claimed point count disagrees with what was read — so a new release is a deliberate commit
+that re-takes the milestone's numbers, not a silent change of course size. The notice the
+app ships is `apps/nihongo-tutor/src-tauri/licences/OPENJLPT-grammar.txt`, catalogued as
+`openjlpt`; it carries the same statement of modifications to the reader.
+
 ## Before you distribute
 
 1. **Nothing has to be gathered by hand.** The notices are in `licences/`, are
@@ -940,13 +1020,13 @@ verbatim licence wording are in
    APP=".cargo-target/release/bundle/macos/Hanzi Tutor.app"   # or src-tauri/target/...
    ls "$APP/Contents/Resources/licences"
 
-   # The Japanese app — ten files named in its own catalogue.
+   # The Japanese app — twelve files named in its own catalogue.
    KANA=".cargo-target/release/bundle/macos/Nihongo Tutor.app"
    ls "$KANA/Contents/Resources/licences"
    ```
 
    Those directories must hold all fifteen files named in the main app's
-   `src-tauri/src/licences.rs` and all ten named in
+   `src-tauri/src/licences.rs` and all twelve named in
    `apps/nihongo-tutor/src-tauri/src/licences.rs` respectively. The in-app screen
    works even if they do not — the text is compiled in — but a redistributor who
    wants to read the notices out of the bundle would be stuck.

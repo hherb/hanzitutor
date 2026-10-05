@@ -31,14 +31,21 @@ export type KanaView = "practice" | "chart" | "drill" | "review";
 /**
  * The screens of the kanji course.
  *
- * `Phrases` sits between `Words` and `Read` because that is the order a learner
- * meets the language in — a word, then a sentence made of words the course teaches,
- * then a passage — and because it is the one screen whose content is *imported*
- * rather than written here, so the sequence Words → Phrases → Read is also the
- * sequence from "we chose every item" to "we chose every item in it but the
- * sentences are someone else's".
+ * `Words` → `Phrases` → `Grammar` → `Read` is the order a learner meets the
+ * language in: a word, then a sentence made of words the course teaches, then the
+ * patterns those sentences are built from, then a passage read whole. It is also
+ * the sequence from "we chose every item" to "we chose every item in it but the
+ * text is someone else's" — Words, Phrases and Grammar are each imported and
+ * attributed, and Read is the long form written here.
  */
-export type KanjiView = "kanji" | "radicals" | "words" | "phrases" | "read" | "review";
+export type KanjiView =
+  | "kanji"
+  | "radicals"
+  | "words"
+  | "phrases"
+  | "grammar"
+  | "read"
+  | "review";
 
 /** Every screen, including the two that belong to neither course. */
 export type View = KanaView | KanjiView | "licences" | "start";
@@ -47,21 +54,31 @@ export type View = KanaView | KanjiView | "licences" | "start";
  * The screens that are **two** screens: a course, and the stage one of its cards
  * opens.
  *
- * Five, and each of them has a panel that reports a stage is up so the app can
- * take its own chrome — the course switch and the tab row — out of the way
- * (`HANDOVER_NIHONGO.md` invariants 33, 34 and 35). The list is here rather than in
- * the template because it is a property of the division: a screen added to one of
- * these panels' machines and not to this list, or the other way round, is what
- * `nav.test.ts` fails on.
+ * Six, and each of them has a panel that reports a stage is up so the app can take
+ * its own chrome — the course switch and the tab row — out of the way
+ * (`HANDOVER_NIHONGO.md` invariants 33, 34, 35 and 38). The list is here rather
+ * than in the template because it is a property of the division: a screen added to
+ * one of these panels' machines and not to this list, or the other way round, is
+ * what `nav.test.ts` fails on.
+ *
+ * Phrases is deliberately **not** one of them: a phrase's word card opens under the
+ * row that was tapped, so there is no second screen for the app to stand aside for.
  */
-export type StageView = "practice" | "kanji" | "radicals" | "words" | "read";
+export type StageView =
+  | "practice"
+  | "kanji"
+  | "radicals"
+  | "words"
+  | "grammar"
+  | "read";
 
-/** The five, in the order the courses name them. */
+/** The six, in the order the courses name them. */
 export const STAGE_VIEWS: readonly StageView[] = [
   "practice",
   "kanji",
   "radicals",
   "words",
+  "grammar",
   "read",
 ];
 
@@ -119,6 +136,7 @@ export const COURSES: readonly Course[] = [
       { id: "radicals", label: "Radicals" },
       { id: "words", label: "Words" },
       { id: "phrases", label: "Phrases" },
+      { id: "grammar", label: "Grammar" },
       { id: "read", label: "Read" },
       { id: "review", label: "Review" },
     ],

@@ -78,3 +78,12 @@ required-features = ["tokenize"]
 name = "prepare-phrases"
 path = "src/bin/prepare_phrases.rs"
 required-features = ["tokenize"]
+
+# The grammar course, imported from OpenJLPT rather than written here. Behind
+# `prepare` rather than `tokenize` on purpose: the corpus carries its own furigana
+# markup for every kanji, so nothing has to be segmented and the analyser stays out
+# of this pipeline. See `grammar.rs` and ROADMAP_NIHONGO.md N19.
+[[bin]]
+name = "prepare-grammar"
+path = "src/bin/prepare_grammar.rs"
+required-features = ["prepare"]

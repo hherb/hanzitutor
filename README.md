@@ -1609,7 +1609,13 @@ demonstrates from the app's own vocabulary that one reading names several words
 graded sentences imported from Tatoeba**, 200 in each of the seven bands, each held
 to the words the course teaches and shown with a reading over every kanji, its
 English and its own attribution — CC BY 2.0 FR is why each row names its sentence id
-and its contributor. It keeps its own learner data
+and its contributor. A **Grammar** screen offers **526 patterns imported from
+OpenJLPT** — the largest gap the app had, since the particles and endings the kana
+course unlocks were taught nowhere — each with the form it is built from, the note
+that says how it differs from a similar one, and two or three whole sentences with a
+reading over every kanji; the corpus's own teaching order is what the screen offers,
+because the JLPT publishes no official grammar list and the levels it carries are
+dropped rather than shown. It keeps its own learner data
 — a tally per pair and an SM-2 review schedule, in its own files, never a shared
 store. It versions itself at 0.1.0 and has its own handover and roadmap —
 **[HANDOVER_NIHONGO.md](HANDOVER_NIHONGO.md)** and

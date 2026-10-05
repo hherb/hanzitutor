@@ -4,10 +4,13 @@ fn main() {
     // surface as a cryptic `include_bytes!` error. Checking here turns that into
     // instructions.
     //
-    // Both are checked because both are read: the kana course has always drawn
-    // from one, and the kanji screens now draw from the other. The kanji artifact
-    // sat in the repository unread for a whole milestone, which is exactly the
-    // state in which nobody notices it going missing.
+    // All five are checked because all five are read: the kana course has always
+    // drawn from one, and the other four carry the character course, the
+    // vocabulary, the passages and the graded phrases. The kanji artifact sat in
+    // the repository unread for a whole milestone, which is exactly the state in
+    // which nobody notices a dataset going missing — and the three artifacts N18
+    // and N19 added are the ones a clone is likeliest to be missing, because they
+    // are the ones with a `prepare-*` of their own.
     let data =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crates/nihongo-core/data");
     let artifacts = [
@@ -18,6 +21,22 @@ fn main() {
         (
             "kanji.bin.gz",
             "./scripts/fetch-data.sh\n  pnpm run prepare-kanji",
+        ),
+        (
+            "words.bin.gz",
+            "./scripts/fetch-data.sh\n  pnpm run prepare-words",
+        ),
+        (
+            "passages.bin.gz",
+            "./scripts/fetch-data.sh\n  pnpm run prepare-passages",
+        ),
+        (
+            "phrases.bin.gz",
+            "./scripts/fetch-tatoeba.sh\n  pnpm run prepare-phrases",
+        ),
+        (
+            "grammar.bin.gz",
+            "./scripts/fetch-openjlpt.sh\n  pnpm run prepare-grammar",
         ),
     ];
 
