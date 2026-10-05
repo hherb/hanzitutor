@@ -112,10 +112,10 @@ nothing complains.
 ## 2. What already works
 
 Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor -p
-hanzi-voice` is **411 tests** — every `#[test]` in the three suites (246 in
+hanzi-voice` is **412 tests** — every `#[test]` in the three suites (247 in
 `nihongo-core`, 136 in `nihongo-tutor`, 29 in `hanzi-voice`), plus two doc-tests
 (`lib.rs`'s and `variants.rs`'s); the frontend's are counted separately below.
-`pnpm run test:web` runs 207, of which **138** are this app's.
+`pnpm run test:web` runs 209, of which **140** are this app's.
 
 | | |
 | --- | --- |
@@ -140,7 +140,7 @@ hanzi-voice` is **411 tests** — every `#[test]` in the three suites (246 in
 | Furigana | 16,022 of 16,073 aligned (99.7%); the other 51 carry their reading and no ruby |
 | Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
 | Phrases | 1,400 imported from Tatoeba — **200 in each of the seven bands**, 6,025 tokens, 152 named contributors, 54 KB; every kanji-bearing word taught, the band is the hardest word's, and every sentence carries its id, its contributor and its licence on screen (invariant 37) |
-| Grammar | **526 patterns imported from OpenJLPT** (0.3.0, CC BY-SA 4.0) — the form each is built from, the note on nuance, and 1,526 sentences with 6,591 ruby spans; 107 patterns carry a kana reading, 70 tags, 524 notes (38 with their level references removed), 16 examples with no kanji. The corpus's JLPT levels are **dropped**, and the order is its teaching order rather than a ladder: levelling a pattern by the hardest character in its examples put **344 of the 526** in band 7 and 2 in band 1 (invariant 38) |
+| Grammar | **526 patterns imported from OpenJLPT** (0.3.0, CC BY-SA 4.0) — the form each is built from, the note on nuance, and 1,526 sentences with 6,591 ruby spans; 107 patterns carry a kana reading, 70 tags, 524 notes (38 with their level references removed), 16 examples with no kanji. The corpus's JLPT levels are **dropped**, and the order is its teaching order rather than a ladder: levelling a pattern by the hardest character in its pattern *and* its examples put **344 of the 526** in band 7 and 2 in band 1 (invariant 38) |
 | Words on a card | 16,073 words over 2,136 characters — 一 in 223, 人 in 218, and **57 characters in none**; a page of 12, in course order (invariant 28) |
 | One reading | **はし is 橋, 端 and 箸 and かみ is five words** (上 紙 神 加味 髪) — the homophones the **Start here** screen argues with, drawn from the artifact rather than typed into the interface (invariant 32) |
 | Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
@@ -148,8 +148,8 @@ hanzi-voice` is **411 tests** — every `#[test]` in the three suites (246 in
 | Bundle | built at N9 as `Kana Tutor.app`, 15.25 MiB, and **rebuilt after the N10 rename as `Nihongo Tutor.app`** — 15 MiB, `codesign --verify --deep --strict` clean, `Identifier=com.hanzitutor.kana`, Team `X5DWXB4283`, and all ten notices world-readable. The `.dmg` needs Tauri's own `bundle_dmg.sh` run outside the sandbox (trap 21); the N10 one is **7,957,111 bytes**, `hdiutil verify` checksum VALID, signed `Identifier=Nihongo Tutor_0.1.0_aarch64`, and mounting it shows `Nihongo Tutor.app` plus the `Applications` link with the inner app still passing `--deep --strict`. The N9 figures were 15.25 MiB and an 8,186,456-byte image; the icon N9 drew has since been **redesigned at N14** — white field, the flag's red あ — and both the desktop set and the iOS set were regenerated from the new master, so a build from this tree wears a different face than the 15 MiB one described here; `/Applications/Kana Tutor.app` is still the N9 install, and the N10 build has not been installed there |
 | Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review", and the kana course seen on the device at N13. **Rebuilt and reinstalled at N18** with the same recipe, on **both** devices — HHIP1 and Horst's 12.9-inch iPad — and the Phrases screen was then looked at on each by the maintainer, which is what closed the last "measured but never seen" screen in the app. See §5, "Building for iOS", for the three things `tauri ios init` does not provide |
 | Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Phrases, Grammar, Read, Review, where **six screens are each two screens**: the course and the thing it opens — Kanji and Practice open a board, Radicals a family, Words a card, Grammar a pattern, Read a passage (invariants 33, 34, 35 and 38). **Phrases is not one of them**: a phrase's card opens under the row it was tapped in, so there is no second screen to step aside for (invariant 37). **Start here** and Licences hang off the footer, in neither course (invariant 31). At 980×760 the seven tabs sit on one line; at a phone's width they wrap after `Phrases`, leaving `Grammar · Read · Review` on a second line, with no page overflow |
-| Tests | nihongo-core 246, nihongo-tutor 136, hanzi-voice 29, frontend 138 of the 207 |
-| Artifact | kana 70,917, kanji 3,236,713, words 601,816, passages 502, phrases 53,945 and grammar 203,015 bytes — all gzip + magic + postcard, all six embedded with `include_bytes!` |
+| Tests | nihongo-core 247, nihongo-tutor 136, hanzi-voice 29, frontend 140 of the 209 |
+| Artifact | kana 70,917, kanji 3,236,713, words 601,816, passages 502, phrases 53,945 and grammar 203,019 bytes — all gzip + magic + postcard, all six embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | three files, `confusions.json`, `review.json` and `prefs.json`, in the app's own data directory |
 | Version | both crates 0.1.0, and the app's to match |
@@ -314,7 +314,8 @@ and the first two are the same one twice. **The corpus's JLPT levels are dropped
 and the level cross-references inside 38 of the 524 notes — *"softer requests use
 〜てくれませんか (N4)"* — were removed with the label alone. And **a pattern has no band**,
 because the obvious ladder was measured before it was rejected: levelling a point by the
-hardest character in its examples puts **344 of the 526 in band 7** and only 2 in band 1, so
+hardest character in its **pattern and** its examples puts **344 of the 526 in band 7** and only
+2 in band 1, so
 the screen offers one ordered course, a page of 20, and a search box. The third is the
 promise: a grammar example is the corpus's own teaching sentence and **cannot** be held to
 the vocabulary the way a phrase is — 557 of the 1,526 contain a jōyō-remainder character —
@@ -463,7 +464,7 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
   src/phrases.rs         (550)    Phrase, PhraseToken, PhraseDataset, the artifact
                                   magic and `band_from` (a phrase is as hard as its
                                   hardest word) — the graded-phrase half, N18
-  src/grammar.rs         (767)    GrammarPoint, GrammarExample, GrammarDataset, the
+  src/grammar.rs         (787)    GrammarPoint, GrammarExample, GrammarDataset, the
                                   artifact format, `parse_furigana` (the corpus's own
                                   ruby markup, parsed and never composed) and
                                   `strip_level_references` — the grammar course, N19,
@@ -533,7 +534,7 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
   data/phrases.bin.gz             COMMITTED, 53,945 bytes — 1,400 imported
                                   sentences, 200 per band, each with its id, its
                                   contributor, its licence and its tokens
-  data/grammar.bin.gz             COMMITTED, 203,015 bytes — 526 imported patterns,
+  data/grammar.bin.gz             COMMITTED, 203,019 bytes — 526 imported patterns,
                                   1,526 sentences with 6,591 ruby spans, one course
                                   order and no level (invariant 38)
   tests/kana_artifact.rs (261)    12 tests over the committed kana artifact
@@ -545,7 +546,7 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   pinning the homophones はし and かみ (invariant 32)
   tests/passages_artifact.rs(247) 9 tests over the committed passages, including
                                   that they still match data/passages/*.txt
-  tests/grammar_artifact.rs(315)  8 tests over the committed grammar: the counts, the
+  tests/grammar_artifact.rs(337)  9 tests over the committed grammar: the counts, the
                                   furigana-over-every-kanji invariant, the ruby
                                   reassembly, the no-level obligation, the teaching
                                   order, the field shapes, the search and the source
@@ -599,7 +600,7 @@ apps/nihongo-tutor/               the app
                                   CC BY-SA 4.0 §3(a)(1)(B) asks
   src/App.svelte         (465)    the two courses and the switch between them, the
                                   `chromeVisible` that stands the switch and the tab
-                                  row aside while any of the five two-screen panels
+                                  row aside while any of the six two-screen panels
                                   has a stage up (33, 34, 35) — the lookup that
                                   throws for a sixth, because `nav.ts` owns the list
                                   — the one place the voice status and the
@@ -612,13 +613,13 @@ apps/nihongo-tutor/               the app
                                   screens, their defaults, and the membership test
                                   `goTo` is guarded by — N10 — with Start here and
                                   Licences the two screens in neither course (32) —
-                                  and `STAGE_VIEWS`, the five screens that are two
+                                  and `STAGE_VIEWS`, the six screens that are two
                                   screens (35)
   src/lib/nav.test.ts    (205)    run by the ROOT project's vitest; asserts every
                                   screen has one home, Review is the only screen
                                   two courses share, the two footer screens are
-                                  in neither, and the five stage screens are exactly
-                                  the five (35)
+                                  in neither, and the six stage screens are exactly
+                                  the six (35, 38)
   src/lib/StartPanel.svelte(248)  **Start here** — what the writing system is for,
                                   and the homophone demonstration built from the
                                   app's own vocabulary — N11, invariant 32
@@ -680,7 +681,7 @@ apps/nihongo-tutor/               the app
   src/lib/PassageStage.svelte(271)  **the passage stage**: one passage with furigana,
                                   a tap on any word, and the tapped word's card
                                   below it — N7, N15, invariant 35
-  src/lib/GrammarPanel.svelte(412)  **the grammar course**: the search box, a page of
+  src/lib/GrammarPanel.svelte(420)  **the grammar course**: the search box, a page of
                                   20 patterns with the position each sits at, the
                                   pager, and the stage a row opens — N19, invariant
                                   38. The header says whose order this is not
@@ -690,11 +691,11 @@ apps/nihongo-tutor/               the app
                                   furigana and a `Hear it` each, the note, the tags,
                                   and arrows that step the **course** rather than the
                                   page — N19, invariant 38
-  src/lib/grammar.ts      (87)     the grammar course's arithmetic, as pure functions:
+  src/lib/grammar.ts     (103)     the grammar course's arithmetic, as pure functions:
                                   the page size, `positionLabel`, `searchNote` (which
                                   says when a list is not all of the matches), `stepTo`
                                   and `pageOf` — the arrows' rule — invariant 38
-  src/lib/grammar.test.ts(118)     run by the ROOT project's vitest
+  src/lib/grammar.test.ts(140)     run by the ROOT project's vitest
   src/lib/PhrasesPanel.svelte(391)  **the phrases screen**: the seven band chips,
                                    one band of graded sentences with a reading over
                                    every kanji, the English under each, a `Hear it`
@@ -1812,7 +1813,7 @@ one kana and back to choose the next. The rule, in the same parts:
   script toggle, one card per lesson (each carrying that lesson's own kana), and the
   `bind:stage` report that tells `App.svelte` a stage is up; the stage is one kana,
   the sound above the board, the board, and the tools below it. `chromeVisible`
-  stands the switch and the tab row aside while **any** of the five two-screen panels
+  stands the switch and the tab row aside while **any** of the six two-screen panels
   has a stage up (invariant 35), and
   `Lessons` — the first control on the stage — is the way back. Invariant 33's
   arrangement, applied to the other course rather than re-decided.
@@ -1873,7 +1874,7 @@ N13's "deliberately not done" had named as the next piece: **Radicals**, **Words
   way back, named for the list it returns to (`Radicals`, `Words`, `Passages`).
 * **The prop is `stage`, and `nav.ts` owns the list.** It was `bind:practice`, which
   stopped being true the moment a stage could be a family or a passage;
-  `STAGE_VIEWS` in `nav.ts` is the five, and `App.svelte`'s lookup **throws** for a sixth,
+  `STAGE_VIEWS` in `nav.ts` is the six, and `App.svelte`'s lookup **throws** for a seventh,
   so a screen cannot keep a stage flag without being listed there. One flag per panel:
   "See the family" moves the learner from the kanji stage to the radicals panel while the
   kanji panel's own stage is still up, and a single shared flag would leave the chrome
@@ -2203,7 +2204,7 @@ pnpm run prepare-passages
 `prepare-grammar` prints its own, and they are the numbers `tests/grammar_artifact.rs`
 pins: **OpenJLPT 0.3.0, 526 points from n5:81 n4:98 n3:101 n2:123 n1:123, 1,526 examples
 with 6,591 ruby spans (16 with no kanji to annotate), 107 patterns with a kana reading,
-70 distinct tags, 524 notes of which 38 had level references removed, artifact 203,015
+70 distinct tags, 524 notes of which 38 had level references removed, artifact 203,019
 bytes from 535 KB**. It refuses to write when an id repeats, when a pattern with a kanji
 has no reading, when a tag is empty, when a point carries fewer than two examples, when an
 example's markup does not spell its sentence, when a kanji has no reading over it, or when

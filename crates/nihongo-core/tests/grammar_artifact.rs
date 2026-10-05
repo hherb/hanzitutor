@@ -178,6 +178,28 @@ fn no_shipped_text_names_a_jlpt_level() {
     }
 }
 
+/// The other half of the level stripping: a label taken out of the middle of a
+/// sentence must not leave the sentence with a hole in it. The corpus's own notes
+/// contain no ` :`, ` ;` or ` ,` at all — measured, not assumed — so one in the
+/// artifact is a label that was removed without the space it sat behind, which is
+/// how `Formal N2: 〜がたい.` first shipped as `Formal : 〜がたい.`
+#[test]
+fn no_note_has_a_hole_where_a_level_label_was_taken_out() {
+    let dataset = dataset();
+    for point in dataset.points() {
+        let Some(notes) = point.notes.as_deref() else {
+            continue;
+        };
+        for mark in [" :", " ;", " ,"] {
+            assert!(
+                !notes.contains(mark),
+                "{}: a space before {mark:?} is where a label used to be: {notes:?}",
+                point.id
+            );
+        }
+    }
+}
+
 #[test]
 fn the_order_is_the_corpus_teaching_order_and_not_a_sort() {
     let dataset = dataset();

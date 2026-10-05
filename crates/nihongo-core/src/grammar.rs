@@ -33,10 +33,12 @@
 //!
 //! The vocabulary and the phrases are levelled by [`crate::words::band_for`] — the
 //! highest kyōiku grade among a word's kanji — and the obvious move is to level a
-//! grammar point the same way, by the hardest character in its examples. It was
-//! measured before it was rejected: **344 of the 526 points land in band 7**,
-//! because an example sentence is three times the length of a word and a single
-//! jōyō-remainder character puts the whole point there, and only **2** points reach
+//! grammar point the same way, by the hardest character in it — **the whole of a
+//! point's own text, which is its pattern and its examples** (the pattern counts:
+//! 誰 is grade 8 and stands in `何も〜ない`, `誰も〜ない` and `何か / 誰か / どこか`).
+//! That was measured before it was rejected: **344 of the 526 points land in band
+//! 7**, because a point is three times the length of a word and a single
+//! jōyō-remainder character puts the whole of it there, and only **2** points reach
 //! band 1. A ladder that puts 65% of the course on its top rung is not a ladder, so
 //! a pattern has no band and the screen offers one ordered course instead. The
 //! order is the corpus's teaching order, and the screen says whose ladder it is
@@ -464,7 +466,8 @@ pub fn parse_furigana(text: &str, markup: &str) -> Result<Vec<Ruby>, FuriganaErr
 /// why), so the references have to go too, or the interface would be naming levels
 /// it does not carry. **38 of the 524 notes change**, and only ever by losing the
 /// label: a bracketed tag goes with the space it sat behind, `at N4` becomes
-/// `elsewhere`, and a bare label is simply removed. `tests/grammar_artifact.rs`
+/// `elsewhere`, and a bare label takes the space in front of it with it, so
+/// `Formal N2: 〜がたい.` reads `Formal: 〜がたい.` rather than `Formal : 〜がたい.`. `tests/grammar_artifact.rs`
 /// asserts that no shipped text carries one afterwards, which is the test
 /// `words::band_name`'s "no name says JLPT" obligation takes here.
 ///
@@ -502,8 +505,14 @@ pub fn strip_level_references(note: &str) -> String {
                 }
             }
         }
-        // A bare label.
+        // A bare label, with the space in front of it: `Formal N2: 〜がたい` has to
+        // read `Formal: 〜がたい` and not `Formal : 〜がたい`, and `Compare N2
+        // 〜かのようだ` has to read `Compare 〜かのようだ` rather than carrying the
+        // double space the cleanup below would collapse anyway.
         if let Some(level) = level_at(&chars, i) {
+            while out.ends_with(' ') {
+                out.pop();
+            }
             i = level;
             continue;
         }
@@ -634,6 +643,17 @@ mod tests {
         assert_eq!(
             strip_level_references("Compare N2 〜かのようだ."),
             "Compare 〜かのようだ."
+        );
+        // A bare label in front of a colon takes the space in front of it with it:
+        // without that, this note reads "Formal : 〜がたい." — a sentence with a hole
+        // in it, on a card a learner reads.
+        assert_eq!(
+            strip_level_references("Formal N2: 〜がたい."),
+            "Formal: 〜がたい."
+        );
+        assert_eq!(
+            strip_level_references("Related N2 forms: 〜からこそ, 〜てこそ."),
+            "Related forms: 〜からこそ, 〜てこそ."
         );
         assert_eq!(
             strip_level_references("The 'like, as if' use is covered at N3."),

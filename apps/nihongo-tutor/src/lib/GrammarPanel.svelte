@@ -7,7 +7,8 @@
    *
    * The Words and Phrases screens are levelled by the band a word's kanji give it.
    * The obvious move was to level a pattern the same way, by the hardest character
-   * in its examples, and it was **measured before it was rejected**: 344 of the 526
+   * in its pattern and its examples, and it was **measured before it was rejected**: 344 of
+   * the 526
    * points land in band 7 and only 2 reach band 1, because an example sentence is
    * three times the length of a word and one jōyō-remainder character is enough to
    * put the whole pattern on the top rung. So this screen offers the corpus's own
@@ -36,7 +37,7 @@
   import { untrack } from "svelte";
   import type { GrammarPage, GrammarPoint } from "./types";
   import type { VoiceStatus } from "./speech";
-  import { GRAMMAR_PAGE, GRAMMAR_SEARCH, searchNote, stepTo } from "./grammar";
+  import { GRAMMAR_PAGE, GRAMMAR_SEARCH, searchNoteFor, stepTo } from "./grammar";
   import { pageWindow } from "./words";
 
   interface Props {
@@ -71,7 +72,10 @@
 
   const window_ = $derived(pageWindow(total, GRAMMAR_PAGE, page));
   const searching = $derived(query.trim() !== "");
-  const note = $derived(searchNote(found?.total ?? 0, found?.points.length ?? 0, query));
+  // The note is the answer's and nothing else's: `found` is cleared the moment the
+  // query changes, so neither a stale list nor a stale count is ever drawn against
+  // the new words in the box.
+  const note = $derived(searchNoteFor(found, query));
 
   /**
    * Whether each arrow can be followed.
@@ -112,8 +116,10 @@
 
   async function runSearch(text: string) {
     const asked = text.trim();
+    // Dropped before the answer is asked for, so a keystroke never draws the last
+    // query's matches or its count beside the new words.
+    found = null;
     if (asked === "") {
-      found = null;
       return;
     }
     try {
@@ -222,7 +228,9 @@
     </div>
 
     {#if searching}
-      <p class="note" role="status">{note}</p>
+      {#if note}
+        <p class="note" role="status">{note}</p>
+      {/if}
       {#if found && found.points.length > 0}
         <ol class="list" aria-label="Matching patterns">
           {#each found.points as point (point.id)}

@@ -218,11 +218,13 @@ pub const NOTICES: &[LicenceNotice] = &[
         covers: "The grammar patterns, their meanings, the forms they are built from \
                  and every example sentence on the Grammar screen, written by \
                  OpenJLPT's contributors and compacted into `grammar.bin.gz`. Only \
-                 the grammar dataset is taken — not its vocabulary, kanji, sentences \
-                 or levels. The data is **modified**, and the notice states how: the \
-                 N5-N1 level of every point is dropped rather than stored or shown, \
-                 the level cross-references inside 38 notes are removed with the \
-                 label alone, and the corpus's own furigana markup is parsed into \
+                 the grammar dataset is taken — not its vocabulary, its kanji, its \
+                 levels, or the example sentences attached to its vocabulary entries. \
+                 The data is **modified**, and the notice states how: the N5-N1 level \
+                 of every point is dropped rather than stored or shown, the level \
+                 cross-references inside 38 notes are removed with the label and the \
+                 space in front of it, and the corpus's own furigana markup is parsed \
+                 into \
                  ruby segments with no reading invented and no alignment derived. \
                  The share-alike obligation is discharged by this entry, the text it \
                  points at, and the provenance recorded inside the artifact.",

@@ -8,6 +8,7 @@ import {
   positionsOnPage,
   rowLabel,
   searchNote,
+  searchNoteFor,
   stepTo,
 } from "./grammar";
 
@@ -42,6 +43,27 @@ describe("searchNote", () => {
 
   it("trims the query it quotes", () => {
     expect(searchNote(1, 1, "  wa  ")).toBe("1 pattern match “wa”.");
+  });
+});
+
+describe("searchNoteFor", () => {
+  it("says nothing until an answer for this query has arrived", () => {
+    // The first keystroke of a search has no answer yet, and a note built from the
+    // previous one would say "No patterns match “p”." over a search still running.
+    expect(searchNoteFor(null, "p")).toBe("");
+    expect(searchNoteFor(null, "")).toBe("");
+  });
+
+  it("is the answer's note once there is one", () => {
+    expect(searchNoteFor({ total: 3, points: [1, 2, 3] }, "particle")).toBe(
+      "3 patterns match “particle”.",
+    );
+    expect(searchNoteFor({ total: 111, points: new Array(60).fill(1) }, "は")).toBe(
+      "Showing the first 60 of 111 matches for “は”.",
+    );
+    expect(searchNoteFor({ total: 0, points: [] }, "zzzz")).toBe(
+      "No patterns match “zzzz”.",
+    );
   });
 });
 

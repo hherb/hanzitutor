@@ -30,11 +30,16 @@ Attribution, as the licence asks it to be given
 What this app takes, and what it does not
 -----------------------------------------
 
-  **Only the grammar dataset.** This app does not take OpenJLPT's vocabulary
-  levels, its kanji levels or its example sentences: the vocabulary and the kanji
-  come from EDRDG directly (see the EDRDG notice beside this one), and the graded
-  sentences come from Tatoeba directly (see the Tatoeba notice). Waller's lists are
-  not used anywhere in this project, and neither is KanjiVG's diagram set.
+  **Only the grammar dataset.** This app does not take OpenJLPT's vocabulary,
+  its kanji, its vocabulary levels, its kanji levels, or the example sentences
+  attached to its vocabulary entries: the vocabulary and the kanji come from EDRDG
+  directly (see the EDRDG notice beside this one), and the graded sentences on the
+  Phrases screen come from Tatoeba directly (see the Tatoeba notice). Waller's lists
+  are not used anywhere in this project, and neither is KanjiVG's diagram set.
+
+  The example sentences this app **does** take are the grammar dataset's own — the
+  two or three written for each grammar point — which are OpenJLPT's contributors'
+  work and are attributed above.
 
   That matters, and it is the reason the grammar half is usable where the rest of
   that dataset is not: the level assignments OpenJLPT carries rest on an
@@ -48,8 +53,8 @@ What this app did to the data (the licence requires this to be stated)
   This app redistributes a **modified, derived** subset of the grammar dataset,
   not the dataset itself. Specifically:
 
-  * Selected all 526 grammar points and nothing else — none of the dataset's
-    vocabulary, kanji, sentences or levels.
+  * Selected all 526 grammar points, with their own example sentences, and nothing
+    else — none of the dataset's vocabulary, kanji or levels.
   * **Dropped the level of every point.** The corpus labels each one N5–N1, and
     those labels are not stored, not shown, and not implied: the Japan Foundation
     publishes no official JLPT grammar list, and the app's grammar screen says so.
@@ -57,9 +62,12 @@ What this app did to the data (the licence requires this to be stated)
     that order is what the screen offers instead of a level.
   * **Removed the level cross-references inside the notes**, because a note that
     says *"softer requests use 〜てくれませんか (N4)"* would name a level the app does
-    not carry. 38 of the 524 notes were changed, each only by losing the label —
-    for example `までに (N4).` became `までに.`, and *"covered at N3"* became
-    *"covered elsewhere"*. No other wording was touched.
+    not carry. 38 of the 524 notes were changed, each only by losing the label:
+    `までに (N4).` became `までに.`, `Formal N2: 〜がたい.` became
+    `Formal: 〜がたい.` (a bare label takes the space in front of it with it), and
+    *"covered at N3"* became *"covered elsewhere"* — the one construction where
+    deleting the label alone would leave a sentence with a hole in it. No other
+    wording was touched.
   * Parsed the corpus's own furigana markup (`{私|わたし}は…`) into ruby segments so
     a screen can draw it. **No reading was invented and no alignment was derived**:
     the alignment is the corpus's, and `prepare-grammar` refuses to write an

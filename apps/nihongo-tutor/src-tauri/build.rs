@@ -4,13 +4,13 @@ fn main() {
     // surface as a cryptic `include_bytes!` error. Checking here turns that into
     // instructions.
     //
-    // All five are checked because all five are read: the kana course has always
-    // drawn from one, and the other four carry the character course, the
-    // vocabulary, the passages and the graded phrases. The kanji artifact sat in
-    // the repository unread for a whole milestone, which is exactly the state in
-    // which nobody notices a dataset going missing — and the three artifacts N18
-    // and N19 added are the ones a clone is likeliest to be missing, because they
-    // are the ones with a `prepare-*` of their own.
+    // All six are checked because all six are read: the kana course has always
+    // drawn from one, and the other five carry the character course, the
+    // vocabulary, the passages, the graded phrases and the grammar. The kanji
+    // artifact sat in the repository unread for a whole milestone, which is exactly
+    // the state in which nobody notices a dataset going missing — and the two
+    // artifacts N18 and N19 added are the ones a clone is likeliest to be missing,
+    // because they are the ones with a `prepare-*` of their own.
     let data =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crates/nihongo-core/data");
     let artifacts = [

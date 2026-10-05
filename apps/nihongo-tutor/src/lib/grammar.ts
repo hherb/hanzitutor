@@ -49,6 +49,22 @@ export function searchNote(total: number, shown: number, query: string): string 
 }
 
 /**
+ * What the search box says, given the answer that has actually arrived.
+ *
+ * `null` is the moment between a keystroke and its answer, and an answer belongs to
+ * the query that was asked when it was sent: a note built from the previous answer
+ * and the new query would read *"No patterns match “p”."* on the first keystroke of
+ * every search. So the note is the answer's, or nothing at all.
+ */
+export function searchNoteFor(
+  answer: { total: number; points: readonly unknown[] } | null,
+  query: string,
+): string {
+  if (answer === null) return "";
+  return searchNote(answer.total, answer.points.length, query);
+}
+
+/**
  * Where a card's arrows go: the next position in the course, and the page it is on.
  *
  * The course order is the sequence the arrows step through — a pattern has no band

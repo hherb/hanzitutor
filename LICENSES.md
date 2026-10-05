@@ -948,7 +948,10 @@ levels.* Two different provenances live in one repository:
   grant, which is what makes it usable where the levels are not.
 
 The app takes the grammar and **nothing else** from that repository: no vocabulary, no kanji,
-no sentences (those come from Tatoeba directly, see above), no levels, no KanjiVG diagrams.
+no vocabulary levels, no kanji levels, no vocabulary example sentences (the Phrases screen's
+sentences come from Tatoeba directly, see above) and no KanjiVG diagrams. What it does take
+includes the grammar dataset's **own** example sentences — the two or three written for each
+point — which are the contributors' work and are attributed as such.
 
 **What was changed, as CC BY-SA 4.0 §3(a)(1)(B) requires.** The explanations are the
 corpus's words; four things were done to the data, and the artifact records all four in its
@@ -962,10 +965,12 @@ own `GrammarSource`:
 * **the level cross-references inside the notes are removed** — a note reading *"softer
   requests use 〜てくれませんか (N4)"* names a level the app does not carry. **38 of the 524
   notes** changed, each only by losing the label: `までに (N4).` → `までに.`, `Compare N2
-  〜かのようだ` → `Compare 〜かのようだ`, and *"covered at N3"* → *"covered elsewhere"* (the one
-  construction where deleting the label alone would leave a sentence with a hole in it). No
-  other wording was touched, and `tests/grammar_artifact.rs` asserts that no shipped text
-  carries a level label at all;
+  〜かのようだ` → `Compare 〜かのようだ`, `Formal N2: 〜がたい.` → `Formal: 〜がたい.` (a bare
+  label takes the space in front of it with it, or the sentence is left with a hole in it),
+  and *"covered at N3"* → *"covered elsewhere"* (the one construction where deleting the label
+  alone would do the same). No other wording was touched, and `tests/grammar_artifact.rs`
+  asserts that no shipped text carries a level label at all, and that no note has a ` :`, ` ;`
+  or ` ,` — which is what a label removed without its space leaves behind;
 * **the corpus's own furigana markup is parsed into ruby segments** (`{私|わたし}は…` → four
   segments). **No reading is invented and no alignment is derived**: the alignment is the
   corpus's, and `prepare-grammar` refuses to write an example whose markup does not spell

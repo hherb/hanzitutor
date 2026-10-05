@@ -2164,18 +2164,24 @@ reached that verdict, and this milestone is the one it was waiting for.
   from implying otherwise.
 * **The level cross-references inside the notes go with it.** 38 of the 524 notes said things
   like *"softer requests use 〜てくれませんか (N4)"*. Each was changed **only by losing the
-  label**: `までに (N4).` → `までに.`, `Compare N2 〜かのようだ` → `Compare 〜かのようだ`, and
-  *"covered at N3"* → *"covered elsewhere"* — the one construction where deleting the label
-  alone would have left a sentence with a hole in it. `tests/grammar_artifact.rs` asserts that
-  **no shipped text carries a level label at all**, which is the test `words::band_name`'s "no
-  name says JLPT" obligation takes here.
+  label**: `までに (N4).` → `までに.`, `Compare N2 〜かのようだ` → `Compare 〜かのようだ`,
+  `Formal N2: 〜がたい.` → `Formal: 〜がたい.` (a bare label takes the space in front of it —
+  without that rule the card read *"Formal : 〜がたい."*, a sentence with a hole in it, which the
+  first cut of this shipped and a review caught), and *"covered at N3"* → *"covered
+  elsewhere"*, the one construction where deleting the label alone would have done the same.
+  `tests/grammar_artifact.rs` asserts that **no shipped text carries a level label at all** and
+  that **no note contains a space before a colon, semicolon or comma** — which is what a label
+  removed without its space leaves behind, and which the corpus's own notes never contain,
+  measured before the assertion was written.
 * **The order is what a screen offers instead**, and it says whose order it is not.
 
 ### No band, and the measurement that settled it
 
 The obvious move was to level a grammar point the way a word and a phrase are levelled — by the
-hardest character in its examples, through `words::band_for`. It was measured before it was
-rejected, and the numbers are the reason:
+hardest character **in the whole of the point's text, which is its pattern and its examples**
+(the pattern counts: 誰 is grade 8 and stands in 何も〜ない, 誰も〜ない and 何か / 誰か / どこか),
+through `words::band_for`. It was measured before it was rejected, and the numbers are the
+reason:
 
 | band | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -2195,8 +2201,8 @@ teaches, so a tap always has a card behind it (invariant 22). **A grammar exampl
 held to that**, and this is the first shipped text in the app that is not: these are the
 corpus's own teaching sentences, chosen to show a pattern rather than to stay inside a
 16,073-word vocabulary, and **557 of the 1,526 examples contain a jōyō-remainder character**
-(245 distinct ones; two examples use a kanji outside the jōyō set entirely — 几 and 嘘, the
-latter in 嘘つき). What is promised instead is the corpus's **furigana**: every example that
+(245 distinct ones; two examples use a kanji outside the jōyō set entirely — 几 in
+几帳面な彼のことだから… and 嘘 in 悪いと知りながら、つい嘘をついてしまった。). What is promised instead is the corpus's **furigana**: every example that
 contains a kanji carries a reading over every one of them, parsed from the corpus's own
 markup, and `prepare-grammar` **refuses to write** an example whose markup does not spell its
 sentence or whose kanji the markup does not cover. No reading is invented and no alignment is
@@ -2214,11 +2220,11 @@ example opens a word card.
 | Tags | **70** distinct, the corpus's own controlled list |
 | Notes | **524** points carry one; 38 had level references removed |
 | Kanji-free examples | **16**, each carrying one plain segment |
-| Artifact | `grammar.bin.gz`, **203,015 bytes** compressed from 535 KB (38%) — committed |
+| Artifact | `grammar.bin.gz`, **203,019 bytes** compressed from 535 KB (38%) — committed |
 | Pipeline | `prepare-grammar`, behind `prepare` and **not** `tokenize`: the corpus brings its own furigana, so no analyser is needed |
 | Fetch | `scripts/fetch-openjlpt.sh` → `data/raw/openjlpt/` + `PROVENANCE.txt` (URL, size, SHA-256 per file) |
 | Screen | A **Grammar** tab between Phrases and Read; `GrammarPanel` is the course (search box, a page of 20, pager) and `GrammarStage` is one pattern |
-| Tests | 8 in `tests/grammar_artifact.rs`, 11 in `grammar.rs`, 5 in `ipc_contract.rs`, 1 in the app's own suite, **14** in `grammar.test.ts` |
+| Tests | 9 in `tests/grammar_artifact.rs`, 11 in `grammar.rs`, 5 in `ipc_contract.rs`, 1 in the app's own suite, **16** in `grammar.test.ts` |
 | Notice | the **twelfth**: `licences/OPENJLPT-grammar.txt`, catalogued as `openjlpt` |
 
 ### What was measured rather than assumed
@@ -2237,6 +2243,7 @@ would have been a frozen frame and the HTTP report was the truth:
 | `Hear it` | the press reached Rust with **the sentence as written** — `speak "もう少しゆっくり話してください。" -> Ok(())` in the dev log — not the pattern, which no synthesiser should be asked to read |
 | the arrows | next → `44 of 526` 〜ないでください; back → `43 of 526`; both follow the **course**, not the page |
 | the way back | `panel=true chrome=visible`, with the search still on screen |
+| the review's two re-checks, after the first commit | the note is **absent in the tick after a keystroke** — not *No patterns match* over a search still running — and reads `33 patterns match “z”.` once the answer arrives; and zurai's card reads `Formal: 〜がたい.`, not the `Formal : 〜がたい.` the first cut shipped |
 
 **Tests.** 8 artifact tests over the committed artifact (the counts, the furigana invariant, the
 ruby reassembly, the no-level obligation, the order, the field shapes, the search, the source
