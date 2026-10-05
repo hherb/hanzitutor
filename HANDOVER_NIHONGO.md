@@ -100,7 +100,7 @@ Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **331
 tests** — every `#[test]` in the two suites (206 in `nihongo-core`, 125 in
 `nihongo-tutor`), plus two doc-tests (`lib.rs`'s and `variants.rs`'s);
 the frontend's are counted separately below.
-`pnpm run test:web` runs 174, of which **105** are this app's.
+`pnpm run test:web` runs 178, of which **109** are this app's.
 `cargo test -p hanzi-voice`, the shared crate the audio half lives in, is 29.
 
 | | |
@@ -132,7 +132,7 @@ the frontend's are counted separately below.
 | Bundle | built at N9 as `Kana Tutor.app`, 15.25 MiB, and **rebuilt after the N10 rename as `Nihongo Tutor.app`** — 15 MiB, `codesign --verify --deep --strict` clean, `Identifier=com.hanzitutor.kana`, Team `X5DWXB4283`, and all ten notices world-readable. The `.dmg` needs Tauri's own `bundle_dmg.sh` run outside the sandbox (trap 21); the N10 one is **7,957,111 bytes**, `hdiutil verify` checksum VALID, signed `Identifier=Nihongo Tutor_0.1.0_aarch64`, and mounting it shows `Nihongo Tutor.app` plus the `Applications` link with the inner app still passing `--deep --strict`. The N9 figures were 15.25 MiB and an 8,186,456-byte image; the icon N9 drew has since been **redesigned at N14** — white field, the flag's red あ — and both the desktop set and the iOS set were regenerated from the new master, so a build from this tree wears a different face than the 15 MiB one described here; `/Applications/Kana Tutor.app` is still the N9 install, and the N10 build has not been installed there |
 | Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review", and the kana course seen on the device at N13. See §5, "Building for iOS", for the three things `tauri ios init` does not provide |
 | Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Read, Review, where **five screens are each two screens**: the course and the thing it opens — Kanji and Practice open a board, Radicals a family, Words a card, Read a passage (invariants 33, 34 and 35). **Start here** and Licences hang off the footer, in neither course (invariant 31) |
-| Tests | nihongo-core 206, nihongo-tutor 125, hanzi-voice 29, frontend 105 of the 174 |
+| Tests | nihongo-core 206, nihongo-tutor 125, hanzi-voice 29, frontend 109 of the 178 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | three files, `confusions.json`, `review.json` and `prefs.json`, in the app's own data directory |
@@ -230,6 +230,20 @@ overflowing by **13px** at a phone's width — a bug in the chrome that predates
 milestone and that none of the three new screens had — and `.views` wraps now. The
 measurements, and what the three stages deliberately do not have (arrows, or a board),
 are in `ROADMAP_NIHONGO.md` N15.
+
+**And N16 is what N15's first device trials found, on an iPhone 13 Pro Max and an iPad
+Air.** The maintainer's report: after grading, the way on was the lesson's arrows in the
+top corner, and it should be the control beside Grade — Hanzi Tutor's arrangement, where
+the commit button *becomes* `Next`. So the primary control under the board is now the
+**verdict's own way on**: `Grade` while there is no verdict, `Next` once there is one,
+`Finish` at the end of a lesson (there is no next, and the way on is the course), and
+`Grade` again for a radical, which belongs to no lesson. The corner arrows keep their own
+job, which is **skipping** — they step through the lesson without grading, so the primary
+still reads `Grade` after a skip. It is one function, `board.ts`'s `afterGrade`, shared by
+both stages and unit-tested in its four cases, and invariant 36 is the rule. The same
+trials settled one thing *not* to change: the iPad's lesson cards wrap their kana at full
+width, and the maintainer's verdict is that it *"makes good use of screen real estate"*, so
+the track stays as it is.
 
 **And the last of it is the vocabulary on the character's card**, which §9 below had
 called the obvious next thing after N8 — the thing `words::of_kanji` had been
@@ -503,11 +517,13 @@ apps/nihongo-tutor/               the app
                                   kana, and the request from another screen consumed
                                   once its script's course is loaded — N13, invariant
                                   34
-  src/lib/KanaPractice.svelte(933)  **the kana stage**: one kana, its sound above the
+  src/lib/KanaPractice.svelte(974)  **the kana stage**: one kana, its sound above the
                                   board, the board, the tool row below it, and the
                                   typing exercise and the confusions behind the
                                   `More` fold — N13, invariant 34 — with the arrows
-                                  and Grade at the 44px a finger needs — N15
+                                  and Grade at the 44px a finger needs — N15 — and
+                                  Grade becoming the verdict's own way on — N16,
+                                  invariant 36
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
   src/lib/ReviewPanel.svelte(383) what is due **in one course**, and a board to
                                   write it on — N2, N10 — with the joined-stroke
@@ -516,11 +532,12 @@ apps/nihongo-tutor/               the app
   src/lib/KanjiPanel.svelte(309)  **the kanji course**: the grade chips and one card
                                   per lesson of ten, each card carrying its ten
                                   characters — N8, and the first of N12's two screens
-  src/lib/KanjiPractice.svelte(1234)  **the stage**: one character, its readings above
+  src/lib/KanjiPractice.svelte(1277)  **the stage**: one character, its readings above
                                   the board, the board, the tool row below it, and
                                   everything else behind the `More` fold — N12,
                                   invariant 33 — with the arrows and Grade at the
-                                  44px a finger needs — N15
+                                  44px a finger needs — N15 — and Grade becoming the
+                                  verdict's own way on — N16, invariant 36
   src/lib/Icon.svelte    (144)    LIFTED FROM THE CHINESE APP, BYTE-IDENTICAL — the
                                   board's tool glyphs, drawn rather than taken from
                                   an icon set — N12, invariant 33
@@ -562,8 +579,11 @@ apps/nihongo-tutor/               the app
   src/lib/speech.ts      (123)    what can be heard, and which key asks for it, as
                                   pure functions — N1, and invariant 26's rules
   src/lib/speech.test.ts  (81)    run by the ROOT project's vitest
-  src/lib/board.ts        (97)    the board's arithmetic, as pure functions
-  src/lib/board.test.ts   (99)    run by the ROOT project's vitest
+  src/lib/board.ts        (124)   the board's arithmetic, as pure functions — the
+                                  pointer mapping, the sweep, the stray-tap filter,
+                                  and `afterGrade`, the rule that puts the verdict's
+                                  own way on where Grade was (36)
+  src/lib/board.test.ts   (126)   run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
   src/lib/types.ts       (617)    the IPC shapes, `Character = Drawable`, the
                                   chart's slots as `(string | null)[]`, the
@@ -581,17 +601,19 @@ crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
                                   is a default feature this app turns off
 ```
 
-The line counts are the current tree's for the rows N11, N12, N13 and N15 touched —
+The line counts are the current tree's for the rows N11, N12, N13, N15 and N16
+touched —
 `words.rs`, the two artifacts' tests, the app's `lib.rs` and `ipc_contract.rs`,
 `App.svelte`, `nav.ts`, `nav.test.ts`, `types.ts`, `api.ts`, the three `start*`
 files, the six kanji files (`KanjiPanel`, `KanjiPractice`, `Icon`,
 `KanaCanvas`, `kanji.ts`, `kanji.test.ts`), the kana course's own
-(`KanaPanel`, `KanaPractice`, `KanaCanvas`, `kana.ts`, `kana.test.ts`), and the six
+(`KanaPanel`, `KanaPractice`, `KanaCanvas`, `kana.ts`, `kana.test.ts`), the six
 N15 touched (`RadicalsPanel`, `RadicalStage`, `VocabularyPanel`, `WordStage`,
-`PassagePanel`, `PassageStage`) —
+`PassagePanel`, `PassageStage`), and the two N16 touched (`board.ts`,
+`board.test.ts`, plus the two stages above) —
 and were last checked while writing invariants 26 and 27 for the rest; a few of the
 earlier numbers were stale even then, which is worth knowing before treating one as
-a measurement. N15's own six were counted from the tree it wrote.
+a measurement. N15's own six, and N16's two, were counted from the tree they wrote.
 
 `src-tauri/gen/schemas/` is committed, as it is for the other two apps.
 
@@ -1575,7 +1597,8 @@ proposal is the shape that shipped.
   control (`invariant 27`), or a radical's number and family size, which is the same
   kind of fact. Everything that is prose about the character — **including the
   meaning** — is inside the fold, so the row under the board is only what a board
-  needs: Hint, Strokes, Undo, Clear, Grade. Folding the meaning in was the
+  needs: Hint, Strokes, Undo, Clear, Grade — and Grade is the verdict's own way on
+  once there is a verdict, which is invariant 36. Folding the meaning in was the
   maintainer's instruction and it is 92px of a phone's screen.
 * **Inside a lesson, the arrows either side of the character are the only way on.**
   No strip of ten: it would be a second grid above a board whose ten characters are
@@ -1638,7 +1661,8 @@ one kana and back to choose the next. The rule, in the same parts:
   board (the kana, its reading, and the one control that says it), the board, then
   the tools — Hint, Strokes, Undo, Clear, Grade — and everything else about the kana
   behind one `More` fold, at every width. The fold is not a phone-only control, for
-  33's measured reason.
+  33's measured reason. The last of those tools is the verdict's own way on once
+  there is a verdict (invariant 36), which is N16.
 * **The arrows either side of the kana are the lesson of the kana on the board, and
   the lesson is derived from the course on every change.** The confusions list
   crosses lessons — シ and ツ are different rows — so a stage that remembered the
@@ -1719,6 +1743,34 @@ N13's "deliberately not done" had named as the next piece: **Radicals**, **Words
   file, what may be handed to the voice, the joined-stroke rule, and Review — which still
   draws its queue above its board, is the same complaint, and is the next piece of this
   work rather than something N15 did in passing.
+
+### 36. **The control under the board is the verdict's own way on, and the corner arrows are skipping.**
+
+Found in N15's first device trials, in the maintainer's words: *"when grading a drawn
+character, in order to get to the next character, the user has to move the pointer to the
+top right corner. The 'Next' button should appear next to the 'grade' button after grading
+similar as in HanziTutor — the top 'next' is for skipping a character."*
+
+* **One rule, in `board.ts`'s `afterGrade`, used by both board stages** — so the kanji
+  stage and the kana stage cannot disagree about what "graded" means for the control.
+  The primary asks for a verdict while there is none; once there is one the same place
+  holds the way on: **`next`** mid-lesson, **`finish`** at the lesson's last item (there
+  is no next, and the way on is the course the stage was opened from), and **`grade`**
+  again for a **radical**, which belongs to no lesson and has nothing to advance to.
+  Hanzi Tutor does the same with its commit button, and its "Finish" at the end of an
+  entry is where ours comes from.
+* **Skipping is a different act, and the corner arrows keep it.** They step through the
+  lesson **without grading**, so the primary still reads `Grade` after a skip — which is
+  the whole distinction the maintainer drew, and the reason this is not "put a Next
+  button in the corner's place unconditionally".
+* **It is measured rather than reasoned about**: あ graded → `Next` → い; the corner arrow
+  instead → う with no verdict and `Grade` back; ん, whose lesson holds one kana, →
+  `Finish` → the course; 日 → `Next` → 一 in the kanji stage; a radical → `Grade` still.
+  The run is `ROADMAP_NIHONGO.md` N16, and `afterGrade`'s four cases are unit-tested in
+  `board.test.ts`.
+* **Review is deliberately not included**: its due list is *above* its board, so after
+  grading the next item is a scroll away — the same complaint one screen further out, and
+  the next piece of this work rather than something N16 did in passing.
 
 ## 5. The verification loop
 

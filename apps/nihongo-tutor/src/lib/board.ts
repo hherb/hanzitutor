@@ -95,3 +95,30 @@ export const MIN_POINTS = 2;
 export function isStroke(points: Point[]): boolean {
   return points.length >= MIN_POINTS;
 }
+
+/**
+ * What the board's own primary control offers **after** an attempt has been
+ * graded.
+ *
+ * `grade` is the control that asks for a verdict; once there is one, the same
+ * place holds the way on. That is Hanzi Tutor's arrangement — its commit button
+ * becomes `Next` — and the reason it is wanted here is the hand: the learner has
+ * just pressed the button at the bottom of the screen, and reaching back to the
+ * lesson's arrows in the top corner to move on is a journey the verdict itself
+ * can save.
+ *
+ * The corner arrows keep their own job, which is **skipping**: they step through
+ * the lesson without grading, and so leave this control reading `grade` until
+ * something has been judged.
+ *
+ * `grade` is also the answer for a radical head form, which belongs to no lesson:
+ * there is nothing to advance to and nothing to finish. `finish` is the end of a
+ * lesson — there is no next character, and the way on is back to the course — and
+ * it is Hanzi Tutor's rule for the end of an entry rather than a new one.
+ */
+export type AfterGrade = "grade" | "next" | "finish";
+
+export function afterGrade(graded: boolean, inLesson: boolean, hasNext: boolean): AfterGrade {
+  if (!graded || !inLesson) return "grade";
+  return hasNext ? "next" : "finish";
+}

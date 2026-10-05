@@ -48,6 +48,7 @@ references for no gain.
 | **N12** | **The kanji course in two screens** | **Shipped.** The course was one page and the board sat at the bottom of it: on a phone a learner scrolled past the lesson list and the character grid to write one character, and back to choose the next. The course is now the grade chips and one card per lesson of ten (each card showing its ten characters), and tapping a card opens a stage — readings above the board, the board, the tools below it, and everything else about the character behind one `More` fold. See the milestone for the measurement that made the fold universal. |
 | **N13** | **The kana course in two screens** | **Shipped.** N12's complaint, on the kana course and for the same reason: the lesson list, the lesson's kana and the board were stacked in three columns, so a phone made a learner scroll past the course to write one kana. The course is now the script toggle and one card per lesson carrying its own kana, and a card opens a stage — the sound above the board, the board, the tools below it, everything else behind one `More`. See the milestone for the two bugs the measurement corrected, one of which was N12's too. |
 | **N15** | **The last three screens, and a thumb's width** | **Shipped.** N13 left the Radicals, Words and Read screens one column each and named them as the next piece of the same work; each is now a course screen plus a stage, the chrome steps aside for all five two-screen panels (`STAGE_VIEWS`), and the arrows and Grade grew to the 44px a finger needs in both stages. See the milestone for the 13px overflow the phone measurement found in the app's own tab row — a bug none of the three new screens had. |
+| **N16** | **The verdict's own way on** | **Shipped.** Found in N15's first device trials, on an iPhone and an iPad: after grading, the way on was the lesson's arrows in the top corner. The primary control under the board is now the verdict's own way on — `Next` once something has been judged, `Finish` at the end of a lesson, `Grade` again for a radical — while the corner arrows go on skipping. One rule in `board.ts` (`afterGrade`), used by both stages. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -1846,6 +1847,62 @@ its queue is above its board, so the same complaint is true of it and it is the 
 of this work rather than a thing this milestone did in passing. The three stages draw no
 board, by the decision above. And nothing about the schedule, the learner's three files,
 the readings or the voice changed: this milestone is screens.
+
+**And its first device trials found the next thing**, which is N16 below: an iPad Air and
+an iPhone 13 Pro Max, both running this build, driven by hand for the first time. One
+finding was a change (the verdict's own way on) and one was a decision not to change
+anything — the iPad's lesson cards wrap their kana at full width, five kana over two
+lines, and the maintainer's verdict is that it *"makes good use of screen real estate"*,
+so the `minmax(150px, 1fr)` track stays as it is and is not a bug to be tidied away.
+
+---
+
+## N16 — The verdict's own way on
+
+**The maintainer's report, from the first device trials of N15**, on both an iPhone and
+an iPad: *"when grading a drawn character, in order to get to the next character, the user
+has to move the pointer to the top right corner. The 'Next' button should appear next to
+the 'grade' button after grading similar as in HanziTutor — the top 'next' is for skipping
+a character."*
+
+**The rule.** The board's primary control under the board is the **verdict's own way on**:
+it asks for a verdict while there is none, and once there is one the same place holds the
+way on, so the learner never travels back to the corner. It is Hanzi Tutor's arrangement
+— its commit button becomes `Next` — and it is one function, `board.ts`'s `afterGrade`,
+shared by both stages so the two cannot disagree about what "graded" means:
+
+| where the board is | after a verdict |
+| --- | --- |
+| mid-lesson | **Next** — the next character, or the next kana |
+| the lesson's last one | **Finish** — there is no next, and the way on is the course the stage was opened from |
+| a **radical**, which belongs to no lesson | **Grade** again — there is nothing to advance to and nothing to finish |
+| nothing graded yet | **Grade**, disabled until something is drawn |
+
+**The corner arrows are unchanged, and the distinction is the point**: they step through
+the lesson **without grading**, which is what "skipping" means, and that is why the
+primary still reads `Grade` after a skip. Hanzi Tutor makes the same split, and its
+"Finish" at the end of an entry is where ours comes from rather than a new idea.
+
+**Measured**, in the app's own webview at 390×844, driven over §5's DOM probe with a
+synthetic hand along each character's own centre-lines:
+
+* the kana stage on あ (`1 / 5`): `Grade` disabled on an empty board, enabled once drawn,
+  **`Next`** once graded (100/100), and pressing it opened い at `2 / 5` with `Grade` back;
+* the corner arrow instead: い → う at `3 / 5` with **no verdict** and the primary still
+  `Grade` — skipping stayed skipping;
+* ん, whose lesson holds one kana: after grading the primary read **`Finish`**, and
+  pressing it returned to the Kana course with the chrome back;
+* the kanji stage on 日 (`1 / 10`): `Next` after grading, opening 一 at `2 / 10`, and the
+  corner arrow skipping on to 人 at `3 / 10`;
+* a **radical** opened from the radicals panel: after grading, the primary was still
+  `Grade` and still enabled — the case the table above exists for.
+
+Four unit tests pin `afterGrade` (ungraded, mid-lesson, last of the lesson, and no
+lesson), and the four verification layers are green. Nothing else moved: the verdict
+panel, the arrows, the joined-stroke line, the schedule and the voice are what they were,
+and **Review is deliberately not in this change** — its queue lists what is due *above*
+the board, so after grading the next item is a scroll away, which is the same complaint
+one screen further out and the next piece of this work.
 
 ---
 

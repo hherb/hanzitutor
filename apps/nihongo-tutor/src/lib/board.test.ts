@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MIN_POINTS, isStroke, pointerToDisplay, sweepAt } from "./board";
+import { MIN_POINTS, afterGrade, isStroke, pointerToDisplay, sweepAt } from "./board";
 import { BOX } from "./render";
 
 describe("pointerToDisplay", () => {
@@ -95,5 +95,32 @@ describe("isStroke", () => {
     expect(isStroke([{ x: 1, y: 1 }])).toBe(false);
     expect(isStroke([])).toBe(false);
     expect(MIN_POINTS).toBe(2);
+  });
+});
+
+describe("afterGrade", () => {
+  it("asks for a verdict while there is none", () => {
+    // Skipping with the corner arrow is not grading, so the control stays Grade.
+    expect(afterGrade(false, true, true)).toBe("grade");
+    expect(afterGrade(false, true, false)).toBe("grade");
+    // Nothing drawn and no verdict yet: the board's own answer is the same.
+    expect(afterGrade(false, false, false)).toBe("grade");
+  });
+
+  it("offers the next character once the attempt has been judged", () => {
+    expect(afterGrade(true, true, true)).toBe("next");
+  });
+
+  it("offers the way back when the lesson is finished", () => {
+    // The last character of a lesson has no next one, and the way on is the
+    // course — Hanzi Tutor's "Finish" at the end of an entry.
+    expect(afterGrade(true, true, false)).toBe("finish");
+  });
+
+  it("keeps asking for a verdict on a radical, which is in no lesson", () => {
+    // 92 of the 214 head forms are not jōyō characters and belong to no lesson:
+    // there is nothing to advance to and nothing to finish.
+    expect(afterGrade(true, false, false)).toBe("grade");
+    expect(afterGrade(true, false, true)).toBe("grade");
   });
 });

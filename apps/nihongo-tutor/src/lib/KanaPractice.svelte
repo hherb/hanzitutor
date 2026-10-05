@@ -54,6 +54,7 @@
   import { scheduleNote } from "./review";
   import { canHear, isHearItKey, type VoiceStatus } from "./speech";
   import { joinedLabel, lessonLabel, lessonOf, neighbourIn, positionIn } from "./kana";
+  import { afterGrade } from "./board";
   import * as api from "./api";
   import type { GradeReport, Kana, LessonView, Point, ReadingCheck } from "./types";
 
@@ -120,6 +121,14 @@
   const next = $derived(neighbourIn(lesson, ch, 1));
   const at = $derived(positionIn(lesson, ch));
   const of = $derived(lesson?.kana.length ?? 0);
+
+  /**
+   * What the primary control under the board offers: the verdict, then the way on.
+   *
+   * `board.ts`'s rule, shared with the kanji stage, so the two cannot disagree
+   * about what "graded" means for the control.
+   */
+  const after = $derived(afterGrade(report !== null, lesson !== null, next !== null));
 
   /**
    * Load whatever character is on the board, and start it clean.
@@ -453,16 +462,48 @@
         </div>
 
         <div class="tools" role="group" aria-label="Verdict">
-          <button
-            class="primary"
-            disabled={busy || attempt.length === 0}
-            onclick={askForAVerdict}
-            aria-label={busy ? "Grading…" : "Grade this attempt"}
-            title="Grade what you have drawn"
-          >
-            <span class="primary-glyph"><Icon name="tick" /></span>
-            <span>{busy ? "Grading…" : "Grade"}</span>
-          </button>
+          {#if after === "next"}
+            <!--
+              The verdict's own way on, in the place Grade was: the learner has
+              just pressed the button at the bottom of the screen, and the lesson's
+              arrows are in the top corner. Hanzi Tutor's arrangement and
+              `board.ts`'s `afterGrade`. The corner arrows keep their own job,
+              which is **skipping**: they step through the lesson without grading,
+              so this only becomes Next once something has been judged.
+            -->
+            <button
+              class="primary"
+              onclick={() => step(1)}
+              aria-label="Next kana: {next}"
+              title="On to {next}"
+            >
+              <span class="primary-glyph"><Icon name="next" /></span>
+              <span>Next</span>
+            </button>
+          {:else if after === "finish"}
+            <!-- The last kana of the lesson: there is no next one, and the way on
+                 is the course the stage was opened from. -->
+            <button
+              class="primary"
+              onclick={onleave}
+              aria-label="Back to the lessons: this is the last kana of the lesson"
+              title="The lesson is finished — back to the lessons"
+            >
+              <span class="primary-glyph"><Icon name="tick" /></span>
+              <span>Finish</span>
+            </button>
+          {:else}
+            <button
+              class="primary"
+              disabled={busy || attempt.length === 0}
+              onclick={askForAVerdict}
+              aria-label={busy ? "Grading…" : "Grade this attempt"}
+              title="Grade what you have drawn"
+            >
+              <span class="primary-glyph"><Icon name="tick" /></span>
+              <span>{busy ? "Grading…" : "Grade"}</span>
+            </button>
+          {/if}
         </div>
       </div>
 
