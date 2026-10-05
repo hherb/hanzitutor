@@ -122,3 +122,25 @@ export function afterGrade(graded: boolean, inLesson: boolean, hasNext: boolean)
   if (!graded || !inLesson) return "grade";
   return hasNext ? "next" : "finish";
 }
+
+/**
+ * The same sentence for the **review queue**, whose end is a state rather than an
+ * action.
+ *
+ * The queue is a board with no lesson behind it: every item in it is something to
+ * write, and when the last of them has been graded there is nothing to advance to
+ * *and* nothing to go back to, so the control says so — `nothing`, which the
+ * maintainer's word for it is "nothing due" — instead of the stage's `finish`.
+ *
+ * `hasNext` is asked of the **refreshed** queue: `grade` reloads it, and an
+ * attempt that counted as a review takes its character out of the due list, so
+ * what is left is what comes next. It is also asked of the queue rather than of
+ * the page: a queue with more due than one page holds has a next item even when
+ * the page has run out, which is why the caller counts both.
+ */
+export type AfterQueue = "grade" | "next" | "nothing";
+
+export function afterGradeInQueue(graded: boolean, hasNext: boolean): AfterQueue {
+  if (!graded) return "grade";
+  return hasNext ? "next" : "nothing";
+}

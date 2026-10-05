@@ -49,6 +49,7 @@ references for no gain.
 | **N13** | **The kana course in two screens** | **Shipped.** N12's complaint, on the kana course and for the same reason: the lesson list, the lesson's kana and the board were stacked in three columns, so a phone made a learner scroll past the course to write one kana. The course is now the script toggle and one card per lesson carrying its own kana, and a card opens a stage — the sound above the board, the board, the tools below it, everything else behind one `More`. See the milestone for the two bugs the measurement corrected, one of which was N12's too. |
 | **N15** | **The last three screens, and a thumb's width** | **Shipped.** N13 left the Radicals, Words and Read screens one column each and named them as the next piece of the same work; each is now a course screen plus a stage, the chrome steps aside for all five two-screen panels (`STAGE_VIEWS`), and the arrows and Grade grew to the 44px a finger needs in both stages. See the milestone for the 13px overflow the phone measurement found in the app's own tab row — a bug none of the three new screens had. |
 | **N16** | **The verdict's own way on** | **Shipped.** Found in N15's first device trials, on an iPhone and an iPad: after grading, the way on was the lesson's arrows in the top corner. The primary control under the board is now the verdict's own way on — `Next` once something has been judged, `Finish` at the end of a lesson, `Grade` again for a radical — while the corner arrows go on skipping. One rule in `board.ts` (`afterGrade`), used by both stages. |
+| **N17** | **The queue's own end** | **Shipped.** The Review queue, asked for the same day: its list of what is due is *above* its board, so the next character was a scroll away. The same control is now the way on there too — `Next`, and **`Nothing due`** when the queue is empty, which is the maintainer's wording because an empty queue is a state rather than the stage's `finish`. `afterGradeInQueue` plus `review.ts`'s `nextDue`/`hasNextDue`, and a measured run against a real `review.json` whose three cards SM-2'd from 1–3 October to 13 October. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -1902,7 +1903,64 @@ lesson), and the four verification layers are green. Nothing else moved: the ver
 panel, the arrows, the joined-stroke line, the schedule and the voice are what they were,
 and **Review is deliberately not in this change** — its queue lists what is due *above*
 the board, so after grading the next item is a scroll away, which is the same complaint
-one screen further out and the next piece of this work.
+one screen further out and the next piece of this work. *(The maintainer asked for that
+one the same day, and N17 below is it — including its answer to the one question the
+sentence above leaves open, what an exhausted queue should say.)*
+
+---
+
+## N17 — The queue's own end
+
+**N16's own next piece, asked for the same day and in the same breath**: *"Yes, I want it
+too. An exhausted queue should read 'nothing due'."*
+
+**The rule is N16's, on the third board in the app.** Review's list of what is due is
+**above** its board, so after grading, the next character was a scroll away — and this is
+the one screen whose whole subject is "what next". The primary control is therefore the
+verdict's own way on again: `Grade` while there is no verdict, **`Next`** once there is
+one (which opens the next due character), and **`Nothing due`** when the queue has nothing
+left. The queue's end is a **state** rather than the stage's `finish`, which is the
+maintainer's wording and not an implementation detail: on a stage the lesson is over and
+there is a course to go back to, while an empty queue is nowhere to go and nothing to go
+back to, so the control says what is true rather than offering a direction.
+
+`board.ts`'s `afterGradeInQueue` is the rule — the same sentence as `afterGrade` with the
+queue's own end — and it is used with `review.ts`'s two new pure functions:
+
+* **`nextDue(items, current)`** — the next due character, **by identity rather than by
+  position**, because the queue is ordered by how overdue each character is and that order
+  moves as characters are graded. The kind is part of the identity: 人 is both a jōyō
+  character and radical 9, and a card is keyed by the character.
+* **`hasNextDue(queue, current)`** — whether the *queue* has anything after the character
+  on the board, which is not the same question as whether the *page* has. A queue with
+  more due than one page holds has a next character, and the command returns
+  `min(limit, due)` items today, so the second term is a guard rather than the usual path
+  — but "nothing due" is a claim about the queue, and this is the one place that can tell
+  an emptied queue from a page nobody has asked for yet.
+
+**Measured, with the schedule file actually written** — which needs §5's `HOME` recipe
+(trap 5), because the harness's sandbox refuses `~/Library` and a queue that cannot be
+written to can never be graded empty. Three kana written into `review.json` as due, then
+driven over the DOM probe at 390×844 with a synthetic hand:
+
+| step | measured |
+| --- | --- |
+| the queue | `3 due · 3 scheduled`, three rows, no board until one is tapped |
+| あ opened | primary `Grade`, disabled |
+| あ graded 100/100 | primary **`Next`**, header `2 due` — the attempt counted, and the character left the queue |
+| `Next` | い on the board, primary back to `Grade` |
+| い, then う | the same, the header counting down `1 due`, `0 due` |
+| う graded | primary **`Nothing due`**, disabled |
+| the queue below it | `Nothing is due right now — 3 characters are scheduled, and the next comes back in 8 days.` |
+| `review.json` | all three cards moved from 1–3 October to **2026-10-13**, `intervalDays 8.0`, `ease 2.6`, `repetitions 2`, one history entry each |
+
+Six new unit tests pin `nextDue` and `hasNextDue` (the identity rule, the character-versus-
+radical case, the page-versus-queue guard, and the exhausted queue), and the four
+verification layers are green. **What is not changed**: the schedule and its file
+(invariant 15), the rule for when an attempt is a review (invariant 25), the two sections'
+queues (invariant 31), the joined-stroke line and what may be handed to the voice. The
+panel still shows one course's queue, and its own list of what is due is still the way to
+*choose* a character rather than the way to move on.
 
 ---
 

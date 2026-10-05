@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { overdueLabel, scheduleNote, upcomingLabel } from "./review";
+import { hasNextDue, nextDue, overdueLabel, scheduleNote, upcomingLabel } from "./review";
+import type { DueItem } from "./types";
 
 /**
  * The Review screen's arithmetic.
@@ -127,5 +128,63 @@ describe("scheduleNote", () => {
       tone: "ok",
       text: "Saved for review.",
     });
+  });
+});
+
+/** One due item, with the fields the queue arithmetic does not look at. */
+const due = (ch: string, kind: "kana" | "kanji" | "radical" = "kana"): DueItem => ({
+  ch,
+  kind,
+  hint: ch,
+  radical: kind === "radical" ? 9 : null,
+  due: "2026-09-19T09:00:00Z",
+  intervalDays: 1,
+  attempts: 1,
+  lapses: 0,
+});
+
+describe("nextDue", () => {
+  it("is the first due character that is not the one on the board", () => {
+    const items = [due("あ"), due("い"), due("う")];
+    expect(nextDue(items, items[0])?.ch).toBe("い");
+    expect(nextDue(items, items[1])?.ch).toBe("あ");
+    expect(nextDue(items, null)?.ch).toBe("あ");
+  });
+
+  it("answers nothing when the queue holds only the character on the board", () => {
+    expect(nextDue([due("あ")], due("あ"))).toBeNull();
+    expect(nextDue([], null)).toBeNull();
+  });
+
+  it("tells a character from the same character's radical", () => {
+    // 人 is both a jōyō character and radical 9, and a card is keyed by the
+    // character — so the kind is part of the identity rather than decoration.
+    const asKanji = due("人", "kanji");
+    const asRadical = due("人", "radical");
+    expect(nextDue([asKanji], asRadical)?.kind).toBe("kanji");
+  });
+});
+
+describe("hasNextDue", () => {
+  it("is true while the page holds another due character", () => {
+    const items = [due("あ"), due("い")];
+    expect(hasNextDue({ items, due: 2 }, items[0])).toBe(true);
+    // The last item of the page is not the end of the queue: the first item is
+    // the next one, which is what ordering by how overdue each character is means.
+    expect(hasNextDue({ items, due: 2 }, items[1])).toBe(true);
+  });
+
+  it("is true when the page holds only the character on the board and the queue has more", () => {
+    // The guard the second term exists for: "nothing due" is a claim about the
+    // *queue*, and a screen that answered from the page alone would make it over
+    // characters it had not asked for. The command returns
+    // `min(limit, due)` items today, so this is a guard rather than the usual path
+    // — but it is the difference between an emptied queue and an unasked-for page.
+    expect(hasNextDue({ items: [due("あ")], due: 2 }, due("あ"))).toBe(true);
+  });
+
+  it("is false only for a queue with nothing left in it", () => {
+    expect(hasNextDue({ items: [due("あ")], due: 1 }, due("あ"))).toBe(false);
+    expect(hasNextDue({ items: [], due: 0 }, null)).toBe(false);
   });
 });

@@ -21,13 +21,27 @@
    * two screens that already have one are about their own lists (Practice is a
    * script's course, Kanji is a grade's), and routing a due character through
    * either would fight `App.svelte`'s course-reload effect for the selection.
+   *
+   * ## The verdict's own way on, and what the queue says when it is empty
+   *
+   * The list of what is due is **above** the board, so after grading the next
+   * character used to be a scroll away — and this is the one screen whose whole
+   * subject is "what next". The primary control is therefore the verdict's own way
+   * on, as on both board stages (invariant 36): `Grade` while there is no verdict,
+   * `Next` once there is one, which opens the next due character, and
+   * **`Nothing due`** when the queue has nothing left to offer. The queue's end is
+   * a state rather than the stage's `finish` — there is nowhere to go and nothing
+   * to go back to — and `board.ts`'s `afterGradeInQueue` is the rule. The next
+   * character is asked of the **refreshed** queue: grading reloads it, and an
+   * attempt that counted as a review takes its character out of the due list.
    */
   import KanaCanvas from "./KanaCanvas.svelte";
   import SpeakButton from "./SpeakButton.svelte";
+  import { afterGradeInQueue } from "./board";
   import { joinedLabel } from "./kana";
   import { courseOf, type Section } from "./nav";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
-  import { overdueLabel, scheduleNote, upcomingLabel } from "./review";
+  import { hasNextDue, nextDue, overdueLabel, scheduleNote, upcomingLabel } from "./review";
   import * as api from "./api";
   import type { Drawable, DueItem, GradeReport, Point, ReviewQueueView } from "./types";
   import type { VoiceStatus } from "./speech";
@@ -133,6 +147,51 @@
       ),
     };
   });
+
+  /** Whether this item is the one already on the board. */
+  /**
+   * The next due character among those the page holds, or `null` — `review.ts`'s
+   * arithmetic, which answers it by identity rather than by position because the
+   * queue is ordered by how overdue each character is and that order moves as
+   * characters are graded.
+   */
+  const nextItem = $derived(queue ? nextDue(queue.items, chosen) : null);
+
+  /**
+   * Whether the queue can offer anything at all after the character on the board.
+   *
+   * Not simply "is there another item in the page": a queue with more due than one
+   * page holds has a next character even when the page has run out, which is why
+   * `review.ts` counts the section's uncapped `due` against the page's length.
+   */
+  const hasNext = $derived(!!queue && hasNextDue(queue, chosen));
+
+  /**
+   * What the primary control offers: the verdict, then the next due character,
+   * then the state of the queue itself — invariant 36, and `board.ts`'s rule for a
+   * board that has no lesson behind it.
+   */
+  const after = $derived(afterGradeInQueue(report !== null, hasNext));
+
+  /**
+   * Open the next due character, fetching another page first when the queue holds
+   * more than the page does.
+   *
+   * One action rather than two: the learner pressed the control where Grade was,
+   * and what they asked for is the next character — not a page of them to choose
+   * from again.
+   */
+  async function advance() {
+    if (nextItem) {
+      void open(nextItem);
+      return;
+    }
+    if (!hasNext) return;
+    limit += PAGE;
+    await load();
+    const found = queue ? nextDue(queue.items, chosen) : null;
+    if (found) void open(found);
+  }
 </script>
 
 <section class="review">
@@ -235,9 +294,38 @@
           <button onclick={() => board?.animate()}>Show stroke order</button>
           <button onclick={() => board?.undo()}>Undo</button>
           <button onclick={() => board?.clear()}>Clear</button>
-          <button class="primary" disabled={busy || attempt.length === 0} onclick={grade}>
-            Grade
-          </button>
+          {#if after === "next"}
+            <!--
+              The verdict's own way on, in the place Grade was — invariant 36. It
+              matters more here than on a stage: the queue that says what is due is
+              *above* the board, so without this the next character is a scroll
+              away, and this is the one screen whose whole subject is "what next".
+            -->
+            <button
+              class="primary"
+              onclick={() => void advance()}
+              aria-label="Next due character{nextItem ? `: ${nextItem.ch}` : ""}"
+              title={nextItem
+                ? `On to ${nextItem.ch} — ${nextItem.hint}`
+                : "Showing the next due characters"}
+            >
+              Next
+            </button>
+          {:else if after === "nothing"}
+            <!-- The queue's end is a state, not an action: every due character of
+                 this course has been written. -->
+            <button
+              class="primary"
+              disabled
+              title="Every due character of this course has been written, and the next one comes back on the schedule"
+            >
+              Nothing due
+            </button>
+          {:else}
+            <button class="primary" disabled={busy || attempt.length === 0} onclick={grade}>
+              Grade
+            </button>
+          {/if}
         </div>
 
         {#if note}

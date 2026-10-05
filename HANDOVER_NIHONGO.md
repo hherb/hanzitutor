@@ -100,7 +100,7 @@ Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor` is **331
 tests** — every `#[test]` in the two suites (206 in `nihongo-core`, 125 in
 `nihongo-tutor`), plus two doc-tests (`lib.rs`'s and `variants.rs`'s);
 the frontend's are counted separately below.
-`pnpm run test:web` runs 178, of which **109** are this app's.
+`pnpm run test:web` runs 187, of which **118** are this app's.
 `cargo test -p hanzi-voice`, the shared crate the audio half lives in, is 29.
 
 | | |
@@ -132,7 +132,7 @@ the frontend's are counted separately below.
 | Bundle | built at N9 as `Kana Tutor.app`, 15.25 MiB, and **rebuilt after the N10 rename as `Nihongo Tutor.app`** — 15 MiB, `codesign --verify --deep --strict` clean, `Identifier=com.hanzitutor.kana`, Team `X5DWXB4283`, and all ten notices world-readable. The `.dmg` needs Tauri's own `bundle_dmg.sh` run outside the sandbox (trap 21); the N10 one is **7,957,111 bytes**, `hdiutil verify` checksum VALID, signed `Identifier=Nihongo Tutor_0.1.0_aarch64`, and mounting it shows `Nihongo Tutor.app` plus the `Applications` link with the inner app still passing `--deep --strict`. The N9 figures were 15.25 MiB and an 8,186,456-byte image; the icon N9 drew has since been **redesigned at N14** — white field, the flag's red あ — and both the desktop set and the iOS set were regenerated from the new master, so a build from this tree wears a different face than the 15 MiB one described here; `/Applications/Kana Tutor.app` is still the N9 install, and the N10 build has not been installed there |
 | Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review", and the kana course seen on the device at N13. See §5, "Building for iOS", for the three things `tauri ios init` does not provide |
 | Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Read, Review, where **five screens are each two screens**: the course and the thing it opens — Kanji and Practice open a board, Radicals a family, Words a card, Read a passage (invariants 33, 34 and 35). **Start here** and Licences hang off the footer, in neither course (invariant 31) |
-| Tests | nihongo-core 206, nihongo-tutor 125, hanzi-voice 29, frontend 109 of the 178 |
+| Tests | nihongo-core 206, nihongo-tutor 125, hanzi-voice 29, frontend 118 of the 187 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816 and passages 502 bytes — all gzip + magic + postcard, all four embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Learner data | three files, `confusions.json`, `review.json` and `prefs.json`, in the app's own data directory |
@@ -244,6 +244,17 @@ both stages and unit-tested in its four cases, and invariant 36 is the rule. The
 trials settled one thing *not* to change: the iPad's lesson cards wrap their kana at full
 width, and the maintainer's verdict is that it *"makes good use of screen real estate"*, so
 the track stays as it is.
+
+**And N17 finished the rule for the third board, at the maintainer's word the same day.**
+Review's list of what is due sits *above* its board, so after grading the next character
+was a scroll away — the one screen whose whole subject is "what next". Its primary control
+is now `Grade`, then `Next` (which opens the next due character), and **`Nothing due`**
+when the queue is empty: the maintainer's wording, and a **state** rather than the stages'
+`Finish`, because an empty queue is nowhere to go and nothing to go back to. It is
+`board.ts`'s `afterGradeInQueue` with `review.ts`'s `nextDue`/`hasNextDue` — identity
+rather than position, and the *queue* rather than the page — and it was measured against a
+real `review.json`: three hand-written due kana graded one after another until the control
+read `Nothing due`, with all three cards SM-2'd from 1–3 October to **13 October**.
 
 **And the last of it is the vocabulary on the character's card**, which §9 below had
 called the obvious next thing after N8 — the thing `words::of_kanji` had been
@@ -525,10 +536,11 @@ apps/nihongo-tutor/               the app
                                   Grade becoming the verdict's own way on — N16,
                                   invariant 36
   src/lib/LicencesPanel.svelte(116)   the notices, fetched over IPC
-  src/lib/ReviewPanel.svelte(383) what is due **in one course**, and a board to
+  src/lib/ReviewPanel.svelte(471) what is due **in one course**, and a board to
                                   write it on — N2, N10 — with the joined-stroke
                                   line its verdict owes a hand that joined —
-                                  invariant 30
+                                  invariant 30 — and the verdict's own way on, whose
+                                  end state is `Nothing due` — N17, invariant 36
   src/lib/KanjiPanel.svelte(309)  **the kanji course**: the grade chips and one card
                                   per lesson of ten, each card carrying its ten
                                   characters — N8, and the first of N12's two screens
@@ -573,17 +585,20 @@ apps/nihongo-tutor/               the app
   src/lib/kana.test.ts   (182)    run by the ROOT project's vitest
   src/lib/words.ts       (101)    furigana and paging arithmetic, as pure functions
   src/lib/words.test.ts  (131)    run by the ROOT project's vitest
-  src/lib/review.ts       (89)    "2 days overdue" and "in 2 days", as pure
+  src/lib/review.ts      (131)    "2 days overdue" and "in 2 days", `nextDue` and
+                                  `hasNextDue` — which due character comes next, and
+                                  whether the *queue* has one at all — as pure
                                   functions — N2
-  src/lib/review.test.ts (131)    run by the ROOT project's vitest
+  src/lib/review.test.ts (190)    run by the ROOT project's vitest
   src/lib/speech.ts      (123)    what can be heard, and which key asks for it, as
                                   pure functions — N1, and invariant 26's rules
   src/lib/speech.test.ts  (81)    run by the ROOT project's vitest
-  src/lib/board.ts        (124)   the board's arithmetic, as pure functions — the
+  src/lib/board.ts        (146)   the board's arithmetic, as pure functions — the
                                   pointer mapping, the sweep, the stray-tap filter,
-                                  and `afterGrade`, the rule that puts the verdict's
-                                  own way on where Grade was (36)
-  src/lib/board.test.ts   (126)   run by the ROOT project's vitest
+                                  and `afterGrade`/`afterGradeInQueue`, the rules
+                                  that put the verdict's own way on where Grade was
+                                  (36)
+  src/lib/board.test.ts   (150)   run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
   src/lib/types.ts       (617)    the IPC shapes, `Character = Drawable`, the
                                   chart's slots as `(string | null)[]`, the
@@ -601,7 +616,7 @@ crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
                                   is a default feature this app turns off
 ```
 
-The line counts are the current tree's for the rows N11, N12, N13, N15 and N16
+The line counts are the current tree's for the rows N11, N12, N13, N15, N16 and N17
 touched —
 `words.rs`, the two artifacts' tests, the app's `lib.rs` and `ipc_contract.rs`,
 `App.svelte`, `nav.ts`, `nav.test.ts`, `types.ts`, `api.ts`, the three `start*`
@@ -609,11 +624,13 @@ files, the six kanji files (`KanjiPanel`, `KanjiPractice`, `Icon`,
 `KanaCanvas`, `kanji.ts`, `kanji.test.ts`), the kana course's own
 (`KanaPanel`, `KanaPractice`, `KanaCanvas`, `kana.ts`, `kana.test.ts`), the six
 N15 touched (`RadicalsPanel`, `RadicalStage`, `VocabularyPanel`, `WordStage`,
-`PassagePanel`, `PassageStage`), and the two N16 touched (`board.ts`,
-`board.test.ts`, plus the two stages above) —
+`PassagePanel`, `PassageStage`), the two N16 touched (`board.ts`, `board.test.ts`,
+plus the two stages above), and the three N17 touched (`review.ts`,
+`review.test.ts`, `ReviewPanel`) —
 and were last checked while writing invariants 26 and 27 for the rest; a few of the
 earlier numbers were stale even then, which is worth knowing before treating one as
-a measurement. N15's own six, and N16's two, were counted from the tree they wrote.
+a measurement. N15's own six, N16's two and N17's three were counted from the tree
+they wrote.
 
 `src-tauri/gen/schemas/` is committed, as it is for the other two apps.
 
@@ -1768,9 +1785,22 @@ similar as in HanziTutor — the top 'next' is for skipping a character."*
   `Finish` → the course; 日 → `Next` → 一 in the kanji stage; a radical → `Grade` still.
   The run is `ROADMAP_NIHONGO.md` N16, and `afterGrade`'s four cases are unit-tested in
   `board.test.ts`.
-* **Review is deliberately not included**: its due list is *above* its board, so after
-  grading the next item is a scroll away — the same complaint one screen further out, and
-  the next piece of this work rather than something N16 did in passing.
+* **The review queue has the same control, and its own end state** (N17). Its due list is
+  *above* its board, so after grading the next character was a scroll away — the same
+  complaint one screen further out, which N16 recorded as the next piece and the maintainer
+  asked for the same day, with the wording of the end state. The rule is
+  `afterGradeInQueue`, beside `afterGrade` in `board.ts`:
+
+  * **`Next`** opens the next due character. `review.ts`'s `nextDue` answers it **by
+    identity rather than by position** — the queue is ordered by how overdue each character
+    is and that order moves as characters are graded, and the kind is part of the identity
+    because 人 is both a jōyō character and radical 9;
+  * **`Nothing due`**, disabled, is what the queue says when it has nothing left. That is
+    the maintainer's own wording, and it is a **state** rather than the stage's `finish`:
+    an empty queue is nowhere to go and nothing to go back to, where a finished lesson has
+    a course behind it;
+  * `hasNextDue` asks the **queue** rather than the page, so a queue with more due than one
+    page holds does not read "nothing due" over characters nobody has fetched yet.
 
 ## 5. The verification loop
 

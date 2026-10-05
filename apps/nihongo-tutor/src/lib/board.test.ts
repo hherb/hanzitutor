@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { MIN_POINTS, afterGrade, isStroke, pointerToDisplay, sweepAt } from "./board";
+import {
+  MIN_POINTS,
+  afterGrade,
+  afterGradeInQueue,
+  isStroke,
+  pointerToDisplay,
+  sweepAt,
+} from "./board";
 import { BOX } from "./render";
 
 describe("pointerToDisplay", () => {
@@ -122,5 +129,22 @@ describe("afterGrade", () => {
     // there is nothing to advance to and nothing to finish.
     expect(afterGrade(true, false, false)).toBe("grade");
     expect(afterGrade(true, false, true)).toBe("grade");
+  });
+});
+
+describe("afterGradeInQueue", () => {
+  it("asks for a verdict while there is none", () => {
+    expect(afterGradeInQueue(false, true)).toBe("grade");
+    expect(afterGradeInQueue(false, false)).toBe("grade");
+  });
+
+  it("offers the next due character once the attempt has been judged", () => {
+    expect(afterGradeInQueue(true, true)).toBe("next");
+  });
+
+  it("says the queue is exhausted rather than offering a way on", () => {
+    // The queue's end is a state, not the stage's `finish`: there is nowhere to
+    // go and nothing to go back to, so the control reads "nothing due".
+    expect(afterGradeInQueue(true, false)).toBe("nothing");
   });
 });

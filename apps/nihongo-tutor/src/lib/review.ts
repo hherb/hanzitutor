@@ -11,6 +11,8 @@
  * "2 days overdue" testable at all.
  */
 
+import type { DueItem } from "./types";
+
 /** The milliseconds in a day, for the difference arithmetic below. */
 const DAY_MS = 86_400_000;
 
@@ -86,4 +88,46 @@ export function scheduleNote(
     tone: "ok",
     text: `Saved for review — next ${upcomingLabel(graded.nextDue, now)}.`,
   };
+}
+
+/**
+ * Whether two queue entries are the same card.
+ *
+ * A card is keyed by the character, and the kind is compared with it because the
+ * same character can be offered as a kana, a jōyō kanji or a radical head form —
+ * 人 is both a character and radical 9.
+ */
+function isSameCard(item: DueItem, other: DueItem | null): boolean {
+  return item.ch === other?.ch && item.kind === other?.kind;
+}
+
+/**
+ * The next due character after the one on the board, among those the page holds.
+ *
+ * **By identity rather than by position**: the queue is ordered by how overdue each
+ * character is and that order moves as characters are graded, so "the next one" is
+ * the first item that is not the one on the board. A character the page does not
+ * hold — the learner tapped an item and then opened another screen — leaves the
+ * first item as the answer.
+ */
+export function nextDue(items: DueItem[], current: DueItem | null): DueItem | null {
+  return items.find((item) => !isSameCard(item, current)) ?? null;
+}
+
+/**
+ * Whether the queue can offer anything at all after the character on the board.
+ *
+ * Two ways of having something next, and the second is why this is not simply
+ * `nextDue(...) !== null`. `due` is the section's uncapped count and `items` is what
+ * was fetched, so their difference is the part of the queue the screen has not asked
+ * for. The command returns `min(limit, due)` items today, so the second term is a
+ * guard rather than the usual path — but the sentence it guards is **"nothing due"**,
+ * whose subject is the queue and not the page, and this is the one place that can
+ * tell an emptied queue from a page nobody has fetched yet.
+ */
+export function hasNextDue(
+  queue: { items: DueItem[]; due: number },
+  current: DueItem | null,
+): boolean {
+  return nextDue(queue.items, current) !== null || queue.due > queue.items.length;
 }
