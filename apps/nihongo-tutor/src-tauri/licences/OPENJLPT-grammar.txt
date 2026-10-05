@@ -22,10 +22,18 @@ Attribution, as the licence asks it to be given
   Licence (CC BY-SA 4.0).
 
   The grammar points — the explanations and every example sentence — are original
-  writing by OpenJLPT's contributors. OpenJLPT's own NOTICE.md states this, and
-  states that its dataset also draws on other sources: Jonathan Waller's JLPT
-  lists, EDRDG's JMdict and KANJIDIC2, Tatoeba's sentences, and KanjiVG's
-  stroke-order diagrams.
+  writing by OpenJLPT's contributors. OpenJLPT's own `NOTICE.md` states it in as
+  many words: the dataset is assembled from the open sources below **"plus original
+  content written for the project (the grammar dataset and the corrections file)"**,
+  and the project's `sources/grammar/README.md` adds that the explanations and all
+  example sentences were written for OpenJLPT rather than copied from a textbook or
+  a website. `prepare-grammar` **refuses to build** if `NOTICE.md` stops saying that,
+  because it is the basis for taking this dataset and nothing else from the
+  repository.
+
+  The same `NOTICE.md` names the sources its *other* data draws on — Jonathan
+  Waller's JLPT lists, EDRDG's JMdict and KANJIDIC2, Tatoeba's sentences and
+  KanjiVG's diagrams — none of which this app takes from here.
 
 What this app takes, and what it does not
 -----------------------------------------

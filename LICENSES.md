@@ -942,10 +942,13 @@ levels.* Two different provenances live in one repository:
   site (that I'm not selling), is licenced under Creative Commons "BY""*) is unversioned and
   merely asserted. Downstream repackagers version-bump it to CC BY 4.0, which is not a grant
   the rights-holder made. This project does not take it;
-* its **grammar points** are a different work: `NOTICE.md` and `sources/grammar/README.md`
-  both state that the explanations and **every example sentence were written for OpenJLPT**
-  by its contributors and released under **CC BY-SA 4.0**. That is a rights-holder's own
-  grant, which is what makes it usable where the levels are not.
+* its **grammar points** are a different work: its `NOTICE.md` states that the dataset is
+  assembled from the open sources "plus **original content written for the project** (the
+  grammar dataset and the corrections file)", and `sources/grammar/README.md` adds that the
+  explanations and **all example sentences were written for OpenJLPT** rather than copied
+  from a textbook or a website, under **CC BY-SA 4.0**. That is a rights-holder's own grant,
+  which is what makes it usable where the levels are not. `prepare-grammar` refuses to build
+  if `NOTICE.md` stops saying it.
 
 The app takes the grammar and **nothing else** from that repository: no vocabulary, no kanji,
 no vocabulary levels, no kanji levels, no vocabulary example sentences (the Phrases screen's

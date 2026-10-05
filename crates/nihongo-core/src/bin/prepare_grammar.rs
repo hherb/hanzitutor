@@ -173,6 +173,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
+    // The whole reason only the grammar is taken from this repository: the levels
+    // rest on an unverified upstream grant, while the grammar dataset is the
+    // project's own writing. The notice is what says so, and a notice that stops
+    // saying it is a licence question rather than a rebuild.
+    // Compared with its whitespace collapsed: the sentence is wrapped across lines
+    // upstream, and a re-wrap must not fail a licence check.
+    let notice_flat = notice.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !notice_flat.contains("original content written for the project") {
+        return Err(format!(
+            "{} no longer states that the grammar dataset is the project's own original \
+             content — which is the basis for taking it and nothing else from that \
+             repository (invariant 38). Read the notice before rebuilding.",
+            raw_dir.join("NOTICE.md").display()
+        )
+        .into());
+    }
 
     // ---- The five level files, as one course --------------------------------
     let mut points: Vec<GrammarPoint> = Vec::new();
