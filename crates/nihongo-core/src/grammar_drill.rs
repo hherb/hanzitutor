@@ -9,6 +9,18 @@
 //! one weighs the kana pairs this learner confuses, this one weighs the patterns
 //! they miss, and [`crate::drill::pick_weighted`] is the one rule both draw by.
 //!
+//! It asks the same question **two ways**, and the difference between them is the
+//! difference between recognising a pattern and producing one:
+//!
+//! * **recognition** — [`question_for`] offers three patterns to choose between,
+//!   with the answer among them and no fixed place for it;
+//! * **production** — [`draw_production`] asks the learner to *write* the missing
+//!   text, and [`verdict_for`] grades what they typed.
+//!
+//! Both are one question shape, one weighting rule and one file
+//! ([`GrammarLog`]), because a miss is a miss whichever way the learner was asked —
+//! invariant 29's rule, one dataset out.
+//!
 //! # The question, and why it is a cloze
 //!
 //! The corpus's own sentence is shown with one lump of the pattern taken out, and
@@ -36,9 +48,9 @@
 //!   blank may take a kanji and its reading together, or sit inside a span that has
 //!   no reading, but it may not leave half a ruby pair behind.
 //!
-//! Measured over the committed artifact at `MIN_BLANK = 3`: **360 of the 526
-//! points** can be asked, over **908 sentences**. Reading the bracketed groups is
-//! 17 of those points: without it `〜あまり（に）`'s lump would be `あまり（に）`,
+//! Measured over the committed artifact at `MIN_BLANK = 3`: **363 of the 526
+//! points** can be asked, over **903 sentences**. Reading the bracketed groups is
+//! 20 of those points: without it `〜あまり（に）`'s lump would be `あまり（に）`,
 //! which occurs in no Japanese sentence, and the drill would be silent about the
 //! whole pattern in exactly the way a filter that matches nothing looks like a
 //! filter that found nothing. Dropping the minimum to 2 adds more sentences and
@@ -69,6 +81,40 @@
 //! safe remainder below them is a last resort no sentence in the shipped artifact
 //! reaches. The options are the corpus's own patterns and nothing else: this drill
 //! never writes a wrong answer to ask about.
+//!
+//! # And what production asks, which is the other half of asking
+//!
+//! [`production_for`] draws the same sentence with the same lump missing and asks
+//! the learner to **write it**, in romaji or in kana. Three things about it are
+//! decisions rather than implementation:
+//!
+//! * **The answer is the corpus's own reading of the hole, never a composed one.**
+//!   A blank that takes 反して out of a sentence is answered `hanshite`, and the
+//!   reading is the `rt` the corpus put over that kanji — the same rule a word card
+//!   grades a typed reading by (invariant 21). [`Askable::blank_kana`] is where that
+//!   is read, and it is why the blank rule's refusal to cut a ruby pair matters
+//!   twice: a half-swapped pair has no reading to ask for.
+//! * **Nothing is asked that cannot be answered.** The answer has to be something
+//!   the input engine can produce, so [`romaji_for`](crate::input::romaji_for) —
+//!   the reverse of `to_kana` — is the gate. Measured over the committed artifact:
+//!   **every one of the 903** askable blanks is typeable, and the longest answer in
+//!   the course is `ていただけませんか`. Production therefore reaches exactly the
+//!   recognition drill's pool rather than a smaller one, and asks 363 of the 526
+//!   patterns over 903 sentences.
+//! * **The question carries nothing that answers it.** The recognition drill sends
+//!   its answer because the answer is one of its three options; a question with no
+//!   options does not have to, so `ProductionQuestion` is the sentence with the hole
+//!   in it and the corpus's English and *nothing else* — no pattern, no meaning, no
+//!   formation, no note, and neither the text taken out nor its reading. A test
+//!   asserts it on the serialised bytes, so a field added later cannot quietly carry
+//!   one. The lesson — the pattern, its reading, its meaning, its formation, the
+//!   note, the text that was taken out and what it is read as — arrives with the
+//!   verdict ([`ProductionVerdict`]) once the learner has answered.
+//!
+//! What production does *not* do is grade a hand or a whole sentence: the learner
+//! types the lump the sentence needs, which is the attempt, and there is nothing
+//! else to mark. A free sentence of the learner's own is a different exercise with a
+//! different attempt source, and it is not built.
 //!
 //! # What is deliberately not here
 //!
@@ -148,7 +194,7 @@ pub struct Blank {
 ///
 /// Measured over the committed artifact: **35 of the 526** patterns carry a
 /// bracketed group, and reading them this way is the difference between a course
-/// of 343 askable patterns and one of 360 — without it, `〜あまり（に）`'s lump
+/// of 343 askable patterns and one of 363 — without it, `〜あまり（に）`'s lump
 /// would be `あまり（に）`, which occurs in no Japanese sentence, and the drill
 /// would be silent about the whole pattern in exactly the way a filter that
 /// matches nothing looks like a filter that found nothing (the trap
@@ -451,7 +497,7 @@ pub fn askable_points(dataset: &GrammarDataset) -> Vec<&GrammarPoint> {
 /// What the drill can ask, for the screen's own line about it.
 ///
 /// Three numbers rather than a promise: the screen says how much of the course can
-/// be asked and over how many sentences, because 183 of the 526 patterns cannot be
+/// be asked and over how many sentences, because 163 of the 526 patterns cannot be
 /// — their pattern's own text is not in any of their sentences, or not uniquely —
 /// and a learner who went looking for one of them should find that said rather than
 /// find the drill silent about it. The same honesty as the character card's *"No
@@ -475,6 +521,240 @@ pub fn size(dataset: &GrammarDataset) -> DrillSize {
         examples: askable.len(),
         total: dataset.len(),
     }
+}
+
+impl Askable<'_> {
+    /// The reading of the blank, from the corpus's own furigana.
+    ///
+    /// **Never composed** (invariant 21, one dataset over): [`blank_for`] has already
+    /// refused a blank that cuts a span carrying a reading, so the blank is a run of
+    /// whole spans — the `rt` of every span it swallows, and the surface of every
+    /// plain span it covers, in the sentence's own order. For a blank with no kanji
+    /// in it that is the blank itself, and for one that takes a kanji it is the
+    /// reading the corpus put over that kanji (反して → はんして).
+    pub fn blank_kana(&self) -> String {
+        let at = self.blank.at;
+        let end = at + self.blank.text.chars().count();
+        let mut out = String::new();
+        let mut cursor = 0usize;
+        for part in &self.example.ruby {
+            let chars: Vec<char> = part.ruby.chars().collect();
+            let (start, stop) = (cursor, cursor + chars.len());
+            cursor = stop;
+            if stop <= at || start >= end {
+                continue;
+            }
+            match &part.rt {
+                // A span with a reading may only be swallowed whole — the blank rule
+                // refuses the partial case — so all of its reading is in the blank.
+                Some(reading) => out.push_str(reading),
+                // A plain span the blank straddles contributes the part of it the
+                // blank covers, which is the text itself: it has no other reading.
+                None => {
+                    let from = at.saturating_sub(start).min(chars.len());
+                    let to = (end - start).min(chars.len());
+                    out.extend(chars[from..to].iter());
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Whether this sentence can be asked by *production* rather than by recognition.
+///
+/// The question is the same one — the corpus's sentence with the pattern's own lump
+/// taken out — but the learner writes the missing text instead of choosing it, so
+/// the requirement the recognition drill does not have is that **the answer can be
+/// typed at all**. The blank's own reading is what has to be typeable, and the
+/// answer is the reading rather than the written form: a hole holding 反して is
+/// answered `hanshite`, exactly as the word card asks for a word's reading rather
+/// than its spelling (invariant 21). [`romaji_for`](crate::input::romaji_for) is the
+/// authority, and a blank whose reading contains something the input engine cannot
+/// produce — ー is the one that matters — is not asked rather than asked and
+/// unanswerable.
+pub fn producible(answer: &Askable<'_>) -> bool {
+    crate::input::romaji_for(&answer.blank_kana()).is_some()
+}
+
+/// One sentence of one point a production question can be built from, and where it
+/// sits in the point's own list.
+///
+/// The position travels with the sentence so that a screen can name which sentence
+/// it was asked about **without being sent the sentence** — which matters here,
+/// because the sentence contains the answer (see [`ProductionQuestion`]).
+pub fn producible_of(point: &GrammarPoint) -> Vec<(usize, Askable<'_>)> {
+    askable_of(point)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, answer)| producible(answer))
+        .collect()
+}
+
+/// The points the production exercise can ask about: those with at least one
+/// sentence whose blank can be typed.
+pub fn producible_points(dataset: &GrammarDataset) -> Vec<&GrammarPoint> {
+    dataset.points().iter().filter(|point| !producible_of(point).is_empty()).collect()
+}
+
+/// What the production exercise can ask, for the screen's own line about it.
+///
+/// The same three numbers [`size`] reports for the recognition drill, over this
+/// exercise's own pool: it needs no distractors, so it reaches every sentence the
+/// blank rule reaches whose answer is typeable.
+pub fn production_size(dataset: &GrammarDataset) -> DrillSize {
+    let mut points = 0usize;
+    let mut examples = 0usize;
+    for point in dataset.points() {
+        let count = producible_of(point).len();
+        if count > 0 {
+            points += 1;
+            examples += count;
+        }
+    }
+    DrillSize { points, examples, total: dataset.len() }
+}
+
+/// A pattern's sentence with one lump of it taken out, to be **written** rather
+/// than chosen.
+///
+/// The same question the recognition drill asks, drawn the same way — the sentence
+/// is handed over in two halves with the corpus's own furigana on each, and the gap
+/// between them is the question — with one difference that is the whole point of
+/// it: **the payload carries nothing that answers it.** There is no pattern, no
+/// meaning, no formation, no note, and neither the text taken out nor its reading,
+/// so a screen cannot leak the answer because it has not been given one. What the
+/// learner is asked for is the pattern the sentence takes, and the lesson — the
+/// pattern, its reading, its meaning, its formation, its note and the sentence
+/// whole again — arrives with the verdict ([`ProductionVerdict`]) once an answer has
+/// been given. The recognition drill sends its answer because its answer is one of
+/// its three options; this one has no options.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionQuestion {
+    /// The answer's id, which the answer is recorded against.
+    pub point: String,
+    /// Where the sentence sits in the point's own list, so the answer can be
+    /// recorded without the sentence travelling back over the IPC.
+    pub example: usize,
+    /// The sentence's furigana before the blank.
+    pub before: Vec<Ruby>,
+    /// …and after it.
+    pub after: Vec<Ruby>,
+    /// The English the corpus pairs with the sentence. The prompt: this is a
+    /// production exercise about which pattern the sentence takes, and a learner who
+    /// cannot yet read the sentence has no other way in.
+    pub en: String,
+}
+
+/// What the corpus says the hole was, what the learner wrote, and the lesson.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionVerdict {
+    /// The point the sentence belongs to — echoed, so a screen cannot record the
+    /// verdict against a pattern it was not asked about.
+    pub point: String,
+    /// The pattern, as the course writes it.
+    pub pattern: String,
+    /// Its kana reading, where the corpus stores one.
+    pub reading: Option<String>,
+    /// What the pattern means.
+    pub meaning: String,
+    /// What it attaches to.
+    pub formation: String,
+    /// The corpus's note on nuance, where it has one.
+    pub notes: Option<String>,
+    /// The text the sentence wrote in the hole (反して), for the sentence whole again.
+    pub written: String,
+    /// That text's reading, from the corpus's own furigana — **the answer**.
+    pub answer: String,
+    /// What the learner's typing came to, in kana, for the screen to show back.
+    pub produced: String,
+    /// Whether it says the same thing: [`matches_kana_text`](crate::input::matches_kana_text).
+    pub correct: bool,
+}
+
+/// Build the question for one sentence, or `None` when its answer cannot be typed.
+///
+/// `example` is the sentence's position in its point's own list, and it travels from
+/// the caller because a position is a fact about the point rather than about the
+/// sentence.
+pub fn production_for(example: usize, answer: &Askable<'_>) -> Option<ProductionQuestion> {
+    if !producible(answer) {
+        return None;
+    }
+    let (before, after) = answer.split()?;
+    Some(ProductionQuestion {
+        point: answer.point.id.clone(),
+        example,
+        before,
+        after,
+        en: answer.example.en.clone(),
+    })
+}
+
+/// Grade a typed answer against the sentence's own hole, and say what the corpus
+/// says the hole was.
+///
+/// **Correctness is decided here**, on the data the question was drawn from, and by
+/// the same rule whether a screen or a test asks: the learner's typing is read by
+/// the input engine, the blank's reading is the corpus's, and
+/// [`matches_kana_text`](crate::input::matches_kana_text) compares them by sound.
+/// `None` means the sentence is not one this exercise asks — a caller that asked
+/// about something else gets no verdict rather than a wrong one.
+pub fn verdict_for(
+    point: &GrammarPoint,
+    example: usize,
+    typed: &str,
+) -> Option<ProductionVerdict> {
+    let answer = producible_of(point).into_iter().find(|(at, _)| *at == example)?.1;
+    Some(ProductionVerdict {
+        point: point.id.clone(),
+        pattern: point.pattern.clone(),
+        reading: point.reading.clone(),
+        meaning: point.meaning.clone(),
+        formation: point.formation.clone(),
+        notes: point.notes.clone(),
+        written: answer.blank.text.clone(),
+        answer: answer.blank_kana(),
+        produced: crate::input::produce_kana(typed),
+        correct: crate::input::matches_kana_text(&answer.blank_kana(), typed),
+    })
+}
+
+/// Draw the next production question: which pattern (weighted by what this learner
+/// has missed, over this exercise's own pool) and which of its sentences.
+///
+/// Two rolls rather than three, because there are no options to shuffle. Both are
+/// the caller's for the reason the recognition drill's are: every decision here is
+/// assertable, and the command beside this passes rolls from the clock.
+pub fn draw_production(
+    dataset: &GrammarDataset,
+    log: &GrammarLog,
+    point_roll: f64,
+    example_roll: f64,
+) -> Option<ProductionQuestion> {
+    let pool = producible_points(dataset);
+    let picked = log.pick(&pool, point_roll)?;
+    let start = pool.iter().position(|point| point.id == picked.id)?;
+    // The drawn point first, then the rest in course order: a point all of whose
+    // sentences are untypeable does not empty the exercise.
+    for step in 0..pool.len() {
+        let point = pool[(start + step) % pool.len()];
+        let sentences = producible_of(point);
+        if sentences.is_empty() {
+            continue;
+        }
+        let first = ((clamp_roll(example_roll) * sentences.len() as f64) as usize)
+            .min(sentences.len() - 1);
+        for inner in 0..sentences.len() {
+            let (at, answer) = &sentences[(first + inner) % sentences.len()];
+            if let Some(question) = production_for(*at, answer) {
+                return Some(question);
+            }
+        }
+    }
+    None
 }
 
 /// One pattern as an option.
@@ -1141,5 +1421,207 @@ mod tests {
         assert_eq!(draw(&empty, &GrammarLog::new(), 0.5, 0.5, 0.5), None);
         assert_eq!(askable_points(&empty).len(), 0);
         assert!(draw(&dataset(), &GrammarLog::new(), 0.0, 0.0, 0.0).is_some());
+        assert_eq!(production_size(&empty), DrillSize::default());
+        assert_eq!(draw_production(&empty, &GrammarLog::new(), 0.5, 0.5), None);
+        assert_eq!(producible_points(&empty).len(), 0);
+    }
+
+    /// Every character of a byte string that is a given needle.
+    fn holds(haystack: &[u8], needle: &str) -> bool {
+        !needle.is_empty() && haystack.windows(needle.len()).any(|window| window == needle.as_bytes())
+    }
+
+    #[test]
+    fn the_blank_is_read_from_the_corpus_own_furigana() {
+        let dataset = dataset();
+        // A blank that is all kana reads as itself: 犬の方が猫より… takes の方が out.
+        let yori = point(&dataset, "no-hou-ga-yori");
+        let answer = askable_of(yori).into_iter().next().expect("〜の方が〜より can be asked");
+        assert_eq!(answer.blank.text, "の方が");
+        assert_eq!(answer.blank_kana(), "のほうが");
+        // And a blank that takes a kanji takes the corpus's reading with it rather
+        // than one composed here.
+        let mut took_a_kanji = 0usize;
+        for question in askable(&dataset) {
+            if !question.blank.text.chars().any(crate::words::is_kanji) {
+                continue;
+            }
+            took_a_kanji += 1;
+            assert!(
+                !question.blank_kana().chars().any(crate::words::is_kanji),
+                "{}'s reading still holds a kanji",
+                question.point.id
+            );
+            assert_ne!(question.blank_kana(), question.blank.text);
+        }
+        assert!(took_a_kanji > 0, "some blank of the course swallows a kanji");
+
+        // Over the whole course the split is lossless in kana as well as in writing:
+        // the sentence's own reading is the two halves' readings plus the blank's.
+        let mut checked = 0usize;
+        for question in askable(&dataset) {
+            let kana_of = |parts: &[Ruby]| -> String {
+                parts.iter().map(|part| part.rt.clone().unwrap_or_else(|| part.ruby.clone())).collect()
+            };
+            assert!(
+                !question.blank_kana().is_empty(),
+                "{} has a blank with no reading",
+                question.point.id
+            );
+            assert_eq!(
+                format!("{}{}{}", kana_of(&question.before()), question.blank_kana(), kana_of(&question.after())),
+                question.example.kana(),
+                "{}'s split lost or invented a reading",
+                question.point.id
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 903, "the askable set is the measured one");
+    }
+
+    #[test]
+    fn every_answer_the_production_exercise_asks_can_be_typed() {
+        // The measurement this exercise rests on: **every** blank the rule finds has
+        // a reading the input engine can produce, so production reaches the whole of
+        // the recognition drill's pool — 363 of the 526 patterns over 903 sentences —
+        // and refuses nothing. Longest answer: ていただけませんか, nine characters.
+        let dataset = dataset();
+        let mut refused = 0usize;
+        let mut longest = String::new();
+        for answer in askable(&dataset) {
+            let kana = answer.blank_kana();
+            if kana.chars().count() > longest.chars().count() {
+                longest = kana.clone();
+            }
+            match crate::input::romaji_for(&kana) {
+                Some(romaji) => assert!(
+                    crate::input::matches_kana_text(&kana, &romaji),
+                    "{kana} does not accept the spelling {romaji} the engine itself offered"
+                ),
+                None => refused += 1,
+            }
+        }
+        assert_eq!(refused, 0, "no askable blank is untypeable");
+        assert_eq!(longest, "ていただけませんか");
+        assert_eq!(production_size(&dataset), DrillSize { points: 363, examples: 903, total: 526 });
+        assert_eq!(production_size(&dataset), size(&dataset), "the same pool, asked differently");
+    }
+
+    #[test]
+    fn a_production_question_carries_nothing_that_answers_it() {
+        // The recognition drill hands its screen the answer, because the answer is
+        // one of its three options; this one has no options, so it is not given the
+        // pattern, the meaning, the text taken out or that text's reading — and the
+        // property is asserted on the serialised question rather than on the fields,
+        // so a field added later cannot quietly carry one of them.
+        let dataset = dataset();
+        let mut checked = 0usize;
+        for (at, answer) in askable(&dataset).into_iter().enumerate() {
+            let question = production_for(at, &answer).expect("every askable sentence can be produced");
+            let bytes = postcard::to_allocvec(&question).expect("the question serialises");
+            let kana = answer.blank_kana();
+            // The three things that answer the question: the pattern, the text taken
+            // out, and that text's reading. The *meaning* is not on the list — the
+            // corpus's English prompt may happen to use the same words as its own
+            // gloss (`kana-kashira`'s sentence is "I wonder…" and its meaning is "I
+            // wonder") — and it needs no list entry either way, because no field of
+            // this payload could carry it.
+            for secret in [
+                answer.point.pattern.as_str(),
+                answer.blank.text.as_str(),
+                kana.as_str(),
+            ] {
+                assert!(
+                    !holds(&bytes, secret),
+                    "{}'s question carries {secret:?}",
+                    answer.point.id
+                );
+            }
+            // The two halves really are the sentence with the hole between them, so
+            // the screen can draw it and the reveal can put it back together.
+            let before: String = question.before.iter().map(|part| part.ruby.as_str()).collect();
+            let after: String = question.after.iter().map(|part| part.ruby.as_str()).collect();
+            assert_eq!(
+                format!("{before}{}{after}", answer.blank.text),
+                answer.example.ja,
+                "{}'s question lost or invented sentence text",
+                answer.point.id
+            );
+            assert_eq!(question.point, answer.point.id);
+            checked += 1;
+        }
+        assert_eq!(checked, 903);
+    }
+
+    #[test]
+    fn a_verdict_is_decided_from_the_corpus_own_reading() {
+        let dataset = dataset();
+        let question = draw_production(&dataset, &GrammarLog::new(), 0.0, 0.0).expect("a question");
+        let drawn = dataset.get(&question.point).expect("the drawn point is in the course");
+        let answer = producible_of(drawn)
+            .into_iter()
+            .find(|(at, _)| *at == question.example)
+            .expect("the drawn sentence can be produced")
+            .1;
+        let kana = answer.blank_kana();
+
+        // Right in romaji, right in kana, and wrong — all three decided here.
+        let romaji = crate::input::romaji_for(&kana).expect("the answer is typeable");
+        let right = verdict_for(drawn, question.example, &romaji).expect("a verdict");
+        assert!(right.correct);
+        assert_eq!(right.answer, kana);
+        assert_eq!(right.written, answer.blank.text);
+        assert_eq!(right.pattern, drawn.pattern);
+        assert_eq!(right.meaning, drawn.meaning);
+        assert_eq!(right.formation, drawn.formation);
+        assert_eq!(right.point, drawn.id);
+        assert!(!right.produced.is_empty());
+        assert!(verdict_for(drawn, question.example, &kana).expect("a verdict").correct);
+        let wrong = verdict_for(drawn, question.example, "chigau").expect("a verdict");
+        assert!(!wrong.correct);
+        assert_eq!(wrong.produced, "ちがう");
+        // Input the engine cannot read is a wrong answer rather than a failure, and
+        // a sentence this exercise does not ask gets no verdict at all.
+        assert_eq!(verdict_for(drawn, question.example, "!!!").expect("a verdict").produced, "");
+        let desu = point(&dataset, "desu");
+        assert!(producible_of(desu).is_empty(), "〜です is below the blank floor");
+        assert_eq!(verdict_for(desu, 0, "desu"), None);
+        assert_eq!(verdict_for(drawn, usize::MAX, &romaji), None);
+    }
+
+    #[test]
+    fn the_production_draw_is_weighted_and_the_rolls_change_it() {
+        let dataset = dataset();
+        let log = GrammarLog::new();
+        let pool = producible_points(&dataset);
+        let first = draw_production(&dataset, &log, 0.0, 0.0).expect("a question");
+        assert_eq!(first.point, pool[0].id);
+        assert_eq!(first.example, 0, "the first sentence of the first point");
+        // The same rolls are the same question; a later point roll asks about a later
+        // point and a later example roll about another of its sentences.
+        assert_eq!(draw_production(&dataset, &log, 0.0, 0.0), Some(first.clone()));
+        let later = draw_production(&dataset, &log, 0.999, 0.0).expect("a question");
+        assert_ne!(later.point, first.point);
+        let second_sentence =
+            producible_of(dataset.get(&first.point).expect("in the course")).len() > 1;
+        if second_sentence {
+            let other = draw_production(&dataset, &log, 0.0, 0.999).expect("a question");
+            assert_eq!(other.point, first.point);
+            assert_ne!(other.example, first.example);
+        }
+        // Out-of-range and NaN rolls are corrected rather than obeyed.
+        let clamped = draw_production(&dataset, &log, 5.0, -1.0).expect("a question");
+        assert_eq!(clamped.point, pool[pool.len() - 1].id);
+        assert_eq!(draw_production(&dataset, &log, f64::NAN, f64::NAN).map(|q| q.point), Some(first.point));
+
+        // And a pattern this learner misses is asked more often. The weight is the
+        // recognition drill's own, in the same file: a miss is a miss, whichever way
+        // the learner was asked about the pattern.
+        let mut missed = GrammarLog::new();
+        let wanted = pool[5].id.clone();
+        assert_ne!(missed.pick(&pool, 0.02).map(|p| p.id.clone()), Some(wanted.clone()));
+        missed.record(&wanted, false);
+        missed.record(&wanted, false);
+        assert_eq!(missed.pick(&pool, 0.02).map(|p| p.id.clone()), Some(wanted));
     }
 }

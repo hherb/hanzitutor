@@ -20,6 +20,8 @@ import type {
   GrammarDrillSize,
   GrammarLinks,
   GrammarPage,
+  GrammarProductionOutcome,
+  GrammarProductionQuestion,
   GrammarQuestion,
   GrammarTally,
   Kana,
@@ -380,6 +382,49 @@ export function grammarDrillSize(): Promise<GrammarDrillSize> {
  */
 export function recordGrammarAnswer(point: string, picked: string): Promise<GrammarTally> {
   return invoke<GrammarTally>("record_grammar_answer", { point, picked });
+}
+
+/**
+ * The next pattern to write: the corpus's sentence with its pattern's own text taken
+ * out, and the learner writes what is missing.
+ *
+ * The same draw as the drill's, over the production exercise's own pool and weighted
+ * by how often this learner has missed the pattern — and deliberately a **smaller**
+ * payload: the question carries nothing that answers it, which is what makes writing
+ * it worth asking. `null` means nothing at all could be asked, which the screen says
+ * in words rather than leaving blank.
+ */
+export function nextGrammarProduction(): Promise<GrammarProductionQuestion | null> {
+  return invoke<GrammarProductionQuestion | null>("next_grammar_production", {});
+}
+
+/**
+ * What the production exercise can write of the course, in numbers.
+ *
+ * The same three numbers `grammarDrillSize` reports, over this exercise's own pool
+ * (`GrammarDrillSize` rather than a second name for the same shape): the drill needs
+ * two distractors and this needs none, and the two come to the same measured reach —
+ * 363 of the 526 patterns, over 903 sentences, asked one way and the other.
+ */
+export function grammarProductionSize(): Promise<GrammarDrillSize> {
+  return invoke<GrammarDrillSize>("grammar_production_size", {});
+}
+
+/**
+ * Grade a written answer, record it, and get the lesson and the pattern's record.
+ *
+ * `point` names the pattern and `example` is which of its sentences was shown — a
+ * **position**, because the sentence contains the answer and the question never
+ * carried it. There is deliberately no way to say whether the answer was right:
+ * `record_grammar_production` decides in Rust from the corpus's own reading of the
+ * hole, exactly as `record_grammar_answer` decides the drill's.
+ */
+export function recordGrammarProduction(
+  point: string,
+  example: number,
+  typed: string,
+): Promise<GrammarProductionOutcome> {
+  return invoke<GrammarProductionOutcome>("record_grammar_production", { point, example, typed });
 }
 
 /**

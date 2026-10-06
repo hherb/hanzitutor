@@ -1857,3 +1857,156 @@ fn the_grammar_answer_the_interface_posts_is_read_the_way_the_command_reads_it()
     assert!(refused.contains("not a pattern this drill asks about"), "{refused}");
     assert!(state.record_grammar_answer(&question.point, "no-such-pattern").is_err());
 }
+
+/// One question for the production exercise, as the webview reads it.
+///
+/// The shape is deliberately **smaller** than the recognition drill's, and that is
+/// what it is for: this exercise asks the learner to *write* the pattern, so the
+/// question carries the sentence with the hole in it, the position of that sentence
+/// in the pattern's own list, and the corpus's English — and nothing else. The key
+/// set is asserted exactly, and then the absence of the answer is asserted on the
+/// serialised bytes: a field added later that carried the pattern, the meaning or
+/// the text taken out would fail here rather than ship as an exercise that answers
+/// itself.
+#[test]
+fn a_grammar_production_question_carries_nothing_that_answers_it() {
+    let state = state();
+    let question = state
+        .next_grammar_production_with_rolls(0.0, 0.0)
+        .expect("the first pattern of the course can be written");
+    let value = serde_json::to_value(&question).expect("serialises");
+    assert_eq!(keys(&value), vec!["after", "before", "en", "example", "point"]);
+
+    // The sentence is the corpus's, handed over in two halves with the hole between
+    // them, in the same `{ ruby, rt }` shape every other screen reads.
+    let spans = value["before"].as_array().expect("an array");
+    let after = value["after"].as_array().expect("an array");
+    assert!(!spans.is_empty() || !after.is_empty(), "the sentence has to be somewhere");
+    for span in spans.iter().chain(after.iter()) {
+        assert_eq!(keys(span), vec!["rt", "ruby"]);
+        assert!(span["ruby"].as_str().is_some_and(|text| !text.is_empty()));
+    }
+    let before: String = question.before.iter().map(|part| part.ruby.as_str()).collect();
+    let after_text: String = question.after.iter().map(|part| part.ruby.as_str()).collect();
+    assert!(!question.en.is_empty(), "the English is the way in for a beginner");
+
+    // The point, read back through the app's own public half — the same view the
+    // course screen draws — and the sentence the question was cut from: it starts
+    // and ends with the two halves and has something between them.
+    let found = state.grammar_search(&question.point, 5);
+    let point = found
+        .points
+        .iter()
+        .find(|point| point.id == question.point)
+        .expect("the pattern the question names is in the course");
+    let whole = point
+        .examples
+        .iter()
+        .find(|example| example.ja.starts_with(&before) && example.ja.ends_with(&after_text))
+        .expect("the question's sentence is one of the point's own examples");
+    let removed: String = whole
+        .ja
+        .chars()
+        .skip(before.chars().count())
+        .take(whole.ja.chars().count() - before.chars().count() - after_text.chars().count())
+        .collect();
+    assert!(removed.chars().count() >= nihongo_core::MIN_BLANK, "the hole is a real gap: {removed:?}");
+
+    // And none of it answers the question: not the pattern, not its kana reading, not
+    // what it means, not how it is formed, and not the text taken out.
+    let bytes = serde_json::to_string(&question).expect("serialises");
+    let mut secrets = vec![
+        point.pattern.as_str(),
+        point.meaning.as_str(),
+        point.formation.as_str(),
+        removed.as_str(),
+    ];
+    if let Some(reading) = point.reading.as_deref() {
+        secrets.push(reading);
+    }
+    for secret in secrets {
+        assert!(!bytes.contains(secret), "the question carries {secret:?}");
+    }
+}
+
+#[test]
+fn the_grammar_production_size_crosses_as_camel_case() {
+    let size = state().grammar_production_size();
+    let value = serde_json::to_value(size).expect("serialises");
+    assert_eq!(keys(&value), vec!["examples", "points", "total"]);
+    assert_eq!(value["total"], 526);
+    assert_eq!(value["points"], 363);
+    assert_eq!(value["examples"], 903, "every askable sentence has an answer that can be typed");
+}
+
+/// The arguments `record_grammar_production` takes, as the webview posts them.
+///
+/// Spelled out rather than inferred, because this is the half of the contract that
+/// fails loudly — a wrong key is a rejected command — and the half that has already
+/// gone wrong once in this app (`HANDOVER_NIHONGO.md` invariant 14). `example` is a
+/// **position** rather than the sentence, because the sentence contains the answer
+/// and was never sent; and there is deliberately no `correct` field, so the webview
+/// has nothing to lie with.
+#[derive(Deserialize)]
+struct RecordGrammarProduction {
+    point: String,
+    example: usize,
+    typed: String,
+}
+
+#[test]
+fn the_grammar_production_answer_the_interface_posts_is_read_the_way_the_command_reads_it() {
+    // `src/lib/api.ts` authors exactly this payload for exactly this command:
+    //   invoke("record_grammar_production", { point, example, typed })
+    let state = state();
+    let question = state.next_grammar_production_with_rolls(0.0, 0.0).expect("a question");
+    let payload = json!({ "point": question.point, "example": question.example, "typed": "chigau" });
+    let args: RecordGrammarProduction =
+        serde_json::from_value(payload).expect("the payload the interface posts deserialises");
+    let outcome = state
+        .record_grammar_production(&args.point, args.example, &args.typed)
+        .expect("records");
+    let value = serde_json::to_value(&outcome).expect("serialises");
+    assert_eq!(keys(&value), vec!["record", "verdict"]);
+    // The verdict is the lesson: the pattern, its reading, its meaning, its formation,
+    // the corpus's note, the text that was taken out, what that text is read as, what
+    // the learner typed and whether it says the same thing.
+    assert_eq!(
+        keys(&value["verdict"]),
+        vec![
+            "answer", "correct", "formation", "meaning", "notes", "pattern", "point", "produced",
+            "reading", "written",
+        ]
+    );
+    assert_eq!(keys(&value["record"]), vec!["asked", "correct", "point", "weight", "wrong"]);
+    assert_eq!(value["verdict"]["correct"], false, "chigau is not the answer to this one");
+    assert_eq!(value["verdict"]["produced"], "ちがう");
+    assert_eq!(value["verdict"]["point"], question.point);
+    assert!(!value["verdict"]["written"].as_str().unwrap_or("").is_empty());
+    assert!(!value["verdict"]["answer"].as_str().unwrap_or("").is_empty());
+    assert!(!value["verdict"]["pattern"].as_str().unwrap_or("").is_empty());
+    // The record is the recognition drill's own tally in the recognition drill's own
+    // file: one pattern, one record, whichever way it was asked about.
+    assert_eq!(value["record"]["point"], question.point);
+    assert_eq!(value["record"]["asked"], 1);
+    assert_eq!(value["record"]["correct"], 0);
+    assert_eq!(value["record"]["wrong"], 1);
+
+    // A right answer, on a sentence whose hole is known: 犬の方が猫より好きです。 takes
+    // の方が out, and the corpus reads it のほうが. This is the half that shows the
+    // grading is the artifact's: the interface sent no answer at all.
+    let right = state.record_grammar_production("no-hou-ga-yori", 0, "nohouga").expect("records");
+    assert!(right.verdict.correct);
+    assert_eq!(right.verdict.written, "の方が");
+    assert_eq!(right.verdict.answer, "のほうが");
+    assert_eq!(right.verdict.produced, "のほうが");
+    assert_eq!(right.verdict.pattern, "〜の方が〜より");
+    assert_eq!(right.record.point, "no-hou-ga-yori");
+
+    // A sentence the exercise does not ask about, a pattern that is not in the course
+    // and an index that is not a sentence are messages rather than panics — and none
+    // of them reaches the file.
+    assert!(state.record_grammar_production("no-such-pattern", 0, "kana").is_err());
+    assert!(state.record_grammar_production("desu", 0, "desu").is_err());
+    assert!(state.record_grammar_production("no-hou-ga-yori", 9_999, "kana").is_err());
+}

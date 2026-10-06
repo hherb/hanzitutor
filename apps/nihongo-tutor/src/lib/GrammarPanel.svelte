@@ -33,6 +33,7 @@
    * states that, and the words in an example are not tappable.
    */
   import GrammarDrill from "./GrammarDrill.svelte";
+  import GrammarProduction from "./GrammarProduction.svelte";
   import GrammarStage from "./GrammarStage.svelte";
   import * as api from "./api";
   import { untrack } from "svelte";
@@ -86,6 +87,18 @@
    */
   let drilling = $state(false);
   let drillSize = $state<GrammarDrillSize | null>(null);
+  /**
+   * Whether the production exercise is up, and what it can write.
+   *
+   * The panel's **third stage**, and the same shape as the drill: about the course
+   * rather than about one pattern, so it belongs to this screen rather than to a tab
+   * of its own, and it reports `stage` like any other (`nav.ts`'s `STAGE_VIEWS` already
+   * names Grammar, so nothing outside this file changes). `drilling` and `producing`
+   * are one flag each rather than a mode, because each stage's own component owns its
+   * state and a mode would remount the other on the way back.
+   */
+  let producing = $state(false);
+  let productionSize = $state<GrammarDrillSize | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
 
@@ -106,7 +119,7 @@
   const canNext = $derived(open !== null && stepTo(open.position, 1, total) !== null);
 
   $effect(() => {
-    stage = open !== null || drilling;
+    stage = open !== null || drilling || producing;
   });
 
   async function loadPage() {
@@ -189,6 +202,19 @@
     })();
   });
 
+  // And the same for the production exercise's own door: its pool is measured
+  // separately, so the two counts are asked for separately rather than one standing
+  // in for the other.
+  $effect(() => {
+    void (async () => {
+      try {
+        productionSize = await api.grammarProductionSize();
+      } catch (e) {
+        void e;
+      }
+    })();
+  });
+
   // A page change is what fetches; the arrows only set where to land.
   $effect(() => {
     void window_.offset;
@@ -201,17 +227,18 @@
   function goToPage(next: number) {
     open = null;
     drilling = false;
+    producing = false;
     page = next;
   }
 </script>
 
 <!--
-  Two stages, and either of them is **the whole screen**: the pager and the pattern
-  one of its rows opens both step aside for one, exactly as the kana course's lesson
-  list and the kanji course's grade chips do (`KanaPanel` and `KanjiPanel` draw their
-  stage in this same position, before the course section). The panel's own header goes
-  with them — on a phone it is four paragraphs of course preamble, and measured at
-  390px it put the drill's own first control at y=371.
+  Three stages, and any of them is **the whole screen**: the pager and the pattern one
+  of its rows opens both step aside for one, exactly as the kana course's lesson list
+  and the kanji course's grade chips do (`KanaPanel` and `KanjiPanel` draw their stage
+  in this same position, before the course section). The panel's own header goes with
+  them — on a phone it is four paragraphs of course preamble, and measured at 390px it
+  put the drill's own first control at y=371.
 -->
 {#if drilling}
   <!--
@@ -221,6 +248,13 @@
     as every stage's is.
   -->
   <GrammarDrill {voice} onleave={() => (drilling = false)} />
+{:else if producing}
+  <!--
+    And the production exercise is the third: the same sentence and the same hole, with
+    the learner writing the pattern instead of choosing it. Two stages about the whole
+    course rather than one pattern, and neither is a tab.
+  -->
+  <GrammarProduction {voice} onleave={() => (producing = false)} />
 {:else if open}
   <!--
     Keyed on the pattern, so a second row mounts a fresh stage rather than merging the
@@ -268,19 +302,33 @@
   {/if}
 
     <!--
-      The way into the drill, at the top of the course screen where the learner meets
-      it before the list: reading 526 patterns without ever being asked one back is
-      what this milestone exists to fix.
+      The two ways in, at the top of the course screen where the learner meets them
+      before the list: reading 526 patterns without ever being asked one back is what
+      N20 exists to fix, and being asked to *choose* one without ever being asked to
+      *write* it is the half N22 adds. Each door carries its own count, because each
+      is a measurement of the same pool asked differently.
     -->
     <div class="practise">
-      <button class="start" onclick={() => (drilling = true)}>Practise the patterns</button>
-      <span class="count">
-        {#if drillSize}
-          {drillSize.points} of the {drillSize.total} can be asked
-        {:else}
-          Ask one back
-        {/if}
-      </span>
+      <div class="door">
+        <button class="start" onclick={() => (drilling = true)}>Practise the patterns</button>
+        <span class="count">
+          {#if drillSize}
+            {drillSize.points} of the {drillSize.total} can be asked
+          {:else}
+            Ask one back
+          {/if}
+        </span>
+      </div>
+      <div class="door">
+        <button class="start" onclick={() => (producing = true)}>Write the patterns</button>
+        <span class="count">
+          {#if productionSize}
+            {productionSize.points} of the {productionSize.total} can be written
+          {:else}
+            Write one back
+          {/if}
+        </span>
+      </div>
     </div>
 
     <div class="find">
@@ -377,9 +425,20 @@
 
   .practise {
     display: flex;
-    align-items: center;
-    gap: 0.6rem;
+    align-items: flex-start;
+    gap: 1.4rem;
+    flex-wrap: wrap;
     margin: 0.9rem 0 0;
+  }
+
+  /* A door is the button and its count, and the count belongs under the button it
+     counts for: with two doors in one row, a shared line would leave a learner
+     guessing which number is which. */
+  .door {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
   }
 
   .start {

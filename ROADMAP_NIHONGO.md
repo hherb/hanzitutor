@@ -54,6 +54,7 @@ references for no gain.
 | **N19** | **Grammar: the patterns at last** | **Shipped.** The largest gap the roadmap named: particles, the copula and every ending are kana, so a learner who finished the kana course had unlocked the grammar and been given nothing to use it on. **526 patterns imported from OpenJLPT**, each with the form it is built from, the note that says how it differs from a similar one, and two or three sentences with a reading over every kanji — in one course order rather than a ladder, because the measurement put 344 of the 526 in the top band, and with the corpus's JLPT levels dropped rather than shown. See the milestone for the licence work that decided it. |
 | **N20** | **Grammar practice: the patterns asked back** | **Shipped.** N19 gave the learner 526 patterns to read and nothing to answer. The Grammar screen's second stage now draws one of the corpus's own sentences with the pattern's own text taken out and offers three patterns — **363 of the 526 can be asked**, over 903 of the 1,526 sentences — weighted by what this learner has missed and remembered in `grammar.json`. See the milestone for the blank rule's two measurements, the distractor that was plausible only after a second signal was added, and the layout fault the phone found in the screen that was already there. |
 | **N21** | **The pattern's vocabulary** | **Shipped.** N19's screen and N20's drill both left the grammar course an island: its sentences are made of words the course teaches, and nothing said which. Every pattern's stage now lists the words its own sentences use — **526 of 526 patterns, 8,151 links** — each opening its own card, and the characters the pattern itself is written with (**107 patterns, 143 characters, every one jōyō**), each opening the kanji board. The word link is **the analyser's**, and the rule built on the corpus's own furigana was measured and rejected first: 405 disagreements, several of them fragments. See the milestone for that measurement and for what it cost (`prepare-grammar` is now behind `tokenize`). |
+| **N22** | **Grammar production: the pattern written back** | **Shipped.** N20 made the course ask a learner to *choose* a pattern; this makes it ask them to *write* it. The same corpus sentence with the same lump taken out, and the learner types the missing text — romaji or kana — graded against the reading the corpus wrote over that hole. **363 of the 526 patterns over 903 sentences**: exactly the recognition drill's pool, because a question with no options needs no distractors and every one of the 903 answers is typeable. The question carries **nothing that answers it** — no pattern, no meaning, and neither the text taken out nor its reading — so the lesson arrives with the verdict. See the milestone for the measurement that makes the pool the same pool, and for the phone fault the live run found and fixed. |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -78,6 +79,18 @@ own words its sentences use and the characters the pattern itself is written wit
 and each opens the card behind it. The measurement that decided how is the
 milestone's: the corpus's furigana marks readings rather than word boundaries, so the
 rule built on it produced fragments, and the link is UniDic's.
+
+**And N22 is the half N20 left open: the pattern written rather than chosen.** N20's
+own weak-spot bullet had said since N19 that nothing asks a learner to *produce* a
+pattern, and picking one out of three is not producing it. The Grammar screen's third
+stage now shows the same sentence with the same hole and asks the learner to type what
+is missing, graded against the reading the corpus wrote over that hole. It reaches
+**the whole of the recognition pool** — 363 of the 526 patterns over 903 sentences —
+because a question with no options needs no distractors and every one of those answers
+is typeable, and it is the one screen in the app whose payload cannot answer its own
+question: no pattern, no meaning, and neither the text taken out nor its reading. The
+lesson arrives with the verdict. The live run found one fault, on the phone, which is
+why it was run.
 
 ---
 
@@ -2534,6 +2547,138 @@ themselves stay untappable — invariant 38's promise that a grammar example is 
 to the vocabulary stands, and what was added is a list of the course's own words beside
 the sentences rather than a second way to read them.
 
+## N22 — Grammar production: the pattern written back
+
+N20 gave the Grammar screen a stage that asks: one of the corpus's own sentences with the
+pattern's own text taken out, and three patterns to choose between. This file's own
+weak-spot bullet had carried the other half since N19 — *"nothing asks a learner to produce
+or choose a pattern"* — and choosing is not producing. The screen's **third stage** now
+asks for the same sentence with the same hole, and the learner **writes** it.
+
+### The exercise, and why its answer is a reading
+
+The hole is a lump of the pattern — の方が out of `〜の方が〜より`, んがために out of
+`〜んがため(に)` — and it is *found* rather than marked, by N20's rule unchanged: the longest
+lump that occurs exactly once in the sentence, at least three characters long, never cutting
+a furigana pair. What N22 adds is the second thing the hole needs: **its reading**, and that
+reading is the corpus's own. The blank rule already refuses a hole that would leave half a
+ruby pair behind, so a hole is a run of whole spans — the `rt` of every span it swallows and
+the surface of every plain span it covers — and の方が is therefore answered `のほうが` while
+a hole that takes 反して is answered `hanshite`. That is exactly how a word card asks for a
+word's reading rather than its spelling (invariant 21, one dataset out), and it is why the
+blank rule's refusal to cut a pair matters twice here: a half-swapped pair has no reading to
+ask for.
+
+The learner types romaji or kana, and `nihongo_core::input`'s `matches_kana_text` compares by
+sound: either romanisation, kana typed directly, katakana folded to hiragana, and the two
+yotsugana pairs treated as one — `ji` types じ, so an answer containing ぢ has to accept it,
+and **4 of the 903** answers are in that position. That is a measurement rather than a hedge:
+the other 899 are spelled by the input table exactly, and the four are pinned by name-count
+in `tests/grammar_artifact.rs`.
+
+### Nothing is asked that cannot be answered, so the pool is the same pool
+
+A question with no options needs no distractors, so production's pool is the blank rule's own
+extended by one requirement — the answer has to be **typeable**. `input::romaji_for` is the
+reverse of `to_kana`: a greedy walk of the same table, longest spelling first, with ん taking
+its apostrophe wherever a following vowel or `y` would otherwise swallow it, and **verified by
+typing the result back**, so a spelling it hands out is one `to_kana` really produces. It is
+the gate, and it is also what makes the pool the same pool: measured over the committed
+artifact, **every one of the 903** askable holes has a typeable reading and the longest is
+`ていただけませんか`.
+
+| | |
+| --- | --- |
+| Patterns that can be written | **363 of the 526** |
+| Sentences they are asked from | **903 of the 1,526** |
+| Answers the input engine can type | **903 of 903** — none refused |
+| Holes that take a kanji | **172** — answered by the corpus's reading, not by the writing |
+| Holes that are kana already | **731** — answered by what is written |
+| Answers containing ぢ or づ | **4** — the fold, and the test proves it on them |
+| Longest answer | **ていただけませんか** (9 characters) |
+
+### The question cannot answer itself
+
+The recognition drill sends its answer, because the answer is one of its three options and the
+reveal needs it. A question with no options does not have to, and this is where the two
+exercises differ in kind rather than in drawing: `ProductionQuestion` is the sentence in the
+two halves it arrived in, the corpus's English, and the position of that sentence in its
+pattern's own list — **no pattern, no reading, no meaning, no formation, no note, and neither
+the text taken out nor its reading**. A learner cannot read the answer off the screen because
+the screen was never given it, and the lesson — the pattern, its reading, its meaning, its
+formation, its note, the text that was taken out and what that text is read as — arrives with
+the verdict. "Nothing that answers it" is asserted **on the serialised payload**, in the
+crate's tests and again in `ipc_contract.rs`, so a field added later cannot quietly carry one.
+
+The sentence's **position** travels rather than the sentence itself for the same reason, and
+the grading is the data layer's: `verdict_for(point, example, typed)` finds that sentence's own
+hole, reads the answer from the corpus's furigana and decides. The interface has nothing to lie
+with — and there is deliberately no `correct` field to post, exactly as for the drill.
+
+### One file, one tally, two ways of asking
+
+`grammar.json` is unchanged, and a miss is a miss whichever way the learner was asked:
+invariant 29's rule, one dataset out. The kana drill's thirteen classic pairs, 33 yōon
+contrasts and 25 voicing contrasts share one tally because confusing きゃ with きや is a
+confusion like any other; here, failing to *write* 〜んがため(に) is the same fact about this
+learner as failing to *pick* it, so both exercises feed one weight and a pattern missed either
+way comes up more often in both. The schedule is untouched — a pattern has no handwritten
+attempt (invariant 25) — and `GrammarLog` is still this app's own fourth file (invariant 15).
+
+### It is the Grammar screen's third stage, not a seventh tab
+
+`STAGE_VIEWS` does not grow: the drill and the production exercise are two stages of the
+Grammar panel, beside the pattern one of its rows opens, and the chrome steps aside for any of
+them (invariant 35's measured reason — a phone's tab row has no room for a seventh tab). The
+course screen's `.practise` row now carries **two doors** — `Practise the patterns` and `Write
+the patterns` — each with its own measured count, and each stage's first control is the way
+back to the course.
+
+### What was measured rather than assumed
+
+There was **no active display**, so a `-l` capture would have been a frozen frame (§5), and the
+run is a DOM probe over the dev server's log — at 980×728 and then at the phone's width, by
+trap 23's fallback: the window set to 390×844, `minWidth`/`minHeight` with it, and the app
+restarted.
+
+| step | measured |
+| --- | --- |
+| the doors | `Practise the patterns 363 of the 526 can be asked` · `Write the patterns 363 of the 526 can be written` — side by side at 980 (the row 907×68) |
+| the stage | the pool line; the sentence with the corpus's furigana and the hole (`真実を明らかにせ ？ 、記者たちは危険を顧みず取材を続けた。`); the corpus's English; the hint; and the chrome **gone** — the tab row is not in the DOM while a stage is up |
+| the question | no `〜` anywhere in the rendered stage: the pattern is not in the payload, and the probe checks the drawing as well as the JSON |
+| a wrong answer | `chigau` → `Not quite — the hole is んがために. You wrote ちがう.`, the sentence put back together with んがために in the hole, the lesson (`〜んがため(に)` · `in order to; for the sake of` · `Verb-nai stem + んがため(に)` · the corpus's note), and `〜んがため(に): missed 1 of 1 — this pattern comes up more often until you stop missing it.` |
+| the way on | `Next question`, and the next drawn question was a different sentence of a different pattern (`公共の場で大声で電話をするなんて、迷惑 ？ 。`) |
+| a right answer | through the real command, since the screen cannot know it: `correct=true answer=のほうが written=の方が produced=のほうが` |
+| at 980×728 | `pageOverflow 0` before and after answering; input 563×44 and `Check` 74×44 on one line; `back` 101×44 |
+| at 390×844 (373px of client width) | `pageOverflow 0`; the two doors **stack, one per line** (the row 349×159); the sentence 366×51; `back` 101×44 |
+
+**And the phone measurement found one fault, which is why it was taken.** In the first run the
+label sat beside the field, and at 390px that pushed `Check` onto a line of its own — `input
+221×44@157,219 | check 74×44@12,271`: the one control the question has, below the box the
+learner had just typed in. The label moved above the row, and the field and the button are one
+flex row now; the second run measured `input 285×44@12,268 | check 74×44@305,268` — the same
+line, and no overflow at either width. The two doors stacking on a phone is left as it is: two
+full-width buttons of 44px each are clearer than two half-width ones whose labels would wrap.
+
+### What the measurement corrected
+
+The crate's module documentation for the drill had carried **360 of the 526 patterns over 908
+sentences** and *"183 of the 526 patterns cannot be asked"* since N20, while the artifact tests,
+the screen and the API documentation had said 363/903 and 163 all along. The walk this
+milestone's tests do over the committed artifact found the numbers the tests pin, and the stale
+ones are corrected in `grammar_drill.rs` — the class of mistake §5 keeps warning about: a number
+in prose is not a measurement.
+
+### What is not changed
+
+The corpus's sentences and their furigana; the grammar artifact (no rebuild, no format change,
+the text still exactly as OpenJLPT wrote it); the blank rule and its three measurements; the
+recognition drill and its distractors; the schedule and its file; the levels that were dropped
+and the licence notices that state it. What production does **not** do is grade a hand or a
+whole sentence of the learner's own: the attempt is the lump the sentence needs, and a free
+sentence is a different exercise with a different attempt source — which is what the known
+weak spots now say is left.
+
 ## Cross-cutting polish
 
 Recorded here rather than as milestones because none of them is a feature.
@@ -2618,7 +2763,7 @@ Recorded here rather than as milestones because none of them is a feature.
   strokes — kanji stroke order is the thing being taught, and the Chinese app has
   always graded its characters that way. A kanji drawn with two strokes joined is
   refused with the taught count, and `joined` is empty for a kanji and a radical.
-* **Grammar — shipped at N19, N20 and N21, and this bullet is kept rather than
+* **Grammar — shipped at N19, N20, N21 and N22, and this bullet is kept rather than
   deleted.** It stood here from N0 as the largest gap in the product: particles, the
   copula and every inflectional ending are kana, so a learner who finished the kana
   course had unlocked grammar and been given nothing to use it on. N19 put **526
@@ -2631,10 +2776,15 @@ Recorded here rather than as milestones because none of them is a feature.
   course to the vocabulary it had been sitting beside**: every pattern's stage lists
   the course's own words its sentences use (526 of 526, 8,151 links) and the characters
   the pattern itself is written with (107 patterns, 143 characters, all jōyō), each
-  opening the card behind it — the *link* half of this bullet, answered. What is still
-  missing is the **production** half: nothing asks a learner to build a sentence with a
-  pattern, which would need its own attempt source the way the review queue needed the
-  board.
+  opening the card behind it — the *link* half of this bullet, answered. **N22 answered
+  the production half in the form a corpus can support**: the same sentence and the same
+  hole, with the learner typing the missing text against the reading the corpus wrote
+  over it (363 of the 526 patterns over 903 sentences, every answer typeable, and the
+  question carries nothing that answers it). What is still missing is a sentence **of
+  the learner's own** — free composition, where the sentence is not the corpus's and
+  there is no single right answer to grade against. That needs its own attempt source
+  and its own decision about what to mark, and it is the honest remaining gap rather
+  than something N22 did in passing.
 * **The 13 confusion pairs are still a fixed list, and the yōon drill did not
   change that.** N3 weighs them by what this learner gets wrong, which is the half
   that was worth having — and N4's second exercise records its 33 yōon contrasts

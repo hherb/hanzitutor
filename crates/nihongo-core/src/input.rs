@@ -281,6 +281,110 @@ pub fn matches_word(word: &str, typed: &str) -> bool {
     to_kana(typed).map(|produced| produced == word).unwrap_or(false)
 }
 
+/// Fold the two yotsugana pairs onto the kana that spells the same sound.
+///
+/// ぢ and じ are one sound in modern Japanese and so are づ and ず; `ji` types じ
+/// and `zu` types ず, which is what a real IME does. So an exercise that asks a
+/// learner to *produce* a string containing ぢ cannot insist on ぢ being typed —
+/// the engine cannot type it — and comparing the two as one sound is the honest
+/// rule. Every other kana is left alone: を is not お, and the drill's own table
+/// keeps them apart on purpose.
+pub fn fold_yotsugana(input: &str) -> String {
+    input
+        .chars()
+        .map(|ch| match ch {
+            'ぢ' => 'じ',
+            'づ' => 'ず',
+            _ => ch,
+        })
+        .collect()
+}
+
+/// What the learner's typing comes to in kana — the string a screen shows back.
+///
+/// Kana typed directly is taken as it stands, which is what a learner with a
+/// Japanese IME produces; anything else is read as romaji, and a string the table
+/// cannot read at all comes back empty rather than as an error, because "you typed
+/// nothing this can read" is a wrong answer rather than a failure.
+pub fn produce_kana(typed: &str) -> String {
+    let typed = typed.trim();
+    if typed.chars().any(is_kana) {
+        typed.to_string()
+    } else {
+        to_kana(typed).unwrap_or_default()
+    }
+}
+
+/// True when `typed` says what `expected` says: romaji converted to kana, katakana
+/// folded to hiragana, and the two yotsugana pairs treated as one sound.
+///
+/// The rule a *production* exercise needs — the learner writes the reading of
+/// something, in romaji or in kana, and this is the comparison. It is
+/// [`matches_word`] with the two normalisations that make it fair: a reading the
+/// corpus writes in katakana (a loanword inside a sentence) is answered in
+/// hiragana as readily as in katakana, and a reading containing ぢ or づ — which no
+/// spelling of the input table produces — is still answerable. Kana typed directly
+/// is accepted as it stands, which is what [`matches_word`] does not do.
+pub fn matches_kana_text(expected: &str, typed: &str) -> bool {
+    if expected.trim().is_empty() {
+        return false;
+    }
+    let produced = produce_kana(typed);
+    if produced.is_empty() {
+        return false;
+    }
+    fold_yotsugana(&normalise_to_hiragana(&produced))
+        == fold_yotsugana(&normalise_to_hiragana(expected))
+}
+
+/// Whether a character is kana, for telling a typed reading from typed romaji.
+fn is_kana(ch: char) -> bool {
+    matches!(ch as u32, 0x3041..=0x309F | 0x30A1..=0x30FA | 0x30FC)
+}
+
+/// A romaji spelling that types this kana, or `None` when the table has none.
+///
+/// The reverse of [`to_kana`], and the half a production exercise needs: it is what
+/// says whether an answer **can be typed at all** before the question is asked. A
+/// kana the table cannot produce has no spelling here — ー is the one that matters,
+/// because a long vowel is a spelling decision this engine deliberately leaves to
+/// the learner, and the small ゕ ゖ have none either — so a question whose answer
+/// contains one is not asked rather than asked and unanswerable.
+///
+/// The construction is a greedy walk of the same table [`to_kana`] reads, longest
+/// spelling first, with one repair: ん is spelled `n` and takes an apostrophe when
+/// the syllable after it starts with a vowel or `y`, because `na` is な and んあ has
+/// to be typed `n'a`. The result is **verified by typing it back**, so a spelling
+/// this function hands out is one [`to_kana`] really produces; a walk that fails to
+/// round-trip answers `None` rather than a spelling that does not work.
+pub fn romaji_for(kana: &str) -> Option<String> {
+    let kana = normalise_to_hiragana(kana);
+    if kana.is_empty() {
+        return None;
+    }
+    let entries = table();
+    let mut pieces: Vec<(&str, String)> = Vec::new();
+    let mut rest = kana.as_str();
+    while !rest.is_empty() {
+        let entry = entries.iter().find(|e| rest.starts_with(&e.hiragana))?;
+        pieces.push((entry.hiragana.as_str(), entry.romaji.clone()));
+        rest = &rest[entry.hiragana.len()..];
+    }
+    let mut out = String::new();
+    for (i, (piece, romaji)) in pieces.iter().enumerate() {
+        if *piece == "ん" {
+            out.push('n');
+            let next = pieces.get(i + 1).and_then(|(_, romaji)| romaji.chars().next());
+            if next.is_some_and(|ch| is_vowel(ch) || ch == 'y') {
+                out.push('\'');
+            }
+        } else {
+            out.push_str(romaji);
+        }
+    }
+    (to_kana(&out).ok().as_deref() == Some(kana.as_str())).then_some(out)
+}
+
 /// The small kana and the yōon a base kana can form, so an input exercise can
 /// offer the right next keystrokes.
 pub fn continuations(script: Script) -> Vec<(String, String)> {
@@ -519,5 +623,82 @@ mod tests {
         let all = continuations(Script::Hiragana);
         assert_eq!(all.len(), 33);
         assert!(all.iter().any(|(romaji, kana)| romaji == "kyu" && kana == "きゅ"));
+    }
+
+    #[test]
+    fn a_whole_kana_answer_is_matched_by_sound_rather_than_by_writing() {
+        // Romaji, in either romanisation.
+        assert!(matches_kana_text("てください", "tekudasai"));
+        assert!(matches_kana_text("にたいして", "nitaishite"));
+        assert!(matches_kana_text("し", "si"));
+        // Kana typed directly — a learner with a Japanese IME — is accepted as it
+        // stands, which is what `matches_word` cannot do.
+        assert!(matches_kana_text("てください", "てください"));
+        assert!(matches_kana_text("てください", "テクダサイ"));
+        // A reading the corpus writes in katakana is answered in hiragana.
+        assert!(matches_kana_text("カナ", "kana"));
+        assert!(matches_kana_text("かな", "kana"));
+        // And the two yotsugana are one sound in either direction: づ types as `zu`
+        // and ぢ as `ji`, so a reading containing them stays answerable.
+        assert!(matches_kana_text("つづく", "tsuzuku"));
+        assert!(matches_kana_text("つづく", "tsuduku"));
+        assert!(matches_kana_text("はなぢ", "hanaji"));
+        assert!(matches_kana_text("はなじ", "hanadi"));
+        // While the pairs that are *not* one sound stay apart: を is not お.
+        assert!(!matches_kana_text("を", "o"));
+        assert!(matches_kana_text("を", "wo"));
+        // Wrong, empty and unreadable answers are all simply not right.
+        assert!(!matches_kana_text("てください", "tekudasa"));
+        assert!(!matches_kana_text("かな", "kama"));
+        assert!(!matches_kana_text("てください", ""));
+        assert!(!matches_kana_text("てください", "   "));
+        assert!(!matches_kana_text("てください", "!!!"));
+        assert!(!matches_kana_text("", "kana"));
+        assert_eq!(fold_yotsugana("ぢづじず"), "じずじず");
+    }
+
+    #[test]
+    fn a_string_can_be_spelled_back_and_is_verified_by_typing_it() {
+        for (kana, typed) in [
+            ("てください", "tekudasai"),
+            ("にたいして", "nitaishite"),
+            ("はんして", "hanshite"),
+            ("かな", "kana"),
+            ("きゃ", "kya"),
+            ("きや", "kiya"),
+            ("しんぶん", "shinbun"),
+        ] {
+            let romaji = romaji_for(kana).unwrap_or_else(|| panic!("{kana} has no spelling"));
+            assert_eq!(to_kana(&romaji).ok().as_deref(), Some(kana), "{kana} → {romaji}");
+            assert_eq!(romaji, typed, "{kana} should be spelled {typed}");
+        }
+        // The moraic n takes its apostrophe exactly where a following vowel or `y`
+        // would otherwise swallow it: んあ is `n'a`, んや is `n'ya`, んか is `nka`.
+        assert_eq!(romaji_for("んあ").as_deref(), Some("n'a"));
+        assert_eq!(romaji_for("んや").as_deref(), Some("n'ya"));
+        assert_eq!(romaji_for("んか").as_deref(), Some("nka"));
+        assert_eq!(romaji_for("ん").as_deref(), Some("n"));
+        // Nothing that is not kana has a spelling, and neither has the two things
+        // the engine deliberately cannot type.
+        assert_eq!(romaji_for(""), None);
+        assert_eq!(romaji_for("ー"), None, "a long vowel is a spelling, not a sound");
+        assert_eq!(romaji_for("kana"), None);
+    }
+
+    #[test]
+    fn every_kana_the_readings_offer_can_be_typed_back() {
+        // The reverse direction is only useful if it covers the table the forward
+        // one builds, and one pair is a real exception: ゕ and ゖ offer `ka` and
+        // `ke`, and か and け claim those spellings first, so the small kana cannot
+        // be typed at all. Named rather than filtered, so a third is noticed.
+        for (kana, _) in hiragana_with_readings().chain(katakana_only_with_readings()) {
+            if matches!(kana, 'ゕ' | 'ゖ') {
+                assert_eq!(romaji_for(&kana.to_string()), None, "{kana} is not typeable");
+                continue;
+            }
+            let typed = romaji_for(&kana.to_string())
+                .unwrap_or_else(|| panic!("{kana} has no spelling in the table"));
+            assert_eq!(to_kana(&typed).ok(), Some(kana.to_string()), "{kana} typed as {typed}");
+        }
     }
 }

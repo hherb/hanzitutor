@@ -74,9 +74,11 @@ pub use drill::{
 };
 pub use grammar_drill::{
     askable, askable_of, askable_points, attaches_alike, blank_for, can_distract,
-    draw as draw_grammar_question, fills_the_same_hole, formation_head, lumps, plausible,
-    question_for, size as grammar_drill_size, Askable, Blank, DrillSize, GrammarLog, GrammarOption,
-    GrammarQuestion, LENGTH_WINDOW, MIN_BLANK, OPTION_COUNT,
+    draw as draw_grammar_question, draw_production, fills_the_same_hole, formation_head, lumps,
+    plausible, producible, producible_of, producible_points, production_for, production_size,
+    question_for, size as grammar_drill_size, verdict_for, Askable, Blank, DrillSize, GrammarLog,
+    GrammarOption, GrammarQuestion, ProductionQuestion, ProductionVerdict, LENGTH_WINDOW, MIN_BLANK,
+    OPTION_COUNT,
 };
 pub use hanzi_core::{
     decompose::{parse as parse_decomposition, Component, Decomposition},
@@ -98,8 +100,8 @@ pub use kanji::{
     JOYO_COUNT, JOYO_GRADES, KANJI_ARTIFACT_MAGIC, RADICAL_COUNT,
 };
 pub use input::{
-    continuations, matches_reading, matches_word, normalise_to_hiragana, to_kana, to_kana_in,
-    RomajiError,
+    continuations, fold_yotsugana, matches_kana_text, matches_reading, matches_word,
+    normalise_to_hiragana, produce_kana, romaji_for, to_kana, to_kana_in, RomajiError,
 };
 pub use readings::{reading, Reading};
 pub use review::{due_items, kind_of, queue, DueItem, Queue, ReviewKind, Section};

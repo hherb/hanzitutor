@@ -696,6 +696,74 @@ impl AppState {
         })
     }
 
+    /// The next pattern to **write**: which one (weighted towards the ones this
+    /// learner has missed, over this exercise's own pool) and which of its sentences.
+    ///
+    /// Two rolls rather than three, because a question the learner writes has no
+    /// options to shuffle. The rule is `nihongo_core::grammar_drill`'s, and this is
+    /// the thin half that reads this app's own record and hands the question on —
+    /// including the fact that the question carries nothing that answers it.
+    pub fn next_grammar_production_with_rolls(
+        &self,
+        point_roll: f64,
+        example_roll: f64,
+    ) -> Option<grammar_practice::ProductionQuestion> {
+        let log = self
+            .grammar_drill
+            .lock()
+            .expect("the grammar drill's store is not poisoned");
+        grammar_practice::draw_production(&self.grammar, log.log(), point_roll, example_roll)
+    }
+
+    /// The next question to write, with the randomness supplied by the clock.
+    pub fn next_grammar_production(&self) -> Option<grammar_practice::ProductionQuestion> {
+        self.next_grammar_production_with_rolls(roll(), roll())
+    }
+
+    /// What the production exercise can ask of the course, for the screen's line.
+    pub fn grammar_production_size(&self) -> grammar_practice::DrillSize {
+        grammar_practice::production_size(&self.grammar)
+    }
+
+    /// Grade what the learner wrote, record it, and hand back the lesson.
+    ///
+    /// **Correctness is decided here**, on the sentence the question was drawn from:
+    /// `point` names the pattern, `example` says which of its sentences was shown,
+    /// and the answer is that sentence's own hole, read from the corpus's furigana by
+    /// the data layer. The interface could not send the expected answer if it wanted
+    /// to — it was never given it — and there is no `correct` field to post. A
+    /// sentence this exercise does not ask about is an **error** rather than a wrong
+    /// answer, because a verdict recorded against a question nobody asked would put a
+    /// lie in the learner's own file.
+    pub fn record_grammar_production(
+        &self,
+        point: &str,
+        example: usize,
+        typed: &str,
+    ) -> Result<GrammarProductionOutcome, String> {
+        let pattern = self
+            .grammar
+            .get(point)
+            .ok_or_else(|| format!("{point:?} is not a pattern of this course"))?;
+        let verdict = grammar_practice::verdict_for(pattern, example, typed).ok_or_else(|| {
+            format!("sentence {example} of {point:?} is not one this exercise asks about")
+        })?;
+        let tally = self
+            .grammar_drill
+            .lock()
+            .expect("the grammar drill's store is not poisoned")
+            .record(&verdict.point, verdict.correct)
+            .map_err(|err| format!("the answer was counted but could not be saved: {err}"))?;
+        let record = GrammarTally {
+            point: verdict.point.clone(),
+            asked: tally.asked,
+            correct: tally.correct,
+            wrong: tally.wrong,
+            weight: tally.weight(),
+        };
+        Ok(GrammarProductionOutcome { verdict, record })
+    }
+
     /// The yōon digraphs for one script — the pairs that make one mora.
     pub fn yoon(&self, script: Script) -> Vec<YoonView> {
         build_yoon(script)
@@ -1389,6 +1457,25 @@ pub struct GrammarTally {
     pub wrong: u32,
     /// The pattern's share of the drill, per the rule in `nihongo_core::drill`.
     pub weight: f64,
+}
+
+/// What a written answer came to: the lesson, and the pattern's record now.
+///
+/// `verdict` is `nihongo_core::grammar_drill::ProductionVerdict`'s own shape — the
+/// pattern, its reading, its meaning, its formation, the corpus's note, the text the
+/// sentence wrote in the hole, what that text is read as, what the learner's typing
+/// came to and whether it says the same thing. It is the **lesson**, and it is why
+/// the question itself could be sent without any of it: the question cannot answer
+/// itself, and everything a learner needs after answering arrives here.
+///
+/// `record` is the same [`GrammarTally`] the recognition drill returns, because both
+/// exercises feed the one file (`grammar.json`, invariant 15): a miss is a miss
+/// whichever way the learner was asked about the pattern.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GrammarProductionOutcome {
+    pub verdict: grammar_practice::ProductionVerdict,
+    pub record: GrammarTally,
 }
 
 /// A yōon digraph.
@@ -2149,6 +2236,46 @@ fn record_grammar_answer(
     state.record_grammar_answer(&point, &picked)
 }
 
+/// The next pattern to write: drawn from the course, weighted by what this learner
+/// has missed, and handed over with the sentence and nothing that answers it.
+///
+/// The question is drawn in Rust for the recognition drill's reason — only the asker
+/// knows which pattern and which sentence it asked, and the answer has to be
+/// remembered against them.
+#[tauri::command]
+fn next_grammar_production(
+    state: State<'_, AppState>,
+) -> Option<grammar_practice::ProductionQuestion> {
+    state.next_grammar_production()
+}
+
+/// What the production exercise can ask of the course, in numbers.
+///
+/// The same three numbers the recognition drill reports, over this exercise's own
+/// pool, so the screen can say how much of the course can be written rather than
+/// leave a learner wondering why a pattern they know never comes up.
+#[tauri::command]
+fn grammar_production_size(state: State<'_, AppState>) -> grammar_practice::DrillSize {
+    state.grammar_production_size()
+}
+
+/// Grade a written answer, record it, and hand back the lesson.
+///
+/// `point` names the pattern and `example` says which of its sentences the question
+/// showed — the **position** rather than the sentence, because the sentence contains
+/// the answer and the question was not given it. `typed` is what the learner wrote,
+/// romaji or kana, and there is deliberately no way to say whether it was right:
+/// correctness is decided in Rust from the corpus's own reading of the hole.
+#[tauri::command]
+fn record_grammar_production(
+    state: State<'_, AppState>,
+    point: String,
+    example: usize,
+    typed: String,
+) -> Result<GrammarProductionOutcome, String> {
+    state.record_grammar_production(&point, example, &typed)
+}
+
 /// Hear `text` in the system's Japanese voice, cutting off anything already being
 /// said.
 ///
@@ -2297,6 +2424,9 @@ pub fn run() {
             next_grammar_question,
             grammar_drill_size,
             record_grammar_answer,
+            next_grammar_production,
+            grammar_production_size,
+            record_grammar_production,
             speak,
             stop_speaking,
             voice,
@@ -3632,6 +3762,107 @@ mod tests {
         assert_eq!(size.total, state.grammar.len());
         assert_eq!(size.points, 363);
         assert_eq!(size.examples, 903);
+    }
+
+    // ---- the grammar production exercise -----------------------------------
+
+    /// The question the app hands the screen to **write** cannot answer itself, and
+    /// the command grades what comes back against the corpus's own reading.
+    ///
+    /// This is the app's half of invariant 41: the payload the webview receives
+    /// carries the sentence with the hole in it, the corpus's English and nothing
+    /// that answers the question — and the answer is decided in Rust from the
+    /// sentence the question named, so the interface has nothing to lie with.
+    #[test]
+    fn the_grammar_production_the_app_draws_cannot_answer_itself() {
+        let state = state();
+        let question = state.next_grammar_production_with_rolls(0.0, 0.0).expect("a question");
+        let pattern = state.grammar.get(&question.point).expect("the pattern is in the course");
+        let answer = nihongo_core::producible_of(pattern)
+            .into_iter()
+            .find(|(at, _)| *at == question.example)
+            .expect("the sentence the app asked about is one it can ask")
+            .1;
+
+        // The two halves are the corpus's sentence with the hole between them…
+        let before: String = question.before.iter().map(|part| part.ruby.as_str()).collect();
+        let after: String = question.after.iter().map(|part| part.ruby.as_str()).collect();
+        assert!(answer.example.ja.starts_with(&before), "{before:?} is not its start");
+        assert!(answer.example.ja.ends_with(&after), "{after:?} is not its end");
+        assert!(answer.example.ja.len() > before.len() + after.len(), "the hole is a real gap");
+        // …and nothing that answers it is anywhere in the payload: not the pattern,
+        // not the reading the corpus stores for it, not the text taken out, not that
+        // text's reading, and not what the pattern means.
+        let payload = serde_json::to_string(&question).expect("serialises");
+        let kana = answer.blank_kana();
+        let mut secrets = vec![
+            pattern.pattern.as_str(),
+            pattern.meaning.as_str(),
+            answer.blank.text.as_str(),
+            kana.as_str(),
+        ];
+        if let Some(reading) = pattern.reading.as_deref() {
+            secrets.push(reading);
+        }
+        for secret in secrets {
+            assert!(!payload.contains(secret), "the question carries {secret:?}");
+        }
+
+        // The same rolls are the same question, which is what makes any of this
+        // assertable.
+        assert_eq!(state.next_grammar_production_with_rolls(0.0, 0.0), Some(question.clone()));
+
+        // Grading happens here: the answer in romaji, the same answer in kana, and a
+        // wrong one — all recorded against the pattern, in the file the recognition
+        // drill also writes.
+        let romaji = nihongo_core::romaji_for(&answer.blank_kana()).expect("typeable");
+        let right = state
+            .record_grammar_production(&question.point, question.example, &romaji)
+            .expect("grades");
+        assert!(right.verdict.correct);
+        assert_eq!(right.verdict.pattern, pattern.pattern);
+        assert_eq!(right.verdict.written, answer.blank.text);
+        assert_eq!(right.verdict.answer, answer.blank_kana());
+        assert_eq!(right.record.point, question.point);
+        assert_eq!(right.record.asked, 1);
+        assert_eq!(right.record.correct, 1);
+        let in_kana = state
+            .record_grammar_production(&question.point, question.example, &answer.blank_kana())
+            .expect("grades");
+        assert!(in_kana.verdict.correct, "kana typed directly is an answer too");
+        let wrong = state
+            .record_grammar_production(&question.point, question.example, "chigau")
+            .expect("grades");
+        assert!(!wrong.verdict.correct);
+        assert_eq!(wrong.verdict.produced, "ちがう");
+        assert_eq!(wrong.record.asked, 3);
+        assert_eq!(wrong.record.correct, 2);
+        assert_eq!(wrong.record.wrong, 1);
+        assert_eq!(wrong.record.weight, 1.0, "1.0 + 2·wrong − correct, the drill's own rule");
+
+        // The two exercises ask one pool and share one file: the same numbers, and a
+        // pattern's tally is the one both of them move.
+        assert_eq!(state.grammar_production_size(), state.grammar_drill_size());
+
+        // A pattern that is not in the course, a sentence the exercise does not ask
+        // about, and an index that is not a sentence at all are messages rather than
+        // panics — and none of them is written into the file.
+        let missing = state.record_grammar_production("no-such-pattern", 0, "kana").unwrap_err();
+        assert!(missing.contains("not a pattern of this course"), "{missing}");
+        let unasked = state.record_grammar_production("desu", 0, "desu").unwrap_err();
+        assert!(unasked.contains("not one this exercise asks about"), "{unasked}");
+        assert!(state.record_grammar_production(&question.point, usize::MAX, "kana").is_err());
+        assert_eq!(state.grammar_drill_size(), state.grammar_production_size());
+    }
+
+    /// The production exercise reports the same reach, and it is the measured one.
+    #[test]
+    fn the_app_reports_how_much_of_the_course_can_be_written() {
+        let state = state();
+        let size = state.grammar_production_size();
+        assert_eq!(size.total, state.grammar.len());
+        assert_eq!(size.points, 363);
+        assert_eq!(size.examples, 903, "every askable sentence has an answer that can be typed");
     }
 
     /// Nothing to say is an error, and a huge utterance is refused.

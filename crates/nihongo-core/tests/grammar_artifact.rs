@@ -24,6 +24,10 @@
 //!   of the link (526 patterns, 1,523 sentences, 8,151 links) is pinned. This is the
 //!   one cross-artifact assertion here: the two are committed separately and either
 //!   can be rebuilt alone.
+//! * **the course can be asked both ways**: the drill's own reach over the committed
+//!   sentences (363 of the 526 patterns, over 903), and the *production* exercise's
+//!   answer for every one of them — a kana reading the corpus wrote, which the input
+//!   engine can type, which is what makes its pool the same pool asked differently.
 //!
 //! The counts are pinned because they are what catch the corpus moving. A rebuild
 //! that changes them is a deliberate commit, and the numbers `prepare-grammar`
@@ -610,4 +614,120 @@ fn the_drill_can_ask_most_of_the_course_from_the_corpus_own_sentences() {
         "{:?} is not one of the pattern's readings",
         blank.text
     );
+}
+
+/// The other half of asking: the same sentences, with the learner **writing** the
+/// pattern instead of choosing it (`invariant 41`).
+///
+/// The measurement this pins is the reach. Production needs no distractors, so its
+/// pool is the blank rule's own — and every blank it finds has a reading the input
+/// engine can produce, so it reaches exactly what the recognition drill reaches:
+/// **363 of the 526 patterns over 903 sentences, with nothing refused**. The answer
+/// is the corpus's own reading of the hole, and the longest one in the course is
+/// `ていただけませんか`.
+#[test]
+fn the_production_exercise_asks_the_same_sentences_the_other_way() {
+    let dataset = dataset();
+    let size = nihongo_core::production_size(&dataset);
+    assert_eq!(size.points, 363);
+    assert_eq!(size.examples, 903);
+    assert_eq!(size.total, 526);
+    assert_eq!(
+        size,
+        nihongo_core::grammar_drill_size(&dataset),
+        "the two exercises ask the same pool, differently"
+    );
+
+    let mut longest = String::new();
+    for answer in nihongo_core::askable(&dataset) {
+        let kana = answer.blank_kana();
+        assert!(!kana.is_empty(), "{}'s blank has no reading", answer.point.id);
+        assert!(!kana.chars().any(is_kanji), "{}'s answer is not kana: {kana}", answer.point.id);
+        if kana.chars().count() > longest.chars().count() {
+            longest = kana.clone();
+        }
+        let romaji = nihongo_core::romaji_for(&kana)
+            .unwrap_or_else(|| panic!("{}'s answer {kana} cannot be typed", answer.point.id));
+        assert!(nihongo_core::matches_kana_text(&kana, &romaji));
+    }
+    assert_eq!(longest, "ていただけませんか");
+
+    // One named question, end to end: 犬の方が猫より好きです。 takes の方が out and the
+    // learner writes のほうが, which the data layer grades from the corpus's reading.
+    let yori = dataset.get("no-hou-ga-yori").expect("〜の方が〜より is in the corpus");
+    assert_eq!(yori.pattern, "〜の方が〜より");
+    let answer = nihongo_core::askable_of(yori).into_iter().next().expect("it can be asked");
+    assert_eq!(answer.blank.text, "の方が");
+    assert_eq!(answer.blank_kana(), "のほうが");
+    let right = nihongo_core::verdict_for(yori, 0, "nohouga").expect("a verdict");
+    assert!(right.correct);
+    assert_eq!(right.written, "の方が");
+    assert_eq!(right.answer, "のほうが");
+    assert_eq!(right.produced, "のほうが");
+    let wrong = nihongo_core::verdict_for(yori, 0, "yori").expect("a verdict");
+    assert!(!wrong.correct);
+    assert_eq!(wrong.pattern, yori.pattern, "the verdict carries the lesson");
+}
+
+/// What the holes a learner writes actually are, counted over the committed course.
+///
+/// Three shapes, and each decides something rather than decorating a document:
+/// **172 of the 903** holes take a kanji, so those questions are answered by a reading
+/// — the corpus's own, never one composed here — while the other 731 are plain kana
+/// and answered by what is written. **4 of the 903** answers contain ぢ or づ, which no
+/// spelling of the input table produces (`ji` types じ), so the yotsugana fold is
+/// load-bearing for exactly those four and the test proves it on them by typing the
+/// common kana's spelling. And **none** contains katakana: the corpus's furigana over a
+/// pattern's own text is hiragana throughout, so the katakana half of the comparison is
+/// defensive rather than used — the input engine's own tests cover it.
+#[test]
+fn the_hole_a_learner_writes_is_what_the_corpus_reads() {
+    let dataset = dataset();
+    let (mut kanji, mut plain, mut yotsugana) = (0usize, 0usize, 0usize);
+    for answer in nihongo_core::askable(&dataset) {
+        let kana = answer.blank_kana();
+        assert!(!kana.chars().any(is_kanji), "{}'s answer is not kana", answer.point.id);
+        assert!(
+            !kana.chars().any(|ch| ('\u{30A1}'..='\u{30FA}').contains(&ch)),
+            "{}'s answer is katakana: {kana}",
+            answer.point.id
+        );
+        let takes_a_kanji = answer.blank.text.chars().any(is_kanji);
+        if takes_a_kanji {
+            kanji += 1;
+            assert_ne!(kana, answer.blank.text, "{} composed a reading", answer.point.id);
+        } else {
+            plain += 1;
+            assert_eq!(kana, answer.blank.text, "{}'s answer is not what it writes", answer.point.id);
+        }
+        // The reading the corpus gives, typed back, is right.
+        let romaji = nihongo_core::romaji_for(&kana).expect("the answer is typeable");
+        assert!(nihongo_core::matches_kana_text(&kana, &romaji));
+
+        if kana.chars().any(|ch| matches!(ch, 'ぢ' | 'づ')) {
+            yotsugana += 1;
+            // The fold, on a real answer: the same sound spelled with the *common*
+            // kana is accepted, because `ji` and `zu` are what the input table
+            // produces and ぢ and づ are what the corpus wrote.
+            let common: String = kana
+                .chars()
+                .map(|ch| match ch {
+                    'ぢ' => 'じ',
+                    'づ' => 'ず',
+                    other => other,
+                })
+                .collect();
+            assert_ne!(common, kana);
+            let typed = nihongo_core::romaji_for(&common).expect("the common spelling is typeable");
+            assert!(
+                nihongo_core::matches_kana_text(&kana, &typed),
+                "{}: {common} typed as {typed} must be accepted for {kana}",
+                answer.point.id
+            );
+        }
+    }
+    assert_eq!(kanji, 172, "holes that take a kanji, answered by their reading");
+    assert_eq!(plain, 731, "holes that are kana already, answered by what is written");
+    assert_eq!(kanji + plain, 903);
+    assert_eq!(yotsugana, 4, "answers whose reading the input table cannot spell exactly");
 }

@@ -396,6 +396,73 @@ export interface GrammarDrillSize {
   total: number;
 }
 
+/**
+ * One question from the production exercise: the same sentence with the same lump
+ * taken out, and the learner **writes** it rather than choosing it.
+ *
+ * Deliberately smaller than `GrammarQuestion`, and that is the exercise: the payload
+ * carries what the screen shows *before* an answer — the sentence with the hole in it,
+ * the position of that sentence in the pattern's own list, and the corpus's English —
+ * and **nothing that answers it**. There is no pattern, no meaning, no formation, no
+ * note, and neither the text taken out nor its reading, so a screen cannot leak what
+ * it was never given; the lesson arrives with the verdict once the learner has
+ * answered (`HANDOVER_NIHONGO.md` invariant 41).
+ *
+ * `example` is the sentence's position rather than the sentence itself, for the same
+ * reason: the sentence contains the answer. Post it back with `point` and what was
+ * typed, and Rust grades it against the corpus's own reading of the hole.
+ */
+export interface GrammarProductionQuestion {
+  /** The answer's id. */
+  point: string;
+  /** Where the sentence sits in the point's own list of examples. */
+  example: number;
+  /** The sentence's furigana before the blank. */
+  before: Ruby[];
+  /** …and after it. */
+  after: Ruby[];
+  /** The English the corpus pairs with the sentence. The prompt. */
+  en: string;
+}
+
+/**
+ * What a written answer came to, and the lesson that goes with it.
+ *
+ * The lesson is the corpus's: the pattern, its kana reading where it stores one, its
+ * meaning, its formation and its note. `written` is the text the sentence put in the
+ * hole and `answer` is what the corpus reads that text as — the thing that had to be
+ * typed, never a reading composed here. `produced` is what the learner's own typing
+ * came to in kana (empty when the input engine could read none of it), and `correct`
+ * is whether the two say the same thing. All of it is decided in Rust.
+ */
+export interface GrammarProductionVerdict {
+  point: string;
+  pattern: string;
+  reading: string | null;
+  meaning: string;
+  formation: string;
+  notes: string | null;
+  /** The text the sentence wrote in the hole, for the sentence whole again. */
+  written: string;
+  /** That text's reading — **the answer**. */
+  answer: string;
+  /** What the learner typed, read as kana; empty when none of it could be read. */
+  produced: string;
+  correct: boolean;
+}
+
+/**
+ * The verdict and the pattern's record, as one written answer returns them.
+ *
+ * `record` is the **same** tally the recognition drill returns, in the same file
+ * (`grammar.json`, invariant 15): a miss is a miss whichever way the learner was
+ * asked about the pattern, so one number weighs both exercises.
+ */
+export interface GrammarProductionOutcome {
+  verdict: GrammarProductionVerdict;
+  record: GrammarTally;
+}
+
 /** One licence notice, with its text, for a Licences screen. */
 export interface LicenceNotice {
   id: string;
