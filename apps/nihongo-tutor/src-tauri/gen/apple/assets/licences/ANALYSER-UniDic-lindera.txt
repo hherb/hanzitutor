@@ -1,17 +1,33 @@
-UniDic and lindera — the analyser behind the reading passages
-============================================================
+UniDic and lindera — the analyser behind the passages, the phrases and the
+grammar's word links
+========================================================================
 
-The word boundaries and the readings the **Read** screen draws over its passages
-are one analyser's answer about three short passages. The passages themselves are
-written for this course and are this project's own prose; what comes from the
-analyser is the segmentation, and it is stored as token boundaries and readings in
-`crates/nihongo-core/data/passages.bin.gz`. That artifact is a derivative of the
-analyser and of the dictionary it reads, so both are recorded here.
+Three artifacts carry this analyser's output, and all three are derivatives of it
+and of the dictionary it reads:
+
+  * `crates/nihongo-core/data/passages.bin.gz` — the word boundaries and readings
+    the **Read** screen draws over its three passages. The passages are written for
+    this course and are this project's own prose.
+  * `crates/nihongo-core/data/phrases.bin.gz` — the segmentation and readings the
+    **Phrases** screen draws over 1,400 sentences imported from Tatoeba (attributed
+    in the Tatoeba notice beside this one, which is what the sentences' copyright is
+    about; the analyser's part is the same as here).
+  * `crates/nihongo-core/data/grammar.bin.gz` — **which of this app's own words each
+    grammar example's sentence uses**, so the **Grammar** screen can list a pattern's
+    vocabulary and open each word's card. The example sentences are OpenJLPT's,
+    attributed in the OpenJLPT notice beside this one; what is UniDic's here is the
+    word index, because the corpus's own furigana markup marks readings rather than
+    word boundaries.
+
+What the analyser supplies in every case is the segmentation — where the words are —
+and it is stored as token boundaries and readings, or as the list of course words a
+sentence uses. No dictionary entry is copied.
 
   * [lindera](https://github.com/lindera/lindera) 6.2 — the analyser, MIT,
     Copyright (c) 2019 by the project authors. It runs at **build time only**
-    (`prepare-passages`, behind the `tokenize` feature) and is not compiled into
-    the app, not bundled with it, and never run by a learner's machine.
+    (`prepare-passages`, `prepare-phrases` and, since N21, `prepare-grammar` — all
+    behind the `tokenize` feature) and is not compiled into the app, not bundled
+    with it, and never run by a learner's machine.
   * `unidic-mecab-2.1.2`, through
     [lindera-unidic](https://crates.io/crates/lindera-unidic) — the dictionary the
     analyser reads, three-clause BSD, Copyright (c) 2011-2017, The UniDic
@@ -21,9 +37,10 @@ analyser and of the dictionary it reads, so both are recorded here.
 `.lindera/`, which is gitignored and part of no bundle; it is fetched once by
 `scripts/fetch-unidic.sh` and pinned there by MD5
 (`f4502a563e1da44747f61dcd2b269e35  unidic-mecab-2.1.2.tar.gz`), which lindera
-verifies before it will build anything. The passages are three sentences written
-here, and what their artifact carries is where the analyser found the word
-boundaries — not a copy of any dictionary entry.
+verifies before it will build anything. What each artifact carries is where the
+analyser found the word boundaries — for text written here, text imported from
+Tatoeba and text imported from OpenJLPT alike — and never a copy of any dictionary
+entry.
 
 MIT Licence (lindera)
 ---------------------

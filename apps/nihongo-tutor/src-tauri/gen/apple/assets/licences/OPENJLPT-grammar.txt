@@ -1,0 +1,123 @@
+OpenJLPT — the grammar course
+=============================
+
+The grammar patterns this app teaches, the explanation of what each one means, the
+form it is built from, and the example sentences that show it are the work of
+**OpenJLPT** and its contributors. Credit for them belongs to OpenJLPT and to the
+people who wrote them; this project claims no copyright over that material.
+
+Source
+------
+
+  OpenJLPT    https://github.com/evanclan/OpenJLPT
+  Licence     https://creativecommons.org/licenses/by-sa/4.0/legalcode
+  Read from   data/json/grammar/n5.json … n1.json and data/json/meta.json,
+              version 0.3.0 when this build was made
+
+Attribution, as the licence asks it to be given
+-----------------------------------------------
+
+  Contains grammar data from OpenJLPT (https://github.com/evanclan/OpenJLPT),
+  released under the Creative Commons Attribution-ShareAlike 4.0 International
+  Licence (CC BY-SA 4.0).
+
+  The grammar points — the explanations and every example sentence — are original
+  writing by OpenJLPT's contributors. OpenJLPT's own `NOTICE.md` states it in as
+  many words: the dataset is assembled from the open sources below **"plus original
+  content written for the project (the grammar dataset and the corrections file)"**,
+  and the project's `sources/grammar/README.md` adds that the explanations and all
+  example sentences were written for OpenJLPT rather than copied from a textbook or
+  a website. `prepare-grammar` **refuses to build** if `NOTICE.md` stops saying that,
+  because it is the basis for taking this dataset and nothing else from the
+  repository.
+
+  The same `NOTICE.md` names the sources its *other* data draws on — Jonathan
+  Waller's JLPT lists, EDRDG's JMdict and KANJIDIC2, Tatoeba's sentences and
+  KanjiVG's diagrams — none of which this app takes from here.
+
+What this app takes, and what it does not
+-----------------------------------------
+
+  **Only the grammar dataset.** This app does not take OpenJLPT's vocabulary,
+  its kanji, its vocabulary levels, its kanji levels, or the example sentences
+  attached to its vocabulary entries: the vocabulary and the kanji come from EDRDG
+  directly (see the EDRDG notice beside this one), and the graded sentences on the
+  Phrases screen come from Tatoeba directly (see the Tatoeba notice). Waller's lists
+  are not used anywhere in this project, and neither is KanjiVG's diagram set.
+
+  The example sentences this app **does** take are the grammar dataset's own — the
+  two or three written for each grammar point — which are OpenJLPT's contributors'
+  work and are attributed above.
+
+  That matters, and it is the reason the grammar half is usable where the rest of
+  that dataset is not: the level assignments OpenJLPT carries rest on an
+  unversioned community grant that this project does not consider verified, while
+  the grammar explanations and examples are OpenJLPT's own writing under a licence
+  its own NOTICE states.
+
+What this app did to the data (the licence requires this to be stated)
+---------------------------------------------------------------------
+
+  This app redistributes a **modified, derived** subset of the grammar dataset,
+  not the dataset itself. Specifically:
+
+  * Selected all 526 grammar points, with their own example sentences, and nothing
+    else — none of the dataset's vocabulary, kanji or levels.
+  * **Dropped the level of every point.** The corpus labels each one N5–N1, and
+    those labels are not stored, not shown, and not implied: the Japan Foundation
+    publishes no official JLPT grammar list, and the app's grammar screen says so.
+    The five level files are read as **one course in the order they give**, and
+    that order is what the screen offers instead of a level.
+  * **Removed the level cross-references inside the notes**, because a note that
+    says *"softer requests use 〜てくれませんか (N4)"* would name a level the app does
+    not carry. 38 of the 524 notes were changed, each only by losing the label:
+    `までに (N4).` became `までに.`, `Formal N2: 〜がたい.` became
+    `Formal: 〜がたい.` (a bare label takes the space in front of it with it), and
+    *"covered at N3"* became *"covered elsewhere"* — the one construction where
+    deleting the label alone would leave a sentence with a hole in it. No other
+    wording was touched.
+  * Parsed the corpus's own furigana markup (`{私|わたし}は…`) into ruby segments so
+    a screen can draw it. **No reading was invented and no alignment was derived**:
+    the alignment is the corpus's, and `prepare-grammar` refuses to write an
+    example whose markup does not spell its sentence or whose kanji the markup does
+    not cover.
+  * Recorded, for every example, **which of this app's own words its sentence uses**,
+    so the grammar screen can list a pattern's vocabulary and open each word's card.
+    That index is not the corpus's and no reading is taken from it: it is UniDic's
+    segmentation of the sentence, computed at build time (`prepare-grammar`, whose
+    analyser and dictionary are recorded in the artifact and in the analyser notice
+    beside this one), and it is what the corpus's own furigana cannot supply — the
+    markup marks readings, not word boundaries.
+  * Re-encoded the result into a compact binary artifact
+    (`crates/nihongo-core/data/grammar.bin.gz`) and recorded OpenJLPT's own version
+    in it.
+
+  Those five are changes to the **data**, and they are the whole of them: an
+  example sentence is stored, redistributed and shown exactly as the corpus wrote
+  it, and the word index beside it is derived from the sentence rather than a
+  change to it. The grammar course's two exercises
+  (`nihongo_core::grammar_drill`) draw one of those sentences with the pattern's own
+  text blanked at run time — one asks which pattern it is, the other asks the learner
+  to write what is missing — and each shows the sentence whole again once an answer is
+  given. That is a presentation of the material rather than a change to it, and it is
+  stated here rather than left to a licensor to notice.
+
+Consequence of ShareAlike
+-------------------------
+
+  The grammar text stays under CC BY-SA 4.0, and so does `grammar.bin.gz` and
+  anything else built from it. This does not reach the program code (AGPL-3.0),
+  the kana and kanji geometry (Arphic Public License and LGPL-3.0-or-later), the
+  dictionary text (EDRDG, also CC BY-SA 4.0), the alignment (JmdictFurigana, MIT)
+  or the app's own interface text.
+
+Keeping it current
+------------------
+
+  OpenJLPT rebuilds its dataset monthly and versions it in `data/json/meta.json`.
+  The version this build was made from is recorded inside the artifact and asserted
+  by `crates/nihongo-core/tests/grammar_artifact.rs`; `scripts/fetch-openjlpt.sh`
+  records the URL, size and SHA-256 of every file it fetched in
+  `data/raw/openjlpt/PROVENANCE.txt`; and LICENSES.md carries the refresh
+  procedure. Refreshing is a deliberate commit — a new release that changes the
+  counts fails the artifact test rather than quietly changing the course.
