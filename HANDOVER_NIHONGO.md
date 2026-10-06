@@ -2918,6 +2918,36 @@ Three things are this app's own, and the first two are the ones that stop a buil
   where to check it landed. There is no microphone string here, unlike the Chinese
   app's: this app never records.
 
+**And whether the phone build carries the frontend you just built cannot be answered by
+`grep`** — which cost a false alarm the first time this recipe was used to install a
+milestone rather than the whole app. `tauri.conf.json`'s `beforeBuildCommand` does run
+`vite:build` and the new bundle does land in the app, but Tauri embeds `frontendDist`'s
+files with their **contents compressed**: a UI string is not a string in the binary, so
+`grep "Write the patterns" "Nihongo Tutor.app/Nihongo Tutor"` answers nothing whether the
+build is minutes or a year old. Only the asset **paths** are plain —
+`strings -a "Nihongo Tutor.app/Nihongo Tutor" | grep assets/` prints
+`/assets/index-D1u5hBEc.js` and `/assets/index-CtcNEb2v.css`, the names Vite hashed from
+today's `apps/nihongo-tutor/dist/`. So the check is to compare those names with the ones
+in `dist/`, not to look for a sentence. The reason it is worth writing down is that the
+**Rust** half of a milestone *is* greppable — `next_grammar_production` and
+`record_grammar_production` are plain strings in the binary — so a build whose frontend
+was stale would look half-correct rather than wrong.
+
+The install itself is three commands and no ceremony, with the phone unlocked:
+
+```bash
+cd apps/nihongo-tutor/src-tauri/gen/apple/build/payload
+unzip -q "../arm64/Nihongo Tutor.ipa"
+xcrun devicectl device install app --device 00008110-0010252A0293801E "Payload/Nihongo Tutor.app"
+xcrun devicectl device process launch --device 00008110-0010252A0293801E com.hanzitutor.kana
+xcrun devicectl device capture screenshot --device 00008110-0010252A0293801E --destination /tmp/phone.png
+```
+
+The screenshot is the only eyes there are on a device: it comes back at the phone's own
+1284×2778, and `xcrun devicectl list devices` saying `available (paired)` is what says the
+phone is ready — the app's data container survives a reinstall, so the screen it opens on
+is the course the maintainer last left open, not necessarily the one the build is about.
+
 ---
 
 ## 6. Traps that cost time here
