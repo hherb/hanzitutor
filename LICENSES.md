@@ -993,13 +993,17 @@ own `GrammarSource`:
 * the result is re-encoded into `grammar.bin.gz` with the corpus's version recorded in it.
 
 Those four are changes to the **data** and they are the whole of them: a sentence is stored,
-redistributed and shown as the corpus wrote it. The grammar course's two **exercises** —
+redistributed and shown as the corpus wrote it. The grammar course's first two **exercises** —
 N20's drill and N22's production exercise, both `nihongo_core::grammar_drill` — draw one of
 those sentences with the pattern's own text blanked at run time, one asking which pattern it
 is and the other asking the learner to write what is missing, and each shows the sentence
-whole again once an answer is given. That is a presentation of the material rather than a
-change to it, it is recorded in the artifact's notice for the same reason, and it is why
-`prepare-grammar` and `grammar.bin.gz` are untouched by either exercise.
+whole again once an answer is given. A **third** stage since N23 —
+`nihongo_core::composition` — shows those sentences unaltered, with the corpus's own furigana,
+as models for a sentence **of the learner's own**; that sentence is the learner's own writing,
+kept in a file of the app's own, and nothing of the corpus's text is changed, blanked or
+stored differently by it. All of that is a presentation of the material rather than a change
+to it, it is recorded in the artifact's notice for the same reason, and it is why
+`prepare-grammar` and `grammar.bin.gz` are untouched by any of the three.
 
 **ShareAlike consequence.** The grammar text stays under CC BY-SA 4.0, and so does
 `grammar.bin.gz` and anything built from it. It does not reach the program code

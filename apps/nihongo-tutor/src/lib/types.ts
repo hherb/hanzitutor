@@ -463,6 +463,95 @@ export interface GrammarProductionOutcome {
   record: GrammarTally;
 }
 
+/**
+ * One pattern to write a sentence of one's own about.
+ *
+ * The fourth grammar stage's prompt, and the one payload of the three that carries
+ * the pattern: the exercise is *write a sentence with this*, so the pattern is the
+ * question rather than the answer. There is nothing to withhold — the corpus never
+ * wrote the sentence being asked for.
+ *
+ * `examples` are the corpus's own sentences for the pattern, with their furigana:
+ * the model a learner who has just met the pattern can borrow the shape of.
+ * `written` is the learner's own writing for this pattern, oldest first, so the
+ * screen can show them what they have written rather than a score — the app's fifth
+ * file, read back.
+ */
+export interface CompositionPrompt {
+  /** The point's own id, which the sentence is kept against. */
+  point: string;
+  /** The pattern as the course writes it, `〜` slots and all. */
+  pattern: string;
+  /** The pattern in kana, where the corpus stores one. */
+  reading: string | null;
+  /** What the pattern means, in the corpus's words. */
+  meaning: string;
+  /** What it attaches to — `Noun + に対して`. */
+  formation: string;
+  /** The corpus's note on nuance, with its level references removed. */
+  notes: string | null;
+  /** The corpus's own sentences for this pattern: the model, not the answer. */
+  examples: GrammarExample[];
+  /** The sentences this learner has already written for this pattern. */
+  written: string[];
+}
+
+/**
+ * What the app could see in a sentence of the learner's own.
+ *
+ * **This is a checklist rather than a mark**, and the fields say so. `kept` is the
+ * only decision in it — whether the input is a sentence at all — and everything else
+ * is an observation: `found` is the pattern's own text the sentence contains, which
+ * may be empty and is not necessarily wrong (255 of the corpus's own 1,526 sentences
+ * inflect their pattern and would be in that state), `outside` names characters this
+ * course has no card for, and `copied` notices a corpus sentence written back
+ * verbatim. Whether the sentence is grammatical or natural is not in here, because
+ * the app cannot see it.
+ */
+export interface CompositionVerdict {
+  point: string;
+  pattern: string;
+  reading: string | null;
+  meaning: string;
+  formation: string;
+  notes: string | null;
+  /** What was written, read back: pure romaji as kana, Japanese script as typed. */
+  text: string;
+  /** Which of the pattern's own lumps the sentence contains, longest first. */
+  found: string[];
+  /** How many kana/kanji characters it holds. */
+  characters: number;
+  /** False when some of what was written is not Japanese script. */
+  readable: boolean;
+  /** Kanji the course does not teach, in the order they appear and each once. */
+  outside: string[];
+  /** Which of the pattern's own sentences this repeats, if any. */
+  copied: number | null;
+  /** Whether it was a sentence: readable, and long enough. The whole judgement. */
+  kept: boolean;
+}
+
+/** What a written sentence came to, and everything this learner has written for the
+ * pattern now — the fifth file, read back. `warning` is set when the sentence was
+ * kept but the file could not be written. */
+export interface CompositionOutcome {
+  verdict: CompositionVerdict;
+  written: string[];
+  warning: string | null;
+}
+
+/**
+ * How much of the course can be written about.
+ *
+ * Two numbers rather than the other exercises' three, because this one asks about a
+ * pattern rather than about a sentence of one — and `points` is the whole course,
+ * which is the reach the drill's 363 and the written cloze's 363 do not have.
+ */
+export interface CompositionSize {
+  points: number;
+  total: number;
+}
+
 /** One licence notice, with its text, for a Licences screen. */
 export interface LicenceNotice {
   id: string;

@@ -34,6 +34,12 @@
 //! # }
 //! ```
 
+// Free composition: a sentence of the learner's own, written with a pattern, and
+// the checklist a machine may honestly put beside it. Its own module rather than a
+// corner of `grammar_drill` because it has no answer to grade — the drill's two
+// exercises ask a question the corpus can answer and this one cannot, which is what
+// everything about it follows from.
+pub mod composition;
 pub mod curriculum;
 pub mod drill;
 pub mod grammar;
@@ -62,6 +68,11 @@ pub use curriculum::{
     confusions_for, grade_name, kanji_lessons, lessons, off_grid, to_hiragana, to_katakana, yoon,
     Confusable, KanjiLesson, Lesson, Row, Yoon, CHOONPU, CONFUSABLE, KANJI_LESSON_SIZE,
     KATAKANA_ONLY, RARE_KANA, ROWS, SMALL_KANA, VOWEL_COLUMNS,
+};
+pub use composition::{
+    draw as draw_composition, own_lumps, prompt_for as composition_prompt_for,
+    size as composition_size, verdict_for as composition_verdict_for, Composition, CompositionLog,
+    CompositionPrompt, CompositionSize, CompositionVerdict, MIN_COMPOSITION,
 };
 pub use grammar::{
     parse_furigana, strip_level_references, FuriganaError, GrammarArtifact, GrammarDataset,

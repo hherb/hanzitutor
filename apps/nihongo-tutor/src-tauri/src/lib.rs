@@ -21,7 +21,7 @@ pub mod store;
 use hanzi_voice::{Language, Speaker};
 use licences::{AppInfo, LicenceNotice};
 use nihongo_core::{
-    band_name, confusions_for, grade_kana, grade_name,
+    band_name, composition, confusions_for, grade_kana, grade_name,
     grammar_drill as grammar_practice,
     kanji_lessons as build_kanji_lessons, key_of, lessons as build_lessons,
     normalise_to_hiragana, now_iso8601, off_grid, parse_decomposition,
@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::{ConfusionStore, GrammarStore, Prefs, PrefsStore, ReviewStore};
+use store::{CompositionStore, ConfusionStore, GrammarStore, Prefs, PrefsStore, ReviewStore};
 use tauri::{Manager, State};
 
 /// The datasets, loaded once and shared by every command, the drill's memory of
@@ -71,6 +71,11 @@ pub struct AppState {
     /// missed, in a file of its own beside the kana drill's. Two drills, two key
     /// spaces, two files — see [`store`] and `HANDOVER_NIHONGO.md` invariant 15.
     grammar_drill: Mutex<GrammarStore>,
+    /// The sentences this learner has written of their own, in a fifth file of this
+    /// app's own — beside the two tallies, the schedule and the preference, and never
+    /// in any of them: free composition has no verdict to record, so what is kept is
+    /// the sentence rather than a mark for it (`nihongo_core::composition`).
+    compositions: Mutex<CompositionStore>,
     /// The review schedule, in this app's own file beside the drill's — never a
     /// shared one. See [`store`] and `HANDOVER_NIHONGO.md` invariant 15.
     review: Mutex<ReviewStore>,
@@ -99,6 +104,7 @@ impl AppState {
         Self::with_stores(
             ConfusionStore::in_memory(),
             GrammarStore::in_memory(),
+            CompositionStore::in_memory(),
             ReviewStore::in_memory(),
             PrefsStore::in_memory(),
         )
@@ -110,6 +116,7 @@ impl AppState {
         Self::with_stores(
             ConfusionStore::at_dir(&dir),
             GrammarStore::at_dir(&dir),
+            CompositionStore::at_dir(&dir),
             ReviewStore::at_dir(&dir),
             PrefsStore::at_dir(&dir),
         )
@@ -118,6 +125,7 @@ impl AppState {
     fn with_stores(
         drill: ConfusionStore,
         grammar_drill: GrammarStore,
+        compositions: CompositionStore,
         review: ReviewStore,
         prefs: PrefsStore,
     ) -> Self {
@@ -145,6 +153,7 @@ impl AppState {
                 .expect("the committed grammar artifact decodes"),
             drill: Mutex::new(drill),
             grammar_drill: Mutex::new(grammar_drill),
+            compositions: Mutex::new(compositions),
             review: Mutex::new(review),
             prefs: Mutex::new(prefs),
             speaker: Arc::new(Speaker::new(Language::Japanese)),
@@ -762,6 +771,86 @@ impl AppState {
             weight: tally.weight(),
         };
         Ok(GrammarProductionOutcome { verdict, record })
+    }
+
+    /// The next pattern to **write a sentence of one's own about**: which pattern,
+    /// weighted towards the ones this learner has missed, over the whole course.
+    ///
+    /// One roll, because there is no sentence to choose and no options to shuffle:
+    /// the prompt is the pattern itself, which is also why this exercise reaches
+    /// every one of the 526 patterns where the other two reach 363. The rule is
+    /// `nihongo_core::composition`'s, and this is the thin half that reads this app's
+    /// own records — the drill's weights for the draw, and the learner's own
+    /// sentences for the prompt.
+    pub fn next_grammar_composition_with_rolls(
+        &self,
+        point_roll: f64,
+    ) -> Option<composition::CompositionPrompt> {
+        let weights = self
+            .grammar_drill
+            .lock()
+            .expect("the grammar drill's store is not poisoned");
+        let written = self
+            .compositions
+            .lock()
+            .expect("the composition store is not poisoned");
+        composition::draw(&self.grammar, weights.log(), written.log(), point_roll)
+    }
+
+    /// The next pattern, with the randomness supplied by the clock.
+    pub fn next_grammar_composition(&self) -> Option<composition::CompositionPrompt> {
+        self.next_grammar_composition_with_rolls(roll())
+    }
+
+    /// What the composition exercise can ask of the course, for the screen's line.
+    pub fn grammar_composition_size(&self) -> composition::CompositionSize {
+        composition::size(&self.grammar)
+    }
+
+    /// Read a sentence the learner wrote of their own, keep it if it is a sentence,
+    /// and hand back what the app could see in it.
+    ///
+    /// **There is no right answer here, so nothing is graded** — the checks are
+    /// `nihongo_core::composition`'s, and the only decision among them is whether the
+    /// input is a sentence at all. What is kept is the learner's own writing, in this
+    /// app's fifth file, and the pattern's weight is **read** for the draw and never
+    /// written: an exercise that cannot tell a good sentence from a poor one has no
+    /// business recording a mark for either.
+    ///
+    /// A pattern that is not in the course is an error rather than an empty verdict,
+    /// for the reason `record_grammar_production` gives: a sentence filed under a
+    /// pattern nobody was shown would be a lie in the learner's own record.
+    pub fn record_grammar_composition(
+        &self,
+        point: &str,
+        typed: &str,
+    ) -> Result<CompositionOutcome, String> {
+        let pattern = self
+            .grammar
+            .get(point)
+            .ok_or_else(|| format!("{point:?} is not a pattern of this course"))?;
+        let verdict = composition::verdict_for(pattern, &self.kanji, typed);
+        let mut warning = None;
+        let mut store = self
+            .compositions
+            .lock()
+            .expect("the composition store is not poisoned");
+        if verdict.kept {
+            if let Err(err) = store.add(&verdict.point, &verdict.text, &now_iso8601()) {
+                warning = Some(format!("the sentence was kept but could not be saved: {err}"));
+            }
+        }
+        let written = store
+            .log()
+            .sentences(&verdict.point)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        Ok(CompositionOutcome {
+            verdict,
+            written,
+            warning,
+        })
     }
 
     /// The yōon digraphs for one script — the pairs that make one mora.
@@ -1476,6 +1565,29 @@ pub struct GrammarTally {
 pub struct GrammarProductionOutcome {
     pub verdict: grammar_practice::ProductionVerdict,
     pub record: GrammarTally,
+}
+
+/// What a sentence of the learner's own came to: what the app could see, and what
+/// it has now kept.
+///
+/// `verdict` is `nihongo_core::composition::CompositionVerdict`'s own shape — the
+/// pattern and its reading, the pattern's own text where the sentence contains it,
+/// how many characters it holds, whether it could be read at all, the characters the
+/// course does not teach, and the corpus sentence if one was written back. It is a
+/// **checklist rather than a mark**: free composition has no right answer, and the
+/// one decision in it is whether the input is a sentence.
+///
+/// `written` is every sentence this learner has now written for that pattern, in the
+/// order they wrote them — the fifth file read back, so the screen can show the
+/// learner their own writing rather than a score. `warning` is set when the sentence
+/// was kept but the file could not be written, exactly as a graded attempt's write
+/// failure is reported rather than swallowed (invariant 15).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompositionOutcome {
+    pub verdict: composition::CompositionVerdict,
+    pub written: Vec<String>,
+    pub warning: Option<String>,
 }
 
 /// A yōon digraph.
@@ -2276,6 +2388,45 @@ fn record_grammar_production(
     state.record_grammar_production(&point, example, &typed)
 }
 
+/// The next pattern to write a sentence of one's own about, drawn in Rust for the
+/// other exercises' reason and over the whole course rather than a part of it.
+///
+/// The prompt is the pattern itself — with its reading, its meaning, its formation,
+/// its note, the corpus's own sentences as models and the sentences this learner has
+/// already written — because there is no answer to withhold: the exercise asks for a
+/// sentence the corpus never wrote.
+#[tauri::command]
+fn next_grammar_composition(
+    state: State<'_, AppState>,
+) -> Option<composition::CompositionPrompt> {
+    state.next_grammar_composition()
+}
+
+/// What the composition exercise can ask of the course, in numbers.
+///
+/// Two numbers rather than the other exercises' three: this one asks about a pattern
+/// rather than about a sentence of one, and its reach is the whole course.
+#[tauri::command]
+fn grammar_composition_size(state: State<'_, AppState>) -> composition::CompositionSize {
+    state.grammar_composition_size()
+}
+
+/// Read the sentence a learner wrote of their own, keep it, and say what was seen.
+///
+/// `point` names the pattern the prompt showed and `typed` is the whole sentence.
+/// There is deliberately no `correct` field to post, and none to return: the app
+/// cannot see whether a composed sentence is good, and does not pretend to. What it
+/// does see — the pattern's own text, the length, the characters the course does not
+/// teach — is decided in Rust from the artifact.
+#[tauri::command]
+fn record_grammar_composition(
+    state: State<'_, AppState>,
+    point: String,
+    typed: String,
+) -> Result<CompositionOutcome, String> {
+    state.record_grammar_composition(&point, &typed)
+}
+
 /// Hear `text` in the system's Japanese voice, cutting off anything already being
 /// said.
 ///
@@ -2427,6 +2578,9 @@ pub fn run() {
             next_grammar_production,
             grammar_production_size,
             record_grammar_production,
+            next_grammar_composition,
+            grammar_composition_size,
+            record_grammar_composition,
             speak,
             stop_speaking,
             voice,

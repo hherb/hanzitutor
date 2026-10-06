@@ -24,6 +24,9 @@ import type {
   GrammarProductionQuestion,
   GrammarQuestion,
   GrammarTally,
+  CompositionOutcome,
+  CompositionPrompt,
+  CompositionSize,
   Kana,
   KanjiLessonView,
   KanjiView,
@@ -425,6 +428,46 @@ export function recordGrammarProduction(
   typed: string,
 ): Promise<GrammarProductionOutcome> {
   return invoke<GrammarProductionOutcome>("record_grammar_production", { point, example, typed });
+}
+
+/**
+ * The next pattern to write a sentence of one's own about.
+ *
+ * The one grammar prompt that carries the pattern: the exercise is *write a sentence
+ * with this one*, so there is nothing to withhold — the corpus never wrote the
+ * sentence being asked for. It comes with the pattern's own sentences as a model and
+ * the sentences this learner has already written for it, read back out of the app's
+ * fifth file.
+ */
+export function nextGrammarComposition(): Promise<CompositionPrompt | null> {
+  return invoke<CompositionPrompt | null>("next_grammar_composition", {});
+}
+
+/**
+ * How much of the course can be written about, in numbers.
+ *
+ * Two numbers, and the reach is the whole course: the prompt is the pattern itself,
+ * so nothing about a point can make it unaskable the way the blank rule does for the
+ * other two exercises (363 of the 526 each).
+ */
+export function grammarCompositionSize(): Promise<CompositionSize> {
+  return invoke<CompositionSize>("grammar_composition_size", {});
+}
+
+/**
+ * Read the sentence the learner wrote of their own, keep it, and say what was seen.
+ *
+ * There is deliberately no way to say whether the sentence was right, and none is
+ * returned: free composition has no answer to grade against, and
+ * `record_grammar_composition` reports only what the machine can see — whether the
+ * pattern's own text is in the sentence, whether some of it is not Japanese script,
+ * which characters the course does not teach, and whether it is a sentence at all.
+ */
+export function recordGrammarComposition(
+  point: string,
+  typed: string,
+): Promise<CompositionOutcome> {
+  return invoke<CompositionOutcome>("record_grammar_composition", { point, typed });
 }
 
 /**

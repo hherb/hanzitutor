@@ -95,12 +95,16 @@ What this app did to the data (the licence requires this to be stated)
   Those five are changes to the **data**, and they are the whole of them: an
   example sentence is stored, redistributed and shown exactly as the corpus wrote
   it, and the word index beside it is derived from the sentence rather than a
-  change to it. The grammar course's two exercises
+  change to it. The grammar course's first two exercises
   (`nihongo_core::grammar_drill`) draw one of those sentences with the pattern's own
   text blanked at run time — one asks which pattern it is, the other asks the learner
   to write what is missing — and each shows the sentence whole again once an answer is
-  given. That is a presentation of the material rather than a change to it, and it is
-  stated here rather than left to a licensor to notice.
+  given. A **third** stage (`nihongo_core::composition`) shows those sentences
+  unaltered, with the corpus's own furigana, as models for a sentence **of the
+  learner's own**; that sentence is the learner's writing and is kept in a file of its
+  own, and nothing of the corpus's text is changed, blanked or stored differently by
+  it. All of that is a presentation of the material rather than a change to it, and it
+  is stated here rather than left to a licensor to notice.
 
 Consequence of ShareAlike
 -------------------------

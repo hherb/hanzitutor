@@ -33,7 +33,9 @@
 //! that changes them is a deliberate commit, and the numbers `prepare-grammar`
 //! prints are what say why they changed.
 
-use nihongo_core::{is_kanji, GrammarDataset, GrammarPoint, KanjiDataset, WordDataset};
+use nihongo_core::{
+    is_kanji, GrammarDataset, GrammarLog, GrammarPoint, KanjiDataset, WordDataset, MIN_COMPOSITION,
+};
 
 fn dataset() -> GrammarDataset {
     GrammarDataset::from_gzip_bytes(include_bytes!("../data/grammar.bin.gz"))
@@ -730,4 +732,114 @@ fn the_hole_a_learner_writes_is_what_the_corpus_reads() {
     assert_eq!(plain, 731, "holes that are kana already, answered by what is written");
     assert_eq!(kanji + plain, 903);
     assert_eq!(yotsugana, 4, "answers whose reading the input table cannot spell exactly");
+}
+
+/// Free composition: a sentence of the learner's own, and the three measurements
+/// that say what may honestly be put beside it (`invariant 42`).
+///
+/// The exercise is the one grammar question the corpus cannot answer for the app, so
+/// every claim it makes had to be measured against the corpus first:
+///
+/// * **the pool is the whole course** — 526 of 526 — because the prompt is the
+///   pattern itself and needs no sentence, which is the one reach the drill's 363 and
+///   the written exercise's 363 do not have;
+/// * **the pattern's own text is not a gate**, and this is the measurement the whole
+///   exercise turns on: **1,271 of the 1,526** examples contain a lump of their own
+///   pattern and **255** do not, because the corpus writes the pattern inflected
+///   (〜ている as しています, 〜に行く as 行きます). A checker that demanded the
+///   pattern's letters would refuse 255 of the corpus's own teaching sentences;
+/// * **the same for the characters**: exactly two of the 1,526 sentences write a
+///   character outside the course (几 and 嘘), so that is a fact the screen states
+///   rather than a fault it refuses;
+/// * **the floor is the corpus's own shortest sentence**: six kana/kanji characters,
+///   which is `MIN_COMPOSITION`.
+#[test]
+fn a_sentence_of_the_learners_own_is_measured_against_the_corpus() {
+    let dataset = dataset();
+    let kanji = KanjiDataset::from_gzip_bytes(include_bytes!("../data/kanji.bin.gz"))
+        .expect("the committed kanji artifact decodes");
+
+    // The reach: every point of the course, and a draw that returns a pattern of it.
+    let size = nihongo_core::composition_size(&dataset);
+    assert_eq!(size.total, 526);
+    assert_eq!(size.points, size.total, "the prompt is the pattern, so nothing is unaskable");
+    let log = nihongo_core::CompositionLog::new();
+    let weights = GrammarLog::new();
+    let drawn = nihongo_core::draw_composition(&dataset, &weights, &log, 0.0)
+        .expect("the course has a first pattern");
+    assert_eq!(drawn.point, "wa", "an even weight draws the course's first pattern");
+    assert!(!drawn.examples.is_empty(), "the model travels with the prompt");
+    assert!(drawn.written.is_empty(), "and nothing has been written yet");
+
+    // The pattern's own text, counted over every sentence the corpus wrote.
+    let mut contains = 0usize;
+    let mut misses: Vec<String> = Vec::new();
+    let mut shortest = usize::MAX;
+    let mut those_characters: Vec<char> = Vec::new();
+    for point in dataset.points() {
+        let lumps = nihongo_core::own_lumps(point);
+        for example in point.examples() {
+            if lumps.iter().any(|lump| example.ja.contains(lump.as_str())) {
+                contains += 1;
+            } else if misses.len() < 3 {
+                misses.push(format!("{}: {}", point.id, example.ja));
+            }
+            let length = example
+                .ja
+                .chars()
+                .filter(|ch| nihongo_core::Script::of(*ch).is_some() || is_kanji(*ch))
+                .count();
+            shortest = shortest.min(length);
+            for ch in example.ja.chars().filter(|ch| is_kanji(*ch)) {
+                if kanji.get(ch).is_none() && !those_characters.contains(&ch) {
+                    those_characters.push(ch);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        contains, 1271,
+        "the rule that would have been a gate, and the corpus's own sentences that fail it"
+    );
+    assert_eq!(contains + 255, dataset.example_count());
+    assert_eq!(
+        misses[0].split(':').next(),
+        Some("ga-hoshii"),
+        "〜がほしい is taught with ほしくない: {misses:?}"
+    );
+    assert_eq!(
+        shortest, MIN_COMPOSITION,
+        "the floor the corpus itself sets: 私は学生です。 and 危ない！止まれ！"
+    );
+    assert_eq!(
+        those_characters,
+        vec!['几', '嘘'],
+        "two of the corpus's own sentences write a character this course has no card for"
+    );
+
+    // End to end, over the committed artifacts. 〜ている is the inflected case: the
+    // corpus's own sentence is kept even though the pattern's letters are not in it.
+    let te_iru = dataset.get("te-iru").expect("〜ている is in the course");
+    let inflected = nihongo_core::composition_verdict_for(
+        te_iru,
+        &kanji,
+        &te_iru.examples[0].ja,
+    );
+    assert!(inflected.found.is_empty(), "しています does not contain ている");
+    assert!(inflected.kept, "and the sentence is a sentence: {inflected:?}");
+    assert_eq!(inflected.copied, Some(0), "it is the corpus's own sentence, written back");
+
+    // And the case the check does see: 〜の方が〜より, whose sentence is the corpus's.
+    let yori = dataset.get("no-hou-ga-yori").expect("〜の方が〜より is in the course");
+    let written = nihongo_core::composition_verdict_for(yori, &kanji, "犬の方が猫より好きです。");
+    assert_eq!(written.found, vec!["の方が", "より"], "both lumps, longest first");
+    assert!(written.kept && written.readable);
+    assert!(written.outside.is_empty(), "every character is one the course teaches");
+    assert_eq!(written.copied, Some(0), "the corpus wrote this sentence too");
+
+    // The same pattern written in kana, which is what the reading is read for.
+    let kana = nihongo_core::composition_verdict_for(yori, &kanji, "いぬのほうがねこよりすきです。");
+    assert_eq!(kana.found, vec!["のほうが", "より"]);
+    assert!(kana.kept, "a kana sentence is a sentence: {kana:?}");
+    assert_eq!(kana.copied, None, "and it is not the corpus's spelling of it");
 }

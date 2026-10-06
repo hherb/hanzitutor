@@ -2010,3 +2010,153 @@ fn the_grammar_production_answer_the_interface_posts_is_read_the_way_the_command
     assert!(state.record_grammar_production("desu", 0, "desu").is_err());
     assert!(state.record_grammar_production("no-hou-ga-yori", 9_999, "kana").is_err());
 }
+
+// ---- free composition: a sentence of the learner's own ------------------------
+
+/// The prompt for the fourth grammar stage, as the webview reads it.
+///
+/// Unlike the written-cloze exercise's question, this payload **does** carry the
+/// pattern: the exercise is "write a sentence of your own with this one", so the
+/// pattern is the question rather than the answer. It carries the corpus's own
+/// sentences as models and the learner's own sentences as their own writing, and
+/// neither is an answer — there is nothing to withhold, because the corpus never
+/// wrote the sentence being asked for.
+#[test]
+fn a_grammar_composition_prompt_carries_the_pattern_its_model_and_its_own_writing() {
+    let state = state();
+    let prompt = state
+        .next_grammar_composition_with_rolls(0.0)
+        .expect("the course has a first pattern");
+    let value = serde_json::to_value(&prompt).expect("serialises");
+    assert_eq!(
+        keys(&value),
+        vec![
+            "examples", "formation", "meaning", "notes", "pattern", "point", "reading", "written",
+        ]
+    );
+    assert_eq!(value["point"], "wa");
+    assert_eq!(value["pattern"], "〜は");
+    assert_eq!(value["written"], json!([]), "nothing has been written yet");
+
+    // The models are whole corpus sentences with their own furigana, in the same
+    // `{ ruby, rt }` shape every screen draws.
+    let example = &value["examples"][0];
+    assert_eq!(keys(example), vec!["en", "ja", "ruby", "words"]);
+    let spelling: String = example["ruby"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .map(|span| span["ruby"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(spelling, example["ja"].as_str().unwrap_or(""), "the ruby spells the sentence");
+
+    // The reach is the whole course, which is the one thing this exercise has that
+    // the other two do not, and the size command says so.
+    let size = serde_json::to_value(state.grammar_composition_size()).expect("serialises");
+    assert_eq!(keys(&size), vec!["points", "total"]);
+    assert_eq!(size["total"], 526);
+    assert_eq!(size["points"], 526, "the prompt is the pattern, so nothing is unaskable");
+}
+
+/// The arguments `record_grammar_composition` takes, as the webview posts them.
+///
+/// The half of the contract that fails loudly (invariant 14), spelled out rather
+/// than inferred: a wrong key is a rejected command. There is deliberately no
+/// `correct` field, and none in the answer either — what the app could see is
+/// decided in Rust from the artifact, and whether the sentence is *good* is not
+/// something it can see at all.
+#[derive(Deserialize)]
+struct RecordGrammarComposition {
+    point: String,
+    typed: String,
+}
+
+#[test]
+fn the_sentence_the_interface_posts_is_read_the_way_the_command_reads_it() {
+    // `src/lib/api.ts` authors exactly this payload for exactly this command:
+    //   invoke("record_grammar_composition", { point, typed })
+    let state = state();
+    let payload = json!({ "point": "ni-hanshite", "typed": "kare no yosou ni hanshite" });
+    let args: RecordGrammarComposition =
+        serde_json::from_value(payload).expect("the payload the interface posts deserialises");
+    let outcome = state
+        .record_grammar_composition(&args.point, &args.typed)
+        .expect("records");
+    let value = serde_json::to_value(&outcome).expect("serialises");
+    assert_eq!(keys(&value), vec!["verdict", "warning", "written"]);
+    assert!(
+        keys(&value["verdict"]).iter().all(|key| !matches!(key.as_str(), "correct" | "score")),
+        "nothing here is a mark: {:?}",
+        keys(&value["verdict"])
+    );
+    assert_eq!(
+        keys(&value["verdict"]),
+        vec![
+            "characters", "copied", "formation", "found", "kept", "meaning", "notes", "outside",
+            "pattern", "point", "readable", "reading", "text",
+        ]
+    );
+    // Romaji typed as words is read back as kana, and the pattern is seen in it
+    // because the corpus stores the reading of 〜に反して as にはんして.
+    assert_eq!(value["verdict"]["text"], "かれのよそうにはんして");
+    assert_eq!(value["verdict"]["found"], json!(["にはんして"]));
+    assert_eq!(value["verdict"]["kept"], true);
+    assert_eq!(value["verdict"]["readable"], true);
+    assert_eq!(value["verdict"]["copied"], Value::Null);
+    assert_eq!(value["warning"], Value::Null);
+    // And the sentence is kept in the learner's own file, in this app's own
+    // directory: the outcome hands back everything written for this pattern.
+    assert_eq!(value["written"], json!(["かれのよそうにはんして"]));
+
+    // A second sentence with the same pattern accumulates rather than replacing it.
+    let again = state
+        .record_grammar_composition("ni-hanshite", "彼の予想に反して、試合は延期された。")
+        .expect("records");
+    assert_eq!(again.written.len(), 2);
+    assert_eq!(again.written[0], "かれのよそうにはんして");
+    assert_eq!(again.verdict.found, vec!["に反して"]);
+    assert!(again.verdict.kept);
+
+    // Something too short to be a sentence is still read and reported, and kept
+    // nowhere: the checks that are not gates stay checks.
+    let short = state.record_grammar_composition("wa", "はい。").expect("records");
+    assert!(!short.verdict.kept);
+    assert_eq!(short.verdict.characters, 2);
+    assert_eq!(short.verdict.found, vec!["は"], "the pattern is in it and it is still not kept");
+    assert!(short.written.is_empty(), "nothing that is not a sentence reaches the file");
+
+    // A pattern that is not in the course is a message rather than a panic, and it
+    // leaves the learner's file alone.
+    assert!(state.record_grammar_composition("no-such-pattern", "これは文です。").is_err());
+}
+
+/// The file the fourth stage writes is the app's own, and a sentence reaches it.
+#[test]
+fn a_written_sentence_lands_in_the_apps_own_fifth_file() {
+    let dir = TempDir::new("composition");
+    let state = AppState::load_at(dir.path());
+    assert!(
+        !dir.path().join("compositions.json").exists(),
+        "nothing is written until something is written"
+    );
+    let outcome = state
+        .record_grammar_composition("wa", "私は学生です。")
+        .expect("records");
+    assert!(outcome.verdict.kept);
+    assert_eq!(outcome.verdict.copied, Some(0), "that is the corpus's own sentence for 〜は");
+    assert_eq!(outcome.written.len(), 1);
+
+    let text = fs::read_to_string(dir.path().join("compositions.json")).expect("the file");
+    let value: Value = serde_json::from_str(&text).expect("valid JSON");
+    assert_eq!(value["version"], 1);
+    assert_eq!(value["written"]["wa"][0]["text"], "私は学生です。");
+    assert!(value["written"]["wa"][0]["at"].as_str().is_some_and(|at| !at.is_empty()));
+
+    // The prompt the screen draws next carries the learner's own writing, and the
+    // rest of the app's files are untouched by it.
+    let prompt = state.next_grammar_composition_with_rolls(0.0).expect("a pattern");
+    assert_eq!(prompt.point, "wa");
+    assert_eq!(prompt.written, vec!["私は学生です。"]);
+    assert!(!dir.path().join("grammar.json").exists(), "no tally was written");
+    assert!(!dir.path().join("review.json").exists(), "and no schedule was touched");
+}

@@ -1615,8 +1615,15 @@ course unlocks were taught nowhere — each with the form it is built from, the 
 that says how it differs from a similar one, and two or three whole sentences with a
 reading over every kanji; the corpus's own teaching order is what the screen offers,
 because the JLPT publishes no official grammar list and the levels it carries are
-dropped rather than shown. It keeps its own learner data
-— a tally per pair and an SM-2 review schedule, in its own files, never a shared
+dropped rather than shown. The same screen then **asks** three ways: which pattern a
+corpus sentence takes (363 of the 526 patterns), the missing text **written** against
+the reading the corpus put over that hole, and — for **every one of the 526 patterns** —
+a sentence of the learner's own, which the corpus never wrote and which is therefore
+**checked rather than graded**: the app reports the pattern's own letters where it finds
+them, the script, the length and the characters the course has no card for, keeps the
+learner's writing in a file of its own, and says in one line what it cannot see. It keeps
+its own learner data — a tally per pair, a tally per pattern, the learner's own
+sentences, and an SM-2 review schedule, in its own files, never a shared
 store. It versions itself at 0.1.0 and has its own handover and roadmap —
 **[HANDOVER_NIHONGO.md](HANDOVER_NIHONGO.md)** and
 **[ROADMAP_NIHONGO.md](ROADMAP_NIHONGO.md)**. Nothing else in this README,

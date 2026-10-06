@@ -1,16 +1,17 @@
 //! The app's own study files.
 //!
-//! Nihongo Tutor keeps exactly four things about its learner: which confusion pairs
-//! they get wrong, which grammar patterns they miss, when each character the board
-//! has taught comes back, and which half of the app they were last in. All four live
+//! Nihongo Tutor keeps exactly five things about its learner: which confusion pairs
+//! they get wrong, which grammar patterns they miss, **what they have written in
+//! their own sentences**, when each character the board has taught comes back, and
+//! which half of the app they were last in. All five live
 //! here — in files of this app's own, under this app's data directory — and
 //! deliberately **not** in a shared store. The Japanese and Chinese apps are
 //! separate products and their learners' data is separate with them: what is shared
 //! between the apps is *code*, never user data. See `HANDOVER_NIHONGO.md`
 //! invariant 15.
 //!
-//! All four files are plain JSON, written whole and atomically, so that a person can
-//! read one, copy it as a backup, or delete it to start over. All four are written by
+//! All five files are plain JSON, written whole and atomically, so that a person can
+//! read one, copy it as a backup, or delete it to start over. All five are written by
 //! Rust rather than by the webview, which is why the app still holds no filesystem
 //! permission in `capabilities/default.json`.
 
@@ -19,7 +20,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use nihongo_core::{
-    now_iso8601, ConfusionLog, GrammarLog, PairTally, ProgressError, ProgressStore, Section,
+    now_iso8601, CompositionLog, ConfusionLog, GrammarLog, PairTally, ProgressError, ProgressStore,
+    Section,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -29,6 +31,9 @@ pub const FILE_NAME: &str = "confusions.json";
 
 /// The grammar drill's file name, in the same directory.
 pub const GRAMMAR_FILE_NAME: &str = "grammar.json";
+
+/// The composition exercise's file name, in the same directory.
+pub const COMPOSITIONS_FILE_NAME: &str = "compositions.json";
 
 /// The review schedule's file name, in the same directory.
 pub const REVIEW_FILE_NAME: &str = "review.json";
@@ -237,6 +242,74 @@ impl GrammarStore {
         let tally = self.log.record(id, correct);
         self.save()?;
         Ok(tally)
+    }
+
+    /// Write the file, if there is one to write.
+    pub fn save(&self) -> io::Result<()> {
+        match &self.path {
+            Some(path) => write_json(path, &self.log),
+            None => Ok(()),
+        }
+    }
+}
+
+/// The sentences this learner has written of their own, and where they are kept.
+///
+/// The fifth file (invariant 15), beside the kana drill's, the grammar drill's, the
+/// schedule and the preference. It is **not** a tally and not a score: free
+/// composition has no right answer, so `nihongo_core::composition` keeps what the
+/// learner wrote rather than a mark for it, and this is where that lives. It is a
+/// separate file for the reason the others are: the shape is different (a list of
+/// sentences with the date each was written, not counters), and a mistake in writing
+/// one must not be able to reach the other.
+pub struct CompositionStore {
+    /// `None` means nowhere to write, as in the other stores: this session keeps the
+    /// sentences and the next one will not.
+    path: Option<PathBuf>,
+    log: CompositionLog,
+}
+
+impl CompositionStore {
+    /// A store that keeps the learner's sentences in memory and writes nothing.
+    pub fn in_memory() -> Self {
+        Self {
+            path: None,
+            log: CompositionLog::new(),
+        }
+    }
+
+    /// Load `compositions.json` from `dir`, or start empty.
+    ///
+    /// A missing file is not an error: that is the first run, and the first sentence
+    /// written creates it.
+    pub fn at_dir(dir: impl AsRef<Path>) -> Self {
+        let path = dir.as_ref().join(COMPOSITIONS_FILE_NAME);
+        Self {
+            log: read_json(&path),
+            path: Some(path),
+        }
+    }
+
+    /// What has been written.
+    pub fn log(&self) -> &CompositionLog {
+        &self.log
+    }
+
+    /// Whether anything is written to disk at all.
+    pub fn is_persistent(&self) -> bool {
+        self.path.is_some()
+    }
+
+    /// Keep one sentence, write the file, and answer how many this pattern holds.
+    ///
+    /// The same rule the other stores follow: the sentence is kept **even if the
+    /// write fails** — the learner wrote it — but the failure is returned rather than
+    /// swallowed, because a learner whose own writing is not being saved should be
+    /// told rather than discover it later.
+    pub fn add(&mut self, id: &str, text: &str, at: &str) -> io::Result<usize> {
+        let count = self.log.add(id, text, at);
+        self.save()?;
+        Ok(count)
     }
 
     /// Write the file, if there is one to write.
@@ -551,6 +624,94 @@ mod tests {
         let store = ConfusionStore::at_dir(dir.path());
         assert!(store.log().is_empty());
         assert!(!dir.path().join("confusions.json.corrupt").exists());
+    }
+
+    // ---- the learner's own sentences ---------------------------------------
+
+    #[test]
+    fn a_first_run_has_written_nothing_and_the_first_sentence_makes_the_file() {
+        let dir = TempDir::new("composition-first-run");
+        let mut store = CompositionStore::at_dir(dir.path());
+        assert!(store.is_persistent());
+        assert!(store.log().is_empty());
+        assert!(!dir.path().join(COMPOSITIONS_FILE_NAME).exists(), "nothing written yet");
+
+        let count = store.add("ni-hanshite", "彼の予想に反して、試合は延期された。", "2026-10-07T00:00:00Z")
+            .expect("saves");
+        assert_eq!(count, 1);
+        assert!(dir.path().join(COMPOSITIONS_FILE_NAME).exists(), "the sentence was written");
+    }
+
+    #[test]
+    fn the_sentences_survive_a_restart_in_the_order_they_were_written() {
+        let dir = TempDir::new("composition-restart");
+        {
+            let mut store = CompositionStore::at_dir(dir.path());
+            store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z").expect("saves");
+            store.add("wa", "今日は天気がいいです。", "2026-10-07T00:01:00Z").expect("saves");
+            store.add("ga", "雨が降っています。", "2026-10-07T00:02:00Z").expect("saves");
+        }
+        let reopened = CompositionStore::at_dir(dir.path());
+        assert_eq!(reopened.log().total(), 3);
+        assert_eq!(reopened.log().patterns(), 2);
+        assert_eq!(
+            reopened.log().sentences("wa"),
+            vec!["私は学生です。", "今日は天気がいいです。"]
+        );
+        assert_eq!(reopened.log().count("ga"), 1);
+        assert_eq!(reopened.log().count("nope"), 0);
+    }
+
+    #[test]
+    fn the_composition_file_is_readable_json_of_the_shape_the_docs_promise() {
+        let dir = TempDir::new("composition-shape");
+        let mut store = CompositionStore::at_dir(dir.path());
+        store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z").expect("saves");
+
+        let text = fs::read_to_string(dir.path().join(COMPOSITIONS_FILE_NAME)).expect("the file");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        // A person opening it sees `{"version":1,"written":{"wa":[{"text":…,"at":…}]}}`:
+        // their own sentences under the pattern each was written for.
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["written"]["wa"][0]["text"], "私は学生です。");
+        assert_eq!(value["written"]["wa"][0]["at"], "2026-10-07T00:00:00Z");
+    }
+
+    #[test]
+    fn a_file_of_written_sentences_that_will_not_parse_is_kept_aside() {
+        let dir = TempDir::new("composition-corrupt");
+        let path = dir.path().join(COMPOSITIONS_FILE_NAME);
+        fs::write(&path, "{ this is not json").expect("writes");
+
+        let mut store = CompositionStore::at_dir(dir.path());
+        assert!(store.log().is_empty(), "a corrupt file is not a crash");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("compositions.json.corrupt")).expect("still there"),
+            "{ this is not json",
+            "kept as it was, not as an empty file"
+        );
+
+        // And the app carries on: the next sentence writes a valid file.
+        store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z").expect("saves");
+        let reread = CompositionStore::at_dir(dir.path());
+        assert_eq!(reread.log().sentences("wa"), vec!["私は学生です。"]);
+    }
+
+    #[test]
+    fn a_write_failure_is_reported_and_the_sentence_is_still_kept_in_memory() {
+        let dir = TempDir::new("composition-unwritable");
+        fs::create_dir_all(dir.path().join(COMPOSITIONS_FILE_NAME))
+            .expect("a directory in the file's place");
+        let mut store = CompositionStore::at_dir(dir.path());
+        assert!(
+            store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z").is_err(),
+            "the failure surfaces"
+        );
+        assert_eq!(
+            store.log().sentences("wa"),
+            vec!["私は学生です。"],
+            "and the learner's sentence is not lost with it"
+        );
     }
 
     #[test]

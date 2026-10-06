@@ -32,12 +32,13 @@
    * checked at build time and asserted in `tests/grammar_artifact.rs`. The screen
    * states that, and the words in an example are not tappable.
    */
+  import GrammarComposition from "./GrammarComposition.svelte";
   import GrammarDrill from "./GrammarDrill.svelte";
   import GrammarProduction from "./GrammarProduction.svelte";
   import GrammarStage from "./GrammarStage.svelte";
   import * as api from "./api";
   import { untrack } from "svelte";
-  import type { GrammarDrillSize, GrammarPage, GrammarPoint } from "./types";
+  import type { CompositionSize, GrammarDrillSize, GrammarPage, GrammarPoint } from "./types";
   import type { VoiceStatus } from "./speech";
   import { GRAMMAR_PAGE, GRAMMAR_SEARCH, searchNoteFor, stepTo } from "./grammar";
   import { pageWindow } from "./words";
@@ -99,6 +100,17 @@
    */
   let producing = $state(false);
   let productionSize = $state<GrammarDrillSize | null>(null);
+  /**
+   * Whether the composition exercise is up, and what it can ask.
+   *
+   * The panel's **fourth stage**, and the same shape again: about the course rather
+   * than about one pattern, so it is this screen's stage rather than a tab
+   * (`STAGE_VIEWS` already names Grammar). It is the one grammar exercise that
+   * reaches every pattern, and it is the one that is not a question — see
+   * `GrammarComposition.svelte` and `nihongo_core::composition`.
+   */
+  let writing = $state(false);
+  let compositionSize = $state<CompositionSize | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
 
@@ -119,7 +131,7 @@
   const canNext = $derived(open !== null && stepTo(open.position, 1, total) !== null);
 
   $effect(() => {
-    stage = open !== null || drilling || producing;
+    stage = open !== null || drilling || producing || writing;
   });
 
   async function loadPage() {
@@ -215,6 +227,19 @@
     })();
   });
 
+  // And the composition exercise's, which is the whole course rather than a part of
+  // it — the one count of the three that is not a measurement of a pool *smaller*
+  // than the course.
+  $effect(() => {
+    void (async () => {
+      try {
+        compositionSize = await api.grammarCompositionSize();
+      } catch (e) {
+        void e;
+      }
+    })();
+  });
+
   // A page change is what fetches; the arrows only set where to land.
   $effect(() => {
     void window_.offset;
@@ -228,6 +253,7 @@
     open = null;
     drilling = false;
     producing = false;
+    writing = false;
     page = next;
   }
 </script>
@@ -255,6 +281,13 @@
     course rather than one pattern, and neither is a tab.
   -->
   <GrammarProduction {voice} onleave={() => (producing = false)} />
+{:else if writing}
+  <!--
+    And the fourth asks for what none of the others can: a sentence the corpus never
+    wrote. It is not a question and has no answer, so what it shows is a checklist
+    rather than a verdict — `GrammarComposition.svelte` says what, and why.
+  -->
+  <GrammarComposition {voice} onleave={() => (writing = false)} />
 {:else if open}
   <!--
     Keyed on the pattern, so a second row mounts a fresh stage rather than merging the
@@ -302,11 +335,14 @@
   {/if}
 
     <!--
-      The two ways in, at the top of the course screen where the learner meets them
+      The three ways in, at the top of the course screen where the learner meets them
       before the list: reading 526 patterns without ever being asked one back is what
-      N20 exists to fix, and being asked to *choose* one without ever being asked to
-      *write* it is the half N22 adds. Each door carries its own count, because each
-      is a measurement of the same pool asked differently.
+      N20 exists to fix, being asked to *choose* one without ever being asked to
+      *write* it is the half N22 adds, and being asked to *fill a corpus sentence* is
+      not yet being asked for a sentence of one's own — which is the fourth. Each door
+      carries its own count: the first two are measurements of pools smaller than the
+      course, and the third is the whole course, because its prompt is the pattern
+      itself.
     -->
     <div class="practise">
       <div class="door">
@@ -326,6 +362,16 @@
             {productionSize.points} of the {productionSize.total} can be written
           {:else}
             Write one back
+          {/if}
+        </span>
+      </div>
+      <div class="door">
+        <button class="start" onclick={() => (writing = true)}>Write your own</button>
+        <span class="count">
+          {#if compositionSize}
+            Any of the {compositionSize.points} — a sentence of your own
+          {:else}
+            A sentence of your own
           {/if}
         </span>
       </div>
