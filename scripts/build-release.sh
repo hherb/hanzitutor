@@ -103,7 +103,23 @@ done
 # branch was skipped, so the `.app` that a reader is told to pick up kept whatever
 # modes the source files happened to have. `chmod` does not touch file content, so
 # it cannot invalidate the signature Tauri applied.
-if [ -n "$BUNDLE" ] && [ -d "$BUNDLE/macos" ]; then
+#
+# **It is called twice, and the second call is the one that matters for a fresh
+# bundle.** The first pass fixes the bundle a *previous* run left behind — the
+# case a failed `tauri build` produces — and the second runs after the build, on
+# the app that was just assembled from whatever modes the sources happen to have
+# on this machine. One pass before the build was the N24 release's bug: the
+# sources had drifted (a `chmod`-less editor write on `OPENJLPT-grammar.txt`),
+# the new `.app` copied mode 600, and the pass that exists to prevent exactly that
+# had already run against the old bundle. The check that catches it is one
+# command, and it is worth running on a release:
+#
+#     ls -l <bundle>/Contents/Resources/licences/    # every line -rw-r--r--
+#
+# `src-tauri/tests/licences.rs` now checks the same property at the source, before
+# any build, which is where it is cheapest to catch.
+make_readable() {
+  [ -n "$BUNDLE" ] && [ -d "$BUNDLE/macos" ] || return 0
   for app in "$BUNDLE"/macos/*.app; do
     [ -d "$app" ] || continue
     chmod -R a+rX "$app"
@@ -114,9 +130,14 @@ if [ -n "$BUNDLE" ] && [ -d "$BUNDLE/macos" ]; then
       chmod a+r "$app/Contents/Resources/licences"/*
     fi
   done
-fi
+}
+make_readable
 
 if tauri build "$@"; then
+  # The app that was just built, fixed at the modes its sources had. Before the
+  # disk image is made, so the image carries readable notices too.
+  make_readable
+
   # Tauri's disk-image script copies the app icon to `.VolumeIcon.icns` on the
   # volume but never marks that file invisible, so the mounted image shows a
   # large dimmed duplicate of the app icon as a stray file. Everything else in

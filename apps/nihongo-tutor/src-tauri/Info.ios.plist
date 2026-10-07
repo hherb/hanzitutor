@@ -32,5 +32,34 @@
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
 	</dict>
+	<!--
+	  The model check's *local* half (N24, HANDOVER_NIHONGO.md invariant 43).
+
+	  App Transport Security refuses cleartext HTTP by default, and the endpoint a
+	  learner is most likely to point this at on a phone is a language model running
+	  on their own computer — `http://192.168.x.x:11434/v1` and the like. Without
+	  these two keys the request cannot leave the app at all: the cloud half (HTTPS)
+	  works either way, and the local half would fail with an ATS error that reads
+	  like a broken feature rather than a policy.
+
+	  The exception is deliberately the **narrow** one. `NSAllowsLocalNetworking`
+	  permits plain HTTP to local hosts — unqualified names, `.local` and the private
+	  address ranges — while leaving ATS in force for everything else, so an
+	  internet endpoint is still required to be HTTPS. `NSAllowsArbitraryLoads` would
+	  have been the blunt version, and it is not here.
+
+	  `NSLocalNetworkUsageDescription` is the string iOS 14 and later shows in the
+	  one-time "allow this app to find devices on your local network" prompt. It is
+	  worded for this app's single use of the local network, and nothing is scanned
+	  or discovered: the app connects to the one address the learner typed, and only
+	  on the button press.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Nihongo Tutor connects to the model server you configure — for example a language model running on your own computer — to check a sentence you have written. Nothing is sent unless you press the button, and no device is scanned or discovered.</string>
 </dict>
 </plist>

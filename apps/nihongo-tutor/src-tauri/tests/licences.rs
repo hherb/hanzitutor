@@ -423,3 +423,40 @@ fn a_path_helper_resolves_as_the_tests_assume() {
         "the manifest directory is where these paths assume it is"
     );
 }
+
+/// Every notice is **readable by whoever receives the bundle**, which is a licence
+/// question rather than a convenience.
+///
+/// The bundle copies a resource with the modes it finds, git records only the
+/// executable bit, and a `chmod`-less editor write leaves a file at `0600` on the
+/// machine that made it — so a notice can be perfect in the repository, perfect in
+/// the binary (`include_str!` does not care), and `-rw-------` in the bundle a
+/// recipient receives. That is how the N24 release shipped
+/// `licences/OPENJLPT-grammar.txt` unreadable on macOS and iOS: `build-release.sh`
+/// did have a pass that fixes the modes, but it ran *before* `tauri build`, so it
+/// fixed the previous bundle. This test checks the property at its source, where it
+/// is cheapest to catch, and it fails on the machine that drifted rather than on the
+/// one that receives the result.
+#[test]
+fn every_notice_is_world_readable_on_disk() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for notice in notices() {
+            let path = repo_root().join(notice.file);
+            let mode = std::fs::metadata(&path)
+                .unwrap_or_else(|err| panic!("{} is catalogued but unreadable: {err}", notice.file))
+                .permissions()
+                .mode();
+            assert_ne!(
+                mode & 0o044,
+                0,
+                "{} is not readable by anyone else (mode {:o}); git cannot record this, so it is \
+                 this checkout's to fix: chmod 644 {}",
+                notice.file,
+                mode & 0o777,
+                notice.file
+            );
+        }
+    }
+}

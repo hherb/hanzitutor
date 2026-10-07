@@ -45,5 +45,12 @@
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
 	</dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Nihongo Tutor connects to the model server you configure — for example a language model running on your own computer — to check a sentence you have written. Nothing is sent unless you press the button, and no device is scanned or discovered.</string>
 </dict>
 </plist>

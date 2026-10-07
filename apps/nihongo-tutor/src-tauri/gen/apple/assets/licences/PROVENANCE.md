@@ -12,16 +12,17 @@ executable and the notices are compiled in beside it, with plain-text copies in
 the bundle's `Resources/licences/`. Nothing in that table needs the network to be
 read, and this document is the human-readable record of that arrangement.
 
-Nothing *needs* the network, but three things can **use** it, and not one of them
+Nothing *needs* the network, but four things can **use** it, and not one of them
 happens unless the learner asks for it by name. The check is the project's own —
-`grep -rln "ureq\|reqwest" src-tauri/src crates/*/src` — which finds exactly these
-three modules:
+`grep -rln "ureq\|reqwest" src-tauri/src crates/*/src apps/*/src-tauri/src` — which
+finds exactly these four modules:
 
 | Feature | Module | What it sends |
 | --- | --- | --- |
 | Recognising *which* syllable was said. Optional: a button in the settings screen | `crates/hanzi-hearing/src/asr.rs` | nothing. A 163 MB model is fetched, checked against a published digest, and run on the device |
 | Speaking a phrase the app has no recording of. Optional, the same way | `src-tauri/src/say.rs` | nothing. About 61 MB of synthesis files are fetched and checked the same way |
 | Syncing between the learner's own devices. Off until they connect **their own** Dropbox account | `crates/hanzi-sync/src/http.rs` | the study data they chose to sync, to that account and nowhere else, over HTTPS |
+| **Nihongo Tutor:** checking a sentence the learner wrote with a language model. Off until the learner configures an endpoint, and then only on a button press | `apps/nihongo-tutor/src-tauri/src/model.rs` | the grammar pattern they are looking at and **their own sentence**, to the OpenAI-compatible endpoint **they** named (a local server or a cloud provider), with a key they stored themselves — and nothing else. None of OpenJLPT's text goes with it, and no answer is kept |
 
 The two models are downloads the learner starts from the settings screen. This app
 does not redistribute their weights and does not fetch them on anyone's behalf; it
@@ -30,12 +31,13 @@ pressed. See "The speech model is downloaded, not shipped" below. The README's
 promise is restated the same way: the app downloads nothing *unless you ask it
 to*, and everything the bundled course teaches still needs nothing.
 
-`docs/privacy-policy.md` is the public statement of these same three paths, and
-the Play listing's Data safety answers are built from it. If a fourth is ever
-added, all of them have to change together: the project's rule is that the
-listing, the README and this file name every way the app can reach the network,
-and this paragraph is what going stale looks like — it said "exactly one
-exception" while there were three, and never mentioned syncing at all.
+`docs/privacy-policy.md` is **Hanzi Tutor's** public statement of the first three,
+and the Play listing's Data safety answers are built from it. The Japanese app is a
+separate product with its own handover and roadmap, and its own fourth path is
+recorded above and in its invariant 43. The project's rule holds either way: the
+README and this file name every way either app can reach the network, and a path
+added without them is what going stale looks like — this paragraph once said
+"exactly one exception" while there were three, and never mentioned syncing at all.
 
 Some of the entries below are **code rather than data**: SQLite and its `rusqlite`
 bindings, `cpal`, and the speech-recognition stack. Each is recorded here rather
@@ -993,13 +995,17 @@ own `GrammarSource`:
 * the result is re-encoded into `grammar.bin.gz` with the corpus's version recorded in it.
 
 Those four are changes to the **data** and they are the whole of them: a sentence is stored,
-redistributed and shown as the corpus wrote it. The grammar course's two **exercises** —
+redistributed and shown as the corpus wrote it. The grammar course's first two **exercises** —
 N20's drill and N22's production exercise, both `nihongo_core::grammar_drill` — draw one of
 those sentences with the pattern's own text blanked at run time, one asking which pattern it
 is and the other asking the learner to write what is missing, and each shows the sentence
-whole again once an answer is given. That is a presentation of the material rather than a
-change to it, it is recorded in the artifact's notice for the same reason, and it is why
-`prepare-grammar` and `grammar.bin.gz` are untouched by either exercise.
+whole again once an answer is given. A **third** stage since N23 —
+`nihongo_core::composition` — shows those sentences unaltered, with the corpus's own furigana,
+as models for a sentence **of the learner's own**; that sentence is the learner's own writing,
+kept in a file of the app's own, and nothing of the corpus's text is changed, blanked or
+stored differently by it. All of that is a presentation of the material rather than a change
+to it, it is recorded in the artifact's notice for the same reason, and it is why
+`prepare-grammar` and `grammar.bin.gz` are untouched by any of the three.
 
 **ShareAlike consequence.** The grammar text stays under CC BY-SA 4.0, and so does
 `grammar.bin.gz` and anything built from it. It does not reach the program code
