@@ -106,6 +106,14 @@ What this app did to the data (the licence requires this to be stated)
   it. All of that is a presentation of the material rather than a change to it, and it
   is stated here rather than left to a licensor to notice.
 
+  **And one thing leaves the machine, only when the learner asks for it.** The
+  composition stage can ask a language model — one the learner configures, local or
+  remote — to check a sentence they have written. That request carries **the pattern
+  they are looking at and their own sentence, and nothing else**: none of OpenJLPT's
+  explanations, formation, notes or example sentences is sent to any endpoint, because
+  this app does not hand the corpus to a third party to check one sentence. Nothing is
+  sent at all until the learner has configured an endpoint and pressed the button.
+
 Consequence of ShareAlike
 -------------------------
 

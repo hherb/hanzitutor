@@ -27,6 +27,8 @@ import type {
   CompositionOutcome,
   CompositionPrompt,
   CompositionSize,
+  ModelStatus,
+  ModelVerdict,
   Kana,
   KanjiLessonView,
   KanjiView,
@@ -492,6 +494,56 @@ export function grammarSearch(query: string, limit = 60): Promise<GrammarPage> {
  */
 export function grammarLinks(id: string): Promise<GrammarLinks> {
   return invoke<GrammarLinks>("grammar_links", { id });
+}
+
+/**
+ * Say a sentence the learner wrote, in the form this app read it as.
+ *
+ * The command takes what was **typed**, not what was read: `nihongo_core::composition`
+ * decides the read-back form, so a screen cannot hand a Japanese voice a line of romaji
+ * and the rule about what may be spoken stays in one place. A sentence the app could not
+ * read is an error rather than a sound (`HANDOVER_NIHONGO.md` invariant 27, as N24
+ * widened it).
+ */
+export function speakSentence(typed: string): Promise<void> {
+  return invoke<void>("speak_sentence", { typed });
+}
+
+/**
+ * What the learner has configured about the model check — and never the key.
+ *
+ * Asked once by the composition stage, so the fold can say whether there is an endpoint
+ * to send to before offering the button.
+ */
+export function modelStatus(): Promise<ModelStatus> {
+  return invoke<ModelStatus>("model_status");
+}
+
+/**
+ * Remember the endpoint, the model name and, when one was typed, the key.
+ *
+ * `key` of `null` means **leave the stored key alone**: the field shows a placeholder
+ * rather than the secret, so an untouched field must not clear it. An empty string is
+ * the request to forget it.
+ */
+export function saveModelSettings(
+  endpoint: string,
+  model: string,
+  key: string | null,
+): Promise<ModelStatus> {
+  return invoke<ModelStatus>("save_model_settings", { endpoint, model, key });
+}
+
+/**
+ * Ask the configured model to check a sentence the learner wrote.
+ *
+ * The request carries the pattern and the sentence — in the form the app read it back —
+ * and nothing else: none of the corpus's explanations, notes or examples goes to a third
+ * party (`crate::model` has the reasoning). The answer is returned, shown and forgotten;
+ * nothing about it is written to any of the app's files.
+ */
+export function checkSentence(point: string, typed: string): Promise<ModelVerdict> {
+  return invoke<ModelVerdict>("check_sentence", { point, typed });
 }
 
 /**

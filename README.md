@@ -1621,10 +1621,16 @@ the reading the corpus put over that hole, and — for **every one of the 526 pa
 a sentence of the learner's own, which the corpus never wrote and which is therefore
 **checked rather than graded**: the app reports the pattern's own letters where it finds
 them, the script, the length and the characters the course has no card for, keeps the
-learner's writing in a file of its own, and says in one line what it cannot see. It keeps
-its own learner data — a tally per pair, a tally per pattern, the learner's own
-sentences, and an SM-2 review schedule, in its own files, never a shared
-store. It versions itself at 0.1.0 and has its own handover and roadmap —
+learner's writing in a file of its own, and says in one line what it cannot see. It can also
+**speak that sentence back** — the read-back form, so romaji is heard as kana — and offer a
+**second opinion from a model the learner configures themselves**: an OpenAI-compatible
+endpoint, local or cloud, with their own model name and key. That request is off until they
+set one, goes only when they press the button, carries the pattern and their sentence and
+nothing else, is attributed to the model by name, and is **never recorded** — the app's own
+checklist and the model's answer are two different things, and the screen says which is
+which. It keeps its own learner data — a tally per pair, a tally per pattern, the learner's own
+sentences, an SM-2 review schedule, and the model endpoint and key it was given, in its own
+files, never a shared store. It versions itself at 0.1.0 and has its own handover and roadmap —
 **[HANDOVER_NIHONGO.md](HANDOVER_NIHONGO.md)** and
 **[ROADMAP_NIHONGO.md](ROADMAP_NIHONGO.md)**. Nothing else in this README,
 `ROADMAP.md` or `HANDOVER.md` covers it.

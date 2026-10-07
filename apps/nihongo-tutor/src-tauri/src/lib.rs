@@ -7,21 +7,35 @@
 //! drifting away from the JSON this returns.
 //!
 //! Everything the app teaches is **embedded**: the kana and kanji artifacts are
-//! compiled into the binary with `include_bytes!`. There is no network path in
-//! this crate at all — no download, no model, no sync — which is why it has no
-//! plugin permissions in `capabilities/default.json`. **Pronunciation does not
-//! change that**: the voice is the operating system's own, spoken in process, and
-//! nothing is fetched to speak a kana.
+//! compiled into the binary with `include_bytes!`, and **nothing is downloaded** —
+//! not a dataset, not a model, not a clip. Which is why it has no plugin permissions
+//! in `capabilities/default.json`. **Pronunciation does not change that**: the voice is
+//! the operating system's own, spoken in process, and nothing is fetched to speak a
+//! kana.
+//!
+//! **N24 put one outbound path in this crate, and it is narrow by construction.** Until
+//! then this documentation said there was no network path here at all; there is one now,
+//! and it exists only when the learner has configured an OpenAI-compatible endpoint and
+//! pressed a button — an optional second opinion on a sentence they have written, local
+//! or cloud, their address and their key (`crate::model`, and `HANDOVER_NIHONGO.md`
+//! invariant 43). It sends the pattern and their own sentence, records nothing, runs on
+//! no timer, and has no default address to reach. The webview still holds no permissions
+//! at all: the request is made by Rust, so the interface cannot name a URL, read a key,
+//! or send anything on its own.
 
 // The two that share a name with a command are aliased, so that `fn lessons`
 // below is the command and `build_lessons` is the course it serves.
 pub mod licences;
+// The one module that can touch the network, and only when the learner has configured
+// an endpoint and pressed the button: an OpenAI-compatible model asked to check a
+// sentence of their own. See the module's documentation and invariant 43.
+pub mod model;
 pub mod store;
 
 use hanzi_voice::{Language, Speaker};
 use licences::{AppInfo, LicenceNotice};
 use nihongo_core::{
-    band_name, composition, confusions_for, grade_kana, grade_name,
+    band_name, composition, confusions_for, grade_kana, grade_name, spoken_form,
     grammar_drill as grammar_practice,
     kanji_lessons as build_kanji_lessons, key_of, lessons as build_lessons,
     normalise_to_hiragana, now_iso8601, off_grid, parse_decomposition,
@@ -35,7 +49,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::{CompositionStore, ConfusionStore, GrammarStore, Prefs, PrefsStore, ReviewStore};
+use store::{
+    CompositionStore, ConfusionStore, GrammarStore, ModelStore, Prefs, PrefsStore, ReviewStore,
+};
 use tauri::{Manager, State};
 
 /// The datasets, loaded once and shared by every command, the drill's memory of
@@ -76,6 +92,12 @@ pub struct AppState {
     /// in any of them: free composition has no verdict to record, so what is kept is
     /// the sentence rather than a mark for it (`nihongo_core::composition`).
     compositions: Mutex<CompositionStore>,
+    /// The model check's settings, in a sixth file of this app's own, and the only one
+    /// that holds a secret: an OpenAI-compatible endpoint, a model name and possibly a
+    /// key. Empty until the learner configures one, which is what keeps this app's
+    /// promise — nothing is fetched, and no address exists to reach, until the learner
+    /// names it (invariant 43).
+    model: Mutex<ModelStore>,
     /// The review schedule, in this app's own file beside the drill's — never a
     /// shared one. See [`store`] and `HANDOVER_NIHONGO.md` invariant 15.
     review: Mutex<ReviewStore>,
@@ -105,6 +127,7 @@ impl AppState {
             ConfusionStore::in_memory(),
             GrammarStore::in_memory(),
             CompositionStore::in_memory(),
+            ModelStore::in_memory(),
             ReviewStore::in_memory(),
             PrefsStore::in_memory(),
         )
@@ -117,6 +140,7 @@ impl AppState {
             ConfusionStore::at_dir(&dir),
             GrammarStore::at_dir(&dir),
             CompositionStore::at_dir(&dir),
+            ModelStore::at_dir(&dir),
             ReviewStore::at_dir(&dir),
             PrefsStore::at_dir(&dir),
         )
@@ -126,6 +150,7 @@ impl AppState {
         drill: ConfusionStore,
         grammar_drill: GrammarStore,
         compositions: CompositionStore,
+        model: ModelStore,
         review: ReviewStore,
         prefs: PrefsStore,
     ) -> Self {
@@ -154,6 +179,7 @@ impl AppState {
             drill: Mutex::new(drill),
             grammar_drill: Mutex::new(grammar_drill),
             compositions: Mutex::new(compositions),
+            model: Mutex::new(model),
             review: Mutex::new(review),
             prefs: Mutex::new(prefs),
             speaker: Arc::new(Speaker::new(Language::Japanese)),
@@ -851,6 +877,158 @@ impl AppState {
             written,
             warning,
         })
+    }
+
+    /// Speak a sentence the learner wrote, in the form the app read it as.
+    ///
+    /// N24's deliberate widening of `HANDOVER_NIHONGO.md` invariant 27: what may be
+    /// handed to the voice now includes a sentence of the learner's own — because the
+    /// maintainer asked for it, and because hearing your own sentence is how you
+    /// notice it is wrong. The form is decided by the data layer and not by the screen
+    /// (`nihongo_core::composition::spoken_form`): the read-back kana when the learner
+    /// typed romaji, the sentence as written when it is Japanese, and **nothing** when
+    /// the app could not read it — a Japanese voice handed a line of Latin letters
+    /// reads nonsense, so that case is a message rather than a sound.
+    pub fn speak_sentence(&self, typed: &str) -> Result<(), String> {
+        let text = spoken_form(typed).ok_or_else(|| {
+            "this app could not read that as Japanese, so it has nothing to say — write the \
+             sentence in kana, or the whole of it in romaji"
+                .to_string()
+        })?;
+        self.speaker.speak(&text)
+    }
+
+    /// What the learner has configured about the model check.
+    ///
+    /// **Not the key.** The interface is told whether one is stored and never what it
+    /// is: nothing on a screen needs it, and a value that never crosses the boundary
+    /// cannot be read out of a webview's memory by anything that gets in.
+    pub fn model_status(&self) -> ModelStatus {
+        let settings = self
+            .model
+            .lock()
+            .expect("the model store is not poisoned")
+            .settings()
+            .clone();
+        ModelStatus {
+            endpoint: settings.endpoint.clone(),
+            model: settings.model.clone(),
+            key_set: settings.key.as_deref().is_some_and(|key| !key.trim().is_empty()),
+            configured: settings.configured(),
+        }
+    }
+
+    /// Remember the endpoint, the model name and — when one was typed — the key.
+    ///
+    /// `key` of `None` means **leave the stored key alone**, which is what the screen
+    /// sends when the learner did not retype it: the field shows a placeholder rather
+    /// than the secret, so an empty field is not a request to forget it. `Some("")`
+    /// is that request, and is how a key is removed.
+    ///
+    /// The address is validated here rather than at the first sentence: a scheme this
+    /// client cannot speak is a typo worth hearing about while the learner is looking
+    /// at the field they typed it into.
+    pub fn save_model_settings(
+        &self,
+        endpoint: &str,
+        model: &str,
+        key: Option<String>,
+    ) -> Result<ModelStatus, String> {
+        let mut store = self
+            .model
+            .lock()
+            .expect("the model store is not poisoned");
+        let stored = store.settings().key.clone();
+        let settings = crate::model::ModelSettings {
+            endpoint: endpoint.trim().to_string(),
+            model: model.trim().to_string(),
+            key: match key {
+                Some(typed) => {
+                    let typed = typed.trim().to_string();
+                    (!typed.is_empty()).then_some(typed)
+                }
+                None => stored,
+            },
+        };
+        settings.validate()?;
+        // The status is built from the settings in hand rather than by asking
+        // `model_status`, which would take this same lock again — `std::sync::Mutex` is
+        // not reentrant, and the first version of this deadlocked the moment anything
+        // saved an endpoint.
+        let status = ModelStatus {
+            endpoint: settings.endpoint.clone(),
+            model: settings.model.clone(),
+            key_set: settings.key.is_some(),
+            configured: settings.configured(),
+        };
+        store
+            .save(settings)
+            .map_err(|err| format!("the settings were kept but could not be saved: {err}"))?;
+        Ok(status)
+    }
+
+    /// Ask the configured model to check one sentence of the learner's own.
+    ///
+    /// Four things are decisions rather than plumbing:
+    ///
+    /// * **nothing is sent if nothing is configured** — an app with an empty endpoint
+    ///   has no address and says so, rather than failing at the socket;
+    /// * **the sentence sent is the read-back form**, the same one the app speaks and
+    ///   the same one it checks: a learner who typed romaji has written kana, and a
+    ///   model is asked about the Japanese, not about the typing;
+    /// * **the request carries the pattern and the sentence and nothing else** — no
+    ///   meaning, no formation, no notes, no example sentence, all of which are
+    ///   OpenJLPT's text under CC BY-SA 4.0 (`crate::model` has the reasoning);
+    /// * **the answer is not recorded anywhere.** It is returned, shown and forgotten:
+    ///   it does not enter `compositions.json`, it does not move the pattern's weight,
+    ///   and it never joins the checklist `nihongo_core::composition` builds. A model's
+    ///   opinion is not this app's, and the screen attributes it.
+    pub fn check_sentence_with(
+        &self,
+        point: &str,
+        typed: &str,
+        chat: &dyn crate::model::Chat,
+    ) -> Result<crate::model::ModelVerdict, String> {
+        let pattern = self
+            .grammar
+            .get(point)
+            .ok_or_else(|| format!("{point:?} is not a pattern of this course"))?;
+        let sentence = spoken_form(typed).ok_or_else(|| {
+            "this app could not read that as Japanese, so there is nothing to check".to_string()
+        })?;
+        let settings = self
+            .model
+            .lock()
+            .expect("the model store is not poisoned")
+            .settings()
+            .clone();
+        if !settings.configured() {
+            return Err(
+                "no model is configured yet: set an endpoint and a model name first".to_string(),
+            );
+        }
+        let review = crate::model::check(
+            &settings,
+            &pattern.pattern,
+            pattern.reading.as_deref(),
+            &sentence,
+            chat,
+        )?;
+        Ok(crate::model::ModelVerdict {
+            review,
+            model: settings.model.clone(),
+            host: settings.host(),
+            sent: crate::model::sent_line(&pattern.pattern, &sentence),
+        })
+    }
+
+    /// The same, over the real client — the thin half the command calls.
+    pub fn check_sentence(
+        &self,
+        point: &str,
+        typed: &str,
+    ) -> Result<crate::model::ModelVerdict, String> {
+        self.check_sentence_with(point, typed, &crate::model::UreqHttp::new())
     }
 
     /// The yōon digraphs for one script — the pairs that make one mora.
@@ -1588,6 +1766,24 @@ pub struct CompositionOutcome {
     pub verdict: composition::CompositionVerdict,
     pub written: Vec<String>,
     pub warning: Option<String>,
+}
+
+/// What the learner has configured about the model check, as the interface reads it.
+///
+/// **Never the key.** `keySet` is what a screen needs — to show that one is stored, and
+/// to say that leaving the field empty keeps it — and the secret itself does not cross
+/// the IPC boundary in either direction after it has been saved once.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelStatus {
+    /// The configured base, as typed.
+    pub endpoint: String,
+    /// The model name the request asks for.
+    pub model: String,
+    /// Whether a key is stored, and never what it is.
+    pub key_set: bool,
+    /// Whether there is enough here to ask a model anything.
+    pub configured: bool,
 }
 
 /// A yōon digraph.
@@ -2388,6 +2584,97 @@ fn record_grammar_production(
     state.record_grammar_production(&point, example, &typed)
 }
 
+/// Say a sentence the learner wrote, in the form this app read it as.
+///
+/// The command takes what was **typed**, not what was read: the read-back rule is the
+/// data layer's (`nihongo_core::composition::spoken_form`), so a screen cannot hand a
+/// Japanese voice a line of romaji, and the one place that decides what may be spoken
+/// stays one place. A sentence the app could not read is a message rather than a sound.
+#[tauri::command]
+fn speak_sentence(state: State<'_, AppState>, typed: String) -> Result<(), String> {
+    state.speak_sentence(&typed)
+}
+
+/// What the learner has configured about the model check — and never the key.
+#[tauri::command]
+fn model_status(state: State<'_, AppState>) -> ModelStatus {
+    state.model_status()
+}
+
+/// Remember the endpoint, the model name and, when one was typed, the key.
+///
+/// `key` of `null` means "leave the stored key alone": the screen shows a placeholder
+/// rather than the secret, so an untouched field must not clear it. An empty string is
+/// the request to forget it.
+#[tauri::command]
+fn save_model_settings(
+    state: State<'_, AppState>,
+    endpoint: String,
+    model: String,
+    key: Option<String>,
+) -> Result<ModelStatus, String> {
+    state.save_model_settings(&endpoint, &model, key)
+}
+
+/// Ask the configured model to check a sentence of the learner's own.
+///
+/// The whole call is short by design: read the settings and the pattern on this thread,
+/// then do the blocking HTTP request on a thread of the runtime's own, so a model that
+/// takes a minute to answer cannot hold up the window. Nothing is written anywhere —
+/// the answer is handed back, shown, and forgotten (invariant 43).
+#[tauri::command]
+async fn check_sentence(
+    state: State<'_, AppState>,
+    point: String,
+    typed: String,
+) -> Result<crate::model::ModelVerdict, String> {
+    // Everything the request needs is owned before the blocking call, so nothing
+    // borrowed from the app state crosses a thread boundary.
+    let (settings, pattern, reading, sentence) = {
+        let pattern = state
+            .grammar
+            .get(&point)
+            .ok_or_else(|| format!("{point:?} is not a pattern of this course"))?;
+        let sentence = spoken_form(&typed).ok_or_else(|| {
+            "this app could not read that as Japanese, so there is nothing to check".to_string()
+        })?;
+        let settings = state
+            .model
+            .lock()
+            .expect("the model store is not poisoned")
+            .settings()
+            .clone();
+        if !settings.configured() {
+            return Err(
+                "no model is configured yet: set an endpoint and a model name first".to_string(),
+            );
+        }
+        (
+            settings,
+            pattern.pattern.clone(),
+            pattern.reading.clone(),
+            sentence,
+        )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let review = crate::model::check(
+            &settings,
+            &pattern,
+            reading.as_deref(),
+            &sentence,
+            &crate::model::UreqHttp::new(),
+        )?;
+        Ok(crate::model::ModelVerdict {
+            review,
+            model: settings.model.clone(),
+            host: settings.host(),
+            sent: crate::model::sent_line(&pattern, &sentence),
+        })
+    })
+    .await
+    .map_err(|err| format!("the model check did not finish: {err}"))?
+}
+
 /// The next pattern to write a sentence of one's own about, drawn in Rust for the
 /// other exercises' reason and over the whole course rather than a part of it.
 ///
@@ -2495,7 +2782,8 @@ struct YoonSummary {
 /// result is spread out rather than stuck at one end. `splitmix64`'s finaliser
 /// over `nanoseconds ^ counter` is enough for that, and it is written out here
 /// because a dependency for four lines of arithmetic would be the tail wagging
-/// the dog — `HANDOVER.md`'s "the app has no network path" is the same instinct.
+/// the dog — the same instinct that keeps the model check (invariant 43) the only
+/// dependency this app added for a whole feature.
 fn roll() -> f64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -2581,6 +2869,10 @@ pub fn run() {
             next_grammar_composition,
             grammar_composition_size,
             record_grammar_composition,
+            speak_sentence,
+            model_status,
+            save_model_settings,
+            check_sentence,
             speak,
             stop_speaking,
             voice,
@@ -4038,5 +4330,192 @@ mod tests {
         // speaker is dropped with the state at the end of every one of these
         // tests, which calls `stop` too.
         state.stop_speaking();
+    }
+
+    /// A sentence the app could not read is a message before the synthesiser is
+    /// touched — the same rule the test above follows, for the same reason. What the
+    /// read-back form *is* is `nihongo_core::composition`'s, and it is tested there.
+    #[test]
+    fn a_sentence_the_app_cannot_read_is_not_handed_to_the_voice() {
+        let state = state();
+        assert!(state.speak_sentence("").is_err(), "nothing to say");
+        assert!(state.speak_sentence("   ").is_err());
+        let error = state.speak_sentence("私はstudentです。").unwrap_err();
+        assert!(error.contains("could not read"), "unexpected error: {error}");
+        // And this one is also not a panic.
+        state.stop_speaking();
+    }
+
+    /// A `Chat` that answers from memory: the seam that lets the app's own half of the
+    /// model check — which pattern, which sentence, what is made of the answer — be
+    /// tested without a socket. The transport is tested against a real listener in
+    /// `crate::model`'s own tests.
+    struct FakeChat {
+        answer: String,
+        seen: std::sync::Mutex<Vec<serde_json::Value>>,
+    }
+
+    impl crate::model::Chat for FakeChat {
+        fn post_json(
+            &self,
+            _url: &str,
+            _bearer: Option<&str>,
+            body: &str,
+        ) -> Result<String, String> {
+            self.seen
+                .lock()
+                .expect("the fake's log is not poisoned")
+                .push(serde_json::from_str(body).expect("the body is JSON"));
+            Ok(self.answer.clone())
+        }
+    }
+
+    fn fake(answer: &str) -> FakeChat {
+        FakeChat {
+            answer: answer.to_string(),
+            seen: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn reply(content: &str) -> String {
+        serde_json::json!({ "choices": [{ "message": { "content": content } }] }).to_string()
+    }
+
+    /// Nothing is configured until the learner says so, and the key never comes back.
+    #[test]
+    fn the_model_settings_are_the_learners_and_the_key_never_crosses_back() {
+        let state = state();
+        assert!(
+            !state.model_status().configured,
+            "a fresh app has no address to reach and nothing to send"
+        );
+
+        let status = state
+            .save_model_settings("http://127.0.0.1:11434/v1", "llama3.1", None)
+            .expect("saves");
+        assert!(status.configured);
+        assert!(!status.key_set, "no key was given");
+        assert_eq!(status.endpoint, "http://127.0.0.1:11434/v1");
+        assert_eq!(status.model, "llama3.1");
+
+        // A key is kept, and the status says only that one is there.
+        let with_key = state
+            .save_model_settings(
+                "https://api.openai.com/v1",
+                "gpt-4o-mini",
+                Some("sk-secret-value".to_string()),
+            )
+            .expect("saves");
+        assert!(with_key.key_set);
+        let payload = serde_json::to_string(&with_key).expect("serialises");
+        assert!(!payload.contains("sk-secret-value"), "the key is in the payload: {payload}");
+        assert!(payload.contains("keySet"), "{payload}");
+
+        // Saving without a key leaves the stored one alone — a screen that shows a
+        // placeholder rather than the secret cannot mean "forget it" by sending null.
+        let again = state
+            .save_model_settings("https://api.openai.com/v1", "gpt-4o-mini", None)
+            .expect("saves");
+        assert!(again.key_set, "the key was still there");
+
+        // An empty string is the request to forget it.
+        let cleared = state
+            .save_model_settings("https://api.openai.com/v1", "gpt-4o-mini", Some(String::new()))
+            .expect("saves");
+        assert!(!cleared.key_set);
+
+        // And an address this client cannot speak is refused while the learner is
+        // looking at the field, rather than at the first sentence.
+        assert!(state.save_model_settings("127.0.0.1:1234", "m", None).is_err());
+    }
+
+    /// The check sends the pattern and the learner's own sentence, in the form the app
+    /// read it back, and nothing else — and it goes nowhere until a model is set.
+    #[test]
+    fn a_model_check_sends_the_pattern_and_the_sentence_and_nothing_of_the_corpus() {
+        let state = state();
+        let chat = fake(&reply(
+            r#"{"verdict":"understandable","corrected":"いぬのほうがねこよりすきです。","explanation":"Close."}"#,
+        ));
+
+        // Nowhere to send it yet.
+        let error = state
+            .check_sentence_with("no-hou-ga-yori", "いぬのほうがねこよりすきです。", &chat)
+            .unwrap_err();
+        assert!(error.contains("no model is configured"), "{error}");
+        assert!(chat.seen.lock().expect("the log").is_empty(), "nothing was sent");
+
+        state
+            .save_model_settings("http://127.0.0.1:1234/v1", "small-model", None)
+            .expect("saves");
+        let verdict = state
+            .check_sentence_with("no-hou-ga-yori", "inu no houga neko yori suki desu", &chat)
+            .expect("a verdict");
+        assert_eq!(verdict.review.verdict, "understandable");
+        assert_eq!(verdict.model, "small-model");
+        assert_eq!(verdict.host, "127.0.0.1:1234");
+        assert_eq!(verdict.sent, "〜の方が〜より · いぬのほうがねこよりすきです");
+
+        // Copied out rather than held: the guard below is taken again at the end of
+        // this test, and `std::sync::Mutex` is not reentrant.
+        let body = {
+            let seen = chat.seen.lock().expect("the log");
+            assert_eq!(seen.len(), 1);
+            seen[0].to_string()
+        };
+        // The read-back form is what is sent: the learner typed romaji and the model is
+        // asked about the Japanese.
+        assert!(body.contains("いぬのほうがねこよりすきです"), "{body}");
+        assert!(!body.contains("inu no houga"), "{body}");
+        // The pattern is sent, and none of the corpus's prose is: no meaning, no
+        // formation, no note, and none of the point's own example sentences.
+        let point = state.grammar.get("no-hou-ga-yori").expect("the pattern");
+        assert!(body.contains(&point.pattern), "{body}");
+        assert!(!body.contains(&point.meaning), "the corpus's meaning was sent: {body}");
+        assert!(!body.contains(&point.formation), "the corpus's formation was sent: {body}");
+        if let Some(notes) = point.notes.as_deref() {
+            assert!(!body.contains(notes), "the corpus's note was sent: {body}");
+        }
+        for example in point.examples() {
+            assert!(!body.contains(&example.ja), "a corpus sentence was sent: {body}");
+        }
+
+        // An unknown pattern and an unreadable sentence are messages, not requests.
+        let before = chat.seen.lock().expect("the log").len();
+        assert!(state.check_sentence_with("no-such-pattern", "これは本です。", &chat).is_err());
+        assert!(state.check_sentence_with("wa", "私はstudentです。", &chat).is_err());
+        assert_eq!(chat.seen.lock().expect("the log").len(), before, "nothing more was sent");
+    }
+
+    /// Nothing the model says is written anywhere: the file it would have to land in is
+    /// the learner's own sentences, and the model's opinion is not one of this app's
+    /// verdicts (invariants 15 and 43).
+    #[test]
+    fn a_model_answer_is_shown_and_forgotten_and_never_recorded() {
+        let dir = std::env::temp_dir().join(format!(
+            "nihongo-tutor-model-{}-{}",
+            std::process::id(),
+            state().grammar.len()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory");
+        let state = AppState::load_at(&dir);
+        state
+            .save_model_settings("http://127.0.0.1:1234/v1", "small-model", None)
+            .expect("saves");
+        let chat = fake(&reply("Your sentence is fine."));
+        state
+            .check_sentence_with("wa", "私は学生ですよ。", &chat)
+            .expect("a verdict");
+
+        assert!(
+            !dir.join("compositions.json").exists(),
+            "the model's answer reached the learner's own file"
+        );
+        assert!(
+            !dir.join("grammar.json").exists(),
+            "and it did not move the pattern's weight"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

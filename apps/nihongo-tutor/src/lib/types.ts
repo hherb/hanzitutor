@@ -552,6 +552,55 @@ export interface CompositionSize {
   total: number;
 }
 
+/**
+ * What the learner has configured about the model check.
+ *
+ * **Never the key.** `keySet` is all a screen needs — to show that one is stored, and to
+ * say that leaving the field empty keeps it. The secret does not cross the IPC boundary
+ * in either direction after it has been saved once (`HANDOVER_NIHONGO.md` invariants 15
+ * and 43).
+ */
+export interface ModelStatus {
+  /** The configured base, as typed — `http://127.0.0.1:11434/v1`, `https://api.openai.com/v1`. */
+  endpoint: string;
+  /** The model name the request asks for. */
+  model: string;
+  /** Whether a key is stored, and never what it is. */
+  keySet: boolean;
+  /** Whether there is enough here to ask a model anything. */
+  configured: boolean;
+}
+
+/**
+ * What a model said about one sentence, as far as it could be read.
+ *
+ * `verdict` is the model's **own** word, echoed rather than mapped onto anything of
+ * this app's, and empty when the reply was not the JSON the prompt asked for — in
+ * which case `explanation` holds the reply itself. `raw` is the reply exactly as it
+ * arrived, for a reader who wants to see what the model really said.
+ */
+export interface ModelReview {
+  verdict: string;
+  corrected: string | null;
+  explanation: string;
+  raw: string;
+}
+
+/**
+ * A model's answer, and whose answer it is.
+ *
+ * The attribution is the point: `model` and `host` are what the screen names so a
+ * learner can tell the model's opinion from this app's checklist, and `sent` is the
+ * pattern and the sentence as one line. Nothing here is recorded anywhere — a model's
+ * opinion is not one of this app's verdicts (invariant 43).
+ */
+export interface ModelVerdict {
+  review: ModelReview;
+  model: string;
+  host: string;
+  sent: string;
+}
+
 /** One licence notice, with its text, for a Licences screen. */
 export interface LicenceNotice {
   id: string;

@@ -71,8 +71,8 @@ pub use curriculum::{
 };
 pub use composition::{
     draw as draw_composition, own_lumps, prompt_for as composition_prompt_for,
-    size as composition_size, verdict_for as composition_verdict_for, Composition, CompositionLog,
-    CompositionPrompt, CompositionSize, CompositionVerdict, MIN_COMPOSITION,
+    size as composition_size, spoken_form, verdict_for as composition_verdict_for, Composition,
+    CompositionLog, CompositionPrompt, CompositionSize, CompositionVerdict, MIN_COMPOSITION,
 };
 pub use grammar::{
     parse_furigana, strip_level_references, FuriganaError, GrammarArtifact, GrammarDataset,

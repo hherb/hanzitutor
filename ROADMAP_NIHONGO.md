@@ -56,6 +56,7 @@ references for no gain.
 | **N21** | **The pattern's vocabulary** | **Shipped.** N19's screen and N20's drill both left the grammar course an island: its sentences are made of words the course teaches, and nothing said which. Every pattern's stage now lists the words its own sentences use — **526 of 526 patterns, 8,151 links** — each opening its own card, and the characters the pattern itself is written with (**107 patterns, 143 characters, every one jōyō**), each opening the kanji board. The word link is **the analyser's**, and the rule built on the corpus's own furigana was measured and rejected first: 405 disagreements, several of them fragments. See the milestone for that measurement and for what it cost (`prepare-grammar` is now behind `tokenize`). |
 | **N22** | **Grammar production: the pattern written back** | **Shipped.** N20 made the course ask a learner to *choose* a pattern; this makes it ask them to *write* it. The same corpus sentence with the same lump taken out, and the learner types the missing text — romaji or kana — graded against the reading the corpus wrote over that hole. **363 of the 526 patterns over 903 sentences**: exactly the recognition drill's pool, because a question with no options needs no distractors and every one of the 903 answers is typeable. The question carries **nothing that answers it** — no pattern, no meaning, and neither the text taken out nor its reading — so the lesson arrives with the verdict. See the milestone for the measurement that makes the pool the same pool, and for the phone fault the live run found and fixed. |
 | **N23** | **Free composition: a sentence of the learner's own** | **Shipped.** The half of the grammar exercise that no corpus can answer: N20 asked a learner to *choose* a pattern and N22 to *write* it, both inside the corpus's own sentence. The Grammar screen's fourth stage now asks for a sentence the corpus never wrote, and what comes back is a **checklist rather than a mark** — because the obvious rule was measured first and the corpus itself fails it: only **1,271 of its own 1,526** sentences contain their pattern's literal text, the other 255 inflect it. The one decision is whether the input is a sentence; what is kept is the learner's writing itself, in a fifth file of this app's own. It is also the only grammar exercise that reaches **all 526 patterns**, because its prompt is the pattern. See the milestone for the measurements, the screen, and what it says it cannot see. |
+| **N24** | **Hearing it back, and asking a model** | **Shipped.** Two things the composition stage was missing, at the maintainer's word. The app now **speaks the learner's own sentence** — the read-back form, so romaji is heard as kana and a sentence it cannot read is a message rather than a noise (invariant 27 widened). And it can **ask a model** — local or cloud, both OpenAI-compatible, endpoint/model/key the learner's own — for a second opinion that is **off until configured, sent only on a press, carrying the pattern and the sentence and nothing else, attributed to the model by name, and never recorded** (invariant 43). |
 | **N5** | Pitch accent | Wanted and genuinely differentiating, but **blocked on a provenance check rather than on code**, and it is polish beside the kanji work. See the milestone for exactly what can kill it. |
 | **N4** | Yōon drills and a kana chart | **Shipped.** The grid for either script, the characters off it, and the yōon contrasts drilled against their long spellings — one mora against two. Every kana on the chart opens on the board. See the milestone for what the measurement corrected. |
 
@@ -2791,6 +2792,118 @@ has just composed is neither stored nor verified, so the app does not hand it to
 the pattern is used in the right sense. No corpus here can answer that, it would need a reader,
 and the screen says so in one line rather than implying a mark it cannot give.
 
+**And N24 is the two things the composition stage could not do on its own.** The app had
+never spoken a word the learner wrote, and it had never asked anybody whether a sentence was
+right. The first is one rule in one place — `spoken_form` hands the voice the read-back form,
+and answers nothing for a sentence that is not Japanese — and it is the deliberate widening of
+a rule that had held since N1. The second is the app's **first outbound path**, and it is
+written as narrowly as the request allows: off until the learner names an endpoint, one HTTPS
+(or loopback) request per button press, the pattern and the learner's own sentence and no
+corpus prose, an answer attributed to the model by name, and **nothing recorded** — not a
+weight, not a file, not a line of the checklist. A **local stand-in endpoint** was the way it
+was measured, because the question is what leaves the machine and a real provider is the worst
+place to ask it.
+
+## N24 — Hearing it back, and asking a model
+
+Two things N23's stage could not do, both asked for by the maintainer together: the app
+should **read the learner's sentence back**, and it should offer to **check it for
+correctness with a model** — local or cloud, both through an OpenAI-compatible API, with an
+endpoint, a model name and a key the learner supplies.
+
+They are different kinds of change and they are recorded separately, because one widens a
+rule and the other creates a path.
+
+### The sound: one rule, in one place, and it is the read-back
+
+The app has spoken since N1, and until N24 it spoke only what it had stored: a kana, a word's
+stored reading, one reading of a kanji, or a corpus sentence. **A sentence the learner wrote
+is now on that list**, and the rule that keeps it honest is that what reaches the synthesiser
+is not what was typed but **what the app read it as** —
+`nihongo_core::composition::spoken_form`, the same read-back the verdict is built from.
+`inu no houga neko yori suki desu` is heard as いぬのほうがねこよりすきです; 私はstudentです。
+is **not** heard at all, because handing a Japanese voice a line with a Latin word in it reads
+nonsense, and the screen says so instead:
+
+> this app could not read that as Japanese, so it has nothing to say — write the sentence in
+> kana, or the whole of it in romaji
+
+That is invariant 27, widened deliberately and in one function, so a screen cannot hand the
+voice something Rust did not read.
+
+### The path: off until configured, and it sends two things
+
+The second half is the app's **first outbound request**, and the promise it amends is the
+crate's oldest: *there is no network path in this crate at all*. There is one now, and what
+makes it defensible is that every part of it is a decision rather than a default:
+
+* **Off until the learner configures it.** No endpoint, no request; no startup call, no timer,
+  no default address. The button is the whole trigger.
+* **It sends the pattern and the learner's own sentence, and nothing else.** Not the corpus's
+  meaning, formation, notes or examples — OpenJLPT's text is CC BY-SA 4.0 and this app does not
+  hand a corpus to a third party to check one sentence. The sentence is sent in its read-back
+  form, so a model is asked about the Japanese rather than about the typing.
+* **The answer is shown, attributed and forgotten.** It never enters `compositions.json`, it
+  never moves the pattern's weight, and it never joins the checklist the app builds. On screen
+  the two are visibly separate: this app's checklist above, and below it the model's answer
+  headed with the model's **own** word for its judgement and closed with the model and host
+  that produced it.
+* **The key is a secret.** It lives in `model.json` — the sixth file of this app's own, written
+  `0600` — and never crosses back over the IPC: the interface is told that one is set, never
+  what it is. A local server needs none at all.
+* **The reply is read generously and trusted not at all.** A JSON object anywhere in the reply
+  is read for the fields the prompt asked for; anything else is shown as the prose it is. There
+  is no `response_format` field, because local servers reject it and a model that answered in
+  the wrong shape has still answered.
+* **Nothing blocks the window**: the command reads what it needs on the async worker and runs
+  the request on the runtime's blocking pool.
+
+The transport is `ureq` 2 — the client `crates/hanzi-sync` already uses for Dropbox — over
+`rustls` with `webpki-roots`, so no system certificate store is read and the mobile builds are
+unaffected. It is behind `model::Chat`, a seam with no decisions in it, so the request, the
+prompt, the reading of the reply and everything the app does with it are tested with a fake;
+and the real client is tested against a listener on loopback. **`cargo test` still needs no
+network.**
+
+### What was measured rather than assumed
+
+There was **no active display**, so §5's DOM probe over the dev server's log drove both
+halves, at 980×728 and then at 390×844 (the window set to the phone's size and the app
+restarted, trap 23's fallback), with `HOME` inside the workspace so `model.json` was really
+written. The endpoint was a **stand-in on loopback** (~25 lines of Python, §5's new recipe),
+because the question — what leaves the machine — is the one a real provider is worst at
+answering.
+
+| step | measured |
+| --- | --- |
+| the spoken rule | `私はstudentです。` → `this app could not read that as Japanese, so it has nothing to say…`, and the romaji sentence → no error at all: the read-back was spoken |
+| the fold, unconfigured | the settings note (`…kept in this app's own data directory, in a file only you can read. A local server needs no key…`) and three fields |
+| saving | `model.json` on disk, `-rw-------` (0600), holding endpoint, model and key — and the interface's status carrying `keySet: true` and not the key |
+| the disclosure, before anything is sent | `Sends the pattern 〜ずとも and your sentence — in the form this app reads it back — to 127.0.0.1:8123 (probe-model). Nothing else: no notes, no examples, and nothing is kept.` |
+| what the endpoint actually received | `/v1/chat/completions`, `Authorization: Bearer sk-probe`, and a body with **exactly three keys** (`model`, `messages`, `temperature`) whose user message was `Pattern: 〜ずとも` + `Sentence: いぬのほうがねこよりすきです` — the romaji that was typed appears nowhere |
+| the answer | `Understandable` · `The model would write: いぬのほうがねこよりすきです。` · the explanation · `probe-model at 127.0.0.1:8123 — a language model, not this app. It can be wrong, and the checklist above is the only part of this screen that this app decided.` — with the app's own three checklist lines still above it |
+| editing the sentence | the model's answer disappears, because an answer belongs to the sentence it was asked about |
+| a bad address | `127.0.0.1:8123` → `"127.0.0.1:8123" is not an address this app can reach: it has to start with http:// or https://` — refused while the learner is looking at the field |
+| at 390×844 | `pageOverflow 0` with the settings open, the disclosure shown and the answer drawn; the sentence field 268×63 and `Check` 74×44 on one line; `Hear it` 72×44; each settings field full-width; `Save` and `Forget the saved key` on one row |
+
+**And the run found one fault, which is what measurement is for.** After a successful save the
+fold switches to *what it will send*, which is the confirmation — and a `Saved.` line under
+the fields that are no longer drawn could therefore never be read. It came out. (The probe
+found it by waiting for a line that never appeared, which is also how the maintainer would
+have experienced it: nothing to confirm the save had happened.)
+
+### What is not changed — and what is deliberately not built
+
+The corpus's sentences and their furigana; the grammar artifact; the blank rule; the app's own
+checklist and everything it decides; `compositions.json` and the five other files' shapes; the
+schedule; the notices, which gain nothing because this feature ships no data. What is **not**
+built: a model check for any exercise other than the composition stage (the drill and the
+written cloze are graded in Rust from the corpus's own data, and a second authority beside
+them would make one of the two pointless); a per-word check; an OS-keychain home for the key
+(§7 of the handover has the trade — three platform implementations against a file only its
+owner can read); and **any** use of a model's answer as a verdict. That last one is the point
+of the whole feature: the learner can tell which answer is this app's.
+
 ## Cross-cutting polish
 
 Recorded here rather than as milestones because none of them is a feature.
@@ -2897,11 +3010,12 @@ Recorded here rather than as milestones because none of them is a feature.
   patterns** because its prompt is the pattern, keeps the learner's writing in a fifth
   file of this app's own, and — because 255 of the corpus's own 1,526 sentences inflect
   their pattern and would fail the obvious check — reports what it can see as a
-  **checklist rather than a mark**. The honest remaining gap is now narrower and harder:
-  a sentence graded for **grammar and naturalness** rather than for the pattern's
-  letters, which no corpus in this app can answer. It would need a reader — or a model,
-  which this app's "nothing is downloaded" promise forecloses — and the screen says so
-  in one line rather than pretending otherwise.
+  **checklist rather than a mark**. **N24 answered part of that gap without pretending to close it**: the learner
+  can now ask a **model** of their own choosing — local or cloud, configured by them — for a
+  second opinion on a sentence, and the app shows it attributed to the model rather than
+  folding it into its own checklist (`ROADMAP_NIHONGO.md` N24, invariant 43). What remains
+  unbuilt is a model's answer becoming **this app's** verdict: it is shown and forgotten,
+  never recorded, and never allowed to move a weight.
 * **The 13 confusion pairs are still a fixed list, and the yōon drill did not
   change that.** N3 weighs them by what this learner gets wrong, which is the half
   that was worth having — and N4's second exercise records its 33 yōon contrasts

@@ -115,11 +115,13 @@ nothing complains.
 ## 2. What already works
 
 Measured, not remembered. `cargo test -p nihongo-core -p nihongo-tutor -p
-hanzi-voice` is **486 tests** — 294 in `nihongo-core` (202 in the crate's own suite,
+hanzi-voice` is **515 tests** — 295 in `nihongo-core` (203 in the crate's own suite,
 which gains two more when the `tokenize` feature is on, and 92 across its artifact
-tests), 163 in `nihongo-tutor` (86 in the app's suite, 63 in `ipc_contract`, 12
+tests), 191 in `nihongo-tutor` (111 in the app's suite, 66 in `ipc_contract`, 12
 notices, and 2 doc-tests) and 29 in `hanzi-voice`; the frontend's are counted
-separately below. `pnpm run test:web` runs 252, of which **183** are this app's.
+separately below. `pnpm run test:web` runs 262, of which **193** are this app's. Two of
+the app's own tests bind a socket on loopback and speak HTTP to it, which is how the
+model check's real client is tested without the internet (§5).
 
 | | |
 | --- | --- |
@@ -148,6 +150,8 @@ separately below. `pnpm run test:web` runs 252, of which **183** are this app's.
 | Grammar drill | **363 of the 526 patterns can be asked**, from **903 of the 1,526 sentences** — the corpus's own sentence with the pattern's own text taken out, three patterns to choose between, weighted by what this learner misses and remembered in this app's own `grammar.json`; every option is a pattern of the corpus, the furigana is its own, and `Hear it` speaks the sentence **only after** it is answered (invariants 27 and 39) |
 | Grammar production | **the same 363 of the 526, over the same 903 sentences, written rather than chosen** (N22, invariant 41): the learner types the missing text, graded in Rust against the reading the corpus wrote over that hole — 172 of the holes take a kanji and are answered by their reading, the other 731 by what is written, and **all 903 answers are typeable** (the longest is `ていただけませんか`). The question carries **nothing that answers it** — no pattern, no meaning, and neither the text taken out nor its reading — and the lesson arrives with the verdict, in the same `grammar.json` |
 | Grammar composition | **a sentence of the learner's own, for every one of the 526 patterns** (N23, invariant 42): the exercise the corpus cannot answer, so what comes back is a **checklist rather than a mark** — whether the pattern's own letters are in the sentence (they are in **1,271 of the corpus's own 1,526** sentences and not in the other **255**, which is why it cannot be a gate), how many characters it holds, whether all of it is Japanese script, which characters the course has no card for, and whether one of the corpus's own sentences was written back. The one decision is whether the input is a sentence; **the writing is kept** in a fifth file of this app's own, keyed by pattern, and drawn back on the same screen. |
+| Sentence read back | **the learner's own sentence, spoken by the app** (N24, invariant 27): what is handed to the voice is not what was typed but what Rust read it as — romaji heard as kana, and a sentence the app could not read is a message rather than a noise |
+| Model check | **an optional second opinion on that sentence** (N24, invariant 43): an OpenAI-compatible endpoint the learner names — a local server or a cloud provider, their model and their key — asked to judge the sentence and offer a correction. Off until configured, sent only on a button press, carrying **the pattern and the learner's sentence and nothing else** (no corpus prose), and **never recorded**: the answer is attributed to the model by name, shown beside this app's checklist rather than merged into it, and forgotten. The settings live in `model.json`, the one file of the six holding a secret, written `0600` |
 | Pattern vocabulary | **526 of 526 patterns** name a word the course teaches, over **1,523 of the 1,526 sentences** and **8,151 links** (7,345 once per pattern, 28 the most); the words its sentences use open their own cards, and the **107 patterns written with a kanji** offer their **143 characters** — all jōyō — on the kanji board. The word link is **UniDic's**, not the corpus's: the furigana rule was measured at 405 disagreements over the 1,526 sentences (invariant 40) |
 | Words on a card | 16,073 words over 2,136 characters — 一 in 223, 人 in 218, and **57 characters in none**; a page of 12, in course order (invariant 28) |
 | One reading | **はし is 橋, 端 and 箸 and かみ is five words** (上 紙 神 加味 髪) — the homophones the **Start here** screen argues with, drawn from the artifact rather than typed into the interface (invariant 32) |
@@ -156,11 +160,11 @@ separately below. `pnpm run test:web` runs 252, of which **183** are this app's.
 | Bundle | built at N9 as `Kana Tutor.app`, 15.25 MiB, and **rebuilt after the N10 rename as `Nihongo Tutor.app`** — 15 MiB, `codesign --verify --deep --strict` clean, `Identifier=com.hanzitutor.kana`, Team `X5DWXB4283`, and all ten notices world-readable. The `.dmg` needs Tauri's own `bundle_dmg.sh` run outside the sandbox (trap 21); the N10 one is **7,957,111 bytes**, `hdiutil verify` checksum VALID, signed `Identifier=Nihongo Tutor_0.1.0_aarch64`, and mounting it shows `Nihongo Tutor.app` plus the `Applications` link with the inner app still passing `--deep --strict`. The N9 figures were 15.25 MiB and an 8,186,456-byte image; the icon N9 drew has since been **redesigned at N14** — white field, the flag's red あ — and both the desktop set and the iOS set were regenerated from the new master, so a build from this tree wears a different face than the 15 MiB one described here; `/Applications/Kana Tutor.app` is still the N9 install, and the N10 build has not been installed there |
 | Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review", and the kana course seen on the device at N13. **Rebuilt and reinstalled at N18** with the same recipe, on **both** devices — HHIP1 and Horst's 12.9-inch iPad — and the Phrases screen was then looked at on each by the maintainer, which is what closed the last "measured but never seen" screen in the app. See §5, "Building for iOS", for the three things `tauri ios init` does not provide |
 | Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Phrases, Grammar, Read, Review, where **six screens carry a stage**: the course and the thing one of its cards opens — Kanji and Practice open a board, Radicals a family, Words a card, Grammar a pattern **and, since N22 and N23, the three exercises that ask it back**, Read a passage (invariants 33, 34, 35, 38 and 41). **Phrases is not one of them**: a phrase's card opens under the row it was tapped in, so there is no second screen to step aside for (invariant 37). **Start here** and Licences hang off the footer, in neither course (invariant 31). At 980×760 the seven tabs sit on one line; at a phone's width they wrap after `Phrases`, leaving `Grammar · Read · Review` on a second line, with no page overflow |
-| Tests | nihongo-core 294, nihongo-tutor 163, hanzi-voice 29, frontend 183 of the 252 |
+| Tests | nihongo-core 295, nihongo-tutor 191, hanzi-voice 29, frontend 193 of the 262 |
 | Artifact | kana 70,917, kanji 3,236,713, words 601,816, passages 502, phrases 53,945 and grammar **226,452** bytes — all gzip + magic + postcard, all six embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Grammar format | version 2 (`GRAMM002`): an example carries the course words its sentence uses (invariant 40) |
-| Learner data | five files, `confusions.json`, `grammar.json`, `compositions.json`, `review.json` and `prefs.json`, in the app's own data directory (invariant 15) |
+| Learner data | six files, `confusions.json`, `grammar.json`, `compositions.json`, `review.json`, `prefs.json` and `model.json`, in the app's own data directory (invariant 15) — the last of them the only one that holds a secret, and the only one written readable by its owner alone |
 | Version | both crates 0.1.0, and the app's to match |
 
 The app runs and has been looked at, all of it: the course, the board, stroke-order
@@ -395,6 +399,31 @@ displays), which found one fault and fixed it: the field's label sat beside it a
 **No person has looked at this screen either**, so it is owed the same reading the grammar
 screen, the drill and the links are owed.
 
+**And N24 is the second opinion, and the sound of your own sentence.** The maintainer asked
+for two things the composition stage was missing: the app should **read the learner's
+sentence back**, and it should be able to **check it with a model** — local or cloud, both
+OpenAI-compatible, with an endpoint, a model name and a key the learner supplies. The first
+is a deliberate widening of invariant 27, and it is one rule in one place:
+`nihongo_core::composition::spoken_form` hands the voice the **read-back** form (romaji heard
+as kana) and answers `None` for anything that is not Japanese, so a learner who typed a Latin
+word inside a sentence is told rather than read nonsense at. The second is a **new outbound
+path** in an app that had none, and invariant 43 is the rule: **off until the learner
+configures an endpoint**, sent only on a button press, carrying **the pattern they are
+looking at and their own sentence and nothing else** — no corpus prose, which is OpenJLPT's
+text under CC BY-SA 4.0 — and **never recorded**: the answer does not enter
+`compositions.json`, does not move the pattern's weight, and never joins the checklist. The
+screen says what leaves the machine before it does, echoes the model's **own** word for its
+judgement rather than translating it, and names the model and host under the answer. The
+settings — endpoint, model, key — are the sixth file of this app's own, written `0600`
+because the key is the one secret it holds, and never returned over the IPC. Both halves were
+driven over §5's DOM probe with a **local stand-in endpoint** answering on loopback: the
+message a sentence the app cannot read produces, the read-back the voice is given, the
+settings' save, the check, the model's answer and its attribution, that editing the sentence
+drops a stale answer, and that a bad address is refused while the learner is looking at the
+field. The phone measurement found no faults (`pageOverflow 0`, the field and `Check` on one
+line, the settings fields full-width). **No person has looked at either half**, so both are
+owed the reading the grammar screens are owed.
+
 **And N23 is the grammar exercise the corpus could not supply: a sentence of the learner's
 own.** N19 read the patterns, N20 chose among them, N22 wrote one into a hole the corpus had
 cut — and four milestones of weak-spot bullets had said the same thing at the end of each,
@@ -577,7 +606,7 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   and `ProductionQuestion` (**nothing that answers it**),
                                   `verdict_for`, and `draw_production` with its two
                                   rolls — invariant 41
-  src/composition.rs     (722)    the free-composition half, N23: the prompt (a pattern,
+  src/composition.rs     (766)    the free-composition half, N23: the prompt (a pattern,
                                   its model and the learner's own sentences), the
                                   checklist `verdict_for` builds from a sentence of the
                                   learner's own — the pattern's lumps, the characters the
@@ -701,7 +730,7 @@ scripts/fetch-tatoeba.sh          fetches Tatoeba's Japanese exports into
                                   ships or tests needs it
 
 apps/nihongo-tutor/               the app
-  src-tauri/src/lib.rs  (4042)    AppState, the speaker, the chart and the 45
+  src-tauri/src/lib.rs  (4520)    AppState, the speaker, the chart and the 49
                                   commands, all thin — and the one place a kana is
                                   graded through `nihongo_core::grade_kana` rather
                                   than the shared engine — invariant 30. The newest
@@ -710,16 +739,31 @@ apps/nihongo-tutor/               the app
                                   `record_grammar_production`, whose outcome is the
                                   lesson (`GrammarProductionOutcome`) the recognition
                                   drill deliberately does not send (invariant 41)
-  src-tauri/src/store.rs(1060)    the five files of this app's own: confusions.json
+  src-tauri/src/model.rs (791)    the one thing in this app that can reach the network,
+                                  and only when the learner has configured an endpoint
+                                  and pressed the button — N24, invariant 43: the
+                                  OpenAI-compatible settings and their validation, the
+                                  prompt and request body (**the pattern and the
+                                  sentence, and none of the corpus's prose**), a lenient
+                                  reader for what comes back, the `Chat` seam that keeps
+                                  the transport decisionless, and `UreqHttp` over
+                                  `ureq`/`rustls`, tested against a listener on
+                                  loopback
+  src-tauri/src/store.rs(1269)    the six files of this app's own: confusions.json
                                   (load, record, atomic write — N3), review.json
                                   (the SM-2 schedule, and the rule for when an
                                   attempt is a review — N2), prefs.json (which
-                                  course was open — N10) and grammar.json (which
-                                  patterns this learner misses — N20). One generic
-                                  read/write pair, because the ritual is the same for
-                                  all four — invariant 15
+                                  course was open — N10), grammar.json (which
+                                  patterns this learner misses — N20) and
+                                  compositions.json (the sentences this learner has
+                                  written of their own — N23), plus model.json (the
+                                  model check's endpoint, model and key — N24, written
+                                  0600 because it is the one secret here). One generic
+                                  read/write pair for the five plain ones and one
+                                  private writer for the sixth, because the ritual is
+                                  the same for all six — invariant 15
   src-tauri/src/licences.rs(277)  the notice catalogue, with the text compiled in
-  src-tauri/tests/ipc_contract.rs (2162)  63 tests locking the JSON the webview
+  src-tauri/tests/ipc_contract.rs (2327)  66 tests locking the JSON the webview
                                   reads *and the arguments it posts* (invariant 14),
                                   including the `joined` field a joined kana crosses
                                   with — invariant 30 — its empty twin on a kanji,
@@ -866,7 +910,7 @@ apps/nihongo-tutor/               the app
                                   reading and the writing), and the pool note —
                                   invariant 41
   src/lib/grammarProduction.test.ts(115)  run by the ROOT project's vitest
-  src/lib/GrammarComposition.svelte(529)  **the grammar composition exercise**: one
+  src/lib/GrammarComposition.svelte(906)  **the grammar composition exercise**: one
                                   pattern, a sentence of the learner's own, and the
                                   checklist rather than a verdict — the learner's own
                                   earlier sentences drawn above the box, the corpus's own
@@ -879,6 +923,13 @@ apps/nihongo-tutor/               the app
                                   wrong), `keptLine` (the one decision), `limitationNote`,
                                   `poolNote` and `ownNote` — invariant 42
   src/lib/composition.test.ts(156)  run by the ROOT project's vitest
+  src/lib/model.ts        (87)    the model check's wording, as pure functions: what
+                                  leaves the machine before it does, the host a sentence
+                                  goes to, the model's own word for its judgement, the
+                                  correction it offered, and the attribution line that
+                                  keeps its answer apart from this app's — N24,
+                                  invariant 43
+  src/lib/model.test.ts  (119)    run by the ROOT project's vitest
   src/lib/grammar.ts     (134)     the grammar course's arithmetic, as pure functions:
                                   the page size, `positionLabel`, `searchNote` (which
                                   says when a list is not all of the matches), `stepTo`
@@ -927,13 +978,13 @@ apps/nihongo-tutor/               the app
                                   (36)
   src/lib/board.test.ts   (150)   run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
-  src/lib/types.ts       (996)    the IPC shapes, `Character = Drawable`, the
+  src/lib/types.ts      (1045)    the IPC shapes, `Character = Drawable`, the
                                   chart's slots as `(string | null)[]`, the
                                   `Prefs` the remembered course crosses in,
                                   `WordsOfReading` for the Start screen — invariant 32
                                   — and `KanaPick`, the script-carrying request that
                                   opens the kana stage — invariant 34
-  src/lib/api.ts         (533)    one wrapper per command
+  src/lib/api.ts         (585)    one wrapper per command
 
 crates/hanzi-voice/               SHARED with the two Chinese apps, and not this
                                   part's data layer
@@ -970,7 +1021,10 @@ N23's batch is counted from the tree it wrote: the four new files
 (`composition.rs`, `GrammarComposition.svelte`, `composition.ts`,
 `composition.test.ts`) and the eight it changed — `lib.rs` in the core, the app's
 `lib.rs`, `store.rs`, `ipc_contract.rs`, `grammar_artifact.rs`, `GrammarPanel`,
-`types.ts` and `api.ts`.
+`types.ts` and `api.ts`. N24's are counted the same way: the three it added
+(`model.rs`, `lib/model.ts` and `model.test.ts`) and the eight it changed — the app's
+`lib.rs`, `store.rs`, `composition.rs` in the core, `ipc_contract.rs`, `Cargo.toml`,
+`GrammarComposition.svelte`, `api.ts` and `types.ts`.
 
 `src-tauri/gen/schemas/` is committed, as it is for the other two apps.
 
@@ -1224,11 +1278,12 @@ a struct, test the *payload*, not the struct.
 
 ### 15. **The learner's data is this app's, and it stays this app's.**
 
-Nihongo Tutor writes exactly five things about its learner — the per-pair tallies
+Nihongo Tutor writes exactly six things about its learner — the per-pair tallies
 in `confusions.json`, the per-pattern tallies in `grammar.json`, the sentences the
 learner has written of their own in `compositions.json`, the SM-2 schedule in
-`review.json`, and the remembered course in `prefs.json`, all in its own directory
-under the app's data directory — and no other app reads them, imports them, or shares
+`review.json`, the remembered course in `prefs.json`, and the model check's endpoint,
+model name and key in `model.json` — all in its own directory
+under the app's data directory, and no other app reads them, imports them, or shares
 a store with them. **The Japanese and
 Chinese apps are separate products; what is shared between them is code, never user
 data.** So `hanzi-store` is not the answer for the drill's tallies, and it is not
@@ -1249,8 +1304,12 @@ one map holding both would have no way to say which of the two it meant. And
 a pattern id, because what it holds is **writing rather than tallying**: a list of
 sentences with their dates is a different shape from a map of counters, and the
 grammar drill's file is the one place a mistake would cost this learner a score they
-had earned. All five
-share one generic read/write pair in `store.rs`, because the ritual — a missing file
+had earned. And `model.json` is N24's, separate from all five for the strongest
+reason of the six: **it holds a secret**, so it is the one file written `0600` rather
+than `0644` and the one whose contents never cross back over the IPC boundary (the
+interface is told that a key is set, never what it is). The five plain files
+share one generic read/write pair in `store.rs` and the sixth a private writer beside
+it, because the ritual — a missing file
 is a first run, an unreadable one is moved aside rather than overwritten, a write is
 a temporary plus a rename — is the same for a preference as for a schedule.
 
@@ -1592,9 +1651,12 @@ are `locale_key` (lower-case, `-` to `_`) and `base_name` (strip the ` (` onward
 and every locale comparison in the file goes through one of them.
 
 **Nothing is bundled and nothing is fetched.** The audio is the platform's own,
-spoken in process by `AVSpeechSynthesizer`; `apps/nihongo-tutor/src-tauri/src/lib.rs`
-still says "there is no network path in this crate at all" and N1 did not change
-that. `Speaker::prime` on macOS builds the synthesiser and resolves the list on a
+spoken in process by `AVSpeechSynthesizer`, and N1 did not change that. **The crate's
+own "no network path at all" sentence stood until N24**, which put one deliberately
+narrow outbound path in it (invariant 43): nothing is ever *downloaded*, and the only
+thing this app can *send* is a sentence of the learner's own to an endpoint the learner
+configured. Everything in this invariant is unchanged — the audio still comes from the
+machine and still needs no network. `Speaker::prime` on macOS builds the synthesiser and resolves the list on a
 thread of the app's own (`warm_voice`), so the first tap pays for nothing — the
 line it prints, `[speech] using voice Kyoko (ja-JP)`, is the cheapest proof that a
 built app reached the real voice list.
@@ -1608,8 +1670,20 @@ that only speaks turns it off. Same instinct as refusing to bundle the analyser.
 ### 27. **Nothing is spoken that is not kana the app stored, and the shortcut is `h`.**
 
 What may be handed to `speak` is a **kana character**, a **word's own stored
-reading**, or **one reading of a kanji**, and the list is exhaustive rather than
-indicative:
+reading**, **one reading of a kanji**, a **corpus sentence** (the phrase screen's and
+the grammar screen's exception, invariant 37), or — **since N24** — **a sentence the
+learner wrote of their own**, and the list is exhaustive rather than indicative.
+
+**The sentence of the learner's own is the maintainer's widening, and it is one rule in
+one place.** The app speaks what it *read* the typing as, never the typing itself:
+`nihongo_core::composition::spoken_form` answers the read-back form (a learner who typed
+`inu no houga neko yori suki desu` hears いぬのほうがねこよりすきです) and answers
+`None` for a sentence it could not read as Japanese at all — so a Latin word left inside
+a Japanese sentence is a message on screen rather than nonsense from the voice, and the
+command (`speak_sentence`) hands the synthesiser nothing else. This is the one place
+where "never a string the app composed" is not the rule, and the reason is that the
+string is the learner's rather than the app's: it is read back by the same rule that
+grades it, and the app claims nothing about whether it is *right*.
 
 * never a reading composed from a written form — 大人 is おとな, and invariant 21
   is the same rule one step out;
@@ -2469,13 +2543,68 @@ measurement forces rather than a preference, and the measurement is the invarian
   learner has just composed is neither stored nor verified, so invariant 27's list is
   unchanged — this app does not hand the synthesiser text it cannot stand behind.
 
-**What is still not built is a sentence graded for grammar or naturalness.** That needs a
-reader, or a model this app's "nothing is downloaded" promise forecloses, and the screen ends
-by saying so in one line (`limitationNote`) rather than implying a mark it cannot give. The
-module is `nihongo_core::composition`, the screen is `GrammarComposition.svelte`, and its
+**What is still not built is a sentence graded for grammar or naturalness — by this app.**
+No corpus here can answer it, and the screen ends by saying so in one line
+(`limitationNote`) rather than implying a mark it cannot give. **N24 added the honest half of
+that**: the learner can ask a **model** of their own choosing for a second opinion, and the
+app shows it attributed to the model rather than folding it into its own checklist —
+invariant 43 is that rule, and the model's answer is still not a verdict this app reaches.
+The module is `nihongo_core::composition`, the screen is `GrammarComposition.svelte`, and its
 residue list is the five measurements above.
 
 ---
+
+### 43. **The model check is the app's one outbound path, it is off until the learner names an endpoint, and its answer is never recorded.**
+
+N24's second half, and the first deliberate exception to the promise this crate was
+written with — *there is no network path in this crate at all*. There is one now, and it
+is narrow by construction rather than by intention. The screen is the Grammar
+composition stage's fold; the code is `apps/nihongo-tutor/src-tauri/src/model.rs`, the
+`check_sentence` command and `src/lib/model.ts`. Eight parts, and each one is a decision:
+
+* **Off until the learner configures it.** No endpoint, no request: an unconfigured app
+  has no address to reach, nothing runs at startup, nothing runs on a timer, and there is
+  no default endpoint baked in. The button is the whole trigger.
+* **What is sent is the pattern and the learner's own sentence, and nothing else.** Not
+  the corpus's meaning, formation, notes or example sentences — those are OpenJLPT's text
+  under CC BY-SA 4.0, and this app does not hand a corpus to a third party to check one
+  sentence. `tests/ipc_contract.rs` asserts it on the serialised body and the live run
+  measured it on the bytes a stand-in endpoint received (§5).
+* **The sentence sent is the read-back form**, the same one the app speaks and the same
+  one it checks: a learner who typed romaji has written kana, and a model is asked about
+  the Japanese rather than about the typing.
+* **Nothing else about the learner goes with it** — not their other sentences, not the
+  schedule, not a tally. The key travels in the `Authorization` header and nowhere else.
+* **The answer is never recorded.** It does not enter `compositions.json`, it does not
+  move the pattern's weight in `grammar.json`, and it never joins the checklist
+  `nihongo_core::composition` builds. A model's opinion is not this app's verdict, and the
+  screen keeps them apart: the app's checklist is drawn by the app, the model's answer
+  below it is headed with the model's **own** word for its judgement and closed with the
+  model and host that produced it. **Do not "improve" this by feeding the model's answer
+  into the record.**
+* **The key is a secret, treated as one.** It lives in `model.json` — the sixth file of
+  this app's own (invariant 15), written `0600` and never returned over the IPC: the
+  interface is told `keySet` and never the value. There is no OS keychain integration, and
+  that is a stated trade rather than an oversight (§7).
+* **The reply is read generously and trusted not at all.** A JSON object anywhere in the
+  reply is parsed for the fields the prompt asked for (and a few near misses); anything
+  else is shown as the prose it is. There is deliberately no `response_format` field: local
+  servers reject it, and a model that answers in the wrong shape has still answered.
+* **Nothing blocks the window.** The command reads what it needs on the async worker and
+  runs the request on the runtime's blocking pool, so a local model that thinks for a
+  minute cannot freeze the interface.
+* **The transport is one decisionless object.** `model::Chat` is the seam (the pattern
+  `hanzi-sync`'s `Http` uses) and `UreqHttp` is the only thing that opens a socket:
+  `ureq` 2 — the client the Chinese app already depends on — over `rustls` with
+  `webpki-roots`, so no system certificate store is read and the mobile builds are
+  unaffected. `cargo test` still needs no network: the transport's own tests bind a
+  listener on loopback, and everything above is tested through the fake.
+
+**What is deliberately not built**: a model check for any exercise other than the
+composition one (the drill and the written cloze are graded in Rust from the corpus's own
+data, and a second opinion there would be a second authority); a per-word check; keychain
+storage; and *any* use of the model's answer as a verdict — the whole point of the feature
+is that the learner can tell the two apart.
 
 ## 5. The verification loop
 
@@ -2856,6 +2985,66 @@ in the past is due now:
 Two of those — one kana, one kanji — is what showed あ with a "Hear it" button and
 学 with none, in one run. The same trick is how a queue with anything in it can be
 seen at all in a sandboxed session, where `review.json` cannot otherwise be written.
+
+### Asking a model without a model
+
+The model check's whole risk is **what leaves the machine**, and that is exactly what a
+real model is worst at showing you: a provider answers, bills, and tells you nothing about
+the bytes it received. A stand-in on loopback answers all of it, and it needs no model, no
+key and no internet — which is also why the recipe belongs here rather than in a document
+about providers.
+
+```python
+# /tmp/fake-openai.py — an OpenAI-compatible endpoint that logs what it is sent.
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+REPLY = {"verdict": "understandable", "corrected": "いぬのほうがねこよりすきです。",
+         "explanation": "The pattern is used correctly; より is optional here."}
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8", "replace")
+        with open("/tmp/fake-openai.log", "a") as log:
+            log.write(json.dumps({"path": self.path,
+                                  "authorization": self.headers.get("Authorization"),
+                                  "body": body}, ensure_ascii=False) + "\n")
+        raw = json.dumps({"choices": [{"message": {"content": json.dumps(REPLY, ensure_ascii=False)}}]},
+                         ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+    def log_message(self, *args):
+        pass
+
+HTTPServer(("127.0.0.1", 8123), Handler).serve_forever()
+```
+
+Point the composition stage's fold at `http://127.0.0.1:8123/v1` with any model name, save,
+and press the check. Then read `/tmp/fake-openai.log` — N24's own run measured, in the body
+the app really sent:
+
+* **three keys and no more**: `model`, `messages`, `temperature` (there is no
+  `response_format`, deliberately — invariant 43);
+* the `Authorization` header carrying the key the learner typed, and nothing else of theirs;
+* the user message being **the pattern and the read-back sentence**, with no corpus prose in
+  it: `Pattern: 〜ずとも` / `Sentence: いぬのほうがねこよりすきです` — and not the romaji that
+  was typed.
+
+The rest of the feature is measured the same way as any screen (§5's DOM probe): what
+`Hear it` does with a sentence the app cannot read (the message, not a sound), what the fold
+shows before anything is configured, what it says it will send, the model's own word for its
+judgement with the model and host under it, that editing the sentence drops a stale answer,
+and that an address this client cannot speak is refused while the learner is looking at the
+field.
+
+```bash
+# The transport itself, with no model and no internet: `model.rs` binds its own listener
+# on 127.0.0.1:0, serves one canned reply, and asserts the bytes the real client wrote.
+./scripts/with-cargo-env.sh cargo test -p nihongo-tutor --lib model
+```
 
 ### When the window is blank
 
@@ -3808,6 +3997,29 @@ Chinese second — is served today by Hanzi Tutor itself, so anything that recor
 "this character is already known from the other language" must not assume which
 language came first.
 
+### Where the API key lives, and what that costs
+
+**Decided and shipped, with the cost stated rather than hidden.** The model check's key is
+kept in this app's own `model.json`, in the app's data directory, written `0600` and never
+returned over the IPC. It is **not** in an OS keychain, and that is a decision: a keychain
+means `security-framework` on macOS, `libsecret`/`secret-service` on Linux and Keychain plus
+Keystore on iOS and Android — three implementations and three failure modes for a feature
+whose other half is *"a local server needs no key"*. What the trade buys is one behaviour on
+every platform; what it costs is that anything running as the learner can read the file, so
+the protection is the account and the disk, not the app. Moving it to a keychain is a
+milestone of its own, and invariant 43 is the part that must not change either way: the key
+is never sent anywhere but the endpoint the learner named, and never crosses back to the
+webview.
+
+**And what a model must never become.** The check is an opinion the learner asked for, shown
+beside this app's checklist and attributed to the model by name. The tempting next step —
+letting a model's answer decide whether a sentence was right, and feed the pattern's weight —
+is deliberately not taken: the file would then hold a machine's judgement as if it were this
+app's, and the one thing the screen is careful about would stop being true. If a model is
+ever asked about anything else here (a word's reading, a passage, a drill answer), the same
+four rules travel with it: opt-in, what is sent named on screen, the reply attributed, and
+nothing recorded.
+
 ### The `assets/website` duplication
 
 `assets/README.md` records that all twelve files in `assets/website/` also exist
@@ -3869,6 +4081,15 @@ four requirements against the place it is met, and the three that were unmet.
 operating system's, so there are no audio files to attribute. A notice for the
 synthesiser would be a notice for something this app does not ship.
 
+**N24 added no notice, and that is the right answer rather than an omission**: the model
+check ships no data, no weights and no text of anybody else's — it sends two things to an
+endpoint the learner chose. What it *does* change is `LICENSES.md`, which is bundled as this
+app's `provenance` notice: the project's table of "every way the app can reach the network"
+gained a fourth row naming `apps/nihongo-tutor/src-tauri/src/model.rs`, what it sends and
+when, and the paragraph that used to say "exactly these three modules" now says four. The
+check the table is built on (`grep -rln "ureq\|reqwest" …`) is what would have caught it
+going stale.
+
 The app ships `LICENSE`, `LICENSES.md` and the five notice files above.
 **Before distributing it**, read `LICENSES.md`'s "Before you distribute": the
 same rules apply, and N9 is where the EDRDG update obligation — which its terms
@@ -3909,6 +4130,14 @@ assumed to be covered by the Chinese one.
   (invariants 26 and 27). What is deliberately absent is **bundled clips** — nothing
   needs them while the system voice works. The drill is silent on purpose: hearing
   シ and ツ would answer the question the drill asks. §7 has the clip position.
+* **A model as a grader — and a model check anywhere but the composition stage.** N24 built
+  the opt-in second opinion on a sentence the learner wrote with a pattern (invariant 43),
+  and the line it does not cross is the one worth recording: a model's answer is shown,
+  attributed and forgotten, and **never** becomes this app's verdict, a weight, or a line in
+  any of the six files. A check for the drill, the written cloze or a word's reading is not
+  built either — those are graded in Rust from the corpus's own data, and a second authority
+  beside them would make one of the two pointless. Nor is an OS-keychain home for the API
+  key (§7 has the trade).
 * **Spaced repetition for the vocabulary.** N2's schedule is over *characters* —
   what a board grades — and it ships. A word is checked by typing, so it has no
   handwritten attempt to schedule; a word queue would need its own attempt source

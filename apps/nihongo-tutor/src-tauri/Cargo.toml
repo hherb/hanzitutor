@@ -28,3 +28,9 @@ nihongo-core = { path = "../../../crates/nihongo-core" }
 # `default-features = false` is the whole reason that crate has the switch: its
 # capture half carries `cpal`, and this app never opens a microphone.
 hanzi-voice = { path = "../../../crates/hanzi-voice", default-features = false }
+# The one thing in this app that can reach the network, and only when the learner has
+# configured a model endpoint and pressed the button (invariant 43). `ureq` is the
+# blocking client `crates/hanzi-sync` already uses for Dropbox, over `rustls` with the
+# root certificates bundled by `webpki-roots` — so no system certificate store is read,
+# which matters under a sandbox and on the mobile builds alike.
+ureq = "2"

@@ -2160,3 +2160,168 @@ fn a_written_sentence_lands_in_the_apps_own_fifth_file() {
     assert!(!dir.path().join("grammar.json").exists(), "no tally was written");
     assert!(!dir.path().join("review.json").exists(), "and no schedule was touched");
 }
+
+// ---- the model check, and the sentence read back -------------------------------
+
+/// The `Chat` seam, faked in the contract test the way `crate::model`'s own tests do.
+///
+/// The command's payload and response shapes are what this file is about, so the model
+/// itself is stood in for: what crosses the IPC boundary is asserted, and no socket is
+/// opened. The transport has its own tests against a real local listener.
+struct CannedChat {
+    answer: String,
+    seen: std::sync::Mutex<Vec<serde_json::Value>>,
+}
+
+impl nihongo_tutor_lib::model::Chat for CannedChat {
+    fn post_json(&self, _url: &str, _bearer: Option<&str>, body: &str) -> Result<String, String> {
+        self.seen
+            .lock()
+            .expect("the canned client's log is not poisoned")
+            .push(serde_json::from_str(body).expect("the body is JSON"));
+        Ok(self.answer.clone())
+    }
+}
+
+#[test]
+fn the_model_settings_cross_without_the_key_and_with_the_shape_the_screen_reads() {
+    let state = state();
+    // `src/lib/api.ts` reads `{ endpoint, model, keySet, configured }` and the screen
+    // never sees the secret in either direction.
+    let status = serde_json::to_value(state.model_status()).expect("serialises");
+    assert_eq!(keys(&status), vec!["configured", "endpoint", "keySet", "model"]);
+    assert_eq!(status["configured"], false, "a fresh app has no address to reach");
+
+    // The payload `save_model_settings` takes, as `api.saveModelSettings` posts it.
+    // `key: null` is "leave the stored key alone" — the screen shows a placeholder
+    // rather than the secret, so an untouched field must not clear it.
+    let payload = json!({
+        "endpoint": "http://127.0.0.1:11434/v1",
+        "model": "llama3.1",
+        "key": "sk-typed-once",
+    });
+    let saved = state
+        .save_model_settings(
+            payload["endpoint"].as_str().expect("an endpoint"),
+            payload["model"].as_str().expect("a model"),
+            payload["key"].as_str().map(str::to_string),
+        )
+        .expect("saves");
+    let value = serde_json::to_value(&saved).expect("serialises");
+    assert_eq!(value["configured"], true);
+    assert_eq!(value["keySet"], true);
+    assert_eq!(value["endpoint"], "http://127.0.0.1:11434/v1");
+    assert_eq!(value["model"], "llama3.1");
+    assert!(
+        !value.to_string().contains("sk-typed-once"),
+        "the key crossed back to the interface: {value}"
+    );
+
+    // A null key keeps what is stored; an empty string is the request to forget it.
+    let kept = state
+        .save_model_settings("http://127.0.0.1:11434/v1", "llama3.1", None)
+        .expect("saves");
+    assert!(kept.key_set);
+    let forgotten = state
+        .save_model_settings("http://127.0.0.1:11434/v1", "llama3.1", Some(String::new()))
+        .expect("saves");
+    assert!(!forgotten.key_set);
+
+    // An address this client cannot speak is refused while the learner is looking at
+    // the field, and the six-file rule is untouched by any of it.
+    assert!(state.save_model_settings("127.0.0.1:11434", "llama3.1", None).is_err());
+    assert!(state.save_model_settings("", "llama3.1", None).is_err());
+}
+
+#[test]
+fn a_model_check_crosses_as_the_models_own_answer_with_its_attribution() {
+    let state = state();
+    let chat = CannedChat {
+        answer: json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"verdict\":\"understandable\",\"corrected\":\"いぬのほうがねこよりすきです。\",\"explanation\":\"Close: the pattern is right.\"}",
+                }
+            }]
+        })
+        .to_string(),
+        seen: std::sync::Mutex::new(Vec::new()),
+    };
+
+    // Nothing is configured yet, so nothing is sent.
+    let error = state
+        .check_sentence_with("no-hou-ga-yori", "いぬのほうがねこよりすきです。", &chat)
+        .unwrap_err();
+    assert!(error.contains("no model is configured"), "{error}");
+    assert!(chat.seen.lock().expect("the log").is_empty());
+
+    state
+        .save_model_settings("http://127.0.0.1:1234/v1", "small-model", None)
+        .expect("saves");
+
+    // The arguments `check_sentence` takes, as `api.checkSentence` posts them.
+    let payload = json!({ "point": "no-hou-ga-yori", "typed": "inu no houga neko yori suki desu" });
+    let verdict = state
+        .check_sentence_with(
+            payload["point"].as_str().expect("a point"),
+            payload["typed"].as_str().expect("the typing"),
+            &chat,
+        )
+        .expect("a verdict");
+    let value = serde_json::to_value(&verdict).expect("serialises");
+    assert_eq!(keys(&value), vec!["host", "model", "review", "sent"]);
+    assert_eq!(
+        keys(&value["review"]),
+        vec!["corrected", "explanation", "raw", "verdict"],
+        "the model's own answer, and the whole of it for anyone who wants to read it"
+    );
+    assert_eq!(value["review"]["verdict"], "understandable");
+    assert_eq!(value["review"]["corrected"], "いぬのほうがねこよりすきです。");
+    assert_eq!(value["model"], "small-model", "whose answer this is");
+    assert_eq!(value["host"], "127.0.0.1:1234");
+    assert_eq!(value["sent"], "〜の方が〜より · いぬのほうがねこよりすきです");
+
+    // What was actually posted: the pattern and the read-back sentence, and no corpus
+    // prose. The licence decision is asserted on the bytes, not in prose.
+    let seen = chat.seen.lock().expect("the log");
+    assert_eq!(seen.len(), 1);
+    let body = seen[0].to_string();
+    assert!(body.contains("いぬのほうがねこよりすきです"), "{body}");
+    assert!(!body.contains("inu no houga"), "the romaji typing is not what a model is asked about");
+    assert!(body.contains("small-model"));
+    drop(seen);
+
+    // An unknown pattern, and a sentence the app cannot read, are messages rather than
+    // requests — and neither reaches the endpoint.
+    let before = chat.seen.lock().expect("the log").len();
+    assert!(state.check_sentence_with("no-such-pattern", "これは本です。", &chat).is_err());
+    assert!(state.check_sentence_with("wa", "私はstudentです。", &chat).is_err());
+    assert_eq!(chat.seen.lock().expect("the log").len(), before);
+}
+
+/// The read-back sentence is not posted to a voice that cannot read it.
+///
+/// `speak_sentence` takes the **typing** and reads it back in Rust, so a screen cannot
+/// hand the synthesiser a line of romaji (invariant 27, as N24 widened it). The
+/// read-back form itself is `nihongo_core::composition`'s, and the refusal here is
+/// decided before the synthesiser is touched — which is what makes it safe in a test
+/// suite, exactly as the app's own `speak` tests are.
+#[test]
+fn the_sentence_the_voice_is_handed_is_the_one_rust_read_back() {
+    let state = state();
+    assert!(state.speak_sentence("").is_err());
+    assert!(state.speak_sentence("   ").is_err());
+    let error = state.speak_sentence("私はstudentです。").unwrap_err();
+    assert!(error.contains("could not read"), "{error}");
+    state.stop_speaking();
+
+    // The payload `api.speakSentence` posts: `invoke("speak_sentence", { typed })`.
+    #[derive(Deserialize)]
+    struct SpeakSentence {
+        typed: String,
+    }
+    let args: SpeakSentence =
+        serde_json::from_value(json!({ "typed": "私はstudentです。" })).expect("deserialises");
+    assert!(state.speak_sentence(&args.typed).is_err());
+}

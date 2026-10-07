@@ -416,6 +416,27 @@ fn japanese_len(text: &str) -> usize {
         .count()
 }
 
+/// What may be handed to the voice for a sentence the learner wrote: the sentence as
+/// [`read_back`] reads it, when that is Japanese at all.
+///
+/// N24 widened what the app may speak — a learner's own composed sentence is now one
+/// of the things `HANDOVER_NIHONGO.md` invariant 27 allows — and this is the whole of
+/// the widening, in one place rather than in the screen that draws the button:
+///
+/// * **the read-back form is spoken, not the typing.** A learner who writes
+///   `inu no houga neko yori suki desu` has written いぬのほうがねこよりすきです, and
+///   handing the synthesiser the romaji would have a Japanese voice read Latin
+///   letters;
+/// * **and nothing is spoken that is not Japanese.** A mixed input the app did not
+///   read — a Latin word left inside a Japanese sentence — is `None`, so the button
+///   reports that rather than saying something the learner did not write.
+///
+/// Empty input, and input that reads back to nothing, are `None` too.
+pub fn spoken_form(typed: &str) -> Option<String> {
+    let text = read_back(typed);
+    (!text.is_empty() && text.chars().all(is_japanese)).then_some(text)
+}
+
 /// Read a sentence the learner wrote, and say what the app can see in it.
 ///
 /// **This is the whole of the marking, and it is not a grade.** The only judgement
@@ -704,6 +725,29 @@ mod tests {
         // An empty course and a course with no drawable point are answers, not panics.
         let empty = GrammarDataset::default();
         assert!(draw(&empty, &weights, &log, 0.5).is_none());
+    }
+
+    /// N24's widening of invariant 27: a composed sentence may be spoken, and what is
+    /// spoken is what the app read the typing as — never the typing itself.
+    #[test]
+    fn what_may_be_spoken_is_the_sentence_read_back_and_only_when_it_is_japanese() {
+        assert_eq!(
+            spoken_form("inu no houga neko yori suki desu").as_deref(),
+            Some("いぬのほうがねこよりすきです"),
+            "romaji is spoken as the kana it reads as"
+        );
+        assert_eq!(
+            spoken_form("いぬのほうがねこよりすきです。").as_deref(),
+            Some("いぬのほうがねこよりすきです。"),
+            "kana is spoken as it stands"
+        );
+        assert_eq!(spoken_form("   ").as_deref(), None, "nothing to say");
+        assert_eq!(spoken_form("").as_deref(), None);
+        assert_eq!(
+            spoken_form("私はstudentです。").as_deref(),
+            None,
+            "a sentence the app could not read is not handed to a Japanese voice"
+        );
     }
 
     #[test]

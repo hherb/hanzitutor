@@ -30,15 +30,43 @@
    *
    * ## What is spoken
    *
-   * The corpus's own model sentences, and only those: invariant 27 allows a stored
-   * sentence to the voice, and a sentence the learner has just composed is neither
-   * stored nor verified — this app does not speak text it cannot stand behind.
+   * The corpus's own model sentences, and — since N24 — **the learner's own sentence**,
+   * which is a deliberate widening of `HANDOVER_NIHONGO.md` invariant 27 at the
+   * maintainer's word: hearing what you have just written is how you notice it is wrong.
+   * What is handed to the voice is not what was typed but what Rust read it as
+   * (`speak_sentence`), so romaji is heard as kana and a sentence the app could not read
+   * is a message rather than a noise.
+   *
+   * ## And the model check, which is opt-in and off until it is configured
+   *
+   * The same sentence can be sent to an OpenAI-compatible endpoint — a local server or a
+   * cloud one, the learner's choice of address, model and key — for a second opinion.
+   * Four things about it are visible on the screen rather than in a document: it says
+   * **what leaves the machine** before anything does, it names **which model and host**
+   * answered, it echoes the model's **own** word for its judgement instead of mapping it
+   * onto this app's, and it says in one line that the model is not this app and can be
+   * wrong. Nothing about the answer is recorded anywhere (invariant 43).
    */
   import Icon from "./Icon.svelte";
   import SpeakButton from "./SpeakButton.svelte";
   import * as api from "./api";
-  import type { CompositionOutcome, CompositionPrompt, CompositionSize } from "./types";
-  import type { VoiceStatus } from "./speech";
+  import type {
+    CompositionOutcome,
+    CompositionPrompt,
+    CompositionSize,
+    ModelStatus,
+    ModelVerdict,
+  } from "./types";
+  import { canHear, voiceNote, type VoiceStatus } from "./speech";
+  import {
+    attributionLine,
+    correctedLine,
+    disclosureLine,
+    explanationLine,
+    failureLine,
+    reviewHeadline,
+    settingsNote,
+  } from "./model";
   import { needsRuby } from "./words";
   import {
     canSubmit,
@@ -67,6 +95,27 @@
   let kept = $state(0);
   let error = $state<string | null>(null);
   let busy = $state(false);
+
+  /**
+   * The learner's own sentence, read back.
+   *
+   * A control of this screen's own rather than `SpeakButton`, because what is spoken is
+   * not the text in the box: it is the text **as Rust read it**, and only Rust knows
+   * that. The no-voice rule is still the shared one (`canHear`/`voiceNote`), which is
+   * what that pair of functions exists for.
+   */
+  let hearError = $state<string | null>(null);
+
+  /** The model check: what is configured, what the learner is typing, what came back. */
+  let model = $state<ModelStatus | null>(null);
+  let endpoint = $state("");
+  let modelName = $state("");
+  let key = $state("");
+  let saveError = $state<string | null>(null);
+  let checking = $state(false);
+  let checkError = $state<string | null>(null);
+  let verdict = $state<ModelVerdict | null>(null);
+  let showingSettings = $state(false);
 
   /**
    * A ticket per ask, so an earlier request cannot land on top of a later one.
@@ -114,6 +163,83 @@
       busy = false;
     }
   }
+
+  /** Hear the sentence as this app read it. */
+  async function hear() {
+    try {
+      hearError = null;
+      await api.speakSentence(typed);
+    } catch (e) {
+      hearError = String(e);
+    }
+  }
+
+  function fillSettings(status: ModelStatus) {
+    model = status;
+    endpoint = status.endpoint;
+    modelName = status.model;
+    key = "";
+    showingSettings = !status.configured;
+  }
+
+  /** Save the address, the model name and — when one was typed — the key. */
+  async function save(forget = false) {
+    try {
+      saveError = null;
+      // `null` means "leave the stored key alone": the field is a placeholder when a key
+      // is saved, so an untouched field must not clear it. `""` is the explicit request
+      // to forget it, which the button beside the field makes.
+      const status = await api.saveModelSettings(
+        endpoint,
+        modelName,
+        forget ? "" : key.trim() === "" ? null : key,
+      );
+      // Saving switches the fold to what it will send, which is the confirmation: a
+      // "Saved." line under fields that are no longer drawn would never be seen.
+      fillSettings(status);
+    } catch (e) {
+      saveError = String(e);
+    }
+  }
+
+  /** Ask the model about the sentence in the box. */
+  async function check() {
+    const askedPattern = prompt;
+    if (!askedPattern || !canSubmit(typed) || checking) return;
+    try {
+      checking = true;
+      checkError = null;
+      const answered = await api.checkSentence(askedPattern.point, typed);
+      if (prompt !== askedPattern) return;
+      verdict = answered;
+    } catch (e) {
+      if (prompt === askedPattern) checkError = failureLine(e);
+    } finally {
+      checking = false;
+    }
+  }
+
+  $effect(() => {
+    void (async () => {
+      try {
+        model = await api.modelStatus();
+        endpoint = model.endpoint;
+        modelName = model.model;
+        showingSettings = !model.configured;
+      } catch {
+        // The fold says nothing about a status it could not read; the check itself
+        // reports the failure that matters.
+      }
+    })();
+  });
+
+  // An answer belongs to the sentence it was asked about: editing the sentence drops
+  // it, so a model's verdict for old text is never drawn under new text.
+  $effect(() => {
+    void typed;
+    verdict = null;
+    checkError = null;
+  });
 
   $effect(() => {
     void (async () => {
@@ -223,6 +349,30 @@
           disabled={outcome !== null || busy || !canSubmit(typed)}>Check</button
         >
       </div>
+      <!--
+        The learner's own sentence, read back. Shown as soon as there is something in
+        the box, before or after the checklist: hearing what you wrote is how you notice
+        it is wrong. What is spoken is the read-back form, decided in Rust.
+      -->
+      {#if canSubmit(typed)}
+        <div class="hear">
+          <button
+            class="hear-it"
+            type="button"
+            onclick={() => void hear()}
+            disabled={!canHear(voice)}
+            title={voiceNote(voice) ?? "Say your sentence in the system's Japanese voice"}
+          >
+            Hear it
+          </button>
+          {#if voiceNote(voice)}
+            <span class="note">{voiceNote(voice)}</span>
+          {/if}
+          {#if hearError}
+            <span class="error" role="alert">{hearError}</span>
+          {/if}
+        </div>
+      {/if}
     </div>
 
     {#if outcome}
@@ -247,6 +397,85 @@
     {:else}
       <p class="hint">A sentence of your own — one this app has never seen.</p>
     {/if}
+
+    <!--
+      The second opinion, after everything this app decided: folded away, opt-in, and
+      off until the learner names an endpoint. The corpus's model sentences above carry a
+      `Hear it`; this asks a model about the learner's own.
+    -->
+    <details class="model-check" open={showingSettings}>
+      <summary>Ask a model about this sentence</summary>
+      {#if !model}
+        <p class="hint">Loading the model settings…</p>
+      {:else if showingSettings || !model.configured}
+        <p class="hint">{settingsNote()}</p>
+        <div class="fields">
+          <label for="model-endpoint">Endpoint</label>
+          <input
+            id="model-endpoint"
+            type="text"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="http://127.0.0.1:11434/v1 ・ https://api.openai.com/v1"
+            bind:value={endpoint}
+          />
+          <label for="model-name">Model</label>
+          <input
+            id="model-name"
+            type="text"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="llama3.1 ・ gpt-4o-mini"
+            bind:value={modelName}
+          />
+          <label for="model-key">API key <span class="optional">— a local server needs none</span></label>
+          <input
+            id="model-key"
+            type="password"
+            autocomplete="off"
+            placeholder={model.keySet ? "a key is saved — leave empty to keep it" : "sk-…"}
+            bind:value={key}
+          />
+          <div class="row">
+            <button class="save" onclick={() => void save()} disabled={checking}>Save</button>
+            {#if model.keySet}
+              <button class="forget" onclick={() => void save(true)} disabled={checking}>
+                Forget the saved key
+              </button>
+            {/if}
+            {#if model.configured}
+              <button class="forget" onclick={() => (showingSettings = false)}>Done</button>
+            {/if}
+          </div>
+          {#if saveError}<p class="error" role="alert">{saveError}</p>{/if}
+        </div>
+      {:else}
+        <p class="hint">{disclosureLine(model, prompt.pattern)}</p>
+        <div class="row">
+          <button class="save" onclick={() => void check()} disabled={checking || !canSubmit(typed)}>
+            {checking ? "Asking…" : "Check with the model"}
+          </button>
+          <button class="forget" onclick={() => (showingSettings = true)}>Change it</button>
+        </div>
+        {#if checkError}
+          <p class="error" role="alert">{checkError}</p>
+        {/if}
+        {#if verdict}
+          <div class="answer">
+            <p class="headline">{reviewHeadline(verdict.review)}</p>
+            {#if correctedLine(verdict.review)}
+              <p class="corrected" lang="ja">{correctedLine(verdict.review)}</p>
+            {/if}
+            {#if explanationLine(verdict.review)}
+              <p class="explanation">{explanationLine(verdict.review)}</p>
+            {/if}
+            <p class="attribution">{attributionLine(verdict)}</p>
+          </div>
+        {/if}
+      {/if}
+    </details>
   {:else if !error}
     <p class="hint">{busy ? "Choosing a pattern…" : "Loading…"}</p>
   {/if}
@@ -512,6 +741,155 @@
 
   .limitation {
     margin: 0.8rem 0 0;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  /* The learner's own sentence, read back. */
+  .hear {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
+  }
+
+  .hear-it {
+    min-height: 44px;
+    padding: 6px 14px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  .hear-it:hover:not(:disabled) {
+    border-color: var(--accent);
+  }
+
+  .hear-it:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  .hear .note {
+    font-size: 0.8rem;
+    color: var(--muted);
+    max-width: 40ch;
+  }
+
+  /* The model check: folded away, and the fields are one per line so a long endpoint
+     and a long model name are both readable while they are typed. */
+  .model-check {
+    margin: 1.2rem 0 0;
+    border-top: 1px solid var(--line);
+    padding-top: 0.6rem;
+    font-size: 0.9rem;
+  }
+
+  .model-check summary {
+    cursor: pointer;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    color: var(--muted);
+  }
+
+  .model-check .fields {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 0.4rem;
+  }
+
+  .model-check .fields label {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-top: 0.4rem;
+  }
+
+  .model-check .optional {
+    color: var(--muted);
+  }
+
+  .model-check .fields input {
+    min-height: 44px;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+  }
+
+  .model-check .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 0.6rem;
+  }
+
+  .save {
+    min-height: 44px;
+    padding: 6px 14px;
+    border-radius: var(--radius);
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: var(--accent-ink);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .save:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .forget {
+    min-height: 44px;
+    padding: 6px 12px;
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  /* The model's answer, drawn as its own thing: a border the checklist above does not
+     have, so the two are never read as one screen's verdict. */
+  .model-check .answer {
+    margin-top: 0.7rem;
+    padding: 0.7rem 0.8rem;
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--muted);
+    border-radius: 10px;
+    background: var(--panel);
+  }
+
+  .model-check .headline {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+
+  .model-check .corrected {
+    margin: 0.4rem 0 0;
+    font-size: 1.2rem;
+    line-height: 2;
+  }
+
+  .model-check .explanation {
+    margin: 0.4rem 0 0;
+  }
+
+  .model-check .attribution {
+    margin: 0.5rem 0 0;
     font-size: 0.8rem;
     color: var(--muted);
   }

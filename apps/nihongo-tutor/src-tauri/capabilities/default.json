@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default permissions for the main window. Every command this app defines is callable without a permission; this covers the Tauri core itself. There are deliberately no plugin permissions: this app has no dialogs, no filesystem access, no microphone and no opener.",
+  "description": "Default permissions for the main window. Every command this app defines is callable without a permission; this covers the Tauri core itself. There are deliberately no plugin permissions: this app has no dialogs, no filesystem access, no microphone and no opener. The one request this app can make off the machine — an optional model check — is made in Rust rather than by the webview, which is why it needs no permission here and why the interface can neither name a URL nor read the key.",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

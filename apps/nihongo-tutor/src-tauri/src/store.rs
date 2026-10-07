@@ -23,6 +23,8 @@ use nihongo_core::{
     now_iso8601, CompositionLog, ConfusionLog, GrammarLog, PairTally, ProgressError, ProgressStore,
     Section,
 };
+
+use crate::model::ModelSettings;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +36,13 @@ pub const GRAMMAR_FILE_NAME: &str = "grammar.json";
 
 /// The composition exercise's file name, in the same directory.
 pub const COMPOSITIONS_FILE_NAME: &str = "compositions.json";
+
+/// The model-check settings' file name, in the same directory.
+///
+/// The one file here that is **not** study data: it holds an address and, where the
+/// endpoint needs one, an API key. It is written readable only by its owner, and the
+/// key never crosses the IPC boundary back to the webview (invariants 15 and 43).
+pub const MODEL_FILE_NAME: &str = "model.json";
 
 /// The review schedule's file name, in the same directory.
 pub const REVIEW_FILE_NAME: &str = "review.json";
@@ -321,6 +330,75 @@ impl CompositionStore {
     }
 }
 
+/// The model-check settings, and where they are kept.
+///
+/// The sixth file (invariant 15), and the only one that is not about the learner's
+/// study: an endpoint, a model name and possibly a key. It is a file rather than a
+/// session setting because a learner who has typed their address once should not have
+/// to type it again — and it is its own file because a secret must not sit in the same
+/// JSON as a schedule.
+///
+/// **The key is the one secret this app writes.** It is kept in plain text, because
+/// this app has no keychain integration and a key that is not persisted is a key
+/// retyped every session; the file is created readable and writable only by its owner
+/// (`0600` on Unix) and never crosses back over the IPC boundary — the interface is
+/// told whether a key is set, never what it is. A learner who does not want a key on
+/// disk can point the endpoint at a local server, which is the other half of what this
+/// feature is for.
+///
+/// There is no version field, deliberately, for the reason `GrammarLog` has none: the
+/// shape is three strings with serde defaults, so a file from an older build — or one
+/// a person edited by hand — reads as *unconfigured in part* rather than as an error,
+/// and a file that will not parse at all is moved aside by the same ritual as the
+/// other five.
+pub struct ModelStore {
+    /// `None` means nowhere to write: the settings still work for this session.
+    path: Option<PathBuf>,
+    settings: ModelSettings,
+}
+
+impl ModelStore {
+    /// A store that keeps the settings in memory and writes nothing.
+    pub fn in_memory() -> Self {
+        Self {
+            path: None,
+            settings: ModelSettings::default(),
+        }
+    }
+
+    /// Load `model.json` from `dir`, or start unconfigured.
+    pub fn at_dir(dir: impl AsRef<Path>) -> Self {
+        let path = dir.as_ref().join(MODEL_FILE_NAME);
+        Self {
+            settings: read_json(&path),
+            path: Some(path),
+        }
+    }
+
+    /// What the learner configured.
+    pub fn settings(&self) -> &ModelSettings {
+        &self.settings
+    }
+
+    /// Whether anything is written to disk at all.
+    pub fn is_persistent(&self) -> bool {
+        self.path.is_some()
+    }
+
+    /// Replace the settings, writing the file, and say when the write failed.
+    ///
+    /// The settings are kept **even if the write fails** — the learner typed them and
+    /// this session can use them — and the failure comes back rather than being
+    /// swallowed, for the reason the other stores give.
+    pub fn save(&mut self, settings: ModelSettings) -> io::Result<()> {
+        self.settings = settings;
+        match &self.path {
+            Some(path) => write_secret_json(path, &self.settings),
+            None => Ok(()),
+        }
+    }
+}
+
 /// What one attempt did to the review schedule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttemptOutcome {
@@ -520,6 +598,27 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let text = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, text.as_bytes())?;
+    fs::rename(&tmp, path)
+}
+
+/// Write a JSON file whole, readable and writable only by its owner.
+///
+/// The same temporary-plus-rename as [`write_json`], with the mode set on the
+/// temporary before it is renamed, so the secret is never briefly world-readable. On
+/// Unix the mode is `0600`; on the platforms where that means nothing the file is
+/// simply written, which is what the platform's own directory permissions are for.
+fn write_secret_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let text = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, text.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+    }
     fs::rename(&tmp, path)
 }
 
@@ -761,6 +860,116 @@ mod tests {
     }
 
     // ---- the review schedule ----------------------------------------------
+
+    // ---- the model check's settings ----------------------------------------
+
+    #[test]
+    fn a_first_run_has_no_model_configured_and_saving_one_makes_the_file() {
+        let dir = TempDir::new("model-first-run");
+        let mut store = ModelStore::at_dir(dir.path());
+        assert!(store.is_persistent());
+        assert!(!store.settings().configured(), "nothing is configured before anything is typed");
+        assert!(!dir.path().join(MODEL_FILE_NAME).exists(), "nothing written yet");
+
+        store
+            .save(ModelSettings {
+                endpoint: "http://127.0.0.1:11434/v1".to_string(),
+                model: "llama3.1".to_string(),
+                key: None,
+            })
+            .expect("saves");
+        assert!(dir.path().join(MODEL_FILE_NAME).exists());
+        assert!(store.settings().configured());
+    }
+
+    #[test]
+    fn the_model_settings_survive_a_restart_and_the_key_is_one_of_them() {
+        let dir = TempDir::new("model-restart");
+        {
+            let mut store = ModelStore::at_dir(dir.path());
+            store
+                .save(ModelSettings {
+                    endpoint: "https://api.openai.com/v1".to_string(),
+                    model: "gpt-4o-mini".to_string(),
+                    key: Some("sk-secret".to_string()),
+                })
+                .expect("saves");
+        }
+        let reopened = ModelStore::at_dir(dir.path());
+        assert_eq!(reopened.settings().endpoint, "https://api.openai.com/v1");
+        assert_eq!(reopened.settings().model, "gpt-4o-mini");
+        assert_eq!(reopened.settings().key.as_deref(), Some("sk-secret"));
+        assert!(reopened.settings().validate().is_ok());
+    }
+
+    #[test]
+    fn the_key_file_is_readable_by_its_owner_only_and_is_the_promised_shape() {
+        let dir = TempDir::new("model-shape");
+        let mut store = ModelStore::at_dir(dir.path());
+        store
+            .save(ModelSettings {
+                endpoint: "http://127.0.0.1:1234/v1".to_string(),
+                model: "local-model".to_string(),
+                key: Some("sk-secret".to_string()),
+            })
+            .expect("saves");
+
+        let path = dir.path().join(MODEL_FILE_NAME);
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("the file")).expect("valid JSON");
+        assert_eq!(value["endpoint"], "http://127.0.0.1:1234/v1");
+        assert_eq!(value["model"], "local-model");
+        assert_eq!(value["key"], "sk-secret");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).expect("the file").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "a secret is not world-readable: {mode:o}");
+        }
+    }
+
+    #[test]
+    fn a_model_file_that_will_not_parse_is_kept_aside_and_leaves_the_app_unconfigured() {
+        let dir = TempDir::new("model-corrupt");
+        let path = dir.path().join(MODEL_FILE_NAME);
+        fs::write(&path, "{ this is not json").expect("writes");
+
+        let mut store = ModelStore::at_dir(dir.path());
+        assert!(!store.settings().configured(), "a corrupt file is not a crash");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("model.json.corrupt")).expect("still there"),
+            "{ this is not json"
+        );
+
+        // And the app carries on: saving writes a valid file.
+        store
+            .save(ModelSettings {
+                endpoint: "http://127.0.0.1:1234/v1".to_string(),
+                model: "local-model".to_string(),
+                key: None,
+            })
+            .expect("saves");
+        assert!(ModelStore::at_dir(dir.path()).settings().configured());
+    }
+
+    #[test]
+    fn a_model_file_from_an_older_build_reads_as_far_as_it_can() {
+        // The shape is three strings with defaults, so a file missing the key — or
+        // missing everything but the endpoint — is partly configured rather than
+        // corrupt.
+        let dir = TempDir::new("model-partial");
+        fs::write(
+            dir.path().join(MODEL_FILE_NAME),
+            r#"{"endpoint": "http://127.0.0.1:1234/v1"}"#,
+        )
+        .expect("writes");
+        let store = ModelStore::at_dir(dir.path());
+        assert_eq!(store.settings().endpoint, "http://127.0.0.1:1234/v1");
+        assert_eq!(store.settings().model, "");
+        assert_eq!(store.settings().key, None);
+        assert!(!store.settings().configured(), "a model name is still missing");
+    }
 
     #[test]
     fn a_first_run_has_an_empty_schedule_and_the_first_attempt_makes_the_file() {
