@@ -1198,7 +1198,7 @@ impl AppState {
     /// through the words that use it": the vocabulary is ordered by band and then
     /// by EDRDG's frequency, so the first page is the words whose other characters
     /// the course teaches first. Paged for a measured reason — 一 is written in
-    /// 223 of the 16,073 words and 人 in 218 — where a card that shipped them all
+    /// 225 of the 16,170 words and 人 in 219 — where a card that shipped them all
     /// would draw a list nobody scrolls.
     ///
     /// A jōyō character no word uses — 57 of the 2,136 — answers with an empty
@@ -1285,17 +1285,24 @@ impl AppState {
             .ok_or_else(|| format!("{text} ({reading}) is not in the vocabulary"))
     }
 
-    /// One word, by its text alone.
+    /// One word, by the text a sentence used and the reading drawn over it.
     ///
-    /// What a tapped passage token has: the token carries the word's text, because
-    /// that is what the sentence shows, and the token's own reading is the
-    /// *surface's* — 行き is read いき while the word is 行く, read いく — so it
-    /// cannot identify the entry. Six texts in the vocabulary are read two ways;
-    /// this returns the one the course reaches first, which is the earlier band and
-    /// the more frequent.
-    pub fn word_of_text(&self, text: &str) -> Result<WordView, String> {
-        self.words
-            .of_text(text)
+    /// What a tapped token has. The text alone does not identify the entry: 106 of
+    /// the vocabulary's written forms are read more than one way and 人 is three
+    /// words in it — ひと, にん, じん — so `of_text` alone answers with whichever
+    /// entry the artifact lists first. The reading the screen drew is the
+    /// analyser's reading of *that sentence*, and since it was what chose the entry
+    /// the token links to, it is the entry's own here.
+    ///
+    /// Not always, and that is the fallback: a token's reading is its **surface's**,
+    /// so it identifies an entry only when the surface *is* the entry — 行き is read
+    /// いき while the word is 行く, read いく. A reading that names no entry, and
+    /// `None` for a caller that has only the text, fall back to the first entry,
+    /// which is the only entry for all but 199 written forms.
+    pub fn word_of_text(&self, text: &str, reading: Option<&str>) -> Result<WordView, String> {
+        reading
+            .and_then(|reading| self.words.find(text, reading))
+            .or_else(|| self.words.of_text(text))
             .map(word_view)
             .ok_or_else(|| format!("{text} is not in the vocabulary"))
     }
@@ -2002,7 +2009,10 @@ pub struct TokenView {
 ///
 /// The ruby parts are the **corpus's own markup**, parsed at build time and never
 /// composed here: `{私|わたし}は…` is OpenJLPT's alignment, so this app invents no
-/// reading — the rule invariant 21 states for a word, applied to a sentence.
+/// reading — the rule invariant 21 states for a word, applied to a sentence. What
+/// `Hear it` says is the ruby spelled out, which the screens do for themselves the
+/// way the kanji card does (`spokenReading` in `kanji.ts`) rather than a second
+/// field carrying the same reading over the wire.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GrammarExampleView {
@@ -2450,8 +2460,12 @@ fn word(state: State<'_, AppState>, text: String, reading: String) -> Result<Wor
 
 /// One word, by its text alone — what a tapped passage token has.
 #[tauri::command]
-fn word_of_text(state: State<'_, AppState>, text: String) -> Result<WordView, String> {
-    state.word_of_text(&text)
+fn word_of_text(
+    state: State<'_, AppState>,
+    text: String,
+    reading: Option<String>,
+) -> Result<WordView, String> {
+    state.word_of_text(&text, reading.as_deref())
 }
 
 /// Check a typed reading against a word. The word is graded as a word — its own
@@ -3747,13 +3761,13 @@ mod tests {
 
     /// **The character card's vocabulary list.** A page of what
     /// `WordDataset::of_kanji` holds, with the character echoed back, paged for a
-    /// measured reason: 一 is written in 223 words.
+    /// measured reason: 一 is written in 225 words.
     #[test]
     fn a_page_of_a_characters_words_arrives_in_course_order() {
         let state = state();
         let first = state.words_of_kanji('一', 0, 12).expect("一 is jōyō");
         assert_eq!(first.ch, '一');
-        assert_eq!(first.total, 223, "一 is the busiest character in the vocabulary");
+        assert_eq!(first.total, 225, "一 is the busiest character in the vocabulary");
         assert_eq!(first.offset, 0);
         assert_eq!(first.words.len(), 12);
         for word in &first.words {
@@ -3884,23 +3898,58 @@ mod tests {
     }
 
     #[test]
-    fn a_word_a_passage_links_to_is_found_by_its_text_alone() {
-        // The token carries the word's text, not its reading, so a tap has to be
-        // able to open an entry from that alone — 行き's own reading is いき and the
-        // word it links to is 行く, read いく.
+    fn a_word_a_sentence_links_to_is_found_by_its_text_and_the_reading_over_it() {
+        // The token carries the word's text, so a tap has to be able to open an
+        // entry from that alone — 行き's own reading is いき and the word it links to
+        // is 行く, read いく, which no reading of the token names.
         let state = state();
-        let word = state.word_of_text("行く").expect("行く is in the vocabulary");
+        let word = state
+            .word_of_text("行く", None)
+            .expect("行く is in the vocabulary");
         assert_eq!(word.text, "行く");
         assert_eq!(word.reading, "いく");
 
         // 行き is an entry in its own right — a noun — so this finds that one, and
         // the two are different words rather than one answer to two questions.
-        let noun = state.word_of_text("行き").expect("行き is a noun entry");
+        let noun = state.word_of_text("行き", None).expect("行き is a noun entry");
         assert_eq!(noun.text, "行き");
         assert_ne!(noun.reading, word.reading);
 
+        // A written form the course reads three ways is three words, and the reading
+        // the sentence drew is what names the one behind the tap: トムは人だ is
+        // 人(ひと), 三人 is 人(にん), 日本人 is 人(じん).
+        assert_eq!(
+            state
+                .word_of_text("人", Some("ひと"))
+                .expect("ひと is taught")
+                .reading,
+            "ひと"
+        );
+        assert_eq!(
+            state
+                .word_of_text("人", Some("にん"))
+                .expect("にん is taught")
+                .reading,
+            "にん"
+        );
+        assert_eq!(
+            state
+                .word_of_text("人", Some("じん"))
+                .expect("じん is taught")
+                .reading,
+            "じん"
+        );
+
+        // A reading that names no entry — the analyser's わたくし for 私 — is not an
+        // error and not a fourth answer: the first entry is what the text alone
+        // means, and the ruby the screen drew stayed the card's for the same reason.
+        let fallback = state
+            .word_of_text("私", Some("わたくし"))
+            .expect("私 is taught");
+        assert_eq!(fallback.reading, "わたし");
+
         // Anything the course does not teach is a message rather than a panic.
-        assert!(state.word_of_text("あいうえお").is_err());
+        assert!(state.word_of_text("あいうえお", None).is_err());
     }
 
     #[test]

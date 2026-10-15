@@ -6,7 +6,7 @@ to work on it.
 
 The two roadmaps are separate because the two parts are: they share the geometry
 engine and nothing else that a milestone needs to care about, and they version
-independently (Japanese at 0.1.0). Nothing in `ROADMAP.md` mentions this work, and
+independently (Japanese at 0.2.1). Nothing in `ROADMAP.md` mentions this work, and
 nothing here mentions the Chinese milestones except where code is reused.
 
 ---
@@ -128,7 +128,7 @@ derived from the readings.
 
 ### The app
 
-`apps/nihongo-tutor`, a Tauri app at 0.1.0 with ten thin commands and three
+`apps/nihongo-tutor`, a Tauri app at 0.2.1 with ten thin commands and three
 views: **Practice** (course, board, animation, grading, typing),
 **Tell them apart** (the discrimination drill), and **Licences**.
 
@@ -956,7 +956,7 @@ exactly the shape Japanese needs.
 
 ### Shipped — the words artifact, and the passages
 
-`crates/nihongo-core/data/words.bin.gz` — **16,073 words, 601,816 bytes** —
+`crates/nihongo-core/data/words.bin.gz` — **16,170 words, 603,327 bytes** —
 committed, byte-identical on a rebuild, and held by 15 tests in
 `crates/nihongo-core/tests/words_artifact.rs` that need none of the 118 MB of JSON,
 63 MB of XML or 33 MB of furigana the pipeline reads. `prepare-words` joins three
@@ -967,8 +967,8 @@ draw**, so the course can never offer a word it cannot teach.
 **The ladder is decided, and it is ours.** A word's band is the **highest kyōiku
 grade among its kanji** (1–6), with band 7 for a word containing a jōyō-remainder
 kanji; EDRDG's `nf` rank orders the words *within* a band, and the unranked ones
-follow the ranked. Measured band sizes: **585 / 1,781 / 2,408 / 2,232 / 2,412 /
-1,834 / 4,821**. The alternative — frequency-quantile bands of roughly equal size —
+follow the ranked. Measured band sizes: **596 / 1,800 / 2,414 / 2,244 / 2,420 /
+1,846 / 4,850**. The alternative — frequency-quantile bands of roughly equal size —
 was rejected because it mixes grade-1 and grade-6 kanji in one band, so a learner
 meets 秘密 before 六. The UI must present these as our approximation, not the JLPT's;
 there has been no official JLPT list since 2010. `band_name` exists so that it can,
@@ -978,9 +978,19 @@ than trusting the stored number.
 **Readings are the dictionary's, never composed.** 大人 is おとな and not だいじん,
 今日 is きょう, 一人 is ひとり, 明日 is あした — the test asserts those four, because
 they are what a "reading per character" design gets wrong. Furigana comes from
-JmdictFurigana and puts each reading over the characters it belongs to: 16,022 of
-16,073 words are aligned (99.7%), and the 51 that are not keep their reading and
+JmdictFurigana and puts each reading over the characters it belongs to: 16,100 of
+16,170 words are aligned (99.6%), and the 70 that are not keep their reading and
 carry no ruby — **gathered, never invented**.
+
+**And a written form read two ways is two words.** `prepare-words` emitted one reading
+per dictionary entry — the commonest — which silently decided that 日本 is taught as
+にほん and not にっぽん, 四 as し and not よん, and left the sentences reading them the
+other way with no entry to point at. Every kana form EDRDG marks **common** is its own
+word now: **+97 words**, 16,170 in all. `common` is the filter rather than "every form
+that applies", and the difference is measured — the rare forms sort ahead of the ordinary
+reading, and emitting them put 良い(えい), 誰(だあれ) and 蛇(くちなわ) in front of
+良い(よい), 誰(だれ) and 蛇(へび) for 22 sentences between them. `tests/words_artifact.rs`
+pins both halves: the readings the corpus needs, and the rare ones that must not come back.
 
 **Five things measuring changed, and two of them were this author's errors.**
 
@@ -999,7 +1009,7 @@ carry no ruby — **gathered, never invented**.
   お握り for おにぎり, さっき as 先, 型録 for カタログ — and 173 of those carry an
   explicit `rK`/`sK`/`ateji` tag. Both are now excluded, because a kanji course that
   taught them would teach spellings its learner will never meet. This is why the
-  vocabulary is 16,073 and not 21,902: **smaller and right rather than larger and
+  vocabulary is 16,170 and not 21,902: **smaller and right rather than larger and
   wrong.**
 * **"Has a kanji form" is not "contains a kanji."** JMdict lists full-width
   numerals such as `１０００` under `kanji`, so 15 words arrived with no kanji
@@ -1052,7 +1062,17 @@ uninflected word and the pronunciation field for an inflected one. And the link 
 tapped word opens has to be the **dictionary form** (UniDic's `lexeme`), so 行き
 opens 行く and 食べ opens 食べる — and where a token is written exactly as the course
 writes it, the course's own reading wins, so a passage saying 私 and the card behind
-it cannot disagree about わたし and わたくし.
+it cannot disagree about わたし and わたくし. **Unless a number is counting it**: the
+月 of `10月` is がつ and the 時 of `2時` is じ, so a kanji token directly after a number
+takes the analyser's reading of that sentence instead. The corpus moved 33 token
+readings when that was fixed, and `HANDOVER_NIHONGO.md` §14 has the measurement.
+
+**And unless the written form is taught more than one way**, which is the same rule one
+step further in: 199 written forms are, 人 as ひと, にん and じん among them, and the
+analyser's reading of the sentence is what says which entry the token is — 41 more
+readings moved when that was applied, with four of the analyser's refused. The vocabulary
+had to hold the readings first: every kana form EDRDG marks common is its own word now
+(+97 words). §14 has both.
 
 ### Shipped — the screens
 
@@ -1060,7 +1080,7 @@ The two views the acceptance criteria name, and both were **driven and looked at
 rather than assumed (the recipe is `HANDOVER_NIHONGO.md` §5):
 
 * **Words** — the ladder as seven band chips with their measured sizes
-  (585 / 1,781 / 2,408 / 2,232 / 2,412 / 1,834 / 4,821), a paged list of the band's
+  (596 / 1,800 / 2,414 / 2,244 / 2,420 / 1,846 / 4,850), a paged list of the band's
   words with their readings and glosses, and a card for the selected word: its
   **per-character furigana** — 一方 comes out with いっ over 一 and ぽう over 方 — its
   meaning, its band and EDRDG's frequency block, and a box to type the reading.
@@ -1171,8 +1191,8 @@ not the words it is *used in*, which is the half of "a character arrives through
 words that use it" the course is built on. It now lists them, from
 `WordDataset::of_kanji`, in the course's own order — band, then EDRDG's frequency —
 a page of twelve, and each opens that word's own card, the same one `Words` and
-`Read` show. Three measurements decided the shape: **一 is written in 223 of the
-16,073 words and 人 in 218** (so it pages, like a band), **57 jōyō characters are in
+`Read` show. Three measurements decided the shape: **一 is written in 225 of the
+16,170 words and 人 in 219** (so it pages, like a band), **57 jōyō characters are in
 no word at all** (so the card says that rather than drawing an empty list), and a
 character outside the jōyō set is an error rather than an empty list, because the
 vocabulary holds no word such a character could be in. `HANDOVER_NIHONGO.md`
@@ -1344,7 +1364,7 @@ course is and what it holds:
 | Course | Screens | What the switch says |
 | --- | --- | --- |
 | **Kana** | Practice, Chart, Tell them apart, Review | 177 kana · 38 lessons |
-| **Kanji** | Kanji, Radicals, Words, Read, Review | 2,136 kanji · 16,073 words |
+| **Kanji** | Kanji, Radicals, Words, Read, Review | 2,136 kanji · 16,170 words |
 
 **Licences is in neither course.** It is a notice the app owes rather than
 something it teaches, so it moved to the footer and stopped taking one of nine tab
@@ -1356,7 +1376,7 @@ version of this milestone still spent four lines above the first useful pixel on
 name and a sentence, which on a 728-pixel window is a tenth of the screen saying
 what the title bar already said. Each course button is now the name and one line:
 `The on-ramp · 177 kana · 38 lessons` and `The main course · 2,136 kanji ·
-16,073 words` — characters and words, not a count per screen, because the tab row
+16,170 words` — characters and words, not a count per screen, because the tab row
 below already names the radicals and the passage reader. `nav.test.ts` asserts the
 tagline stays inside the two-line budget, and the live check **measured** it rather
 than trusting it: **52 px per button at 980×728**, `body.scrollHeight` 958 against a
@@ -2068,6 +2088,16 @@ cannot drift from the words it claims to be levelled against — a phrase's band
 word's, which is 私 making `私は学生です` a band-6 sentence, and that is the app's own word
 ladder rather than a second one.
 
+**And the reading over a token is the sentence's, not the first entry the vocabulary lists.**
+199 written forms are taught more than one way — 人 is ひと, にん and じん — so the token is
+linked with `WordDataset::find` on the reading the analyser gave that sentence, and the card a
+tap opens is the same entry. `トムは人だ。` drew じん before; it draws ひと now, `空が晴れた。`
+draws そら and `本を開くな。` draws ひらく, while `月は昇った。` keeps つき and 私 keeps
+わたし. Four readings the analyser gives are refused, each with its sentence — see
+`HANDOVER_NIHONGO.md` §14, which also carries the measurement for the class this cannot
+reach: 仕事中 is ちゅう, and 中(ちゅう) is an entry EDRDG marks `spec1`, which the course's
+membership rule keeps out.
+
 ### The licence, and the 107 sentences that had to go
 
 The research into the corpus found four things, and **one of them was a bug in this
@@ -2114,7 +2144,7 @@ truth and a `-l` capture would have been a frozen frame):
 | band 1, row 0 | `10月つきだよ。` / `It's October.` / `Tatoeba #11910517 · bunbuku · CC BY 2.0 FR`, one `<ruby>`, `rt=つき` |
 | tapping a word | the card for **一** opened under the row — `いち`, `one; 1`, `kyōiku 1`, `nf33` — because UniDic's lexeme for the digit `1` is 一 |
 | band 7, row 0 | `12歳さいです。` / `I'm twelve years old.` / `Tatoeba #3488407 · arnab` |
-| `Hear it` | the press reached Rust with the sentence itself (`speak "12歳です。"` in the dev log), which is the one place this screen differs from N1/N27's rule: what is spoken is the **sentence as written**, not a kana reading, because a sentence has no ambiguous reading to choose and the synthesiser needs the kanji to read it at all |
+| `Hear it` | **Corrected after N18 shipped.** The press used to reach Rust with the sentence itself (`speak "12歳です。"` in the dev log), on the argument that a sentence has no ambiguous reading to choose between and the synthesiser needs the kanji to read it at all. Handed the kanji, the voice chose its own reading and chose wrong: `お腹痛いの？` (Tatoeba #2771616) is said `おふくつういの` — お + 腹痛(ふくつう) + a dangling い. The press now sends the **artifact's readings joined** (`spokenPhrase`); the sentence as written is drawn and never spoken. See `HANDOVER_NIHONGO.md` invariant 37 for the measurement |
 
 **And then it was looked at, on two devices.** A probe reporting a screen is not a person seeing
 it, and this session had no display at all — so the app was built for iOS with §5's recipe and
@@ -2240,7 +2270,7 @@ The passages and the phrases guarantee that every kanji-bearing token is a word 
 teaches, so a tap always has a card behind it (invariant 22). **A grammar example cannot be
 held to that**, and this is the first shipped text in the app that is not: these are the
 corpus's own teaching sentences, chosen to show a pattern rather than to stay inside a
-16,073-word vocabulary, and **557 of the 1,526 examples contain a jōyō-remainder character**
+16,170-word vocabulary, and **557 of the 1,526 examples contain a jōyō-remainder character**
 (245 distinct ones; two examples use a kanji outside the jōyō set entirely — 几 in
 几帳面な彼のことだから… and 嘘 in 悪いと知りながら、つい嘘をついてしまった。). What is promised instead is the corpus's **furigana**: every example that
 contains a kanji carries a reading over every one of them, parsed from the corpus's own
@@ -2280,7 +2310,7 @@ would have been a frozen frame and the HTTP report was the truth:
 | the course page | 20 rows, the first `1 / 〜は / wa / as for; marks the topic of the sentence`, pager `page 1 of 27` |
 | the search box | `particle` → *26 patterns match* (24 tagged `particle`, plus 2 whose other text names it); `ni taishite` → one match at **198 of 526**; `てください` → 2; `zzzz` → *No patterns match “zzzz”.* |
 | a result opened | the chrome **absent from the DOM**, the stage at `43 of 526`, 〜てください, `WRITTEN WITH Verb-te + ください`, 3 examples, ruby `少すこ 話はな`, the note ending *…use 〜てくれませんか.* with its `(N4)` gone, tags `request·politeness`, both arrows enabled |
-| `Hear it` | the press reached Rust with **the sentence as written** — `speak "もう少しゆっくり話してください。" -> Ok(())` in the dev log — not the pattern, which no synthesiser should be asked to read |
+| `Hear it` | **Corrected after the phrase bug was reported.** The press used to reach Rust with **the sentence as written** — `speak "もう少しゆっくり話してください。" -> Ok(())` in the dev log — never the pattern, which is still true. It now sends the example's **own readings joined** (`spokenRuby`): the voice parses a written sentence itself and reads `お腹痛いの？` as `おふくつういの`. See `HANDOVER_NIHONGO.md` invariant 37 |
 | the arrows | next → `44 of 526` 〜ないでください; back → `43 of 526`; both follow the **course**, not the page |
 | the way back | `panel=true chrome=visible`, with the search still on screen |
 | the review's two re-checks, after the first commit | the note is **absent in the tick after a keystroke** — not *No patterns match* over a search still running — and reads `33 patterns match “z”.` once the answer arrives; and zurai's card reads `Formal: 〜がたい.`, not the `Formal : 〜がたい.` the first cut shipped |

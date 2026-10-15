@@ -25,6 +25,16 @@
    * rule `prepare-passages` enforces by refusing to write — see
    * `HANDOVER_NIHONGO.md` invariant 22.
    *
+   * ## The row is drawn as written and **spoken as read**
+   *
+   * `Hear it` is handed `spokenPhrase(phrase)` — the artifact's own readings joined —
+   * and not the sentence on the row. The system voice decides its own reading of
+   * kanji, and it decides this one wrong: Apple's Japanese front end has 腹痛 as a
+   * word, so `お腹痛いの？` comes out `おふくつういの` (お + 腹痛(ふくつう) + a dangling
+   * い) where the artifact reads おなか + いたい. See `spokenRuby` in `words.ts` for
+   * the measurement, and `HANDOVER_NIHONGO.md` invariant 37 for why the sentence used
+   * to be handed over whole.
+   *
    * ## Attribution is on the screen, not only in the licence file
    *
    * The sentences are Tatoeba's, contributed under CC BY 2.0 FR, which asks for the
@@ -39,7 +49,7 @@
   import { untrack } from "svelte";
   import type { PhraseBandView, PhraseView, Word } from "./types";
   import { voiceNote, type VoiceStatus } from "./speech";
-  import { firstNonEmptyBand, phraseSource, totalPhrases } from "./phrases";
+  import { firstNonEmptyBand, phraseSource, spokenPhrase, totalPhrases } from "./phrases";
   import { needsRuby, tokenIsTappable } from "./words";
 
   interface Props {
@@ -96,12 +106,16 @@
     }
   }
 
-  async function openWord(phrase: number, word: string) {
-    const key = `${phrase}:${word}`;
+  // The reading the row drew is part of what was asked for: it is what identifies
+  // which reading of a written form the tap is about (人 is ひと, にん and じん), so
+  // a stale answer for another reading of the same word is as wrong as one for
+  // another word.
+  async function openWord(phrase: number, word: string, reading: string) {
+    const key = `${phrase}:${word}:${reading}`;
     try {
       error = null;
       asked = key;
-      const found = await api.wordOfText(word);
+      const found = await api.wordOfText(word, reading);
       if (untrack(() => asked) !== key) return;
       opened = { id: phrase, word: found };
     } catch (e) {
@@ -201,7 +215,12 @@
                 <button
                   class="token"
                   title="Open {token.word}"
-                  onclick={() => void openWord(phrase.id, token.word as string)}
+                  onclick={() =>
+                    void openWord(
+                      phrase.id,
+                      token.word as string,
+                      token.rt ?? token.surface,
+                    )}
                 >
                   {#if needsRuby({ ruby: token.surface, rt: token.rt })}
                     <ruby>{token.surface}<rt>{token.rt}</rt></ruby>
@@ -226,7 +245,7 @@
           {/if}
 
           <div class="meta">
-            <SpeakButton text={phrase.text} {voice} label="Hear it" note={false} />
+            <SpeakButton text={spokenPhrase(phrase)} {voice} label="Hear it" note={false} />
             <span class="source">{phraseSource(phrase)}</span>
           </div>
 

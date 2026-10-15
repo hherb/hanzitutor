@@ -277,22 +277,43 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        // The reading: one of the entry's own kana forms that applies to this
-        // written form, common first. **Chosen, never composed** — that is the
-        // whole point of carrying a reading per word.
-        let reading = entry
+        // The readings: **every** kana form of the entry that applies to this
+        // written form **and that EDRDG marks common**, common first. A written
+        // form read two ways is two words here, and that is a correction rather
+        // than a refinement — this used to emit only the commonest reading of each
+        // entry, which silently decided the course cannot teach 中 as ちゅう
+        // (仕事中) because the same entry also reads なか, or 生 as せい (一年生)
+        // because it also reads なま. The imported sentences use exactly the
+        // readings that were being dropped.
+        //
+        // **Common only, and that half is not optional.** Emitting every applicable
+        // form instead put えい beside よい for 良い, だあれ beside だれ for 誰 and
+        // くちなわ beside へび for 蛇 into the course — eleven sentences then drew
+        // the archaic reading, because the first entry for a text is the one the
+        // course reaches and an unranked reading sorts by kana. The marker is the
+        // same one `Priority::is_common` uses for the entry, one level down.
+        //
+        // **Chosen, never composed** is unchanged: every reading is one the
+        // dictionary states for this written form, and none is assembled from the
+        // characters.
+        let mut readings: Vec<&KanaForm> = entry
             .kana
             .iter()
-            .filter(|kana| applies(kana, text))
-            .min_by_key(|kana| !kana.common)
-            .or_else(|| entry.kana.first())
-            .map(|kana| kana.text.clone());
-        let Some(reading) = reading else {
+            .filter(|kana| applies(kana, text) && kana.common)
+            .collect();
+        if readings.is_empty() {
+            // Nothing here is marked common. The first form that applies is still
+            // this word's reading, which is what the rule did before this loop.
+            readings.extend(entry.kana.iter().filter(|kana| applies(kana, text)).take(1));
+        }
+        if readings.is_empty() {
+            // Every kana form names another written form; the first is still it.
+            readings.extend(entry.kana.first());
+        }
+        // Common first, and stable, so a rebuild stays byte-identical.
+        readings.sort_by_key(|kana| !kana.common);
+        if readings.is_empty() {
             return Err(format!("JMdict entry {} ({text}) has no kana reading", entry.id).into());
-        };
-
-        if !seen.insert((text.clone(), reading.clone())) {
-            continue;
         }
 
         let grades: Vec<u8> = kanji_chars
@@ -300,14 +321,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .filter_map(|c| kanji.get(*c).map(|k| k.grade))
             .collect();
         let band = band_for(grades);
-
-        let aligned = furigana
-            .get(&(text.clone(), reading.clone()))
-            .cloned()
-            .unwrap_or_default();
-        if aligned.is_empty() {
-            without_furigana.push(format!("{text} ({reading})"));
-        }
 
         let meaning = entry
             .sense
@@ -323,14 +336,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             })
             .unwrap_or_default();
 
-        words.push(Word {
-            text: text.clone(),
-            reading,
-            furigana: aligned,
-            meaning,
-            band,
-            nf: priority.nf,
-        });
+        for kana in readings {
+            let reading = kana.text.clone();
+            if !seen.insert((text.clone(), reading.clone())) {
+                continue;
+            }
+
+            let aligned = furigana
+                .get(&(text.clone(), reading.clone()))
+                .cloned()
+                .unwrap_or_default();
+            if aligned.is_empty() {
+                without_furigana.push(format!("{text} ({reading})"));
+            }
+
+            words.push(Word {
+                text: text.clone(),
+                reading,
+                furigana: aligned,
+                meaning: meaning.clone(),
+                band,
+                nf: priority.nf,
+            });
+        }
     }
 
     if words.is_empty() {

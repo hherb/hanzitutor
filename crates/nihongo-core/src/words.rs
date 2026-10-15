@@ -318,9 +318,11 @@ impl WordDataset {
 
     /// The first word written exactly `text`, if any.
     ///
-    /// Homographs mean a text can carry more than one reading — six cases in the
-    /// shipped set — so this is a convenience for a screen that already has the
-    /// text, and [`WordDataset::find`] is the precise lookup.
+    /// Homographs mean a text can carry more than one reading — **199** of the
+    /// shipped written forms do, 人 among them as ひと, にん and じん — so this is a
+    /// convenience for a caller that already has the text and wants *an* entry, and
+    /// [`WordDataset::find`] is the precise lookup. The first is the one the course
+    /// reaches: the earlier band, then EDRDG's rank, then the text and the reading.
     pub fn of_text(&self, text: &str) -> Option<&Word> {
         self.words.iter().find(|word| word.text == text)
     }

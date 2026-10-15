@@ -1596,7 +1596,7 @@ that judges 一 — and so is a kanji. It teaches the 177 kana, with a chart of 
 whole gojūon grid and the characters off it, the 2,136 jōyō kanji in kyōiku-grade
 order — the grades and a card per lesson of ten, each card opening a stage with the
 readings above the board and the tools below it — with the 214 Kangxi radicals and
-their IDS components, and 16,073 words with
+their IDS components, and 16,170 words with
 their own readings and furigana, all from committed artifacts with nothing
 downloaded. A character's card also lists the words it is written in, each opening
 the word's own card, and the discrimination drill asks the classic confusions
@@ -1630,7 +1630,7 @@ nothing else, is attributed to the model by name, and is **never recorded** — 
 checklist and the model's answer are two different things, and the screen says which is
 which. It keeps its own learner data — a tally per pair, a tally per pattern, the learner's own
 sentences, an SM-2 review schedule, and the model endpoint and key it was given, in its own
-files, never a shared store. It versions itself at 0.1.0 and has its own handover and roadmap —
+files, never a shared store. It versions itself at 0.2.1 and has its own handover and roadmap —
 **[HANDOVER_NIHONGO.md](HANDOVER_NIHONGO.md)** and
 **[ROADMAP_NIHONGO.md](ROADMAP_NIHONGO.md)**. Nothing else in this README,
 `ROADMAP.md` or `HANDOVER.md` covers it.

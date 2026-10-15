@@ -49,7 +49,7 @@
 //! [`crate::phrases`] and [`crate::passages`] guarantee that every kanji-bearing
 //! token is a word the course teaches. **A grammar example cannot be, and is not
 //! held to it**: these sentences are the corpus's own teaching text, chosen by
-//! their authors to show a pattern rather than to stay inside a 16,073-word
+//! their authors to show a pattern rather than to stay inside a 16,170-word
 //! vocabulary, and 557 of the 1,526 examples contain a jōyō-remainder character.
 //! What replaces the guarantee is the corpus's own furigana: **every example that
 //! contains a kanji carries a reading over every one of them**, parsed by

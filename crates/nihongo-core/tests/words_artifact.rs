@@ -39,13 +39,55 @@ fn word(text: &str, reading: &str) -> nihongo_core::Word {
 #[test]
 fn the_artifact_holds_the_ranked_vocabulary() {
     let dataset = dataset();
-    assert_eq!(dataset.len(), 16_073);
+    assert_eq!(dataset.len(), 16_170);
     assert_eq!(
         dataset.band_counts(),
-        vec![(1, 585), (2, 1_781), (3, 2_408), (4, 2_232), (5, 2_412), (6, 1_834), (7, 4_821)],
+        vec![(1, 596), (2, 1_800), (3, 2_414), (4, 2_244), (5, 2_420), (6, 1_846), (7, 4_850)],
         "the ladder's shape: a word is readable when its kanji are known, so the bands \
          are not the same size and are not meant to be"
     );
+}
+
+/// **A written form EDRDG reads two ways is two words.**
+///
+/// The vocabulary used to carry only the commonest reading of each dictionary entry,
+/// which silently decided that the course cannot teach 日本 as にっぽん or 四 as
+/// よん — and the imported sentences read those forms both ways. Every kana form EDRDG
+/// marks common is a word now, and the readings the corpus's sentences needed are
+/// pinned here.
+///
+/// **The rare and archaic forms are still out, and that half is the reason the filter
+/// is `common` rather than "every form that applies".** Emitting those put 良い(えい)
+/// in front of 良い(よい) in eleven sentences, 誰(だあれ) beside 誰(だれ) in nine and
+/// 蛇(くちなわ) beside 蛇(へび) in two: they sort before the ordinary reading, and the
+/// entry a text resolves to is the first one the course reaches.
+#[test]
+fn a_written_form_edrdg_reads_two_ways_is_two_words() {
+    let dataset = dataset();
+    let readings = |text: &str| -> Vec<String> {
+        let mut found: Vec<String> = dataset
+            .words()
+            .iter()
+            .filter(|word| word.text == text)
+            .map(|word| word.reading.clone())
+            .collect();
+        found.sort();
+        found
+    };
+
+    assert_eq!(readings("人"), ["じん", "にん", "ひと"]);
+    assert_eq!(readings("何"), ["なに", "なん"]);
+    assert_eq!(readings("日本"), ["にっぽん", "にほん"]);
+    assert_eq!(readings("明日"), ["あした", "あす", "みょうにち"]);
+    assert_eq!(readings("四"), ["し", "よん"]);
+    assert_eq!(readings("開く"), ["あく", "ひらく"]);
+
+    for (text, rare) in [("良い", "えい"), ("誰", "だあれ"), ("蛇", "くちなわ")] {
+        assert!(
+            !readings(text).contains(&rare.to_string()),
+            "{text} must not be taught as {rare}, which EDRDG does not mark common"
+        );
+    }
 }
 
 #[test]
@@ -155,12 +197,12 @@ fn furigana_covers_the_word_and_spells_its_reading() {
     }
 
     assert_eq!(
-        with_furigana, 16_022,
+        with_furigana, 16_100,
         "the alignment JmdictFurigana solves; the rest keep their reading and no ruby"
     );
     assert_eq!(
         without.len(),
-        51,
+        70,
         "the words carried without furigana: the upstream release does not align them — \
          gathered, never invented"
     );
@@ -391,7 +433,7 @@ fn every_band_has_words_and_the_first_is_the_smallest() {
         assert!(count > 0, "band {band} is empty");
     }
     let first = dataset.of_band(1).count();
-    assert_eq!(first, 585);
+    assert_eq!(first, 596);
     assert!(
         dataset.of_band(1).all(|w| w.band == 1),
         "a band holds only its own words"
@@ -412,8 +454,8 @@ fn the_words_a_character_is_used_in_are_in_course_order() {
 
     // The busiest characters, pinned: 一 opens 223 words and 人 218, which is why
     // the card pages rather than listing them.
-    assert_eq!(dataset.of_kanji('一').count(), 223);
-    assert_eq!(dataset.of_kanji('人').count(), 218);
+    assert_eq!(dataset.of_kanji('一').count(), 225);
+    assert_eq!(dataset.of_kanji('人').count(), 219);
 
     for ch in ['一', '人', '日', '水', '生'] {
         let words: Vec<&nihongo_core::Word> = dataset.of_kanji(ch).collect();

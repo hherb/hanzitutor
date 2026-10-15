@@ -87,7 +87,7 @@ fn dataset_stats_crosses_as_camel_case() {
     assert_eq!(stats["hiragana"], 86);
     assert_eq!(stats["katakana"], 91);
     assert_eq!(stats["strokes"], 516);
-    assert_eq!(stats["words"], 16_073, "the vocabulary the app embeds");
+    assert_eq!(stats["words"], 16_170, "the vocabulary the app embeds");
     assert_eq!(stats["passages"], 3);
     assert_eq!(stats["phrases"], 1_400, "the graded phrases the app embeds");
     assert_eq!(stats["grammar"], 526, "the imported grammar patterns");
@@ -1753,8 +1753,8 @@ fn a_grammar_question_crosses_with_its_sentence_its_answer_and_its_options() {
     assert_eq!(
         keys(&value),
         vec![
-            "after", "before", "blank", "en", "formation", "ja", "meaning", "notes", "options",
-            "pattern", "point", "reading",
+            "after", "before", "blank", "en", "formation", "ja", "kana", "meaning", "notes",
+            "options", "pattern", "point", "reading",
         ]
     );
     // The ruby spans are the corpus's, one shape for a plain segment and one for a
@@ -1794,6 +1794,16 @@ fn a_grammar_question_crosses_with_its_sentence_its_answer_and_its_options() {
     assert!(
         question.reading.is_none() || !question.reading.as_deref().unwrap_or("").is_empty(),
         "a stored reading is either absent or real: the app composes none"
+    );
+    // And the sentence is handed over twice: as written, for the screen to draw, and in
+    // kana, for the voice. The second one is what `Hear it` sends, and it has no kanji
+    // left because the voice would read one its own way (お腹痛いの？ → おふくつういの).
+    assert!(!question.kana.is_empty());
+    assert_ne!(question.kana, question.ja, "the sentence has a kanji to read");
+    assert!(
+        !question.kana.chars().any(nihongo_core::words::is_kanji),
+        "the spoken form still holds a kanji: {:?}",
+        question.kana
     );
 }
 
@@ -1974,8 +1984,8 @@ fn the_grammar_production_answer_the_interface_posts_is_read_the_way_the_command
     assert_eq!(
         keys(&value["verdict"]),
         vec![
-            "answer", "correct", "formation", "meaning", "notes", "pattern", "point", "produced",
-            "reading", "written",
+            "answer", "correct", "formation", "kana", "meaning", "notes", "pattern", "point",
+            "produced", "reading", "written",
         ]
     );
     assert_eq!(keys(&value["record"]), vec!["asked", "correct", "point", "weight", "wrong"]);
@@ -2002,6 +2012,16 @@ fn the_grammar_production_answer_the_interface_posts_is_read_the_way_the_command
     assert_eq!(right.verdict.produced, "のほうが");
     assert_eq!(right.verdict.pattern, "〜の方が〜より");
     assert_eq!(right.record.point, "no-hou-ga-yori");
+    // The sentence whole again **in kana**, which is what `Hear it` says and what the
+    // verdict carries instead of the sentence as written: the corpus's readings of the
+    // two halves with the hole's own reading between them, no kanji left for the voice
+    // to parse its own way.
+    assert_eq!(right.verdict.kana, "いぬのほうがねこよりすきです。");
+    assert!(
+        !right.verdict.kana.chars().any(nihongo_core::words::is_kanji),
+        "the spoken form still holds a kanji: {:?}",
+        right.verdict.kana
+    );
 
     // A sentence the exercise does not ask about, a pattern that is not in the course
     // and an index that is not a sentence are messages rather than panics — and none

@@ -288,15 +288,19 @@ export function word(text: string, reading: string): Promise<Word> {
 }
 
 /**
- * One word, by its text alone.
+ * One word, by the text a sentence used and the reading drawn over it.
  *
- * What a tapped passage token has: the token carries the word's *text*, and its
- * own reading is the surface's (行き is read いき while the word is 行く, read
- * いく), so the reading cannot identify the entry. Where a text is read two ways
- * this returns the one the course reaches first.
+ * What a tapped token has: the token carries the word's *text* and the *reading*
+ * the screen drew above it. The text alone does not identify the entry — 106
+ * written forms in the vocabulary are read more than one way, and 人 is three words
+ * in it (ひと, にん, じん) — while the reading does, because the token's reading is
+ * the one the analyser gave that sentence and was what chose the entry. A reading
+ * that names no entry is the fallback: a token's reading is its *surface's* (行き is
+ * read いき while the word is 行く, read いく), and a caller with only the text
+ * passes nothing, which means the same fallback.
  */
-export function wordOfText(text: string): Promise<Word> {
-  return invoke<Word>("word_of_text", { text });
+export function wordOfText(text: string, reading?: string | null): Promise<Word> {
+  return invoke<Word>("word_of_text", { text, reading: reading ?? null });
 }
 
 /**
@@ -550,10 +554,13 @@ export function checkSentence(point: string, typed: string): Promise<ModelVerdic
  * Say `text` in the system's Japanese voice, cutting off anything already being
  * said.
  *
- * `text` is always **kana**: a kana character, or a word's own stored reading.
- * Nothing here composes a reading from a written form — 大人 is おとな, and a bare
- * kanji has a dozen readings — so a screen whose only text is characters does not
- * call this at all.
+ * `text` is always **kana**: a kana character, a word's own stored reading, the
+ * stored readings of a corpus sentence, or a sentence the learner wrote read back —
+ * never a written sentence. Nothing here composes a reading from a written form —
+ * 大人 is おとな, and a bare kanji has a dozen readings — and nothing hands the voice
+ * a written sentence to parse either, because it parses `お腹痛いの？` as
+ * `おふくつういの` (see `spokenRuby` in `words.ts`). A screen whose only text is
+ * characters does not call this at all.
  *
  * The utterance is the operating system's, spoken in process, and nothing is
  * downloaded to produce it: the app still has no network path.

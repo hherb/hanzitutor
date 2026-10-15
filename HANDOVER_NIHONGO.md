@@ -40,7 +40,7 @@ There is no data step. `crates/nihongo-core/data/kana.bin.gz` is committed
 (70,917 bytes, 177 kana) precisely so that it does not need one — see invariant 1
 — and so are `kanji.bin.gz` (3,236,713 bytes, 2,136 jōyō kanji, their geometry and
 the 214 radical head forms — invariant 24), `words.bin.gz`
-(601,816 bytes, 16,073 words) and `phrases.bin.gz` (54 KB, 1,400 graded sentences,
+(603,327 bytes, 16,170 words) and `phrases.bin.gz` (54 KB, 1,400 graded sentences,
 from Tatoeba), which are the same decision made again for much larger files
 (invariants 16, 20 and 37). The vocabulary inputs are 118 MB of JSON, 63 MB of XML
 and 33 MB of furigana; none of it is needed to build or to test.
@@ -141,9 +141,9 @@ model check's real client is tested without the internet (§5).
 | Radicals | 214 head forms with geometry, 1,222 strokes, 198 used by jōyō; 18 characters are classified under a different number than their note names |
 | Kanji structure | 2,134 IDS decompositions, 2,037 frequency ranks |
 | Kanji oracle | 2,135 of 2,136 agree with KanjiVG; 衷 is the one written exception (invariant 19) |
-| Vocabulary | 16,073 words — every one with a kanji the board can draw, from EDRDG's common vocabulary (invariant 23) |
-| Bands | 585 / 1,781 / 2,408 / 2,232 / 2,412 / 1,834 / 4,821 — this project's ladder, not the JLPT's (invariant 20) |
-| Furigana | 16,022 of 16,073 aligned (99.7%); the other 51 carry their reading and no ruby |
+| Vocabulary | 16,170 words — every one with a kanji the board can draw, from EDRDG's common vocabulary (invariant 23) |
+| Bands | 596 / 1,800 / 2,414 / 2,244 / 2,420 / 1,846 / 4,850 — this project's ladder, not the JLPT's (invariant 20) |
+| Furigana | 16,100 of 16,170 aligned (99.6%); the other 70 carry their reading and no ruby |
 | Passages | 3, written here — 37 tokens, 14 linked to a word, every kanji-bearing one taught (invariant 22) |
 | Phrases | 1,400 imported from Tatoeba — **200 in each of the seven bands**, 6,025 tokens, 152 named contributors, 54 KB; every kanji-bearing word taught, the band is the hardest word's, and every sentence carries its id, its contributor and its licence on screen (invariant 37) |
 | Grammar | **526 patterns imported from OpenJLPT** (0.3.0, CC BY-SA 4.0) — the form each is built from, the note on nuance, and 1,526 sentences with 6,591 ruby spans; 107 patterns carry a kana reading, 70 tags, 524 notes (38 with their level references removed), 16 examples with no kanji. The corpus's JLPT levels are **dropped**, and the order is its teaching order rather than a ladder: levelling a pattern by the hardest character in its pattern *and* its examples put **344 of the 526** in band 7 and 2 in band 1 (invariant 38) |
@@ -153,7 +153,7 @@ model check's real client is tested without the internet (§5).
 | Sentence read back | **the learner's own sentence, spoken by the app** (N24, invariant 27): what is handed to the voice is not what was typed but what Rust read it as — romaji heard as kana, and a sentence the app could not read is a message rather than a noise |
 | Model check | **an optional second opinion on that sentence** (N24, invariant 43): an OpenAI-compatible endpoint the learner names — a local server or a cloud provider, their model and their key — asked to judge the sentence and offer a correction. Off until configured, sent only on a button press, carrying **the pattern and the learner's sentence and nothing else** (no corpus prose), and **never recorded**: the answer is attributed to the model by name, shown beside this app's checklist rather than merged into it, and forgotten. The settings live in `model.json`, the one file of the six holding a secret, written `0600` |
 | Pattern vocabulary | **526 of 526 patterns** name a word the course teaches, over **1,523 of the 1,526 sentences** and **8,151 links** (7,345 once per pattern, 28 the most); the words its sentences use open their own cards, and the **107 patterns written with a kanji** offer their **143 characters** — all jōyō — on the kanji board. The word link is **UniDic's**, not the corpus's: the furigana rule was measured at 405 disagreements over the 1,526 sentences (invariant 40) |
-| Words on a card | 16,073 words over 2,136 characters — 一 in 223, 人 in 218, and **57 characters in none**; a page of 12, in course order (invariant 28) |
+| Words on a card | 16,170 words over 2,136 characters — 一 in 225, 人 in 219, and **57 characters in none**; a page of 12, in course order (invariant 28) |
 | One reading | **はし is 橋, 端 and 箸 and かみ is five words** (上 紙 神 加味 髪) — the homophones the **Start here** screen argues with, drawn from the artifact rather than typed into the interface (invariant 32) |
 | Audio | the machine's own Japanese voice — `Kyoko (ja-JP)` here — behind a **Hear it** button, the `h` key, and a control on **every reading of a kanji card**; nothing bundled, nothing downloaded (invariants 26 and 27) |
 | Notices | 12 — five of them added at N9, when the EDRDG, JmdictFurigana and UniDic obligations that had been recorded in `LICENSES.md` since N6 and N7 were found to satisfy nothing in the bundle (§8); the Tatoeba one at N18, which is **generated by the pipeline** rather than typed because it names 152 contributors; and the OpenJLPT one at N19, which states what was taken (the grammar and nothing else), what was dropped (every level) and what was changed (38 notes) — and, since N20, that the exercises draw a blank in a sentence at runtime while the artifact itself stays as the corpus wrote it — **both** exercises since N22, because the notice says what the app does to the text, and **the third stage named in it since N23**, because that stage shows the same sentences unaltered as models for a sentence of the learner's own |
@@ -161,11 +161,11 @@ model check's real client is tested without the internet (§5).
 | Bundle (iOS) | a **development-signed** device build exists: `tauri ios build --debug --target aarch64 --ci` → `src-tauri/gen/apple/build/arm64/Nihongo Tutor.ipa`, installed on HHIP1 (iPhone 13 Pro Max, iOS 27) and driven by hand — 日 drawn on the board, graded 87/100 and "Saved for review", and the kana course seen on the device at N13. **Rebuilt and reinstalled at N18** with the same recipe, on **both** devices — HHIP1 and Horst's 12.9-inch iPad — and the Phrases screen was then looked at on each by the maintainer, which is what closed the last "measured but never seen" screen in the app. See §5, "Building for iOS", for the three things `tauri ios init` does not provide |
 | Screens | **two courses**, one at a time, the last one remembered: *Kana* — Practice, Chart, Tell them apart, Review — and *Kanji* — Kanji, Radicals, Words, Phrases, Grammar, Read, Review, where **six screens carry a stage**: the course and the thing one of its cards opens — Kanji and Practice open a board, Radicals a family, Words a card, Grammar a pattern **and, since N22 and N23, the three exercises that ask it back**, Read a passage (invariants 33, 34, 35, 38 and 41). **Phrases is not one of them**: a phrase's card opens under the row it was tapped in, so there is no second screen to step aside for (invariant 37). **Start here** and Licences hang off the footer, in neither course (invariant 31). At 980×760 the seven tabs sit on one line; at a phone's width they wrap after `Phrases`, leaving `Grammar · Read · Review` on a second line, with no page overflow |
 | Tests | nihongo-core 295, nihongo-tutor 191, hanzi-voice 29, frontend 193 of the 262 |
-| Artifact | kana 70,917, kanji 3,236,713, words 601,816, passages 502, phrases 53,945 and grammar **226,452** bytes — all gzip + magic + postcard, all six embedded with `include_bytes!` |
+| Artifact | kana 70,917, kanji 3,236,713, words 603,327, passages 502, phrases 53,996 and grammar **226,452** bytes — all gzip + magic + postcard, all six embedded with `include_bytes!` |
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Grammar format | version 2 (`GRAMM002`): an example carries the course words its sentence uses (invariant 40) |
 | Learner data | six files, `confusions.json`, `grammar.json`, `compositions.json`, `review.json`, `prefs.json` and `model.json`, in the app's own data directory (invariant 15) — the last of them the only one that holds a secret, and the only one written readable by its owner alone |
-| Version | both crates 0.1.0, and the app's to match |
+| Version | both crates 0.2.1, and the app's to match |
 
 The app runs and has been looked at, all of it: the course, the board, stroke-order
 animation, handwriting grading, the discrimination drill, the typing box, the
@@ -304,8 +304,8 @@ waiting for. The card lists the words the course
 teaches that use the character, in the course's own order — band, then EDRDG's
 frequency — a page of twelve at a time, and tapping one opens the **word's own
 card**, the same one `Words` and `Read` show, so the reading is the dictionary's
-and never composed here. The numbers are measured: **一 is written in 223 of the
-16,073 words and 人 in 218**, and **57 jōyō characters are in no word at all**,
+and never composed here. The numbers are measured: **一 is written in 225 of the
+16,170 words and 人 in 219**, and **57 jōyō characters are in no word at all**,
 which the card states in words rather than drawing an empty list. Invariant 28 is
 the part that must not be broken. The live check drove it through a DOM probe,
 because there was no display to capture: the Kanji tab came up on 日 with
@@ -679,11 +679,11 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   sample of each band
   data/kana.bin.gz                COMMITTED, 70,917 bytes
   data/kanji.bin.gz               COMMITTED, 3,236,713 bytes (format v2)
-  data/words.bin.gz               COMMITTED, 601,816 bytes
+  data/words.bin.gz               COMMITTED, 603,327 bytes
   data/passages/*.txt             COMMITTED: the passage text and its glosses,
                                   which is what a person edits
   data/passages.bin.gz            COMMITTED, 502 bytes — the segmentation
-  data/phrases.bin.gz             COMMITTED, 53,945 bytes — 1,400 imported
+  data/phrases.bin.gz             COMMITTED, 53,996 bytes — 1,400 imported
                                   sentences, 200 per band, each with its id, its
                                   contributor, its licence and its tokens
   data/grammar.bin.gz             COMMITTED, 203,019 bytes — 526 imported patterns,
@@ -1123,7 +1123,7 @@ artifact test asserts.
 
 ### 5. **The Japanese crates version themselves.**
 
-`crates/nihongo-core` and `apps/nihongo-tutor` are `version = "0.1.0"`, **not**
+`crates/nihongo-core` and `apps/nihongo-tutor` are `version = "0.2.1"`, **not**
 `version.workspace = true`. This is not tidiness. While they inherited the
 workspace version they could not be committed independently of a Hanzi Tutor
 release: committing them on top of a 0.6.0 HEAD made the workspace 0.7.0, which
@@ -1500,6 +1500,13 @@ committed artifact against the committed vocabulary, which catches a passage edi
 *after* it was generated. Kana, particles, punctuation and numbers are free; the
 constraint is on kanji.
 
+**And the link a token carries is the sentence's reading, not the first entry a text
+has.** **199** of the shipped written forms are read more than one way — 人 is ひと, にん
+and じん — so the token is linked with `WordDataset::find` on the reading the analyser gave
+*that* sentence: `トムは人だ。` links 人(ひと) and `三人いる` links 人(にん). The card a tap
+opens is the same entry, because the command takes the reading the row drew. Four readings
+the analyser gives are refused, each with the sentence that proves it: see §14.
+
 **The analyser is a build-time dependency and must stay one.** `lindera` (MIT) and
 UniDic segment the passages when the artifact is built; the app renders tokens it
 was handed and tokenises nothing. That is not an optimisation: UniDic's
@@ -1529,14 +1536,26 @@ through **two** of its signals, plus one condition on the spelling:
   writes — 彼処 for あそこ, お握り for おにぎり, 先 for さっき, 型録 for カタログ — and
   a further 173 carry an explicit `rK`/`sK`/`ateji` tag on their only common form.
   A kanji course that taught those would teach spellings its learner will never
-  meet, so they are left to the kana course. **This is why the vocabulary is 16,073
+  meet, so they are left to the kana course. **This is why the vocabulary is 16,170
   and not 21,902: smaller and right rather than larger and wrong.**
 * **Every kanji must be in the committed kanji artifact** (invariant 21), which is
   what keeps jinmeiyō and hyōgai vocabulary out until those sets exist.
 
 `spec1`/`spec2` (specialist vocabulary) and `gai1` (loanwords) are deliberately not
 part of membership: they would add about 1,200 words of technical and foreign
-terminology to a beginner's course.
+terminology to a beginner's course. **Measured, not assumed**: admitting every entry whose
+*written form* the course already teaches — the narrow version of that relaxation, which
+would reach 中(ちゅう), 生(せい) and 内(ない) — adds **1,183 words**, and it is still
+refused (§14 has the number and the 24 token readings it would buy).
+
+**A written form EDRDG reads two ways is two words, and that is a reading rule rather than
+a second membership rule.** The pipeline used to emit one reading per dictionary entry —
+the commonest — so 日本 was taught as にほん and not にっぽん, 四 as し and not よん, and the
+sentences that read them the other way had no entry to point at. Every kana form EDRDG
+marks `common` is its own `Word` now (**+97 words**, 16,170 in all). `common` is the filter
+rather than "every form that applies", and the difference is measurable: the rare forms sort
+ahead of the ordinary reading, and emitting them put 良い(えい), 誰(だあれ) and 蛇(くちなわ)
+in front of 良い(よい), 誰(だれ) and 蛇(へび) for 22 shipped sentences between them.
 
 ### 24. **The radical table is the 214 head forms, its order is the numbering, and a character's number is not its note.**
 
@@ -1670,9 +1689,11 @@ that only speaks turns it off. Same instinct as refusing to bundle the analyser.
 ### 27. **Nothing is spoken that is not kana the app stored, and the shortcut is `h`.**
 
 What may be handed to `speak` is a **kana character**, a **word's own stored
-reading**, **one reading of a kanji**, a **corpus sentence** (the phrase screen's and
-the grammar screen's exception, invariant 37), or — **since N24** — **a sentence the
-learner wrote of their own**, and the list is exhaustive rather than indicative.
+reading**, **one reading of a kanji**, the **stored readings of a corpus sentence
+joined** (the phrase and grammar screens, invariant 37), or — **since N24** — **a
+sentence the learner wrote of their own**, and the list is exhaustive rather than
+indicative. **No written sentence is on it any more**, and that is a correction rather
+than a narrowing: see invariant 37 for the measurement that retired the exception.
 
 **The sentence of the learner's own is the maintainer's widening, and it is one rule in
 one place.** The app speaks what it *read* the typing as, never the typing itself:
@@ -1762,7 +1783,7 @@ that are decisions rather than implementation:
   asserts the key never goes backwards, which is the property the screen's promise
   rests on.
 * **The count is the character's and the page is twelve**, because it is measured:
-  **一 is written in 223 of the 16,073 words, 人 in 218**, and 86 characters are in
+  **一 is written in 225 of the 16,170 words, 人 in 219**, and 86 characters are in
   more than sixty. A card that shipped them all would be a megabyte of JSON to draw
   a list — the same reason a band is paged (`MAX_WORD_PAGE`, the same clamp).
 * **A jōyō character in no word is a state the card states**, not an empty list:
@@ -2272,13 +2293,25 @@ rules below are what make that safe to ship. N18 is the milestone; `phrases.rs`,
   the licence rests on the corpus's statement plus `jpn_sentences_CC0.tsv`; the only file with
   a column is the 289 MiB all-languages one, and `LICENSES.md` records the API check it
   stands in for.
-* **The screen is one screen, and it speaks the sentence.** A phrase's word card opens *under
-  the row that was tapped*, so there is no stage and `STAGE_VIEWS` does not grow (invariants
-  33–35) — `nav.test.ts` asserts Phrases is not in it. And the `Hear it` control passes the
-  **sentence as written**, not a kana reading: invariant 27 exists because a bare kanji has
-  several readings the app has no business choosing between, whereas a sentence has none to
-  choose — and the synthesiser needs the kanji to read it at all. That is the one place this
-  file's "what may be handed to the voice" widened, and it widened with a reason.
+* **The screen is one screen, and it speaks the sentence as read, not as written.** A
+  phrase's word card opens *under the row that was tapped*, so there is no stage and
+  `STAGE_VIEWS` does not grow (invariants 33–35) — `nav.test.ts` asserts Phrases is not in
+  it. And the `Hear it` control passes the **artifact's own readings joined**
+  (`spokenPhrase`), not the sentence the row draws. It used to pass the sentence as
+  written, on the argument that a sentence has no ambiguous reading to choose between and
+  "the synthesiser needs the kanji to read it at all". **That argument is false, and the
+  first reported bug proved it.** Measured on this machine, on the voice the app resolves
+  (`Kyoko`, `com.apple.voice.compact.ja-JP`): handed `お腹痛いの？` the synthesiser says
+  `おふくつういの` — お + 腹痛(ふくつう) + the い of 痛い left dangling — because 腹痛 is a
+  word and Apple's Japanese front end prefers the compound to お腹(おなか) + 痛い(いたい).
+  Handed `お腹が痛いの？` it says おなか, so kanji are not the problem and the context is;
+  handed kana it can only read what it is given, and the same reading is the same sound —
+  `お腹が痛いの？` and `おなかがいたいの？` render **byte-identical** audio, which is how
+  that was established. Nothing is composed by the screen: every token's `rt` is the
+  artifact's, and `every_phrase_reads_back_as_kana` in `tests/phrases_artifact.rs` asserts
+  that no shipped phrase still holds a kanji once the readings are joined (**all 1,400**;
+  1,240 of them are written with a kanji). Tatoeba #2771616 — `お腹痛いの？`, tommy_san — is
+  the sentence that found this.
 
 ### 38. **The grammar course is imported, so its levels are dropped and its levels of reading are its own.**
 
@@ -2316,7 +2349,7 @@ decisions rather than implementation, and the first is a licence one.
   teaching order, a page of 20 and a search box, and its header says whose order it is not.
   **Do not reintroduce a band without re-taking that measurement.**
 * **The examples carry their own furigana, and that is what replaces the vocabulary rule.**
-  A grammar example is the corpus's own teaching sentence: holding it to the 16,073-word
+  A grammar example is the corpus's own teaching sentence: holding it to the 16,170-word
   vocabulary the way `prepare-phrases` holds a sentence would drop most of them (**557 of
   the 1,526** contain a jōyō-remainder character, and two contain a non-jōyō one — 几, 嘘).
   So the promise is the corpus's **own markup**, parsed by `parse_furigana`:
@@ -2334,14 +2367,16 @@ decisions rather than implementation, and the first is a licence one.
   `nav.test.ts` together. The stage's arrows move by **course position**, not by index into
   whatever list is loaded: a pattern found through a search steps to the one after it in the
   course, the panel fetching the page that holds it when it is not the one on screen. The
-  chrome steps aside while a stage is up, and `Hear it` speaks the **example sentence as
-  written** — invariant 27's rule intact, since a sentence has no ambiguous reading to choose
-  between and a pattern like `〜に対して` is not something a synthesiser should be asked to
-  read.
+  chrome steps aside while a stage is up, and `Hear it` speaks the example's **own readings
+  joined** (`spokenRuby`) rather than the sentence as written — invariant 37's correction,
+  applied here because the corpus's furigana is the same kind of guarantee: a pattern like
+  `〜に対して` is still never handed to the voice, and the sentence's kanji are now read the
+  way the corpus read them instead of the way Apple's analyser does.
 
 **What is not changed by this:** the vocabulary and its ladder, the passages, the phrases,
-the schedule and its file, the joined-stroke rule, and what may be handed to the voice —
-the phrase screen's exception (invariant 37) is the same one this screen uses.
+the schedule and its file, and the joined-stroke rule. **What may be handed to the voice**
+is invariant 27's list, and it now reads the same on both screens: a corpus sentence is
+spoken from its **stored readings**, never from its written form (invariant 37).
 
 ---
 
@@ -2402,10 +2437,13 @@ the fourth file.
   `PairTally` and its own weight rule, and `grammar.json` is separate from
   `confusions.json` on invariant 15's terms. The schedule is not touched: invariant 25's queue
   is over characters a board can grade, and a grammar point has no handwritten attempt.
-* **What is spoken is the sentence, and only after the answer.** Before an answer the voice
-  would read out the pattern the blank took away, so `Hear it` appears with the verdict.
-  Invariant 27's rule holds otherwise: a pattern (`〜に対して`) is never handed to the
-  synthesiser, and no reading is composed for anything — the drill's options carry the
+* **What is spoken is the sentence in kana, and only after the answer.** Before an answer the
+  voice would read out the pattern the blank took away, so `Hear it` appears with the verdict.
+  What it sends is `GrammarQuestion::kana` — the sentence whole again in the corpus's own
+  readings, the blank's included — because the payload carries the blank as text with no
+  reading of its own, which makes this the one screen that cannot spell the sentence out of
+  the ruby it holds. Invariant 27 holds otherwise: a pattern (`〜に対して`) is never handed to
+  the synthesiser, and no reading is composed for anything — the drill's options carry the
   corpus's stored kana reading where it has one, and nothing where it does not (invariant 21).
 * **No level, no band, and the licence is stated rather than implied.** Invariants 20 and 38
   hold unchanged: the drill draws from the artifact the levels were dropped out of, and it
@@ -2481,7 +2519,10 @@ implementation.
   in `grammar_drill`'s tests and again in `ipc_contract.rs`, so a field added later cannot
   quietly carry the answer. This is the one question in the app that cannot answer itself,
   and it is the difference between recognising a pattern and producing one. **Do not
-  "simplify" it by sending the pattern for the reveal**: that is what the verdict is for.
+  "simplify" it by sending the pattern for the reveal**: that is what the verdict is for — and
+  it is also why the sentence whole again **in kana** (`ProductionVerdict::kana`, what
+  `Hear it` says) is on the verdict and not on the question: read aloud it contains the hole's
+  reading (invariant 27, invariant 37).
 * **Correctness is decided in Rust, on the sentence the question named.**
   `record_grammar_production` takes the pattern and the sentence's position, reads the answer
   from the artifact, and grades what was typed; there is no `correct` field to post. A
@@ -2539,9 +2580,11 @@ measurement forces rather than a preference, and the measurement is the invarian
   two grammar exercises do not have (363 each), because the prompt *is* the pattern and needs
   no sentence of it. `nihongo_core::composition::size` is the number and
   `tests/grammar_artifact.rs` pins it.
-* **Nothing is spoken.** The corpus's own model sentences carry a `Hear it`; a sentence the
-  learner has just composed is neither stored nor verified, so invariant 27's list is
-  unchanged — this app does not hand the synthesiser text it cannot stand behind.
+* **Nothing is spoken of the learner's own.** The corpus's own model sentences carry a
+  `Hear it`, and it speaks their **readings joined** like every other corpus sentence
+  (invariant 37); a sentence the learner has just composed is neither stored nor verified, so
+  invariant 27's list is unchanged — this app does not hand the synthesiser text it cannot
+  stand behind.
 
 **What is still not built is a sentence graded for grammar or naturalness — by this app.**
 No corpus here can answer it, and the screen ends by saying so in one line
@@ -2739,10 +2782,10 @@ something upstream moved, and the artifact test will say what changed.
 pins: **JMdict 3.6.2 (2026-09-28), the priority markers from a JMdict_e created
 2026-10-02 — 22,430 entries ranked and 2,471 marked common without a rank — furigana
 2.3.1+2026-09-25, 24,901 of 218,840 entries considered (193,939 not marked common),
-16,073 words in bands b1:585 b2:1781 b3:2408 b4:2232 b5:2412 b6:1834 b7:4821, 754
+16,170 words in bands b1:596 b2:1800 b3:2414 b4:2244 b5:2420 b6:1846 b7:4850, 754
 left out for having no kanji at all, 7,629 whose kanji spelling is not the one
-EDRDG marks common, 445 with a kanji the kanji artifact does not hold, 16,022 with
-furigana, artifact 602 KB from 1,382 KB**. The vocabulary was **21,902** words
+EDRDG marks common, 445 with a kanji the kanji artifact does not hold, 16,100 with
+furigana, artifact 603 KB from 1,389 KB**. The vocabulary was **21,902** words
 before the common-spelling rule of invariant 23 was applied, which is why that
 invariant says "smaller and right rather than larger and wrong": the difference is
 7,629 spellings nobody writes plus the kana-only entries. It reads 118 MB of JSON
@@ -3474,6 +3517,60 @@ and to let the **course's own reading win** when the token is written exactly as
 vocabulary word is, so a passage saying 私 cannot disagree with the card behind it
 about わたし and わたくし. `tests/passages_artifact.rs` asserts all four rows.
 
+**And that last clause was wrong for the units a number counts, which is the one
+thing in this section that had to be corrected rather than measured first.** "The
+card wins" was applied to every word the course writes that way, including a counter
+with a number in front of it: the 月 of `10月だよ。` was drawn つき and it is **がつ**,
+the 時 of `2時半です。` was drawn とき and it is **じ**, the 人 of `三人いる` was drawn
+じん and it is **にん**, the 分 of `１５分` was drawn ぶん and it is **ふん**. The card's
+reading is the word *standing on its own*, and a number in front of it means it is
+not standing on its own. The rule now is: a kanji token **immediately after a number**
+takes the analyser's reading of that sentence, and every other word keeps the card's.
+Applying it moved **33 token readings across 9 shapes** of the 6,025 — 時 (19), 月 (5),
+人 (3), 分, 型, 年, 度, 日, 滴 — and **nothing else in the artifact moved at all**: 1,400
+phrases before and after, the same bands, the same word links, the same attribution
+file. `tests/phrases_artifact.rs` pins `10月` at がつ and `2時` at じ, and pins the
+counter's own word with no number in front of it — `月は昇った` — at the card's つき,
+which is the boundary the rule turns on.
+
+That boundary is deliberate rather than unfinished: a word no number counts still keeps
+the card's reading even where the analyser disagrees, because the card and the screen
+agreeing is itself a promise (invariant 21). The rest of the corpus's disagreements were
+then worked through, and they are now two rules and one measured refusal.
+
+**Which of a written form's readings a token is.** `WordDataset::of_text` answers with the
+first entry a text has, and **199** of the shipped written forms are read more than one
+way — 人 is three words in the course (ひと, にん, じん), 空 two (から, そら) and 開く two
+(あく, ひらく). The first entry is the earlier band and the more frequent reading, which is
+usually right and was not right in the sentences: `トムは人だ。` drew じん, `空が晴れた。`
+drew から, `本を開くな。` drew あく. The analyser read the sentence, so its reading now
+names the entry — `WordDataset::find` rather than `of_text` — and **the card a tap opens is
+that entry too**: the command takes the reading the row drew, so the ruby and the card
+cannot disagree about ひと. **Four readings are refused**, each with the sentence that
+proves it rather than with taste (`context_may_choose` in `segment.rs`): 人(にん) after a
+proper noun, because `日本人ですか。` is にほんじん and UniDic reads it にっぽん + にん;
+四(よん) in `四月一日です。`; 寒気(かんき) in `寒気がする。`; and 市場(しじょう) in
+`市場に行く。`.
+
+**And the vocabulary had to hold those readings before anything could choose them.**
+`prepare-words` emitted one reading per dictionary entry — the commonest — which silently
+decided that the course cannot teach 日本 as にっぽん or 四 as よん, because the same entry
+also reads にほん and し. Every kana form EDRDG marks **common** is its own word now
+(**+97 words**, 16,170 in all), and that word is not decoration: it is what lets the ruby
+and the card agree. Emitting *every* applicable form instead put 良い(えい), 誰(だあれ) and
+蛇(くちなわ) into the course, ahead of the ordinary readings for eleven, nine and two
+sentences — so the `common` marker is the filter, and `tests/words_artifact.rs` pins both
+halves of that.
+
+**The one class left alone is the one the course does not teach.** 仕事中 is ちゅう in
+Japanese and eighteen shipped sentences read 中 that way; the course teaches 中 only as
+なか, because EDRDG marks the entry that reads ちゅう `spec1`, and 生(せい) and 内(ない) are
+the same story. Admitting every entry whose *written form* the course already teaches — the
+narrow version of that change — was measured before it was refused: **1,183 words**, against
+24 token readings, which is the trade invariant 23 already rejected with its own number. So
+`仕事中です。` draws なか, `tests/phrases_artifact.rs` pins it there, and the day this course
+decides to teach those readings is the day that test is changed deliberately.
+
 Two smaller ones from the same afternoon. The link a tapped word opens is
 `lexeme`, the dictionary form, because the surface is 行き and the entry is 行く;
 and `lexeme` for 私 is `私-代名詞`, so the surface is the fallback rather than the
@@ -4158,7 +4255,7 @@ assumed to be covered by the Chinese one.
   a lesson, which is why it has no romaji under each cell; the prose is in §2.
 * **Kanji beyond the jōyō set.** 2,136 characters, their radical table and their
   course are shipped (N6, N8), and so is the vocabulary they are taught through
-  (N7's `words.bin.gz`, 16,073 words with their own readings and furigana) and the
+  (N7's `words.bin.gz`, 16,170 words with their own readings and furigana) and the
   three reading passages (`passages.bin.gz`, segmented by UniDic at build time).
   Jinmeiyō and hyōgai are deliberately out (invariant 16's refusal conditions and
   invariant 21's membership rule), and adding them moves the vocabulary's size and

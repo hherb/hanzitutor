@@ -25,7 +25,7 @@
 //! that changes them is a deliberate commit, and the funnel `prepare-phrases` prints
 //! is what says why they changed.
 
-use nihongo_core::{Phrase, PhraseDataset, WordDataset};
+use nihongo_core::{is_kanji, Phrase, PhraseDataset, WordDataset};
 
 fn dataset() -> PhraseDataset {
     PhraseDataset::from_gzip_bytes(include_bytes!("../data/phrases.bin.gz"))
@@ -98,6 +98,41 @@ fn every_kanji_bearing_token_is_a_word_the_course_teaches() {
             }
         }
     }
+}
+
+/// **Every shipped phrase can be spoken.** The Phrases screen hands the voice the
+/// artifact's readings and not the sentence on the row (`spokenPhrase` in the app),
+/// because the voice reads a written sentence by its own analysis and gets this shape
+/// wrong: `お腹痛いの？` is said `おふくつういの` — お + 腹痛(ふくつう) + a dangling い —
+/// where the artifact reads おなか + いたい. That only works if the readings cover
+/// every character, so what is asserted here is that joining them leaves no kanji for
+/// the synthesiser to decide about, and that a phrase with no kanji at all is spoken
+/// exactly as it is written.
+#[test]
+fn every_phrase_reads_back_as_kana() {
+    let mut with_kanji = 0usize;
+    for phrase in dataset().phrases() {
+        let kana = phrase.kana();
+        assert!(
+            !kana.chars().any(is_kanji),
+            "#{} reads back with a kanji still in it: {kana:?}",
+            phrase.id
+        );
+        assert!(!kana.is_empty(), "#{} reads back as nothing", phrase.id);
+        let written_has_kanji = phrase.text.chars().any(is_kanji);
+        assert_eq!(
+            kana == phrase.text,
+            !written_has_kanji,
+            "#{}: {:?} reads as {kana:?}",
+            phrase.id,
+            phrase.text
+        );
+        with_kanji += usize::from(written_has_kanji);
+    }
+    // The corpus is Japanese, so most of it has a kanji to read — 1,240 of the 1,400,
+    // the other 160 being kana already. The count is pinned because a rebuild that made
+    // the readings vanish would otherwise pass quietly.
+    assert_eq!(with_kanji, 1_240, "phrases with a kanji in them, as the corpus stands");
 }
 
 /// The band a phrase is filed under is the band of its hardest word, recomputed from
@@ -196,6 +231,99 @@ fn every_kanji_bearing_token_carries_a_hiragana_reading() {
             }
         }
     }
+}
+
+/// **A counter is read the way the number in front of it counts it.**
+///
+/// 月 is つき as a word and がつ in `10月`. The word card carries the word standing
+/// on its own, and drawing that over a counter is the bug this pins shut: the screen
+/// read the 月 of `10月だよ。` as つき. The rule is narrow on purpose — a word a number
+/// counts takes the analyser's reading of *that* sentence, and the same word with no
+/// number in front of it keeps the card's, so `月は昇った` is still つき and 私 is
+/// still わたし however the analyser reads it in a pronoun's position.
+#[test]
+fn a_counter_after_a_number_is_read_the_way_the_number_counts_it() {
+    let dataset = dataset();
+
+    let october = dataset.get(11910517).expect("10月だよ。 is shipped");
+    assert_eq!(october.text, "10月だよ。");
+    assert_eq!(reading_over(october, "月").as_deref(), Some("がつ"));
+
+    let december = dataset.get(11303233).expect("12月です。 is shipped");
+    assert_eq!(reading_over(december, "月").as_deref(), Some("がつ"));
+
+    let two_oclock = dataset.get(7899904).expect("2時半です。 is shipped");
+    assert_eq!(reading_over(two_oclock, "時").as_deref(), Some("じ"));
+
+    // The counter's own word, with no number in front of it, is still the card's.
+    let moon = dataset.get(175637).expect("月は昇った。 is shipped");
+    assert_eq!(reading_over(moon, "月").as_deref(), Some("つき"));
+
+    // And a word no number counts is untouched: the card reads 私 わたし, the
+    // analyser reads it わたくし in this position, and the card wins — the same
+    // choice the rule has always made for a word that is only a word.
+    let pronoun = dataset.get(8755069).expect("これ、私に？ is shipped");
+    assert_eq!(reading_over(pronoun, "私").as_deref(), Some("わたし"));
+}
+
+/// The reading drawn over `surface` in `phrase`, which that phrase must hold once.
+fn reading_over(phrase: &Phrase, surface: &str) -> Option<String> {
+    let readings: Vec<Option<&str>> = phrase
+        .tokens()
+        .filter(|token| token.surface == surface)
+        .map(|token| token.rt.as_deref())
+        .collect();
+    assert_eq!(
+        readings.len(),
+        1,
+        "#{} holds {surface:?} {} times",
+        phrase.id,
+        readings.len()
+    );
+    readings[0].map(str::to_string)
+}
+
+/// The reading over `surface` in the shipped phrase `id`.
+fn reading_in(dataset: &PhraseDataset, id: u32, surface: &str) -> Option<String> {
+    reading_over(dataset.get(id).unwrap_or_else(|| panic!("#{id} is shipped")), surface)
+}
+
+/// **A written form taught more than one way is the word the sentence used.**
+///
+/// 人 is three words in this course — ひと, にん, じん — and before the entry was
+/// chosen by the sentence, a screen drew whichever entry the vocabulary listed
+/// first, which was じん: `トムは人だ。` read じん, and the card a tap opened was
+/// that same wrong word. Each of the three is pinned here with the sentence that
+/// proves it, along with the other homographs the corpus disagrees about, the
+/// readings the analyser gets wrong, and the one this rule cannot reach at all.
+#[test]
+fn a_written_form_read_two_ways_is_the_word_the_sentence_used() {
+    let dataset = dataset();
+
+    // One written form, three sentences, three entries.
+    assert_eq!(reading_in(&dataset, 13771965, "人").as_deref(), Some("ひと"));
+    assert_eq!(reading_in(&dataset, 6705562, "人").as_deref(), Some("にん"));
+    assert_eq!(reading_in(&dataset, 122297, "人").as_deref(), Some("じん"));
+
+    // The rest of the homographs the corpus's sentences decide.
+    assert_eq!(reading_in(&dataset, 179482, "空").as_deref(), Some("そら"));
+    assert_eq!(reading_in(&dataset, 187378, "何").as_deref(), Some("なん"));
+    assert_eq!(reading_in(&dataset, 81627, "開く").as_deref(), Some("ひらく"));
+    assert_eq!(reading_in(&dataset, 11156617, "他").as_deref(), Some("ほか"));
+    assert_eq!(reading_in(&dataset, 3024516, "末").as_deref(), Some("まつ"));
+
+    // Four the analyser gets wrong, held at the course's reading — see
+    // `context_may_choose` in `nihongo_core::segment` for each one's sentence.
+    assert_eq!(reading_in(&dataset, 168964, "四").as_deref(), Some("し"));
+    assert_eq!(reading_in(&dataset, 183996, "寒気").as_deref(), Some("さむけ"));
+    assert_eq!(reading_in(&dataset, 5117746, "市場").as_deref(), Some("いちば"));
+
+    // And the boundary this rule cannot cross: 仕事中 is ちゅう in Japanese, and the
+    // course teaches 中 only as なか, because EDRDG marks the entry that reads
+    // ちゅう `spec1` and `prepare-words` keeps that class of entry out of the course.
+    // The ruby follows the card while that stands — and the measurement for
+    // changing it is in HANDOVER_NIHONGO.md §14.
+    assert_eq!(reading_in(&dataset, 1046221, "中").as_deref(), Some("なか"));
 }
 
 /// What the analyser read is what was written: the tokens reassemble into the

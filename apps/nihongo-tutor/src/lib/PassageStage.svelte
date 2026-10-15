@@ -78,12 +78,16 @@
     }
   }
 
-  async function open(word: string) {
+  // The row's reading is part of the question, not decoration: it is what names
+  // which reading of a written form the tap means (人 is ひと, にん and じん), so an
+  // answer for another reading of the same text is a different answer.
+  async function open(word: string, reading: string) {
+    const key = `${word}:${reading}`;
     try {
       error = null;
-      asked = word;
-      const found = await api.wordOfText(word);
-      if (untrack(() => asked) !== word) return;
+      asked = key;
+      const found = await api.wordOfText(word, reading);
+      if (untrack(() => asked) !== key) return;
       opened = found;
     } catch (e) {
       error = String(e);
@@ -130,7 +134,8 @@
               <button
                 class="token"
                 title="Open {token.surface}"
-                onclick={() => void open(token.word as string)}
+                onclick={() =>
+                  void open(token.word as string, token.rt ?? token.surface)}
               >
                 {#if needsRuby({ ruby: token.surface, rt: token.rt })}
                   <ruby>{token.surface}<rt>{token.rt}</rt></ruby>
