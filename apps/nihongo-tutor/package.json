@@ -1,7 +1,7 @@
 {
   "name": "nihongo-tutor",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "description": "Learn to read and write Japanese: the kana first, then the jōyō kanji",
   "license": "AGPL-3.0-only",

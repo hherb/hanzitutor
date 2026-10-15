@@ -1,7 +1,7 @@
 [package]
 name = "nihongo-core"
 description = "Offline kana and kanji data, stroke order and legibility grading for handwritten Japanese"
-version = "0.2.2"
+version = "0.2.3"
 edition.workspace = true
 license.workspace = true
 

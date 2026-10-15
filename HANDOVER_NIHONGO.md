@@ -165,7 +165,7 @@ model check's real client is tested without the internet (§5).
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Grammar format | version 2 (`GRAMM002`): an example carries the course words its sentence uses (invariant 40) |
 | Learner data | six files, `confusions.json`, `grammar.json`, `compositions.json`, `review.json`, `prefs.json` and `model.json`, in the app's own data directory (invariant 15) — the last of them the only one that holds a secret, and the only one written readable by its owner alone |
-| Version | both crates 0.2.2, and the app's to match |
+| Version | both crates 0.2.3, and the app's to match |
 
 The app runs and has been looked at, all of it: the course, the board, stroke-order
 animation, handwriting grading, the discrimination drill, the typing box, the
@@ -1123,7 +1123,7 @@ artifact test asserts.
 
 ### 5. **The Japanese crates version themselves.**
 
-`crates/nihongo-core` and `apps/nihongo-tutor` are `version = "0.2.2"`, **not**
+`crates/nihongo-core` and `apps/nihongo-tutor` are `version = "0.2.3"`, **not**
 `version.workspace = true`. This is not tidiness. While they inherited the
 workspace version they could not be committed independently of a Hanzi Tutor
 release: committing them on top of a 0.6.0 HEAD made the workspace 0.7.0, which
@@ -4196,9 +4196,26 @@ trusted from the commit that first recorded it**: `muda` 0.21.2 and `tao` 0.37.1
 still require `gtk ^0.18`, and so does every released `tauri` including 2.12.4 (the
 newest stable, 14 October). gtk-rs 0.20 is what would carry `glib` 0.20, and nothing
 in the graph asks for it — so the pair stays accepted and is revisited only if the
-Linux milestone ships. (The workspace is on `tauri` 2.12.0; 2.12.4 is current and **no
-advisory asks for it**, so it was left alone rather than folded into a security
-change.)
+Linux milestone ships.
+
+**And the framework moved up with it, in 0.2.3.** `tauri` 2.12.0 → **2.12.4** with
+`tauri-build`/`tauri-macros`/`tauri-codegen` 2.7.3, `tauri-runtime` and
+`tauri-runtime-wry` 2.12.2, `tauri-utils` 2.10.2 and `swift-rs` 1.0.9 — no advisory
+asked for it, but a three-patch lag in the thing that builds, signs and launches the
+app is not worth carrying either, and invariant 38's floor (2.12.0, `tao` 0.36+) is
+still met from above. It also brought `static_vcruntime` 3.0.0 into the lock, which
+is the Windows-only build dependency `tauri-build` now uses in place of the
+`STATIC_VCRUNTIME` environment variable it deprecated.
+
+**And the graph is audited on every push now, rather than noticed in a push message.**
+`.github/workflows/ci.yml` gained an `audit` job: `pnpm run audit:rust` — `cargo audit
+--deny warnings` against [`.cargo/audit.toml`](.cargo/audit.toml), which ignores exactly
+the two above by id and therefore **fails on any new advisory or warning** — and
+`pnpm run audit:web`, which runs `pnpm audit` in the root and in both apps. That is the
+gate the four `rustls` advisories of 14 October 2026 argue for: they were published on a
+Tuesday, `cargo audit` found them on the Wednesday, and Dependabot had still not
+reported them. It is a separate job so that a failure names itself and an unreachable
+advisory database cannot fail the tests.
 
 ---
 
