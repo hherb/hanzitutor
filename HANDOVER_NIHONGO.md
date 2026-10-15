@@ -4167,14 +4167,38 @@ nothing recorded.
 byte-identical inside `assets/showcase/` — 10 MB carried twice. Plausibly
 deliberate (a flat set is easier to upload from). Decide whether it stays a copy.
 
-### The two Dependabot warnings that stand
+### The dependency advisories, and the two warnings that stand
 
-`glib` 0.18.5 (unsound) and `proc-macro-error` (unmaintained, via `glib-macros`)
-are one chain — `glib ← atk ← gtk ← muda/tao ← tauri` — and it is **GTK, so
-Linux-only**: `cargo tree -i glib` prints nothing for the host target or
-`aarch64-apple-darwin`. A fix needs gtk-rs 0.20, which needs a `muda`/`tao`/
-`tauri` that has not shipped it. Accepted, and revisited only if the Linux
-milestone happens.
+**Cleared on 15 October 2026, and both were real rather than argued away.**
+
+* **`source-map-js` 1.2.1 → 1.2.2**, three Dependabot alerts at **high** severity
+  (GHSA-68fv-2mgg-jv7q: an event-loop denial of service through indexed source-map
+  section offsets). It arrives through `postcss ← vite`, so it is build tooling and
+  nothing shipped contains it — the same shape as the `devalue` alert the 0.7.0
+  release cleared — but all three lockfiles (`pnpm-lock.yaml` and both apps') now
+  resolve 1.2.2, and `pnpm audit` reports nothing in any of them.
+* **`rustls` 0.23.45 → 0.23.46**, four advisories published on **14 October 2026**
+  (RUSTSEC-2026-0346 to -0349: TLS secrets in `Debug` impls, buffered application
+  data after an ECH rejection, brotli decompression ahead of authentication, and an
+  unauthenticated ServerHello downgrading later connections). **`cargo audit` found
+  these; Dependabot had not reported them.** This one *is* in the shipped app:
+  `rustls ← ureq ← nihongo-tutor`, the blocking client behind the model endpoint
+  (invariant 43), and through `hanzi-sync` and `hanzi-hearing` in the Chinese app.
+
+**The two warnings that stand are one chain and they are Linux-only.** `glib` 0.18.5
+(unsound, RUSTSEC-2024-0429) and `proc-macro-error` 1.0.4 (unmaintained,
+RUSTSEC-2024-0370, via `glib-macros`) arrive as `glib ← atk ← gtk ← muda/tao ←
+tauri`. `cargo tree -i glib` prints nothing for the host target **or** for
+`aarch64-apple-darwin`, and every link in the chain is behind
+`target_os = "linux"` (plus the BSDs), so no Apple, Android or Windows build carries
+it. **Re-verified on 15 October 2026 against the newest released versions rather than
+trusted from the commit that first recorded it**: `muda` 0.21.2 and `tao` 0.37.1 both
+still require `gtk ^0.18`, and so does every released `tauri` including 2.12.4 (the
+newest stable, 14 October). gtk-rs 0.20 is what would carry `glib` 0.20, and nothing
+in the graph asks for it — so the pair stays accepted and is revisited only if the
+Linux milestone ships. (The workspace is on `tauri` 2.12.0; 2.12.4 is current and **no
+advisory asks for it**, so it was left alone rather than folded into a security
+change.)
 
 ---
 

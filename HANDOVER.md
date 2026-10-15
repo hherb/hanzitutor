@@ -3260,7 +3260,12 @@ part's `drawable` flag is checked against the character's own stroke geometry.
   it is not fixable from here because `gtk 0.18` pins `glib ^0.18` — cargo rejects
   the upgrade. **Do not spend time on it**: `cargo tree --target
   aarch64-apple-darwin -e normal | grep glib` returns nothing. ROADMAP has the
-  detail.
+  detail. **As of 15 October 2026 it is the only one left**: the three
+  `source-map-js` alerts and the four `rustls` advisories found that day are fixed,
+  and `cargo audit` and `pnpm audit` then report nothing else in this workspace —
+  see `HANDOVER_NIHONGO.md`, "The dependency advisories, and the two warnings that
+  stand", which also records the re-check that `muda` 0.21.2, `tao` 0.37.1 and
+  `tauri` 2.12.4 all still require `gtk ^0.18`.
 - **Resuming inside a user vocabulary list is built, and its position is published
   as it changes** — §6a is the record, and it names the one item still open (a
   per-entry progress tag).
