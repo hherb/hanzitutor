@@ -2761,7 +2761,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nihongo-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "flate2",
  "hanzi-core",
@@ -2774,7 +2774,7 @@ dependencies = [
 
 [[package]]
 name = "nihongo-tutor"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "hanzi-voice",
  "nihongo-core",

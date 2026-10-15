@@ -1630,7 +1630,7 @@ nothing else, is attributed to the model by name, and is **never recorded** — 
 checklist and the model's answer are two different things, and the screen says which is
 which. It keeps its own learner data — a tally per pair, a tally per pattern, the learner's own
 sentences, an SM-2 review schedule, and the model endpoint and key it was given, in its own
-files, never a shared store. It versions itself at 0.2.1 and has its own handover and roadmap —
+files, never a shared store. It versions itself at 0.2.2 and has its own handover and roadmap —
 **[HANDOVER_NIHONGO.md](HANDOVER_NIHONGO.md)** and
 **[ROADMAP_NIHONGO.md](ROADMAP_NIHONGO.md)**. Nothing else in this README,
 `ROADMAP.md` or `HANDOVER.md` covers it.

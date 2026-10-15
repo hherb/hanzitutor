@@ -165,7 +165,7 @@ model check's real client is tested without the internet (§5).
 | Kanji format | version 2 (`KANJD002`): the 214-radical table sits between the characters and the source (invariant 24) |
 | Grammar format | version 2 (`GRAMM002`): an example carries the course words its sentence uses (invariant 40) |
 | Learner data | six files, `confusions.json`, `grammar.json`, `compositions.json`, `review.json`, `prefs.json` and `model.json`, in the app's own data directory (invariant 15) — the last of them the only one that holds a secret, and the only one written readable by its owner alone |
-| Version | both crates 0.2.1, and the app's to match |
+| Version | both crates 0.2.2, and the app's to match |
 
 The app runs and has been looked at, all of it: the course, the board, stroke-order
 animation, handwriting grading, the discrimination drill, the typing box, the
@@ -1123,7 +1123,7 @@ artifact test asserts.
 
 ### 5. **The Japanese crates version themselves.**
 
-`crates/nihongo-core` and `apps/nihongo-tutor` are `version = "0.2.1"`, **not**
+`crates/nihongo-core` and `apps/nihongo-tutor` are `version = "0.2.2"`, **not**
 `version.workspace = true`. This is not tidiness. While they inherited the
 workspace version they could not be committed independently of a Hanzi Tutor
 release: committing them on top of a 0.6.0 HEAD made the workspace 0.7.0, which

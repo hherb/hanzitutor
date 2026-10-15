@@ -6,7 +6,7 @@ to work on it.
 
 The two roadmaps are separate because the two parts are: they share the geometry
 engine and nothing else that a milestone needs to care about, and they version
-independently (Japanese at 0.2.1). Nothing in `ROADMAP.md` mentions this work, and
+independently (Japanese at 0.2.2). Nothing in `ROADMAP.md` mentions this work, and
 nothing here mentions the Chinese milestones except where code is reused.
 
 ---
@@ -128,7 +128,7 @@ derived from the readings.
 
 ### The app
 
-`apps/nihongo-tutor`, a Tauri app at 0.2.1 with ten thin commands and three
+`apps/nihongo-tutor`, a Tauri app at 0.2.2 with ten thin commands and three
 views: **Practice** (course, board, animation, grading, typing),
 **Tell them apart** (the discrimination drill), and **Licences**.
 
