@@ -38,6 +38,9 @@
     "analyse-attempts": "./scripts/with-cargo-env.sh cargo run --release -p hanzi-store --example analyse-attempts",
     "check:rust": "./scripts/with-cargo-env.sh cargo clippy --workspace --all-targets --features hanzi-core/prepare --features nihongo-core/prepare -- -D warnings",
     "check:web": "svelte-check --tsconfig ./tsconfig.json",
+    "audit": "pnpm run audit:rust && pnpm run audit:web",
+    "audit:rust": "./scripts/with-cargo-env.sh cargo audit --deny warnings",
+    "audit:web": "pnpm audit && pnpm --dir apps/nihongo-tutor audit && pnpm --dir apps/tone-trainer audit",
     "check-android-release": "./scripts/check-android-release.sh"
   },
   "dependencies": {

@@ -1,0 +1,24 @@
+# `cargo audit`'s configuration, run from the repository root by `pnpm run
+# audit:rust` and by the `audit` job in `.github/workflows/ci.yml`.
+#
+# The two advisories below are the only ones this project cannot clear, and both
+# are recorded in prose with their measurements: `HANDOVER.md`'s "accepted
+# dependency advisory" bullet and `HANDOVER_NIHONGO.md` §7, "The dependency
+# advisories, and the two warnings that stand".
+#
+# They are one chain — `glib ← atk ← gtk ← muda/tao ← tauri` — and every link is
+# behind `target_os = "linux"` (plus the BSDs), so `cargo tree -i glib` prints
+# nothing for the host target or for `aarch64-apple-darwin` and no Apple, Android
+# or Windows build carries either crate. The fix would be gtk-rs 0.20, and as of
+# 15 October 2026 the newest released `muda` (0.21.2), `tao` (0.37.1) and `tauri`
+# (2.12.4) all still require `gtk ^0.18`. Revisit when the Linux milestone ships.
+#
+# Ignoring these two by id is what makes the rule worth running: with them
+# ignored, every other advisory — and every *new* unmaintained or unsound warning,
+# which is how `glib` and `proc-macro-error` arrived — fails `cargo audit -D
+# warnings` and therefore the build, rather than scrolling past in a log.
+[advisories]
+ignore = [
+    "RUSTSEC-2024-0429", # glib 0.18.5 — unsound, Linux GTK only
+    "RUSTSEC-2024-0370", # proc-macro-error 1.0.4 — unmaintained, via glib-macros
+]

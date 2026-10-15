@@ -80,3 +80,52 @@ jobs:
 
       - name: Type-check the interface
         run: pnpm run check:web
+
+  # The dependency graphs, audited on every push rather than noticed in a push
+  # message — which is how the four `rustls` advisories published on 14 October
+  # 2026 were found: Dependabot had not reported them yet and `cargo audit` had.
+  #
+  # A job of its own for two reasons: a failure names itself, and an advisory
+  # database that is briefly unreachable is not a reason to fail the tests.
+  #
+  # `cargo audit` runs with `-D warnings` against `.cargo/audit.toml`, which
+  # ignores exactly two advisories — `glib` and `proc-macro-error`, one Linux-GTK
+  # chain that no Apple, Android or Windows build contains — and therefore fails
+  # on everything else, **including a new unmaintained or unsound warning**,
+  # which is how those two arrived. The npm side is three lockfiles (the root and
+  # the two apps), each audited where it lives; `pnpm audit` reads the lockfile,
+  # so this job needs no install.
+  audit:
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # `cargo install cargo-audit` builds from source and takes minutes on a
+      # macOS runner, and the only thing wanted from it is one binary — so it is
+      # cached, and installed only when the cache misses.
+      - name: Cache cargo-audit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ hashFiles('.github/workflows/ci.yml') }}
+
+      - name: Install cargo-audit
+        run: command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
+
+      - name: Audit the Rust graph
+        run: pnpm run audit:rust
+
+      - name: Audit the JavaScript graphs
+        run: pnpm run audit:web
