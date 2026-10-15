@@ -10,32 +10,22 @@
  * the corpus gives the hole (what had to be typed) and the text the sentence writes
  * there (what the reveal puts back). They are the same string for a hole that holds no
  * kanji, and saying "written の方が" beside "のほうが" would be noise, so that case says
- * it once. `wholeSentence` is what `Hear it` speaks and what the reveal draws: the two
- * halves the question came in with the corpus's own text put back between them.
- * `poolNote` states how much of the course can be written — the same measured reach the
- * recognition drill has, because a question with no options needs no distractors.
+ * it once. `poolNote` states how much of the course can be written — the same measured
+ * reach the recognition drill has, because a question with no options needs no
+ * distractors.
+ *
+ * **There is no `wholeSentence` here any more.** It built the sentence as written for
+ * `Hear it`, and the voice was never handed it again: a written sentence is one the
+ * synthesiser parses itself, and it parses this shape wrong (`お腹痛いの？` →
+ * `おふくつういの`). The sentence whole again in kana is the verdict's own `kana`
+ * field, decided in Rust beside the answer it contains, and the screen speaks that.
  */
 
-import type { GrammarDrillSize, GrammarProductionQuestion, GrammarProductionVerdict } from "./types";
+import type { GrammarDrillSize, GrammarProductionVerdict } from "./types";
 
 /** Whether there is anything to send back. */
 export function canSubmit(typed: string): boolean {
   return typed.trim() !== "";
-}
-
-/**
- * The sentence whole again, with the text that was taken out put back.
- *
- * The question arrives in two halves — the corpus's own furigana on each — so the
- * reveal is that string, and `Hear it` speaks it. Nothing is composed: the half the
- * learner could not see is the corpus's own text.
- */
-export function wholeSentence(question: GrammarProductionQuestion, written: string): string {
-  return (
-    question.before.map((part) => part.ruby).join("") +
-    written +
-    question.after.map((part) => part.ruby).join("")
-  );
 }
 
 /**

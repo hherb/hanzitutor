@@ -67,7 +67,7 @@
     reviewHeadline,
     settingsNote,
   } from "./model";
-  import { needsRuby } from "./words";
+  import { needsRuby, spokenRuby } from "./words";
   import {
     canSubmit,
     checks,
@@ -321,7 +321,12 @@
               {/each}
             </p>
             <p class="en" lang="en">{example.en}</p>
-            <SpeakButton text={example.ja} {voice} label="Hear it" note={false} />
+            <!-- The model is drawn as the corpus wrote it and spoken as the corpus
+                 read it: the prompt's examples are the artifact's own sentences, so
+                 their readings are here to be joined (`spokenRuby`) rather than a
+                 second field carrying them. The voice would otherwise parse
+                 `お腹痛いの？` as お + 腹痛(ふくつう) + い. -->
+            <SpeakButton text={spokenRuby(example.ruby)} {voice} label="Hear it" note={false} />
           </li>
         {/each}
       </ol>

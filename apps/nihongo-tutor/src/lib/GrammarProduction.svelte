@@ -28,9 +28,11 @@
    * over the hole (`nihongo_core::input`'s `matches_kana_text` accepts either
    * romanisation, kana typed directly, and the two yotsugana pairs as one sound), and
    * whether it is right is decided in Rust rather than here. `Hear it` appears with
-   * the verdict and speaks the sentence whole: before an answer it would read out the
-   * very pattern the hole took away (invariant 27's rule about what may be spoken,
-   * and N20's about when).
+   * the verdict and speaks the sentence whole **in kana** — the corpus's own readings,
+   * which the verdict carries — because the system voice parses a written sentence its
+   * own way and gets this shape wrong (`お腹痛いの？` → `おふくつういの`; see `words.ts`).
+   * Before an answer there is no control at all: it would read out the very pattern the
+   * hole took away (N20's rule about when).
    */
   import Icon from "./Icon.svelte";
   import SpeakButton from "./SpeakButton.svelte";
@@ -43,7 +45,7 @@
   import type { VoiceStatus } from "./speech";
   import { needsRuby } from "./words";
   import { recordLine, sessionLine } from "./grammarDrill";
-  import { canSubmit, outcomeLine, poolNote, wholeSentence } from "./grammarProduction";
+  import { canSubmit, outcomeLine, poolNote } from "./grammarProduction";
 
   interface Props {
     /** What the `voice` command answered, asked once by `App.svelte`. */
@@ -206,9 +208,11 @@
       <div class="after">
         <button class="next" onclick={next} disabled={busy}>Next question</button>
         <!-- Only now: before the answer, the voice would read out the pattern the
-             blank took away. -->
+             blank took away. Kana, not the sentence as written: the verdict carries
+             the sentence whole again in the corpus's own readings, so the voice is
+             not left to parse `お腹痛いの？` into お + 腹痛(ふくつう) + い. -->
         <SpeakButton
-          text={wholeSentence(question, outcome.verdict.written)}
+          text={outcome.verdict.kana}
           {voice}
           label="Hear it"
           note={false}

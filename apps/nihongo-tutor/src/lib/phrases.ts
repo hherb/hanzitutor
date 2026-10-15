@@ -14,6 +14,7 @@
  */
 
 import type { PhraseBandView, PhraseView } from "./types";
+import { tokenReading } from "./words";
 
 /**
  * The band to open on: the first the corpus actually filled.
@@ -43,4 +44,20 @@ export function totalPhrases(bands: PhraseBandView[]): number {
  */
 export function phraseSource(phrase: PhraseView): string {
   return `Tatoeba #${phrase.id} · ${phrase.author} · ${phrase.licence}`;
+}
+
+/**
+ * The phrase in kana: what `Hear it` says, as against the sentence the screen draws.
+ *
+ * Every token's reading is the artifact's own — `prepare-phrases` gives a reading to
+ * every kanji-bearing token and refuses a phrase whose kanji the vocabulary does not
+ * cover, so the join is complete and `tests/phrases_artifact.rs` pins that no shipped
+ * phrase still holds a kanji once its readings are spelled out. Nothing is chosen
+ * here; the choice that goes wrong is the *voice's*: handed `お腹痛いの？` Apple's
+ * Japanese front end says `おふくつういの` — お + 腹痛(ふくつう) + the い of 痛い left
+ * dangling — where the artifact already reads the sentence おなかいたいの. See
+ * `spokenRuby` in `words.ts` for the measurement.
+ */
+export function spokenPhrase(phrase: PhraseView): string {
+  return phrase.tokens.map(tokenReading).join("");
 }

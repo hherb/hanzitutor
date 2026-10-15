@@ -672,6 +672,26 @@ pub struct ProductionVerdict {
     pub produced: String,
     /// Whether it says the same thing: [`matches_kana_text`](crate::input::matches_kana_text).
     pub correct: bool,
+    /// The sentence whole again **in kana**, the corpus's own reading of every part:
+    /// what `Hear it` says once the answer is in.
+    ///
+    /// Not the sentence as written, and the difference is not cosmetic. The system
+    /// voice is handed text and decides the reading itself, and Apple's Japanese
+    /// front end prefers the noun compound over the sentence's own parse when both
+    /// are available: `お腹痛いの？` is spoken `おふくつういの` — お + 腹痛(ふくつう) +
+    /// a dangling い — because 腹痛 is a word and お腹+痛い is an ambiguity the
+    /// analyser resolves the other way. Measured against the same voice on macOS:
+    /// `お腹が痛いの？` and `おなかがいたいの？` render byte-identical audio, so an
+    /// identical reading is the same sound exactly; `お腹痛いの？` is not that audio,
+    /// and sits beside `おふくつういの？` rather than `おなかいたいの？`. The corpus's
+    /// furigana is right, and this is that furigana spelled out, segment by segment,
+    /// so the voice is asked to read a sound rather than to choose one.
+    ///
+    /// **It belongs to the verdict and not to [`ProductionQuestion`]** on that struct's
+    /// own terms: the sentence read aloud contains the hole's reading, so a question
+    /// carrying it would answer itself — see
+    /// `a_production_question_carries_nothing_that_answers_it`.
+    pub kana: String,
 }
 
 /// Build the question for one sentence, or `None` when its answer cannot be typed.
@@ -719,6 +739,7 @@ pub fn verdict_for(
         answer: answer.blank_kana(),
         produced: crate::input::produce_kana(typed),
         correct: crate::input::matches_kana_text(&answer.blank_kana(), typed),
+        kana: answer.example.kana(),
     })
 }
 
@@ -806,6 +827,16 @@ pub struct GrammarQuestion {
     pub blank: String,
     /// The sentence as written, for the reveal once it is answered.
     pub ja: String,
+    /// The same sentence in kana, the corpus's own reading of every part including
+    /// the blank: what `Hear it` says once the question has been answered.
+    ///
+    /// **[`Self::ja`] is what the screen draws; this is what the voice is given.**
+    /// The system voice chooses its own reading of kanji, and Apple's Japanese front
+    /// end picks the noun compound over the sentence's own parse when both exist —
+    /// `お腹痛いの？` comes out `おふくつういの`, お + 腹痛(ふくつう) + a dangling い.
+    /// The corpus's furigana is not wrong; handing the voice the kanji is what lets
+    /// it choose. See [`ProductionVerdict::kana`] for the measurement.
+    pub kana: String,
     /// The English the corpus pairs with the sentence. Shown with the question:
     /// this is a drill about which pattern fits, not a reading test, and a learner
     /// who cannot yet read the sentence has no other way in.
@@ -978,6 +1009,7 @@ pub fn question_for(
         after,
         blank: answer.blank.text.clone(),
         ja: answer.example.ja.clone(),
+        kana: answer.example.kana(),
         en: answer.example.en.clone(),
         pattern: answer.point.pattern.clone(),
         reading: answer.point.reading.clone(),
@@ -1348,6 +1380,12 @@ mod tests {
         );
         assert!(!question.en.is_empty());
         assert!(!question.before.is_empty() || !question.after.is_empty());
+        // And the sentence is handed over twice: as written, for the screen to draw, and
+        // in kana — the blank's own reading included — for the voice. The second is what
+        // `Hear it` sends, because the voice reads kanji its own way (お腹痛いの？ comes
+        // out おふくつういの; see `GrammarQuestion::kana`).
+        assert_ne!(question.kana, question.ja, "the sentence has a kanji to read");
+        assert!(!question.kana.chars().any(crate::words::is_kanji), "{}", question.kana);
 
         // The same rolls are the same question, which is what makes any of this
         // assertable; a later point roll asks about a later point; and the option
@@ -1576,6 +1614,11 @@ mod tests {
         assert_eq!(right.formation, drawn.formation);
         assert_eq!(right.point, drawn.id);
         assert!(!right.produced.is_empty());
+        // And the sentence whole again in kana, which is what the screen speaks once the
+        // answer is in: the corpus's own readings with the hole's between them, and no
+        // kanji left for the voice to parse (お腹痛いの？ → おふくつういの).
+        assert_eq!(right.kana, answer.example.kana());
+        assert!(!right.kana.chars().any(crate::words::is_kanji), "{}", right.kana);
         assert!(verdict_for(drawn, question.example, &kana).expect("a verdict").correct);
         let wrong = verdict_for(drawn, question.example, "chigau").expect("a verdict");
         assert!(!wrong.correct);

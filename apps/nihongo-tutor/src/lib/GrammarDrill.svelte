@@ -177,8 +177,10 @@
       <div class="after">
         <button class="next" onclick={next} disabled={busy}>Next question</button>
         <!-- Only now: before the answer, the voice would read out the pattern the
-             blank took away. -->
-        <SpeakButton text={question.ja} {voice} label="Hear it" note={false} />
+             blank took away. Kana, not the sentence on screen: the blank's reading is
+             in the payload and the voice is not left to choose one — see `kana` on
+             `nihongo_core::grammar_drill::GrammarQuestion`. -->
+        <SpeakButton text={question.kana} {voice} label="Hear it" note={false} />
       </div>
 
       <div class="reveal">

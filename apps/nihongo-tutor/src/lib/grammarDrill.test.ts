@@ -17,6 +17,7 @@ const question: GrammarQuestion = {
   before: [{ ruby: "私", rt: "わたし" }, { ruby: "は", rt: null }],
   after: [{ ruby: "学生です。", rt: null }],
   ja: "私は学生です。",
+  kana: "わたしはがくせいです。",
   en: "I am a student.",
   pattern: "〜は",
   reading: null,

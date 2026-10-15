@@ -23,11 +23,13 @@
    *
    * ## What is spoken
    *
-   * Each **example sentence as written**, and never the pattern: a pattern like
+   * Each **example sentence as read**, and never the pattern: a pattern like
    * `〜に対して` is not a sentence, and the placeholder `〜` is not something a
-   * synthesiser should be asked to read. This is invariant 37's precedent applied
-   * here — a whole sentence has no ambiguous reading to choose between, which is
-   * why the sentence itself may be handed to the voice where a bare kanji may not.
+   * synthesiser should be asked to read. The readings are the corpus's own furigana
+   * joined (`spokenRuby`), because the voice does not have to be trusted with a
+   * written sentence it can parse its own way — `お腹痛いの？` is said `おふくつういの`
+   * by Apple's Japanese front end. See `words.ts` for the measurement and
+   * `HANDOVER_NIHONGO.md` invariant 37 for the rule this replaces.
    *
    * ## In the course's words, and the pattern's own characters
    *
@@ -51,7 +53,7 @@
   import type { GrammarLinks, GrammarPoint } from "./types";
   import type { VoiceStatus } from "./speech";
   import { charactersNote, positionLabel, wordsNote } from "./grammar";
-  import { needsRuby } from "./words";
+  import { needsRuby, spokenRuby } from "./words";
 
   interface Props {
     /** The point this stage is about, as the course screen's row already holds it. */
@@ -180,7 +182,7 @@
         </p>
         <p class="english" lang="en">{example.en}</p>
         <div class="say">
-          <SpeakButton text={example.ja} {voice} label="Hear it" note={i === 0} />
+          <SpeakButton text={spokenRuby(example.ruby)} {voice} label="Hear it" note={i === 0} />
         </div>
       </article>
     {/each}

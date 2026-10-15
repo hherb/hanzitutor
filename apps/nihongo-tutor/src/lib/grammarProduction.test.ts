@@ -1,27 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { canSubmit, outcomeLine, poolNote, wholeSentence } from "./grammarProduction";
-import type { GrammarProductionQuestion, GrammarProductionVerdict } from "./types";
+import { canSubmit, outcomeLine, poolNote } from "./grammarProduction";
+import type { GrammarProductionVerdict } from "./types";
 
 /**
  * The first question of the course, as `next_grammar_production` sends it — which is
  * to say with the answer absent: 犬の方が猫より好きです。 arrives as its two halves and
- * its English, and the pattern, the meaning and the text taken out are not here
- * because Rust does not send them.
+ * its English, and the pattern, the meaning, the text taken out and the sentence's kana
+ * reading are not here because Rust does not send them.
  */
-const question: GrammarProductionQuestion = {
-  point: "no-hou-ga-yori",
-  example: 0,
-  before: [{ ruby: "犬", rt: "いぬ" }],
-  after: [
-    { ruby: "猫", rt: "ねこ" },
-    { ruby: "より", rt: null },
-    { ruby: "好", rt: "す" },
-    { ruby: "きです。", rt: null },
-  ],
-  en: "I like dogs more than cats.",
-};
-
 const verdict = (over: Partial<GrammarProductionVerdict> = {}): GrammarProductionVerdict => ({
   point: "no-hou-ga-yori",
   pattern: "〜の方が〜より",
@@ -33,6 +20,7 @@ const verdict = (over: Partial<GrammarProductionVerdict> = {}): GrammarProductio
   answer: "のほうが",
   produced: "のほうが",
   correct: true,
+  kana: "いぬのほうがねこよりすきです。",
   ...over,
 });
 
@@ -42,25 +30,6 @@ describe("canSubmit", () => {
     expect(canSubmit("   ")).toBe(false);
     expect(canSubmit("nohouga")).toBe(true);
     expect(canSubmit("のほうが")).toBe(true);
-  });
-});
-
-describe("wholeSentence", () => {
-  it("puts the corpus's own text back between the two halves", () => {
-    // The halves carry the furigana for the kanji around the hole, so the string
-    // `Hear it` speaks is the sentence as the corpus wrote it.
-    expect(wholeSentence(question, "の方が")).toBe("犬の方が猫より好きです。");
-  });
-
-  it("is the two halves alone when the hole is at an end", () => {
-    const atTheEnd: GrammarProductionQuestion = {
-      point: "te-kudasai",
-      example: 1,
-      before: [{ ruby: "ちょっと待っ", rt: "ちょっとまっ" }],
-      after: [],
-      en: "Please wait a moment.",
-    };
-    expect(wholeSentence(atTheEnd, "てください")).toBe("ちょっと待ってください");
   });
 });
 

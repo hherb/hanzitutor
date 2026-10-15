@@ -7,6 +7,7 @@ import {
   needsRuby,
   pageWindow,
   readingOf,
+  spokenRuby,
   tokenIsTappable,
   tokenReading,
 } from "./words";
@@ -113,6 +114,38 @@ describe("pageWindow", () => {
 
   it("treats an empty list as one empty page rather than none", () => {
     expect(pageWindow(0, 10, 1)).toEqual({ offset: 0, limit: 10, page: 1, pages: 1 });
+  });
+});
+
+describe("spokenRuby", () => {
+  it("spells a sentence out of the corpus's own readings, in order", () => {
+    // 私は学生です。 as `prepare-grammar` stores it: one span per reading.
+    expect(
+      spokenRuby([
+        { ruby: "私", rt: "わたし" },
+        { ruby: "は", rt: null },
+        { ruby: "学生", rt: "がくせい" },
+        { ruby: "です。", rt: null },
+      ]),
+    ).toBe("わたしはがくせいです。");
+  });
+
+  it("reads a sentence the way the corpus aligned it, not the way the voice would", () => {
+    // The reported bug, as a test. Handed the kanji, Apple's Japanese front end takes
+    // 腹痛 as the noun ふくつう and leaves the い of 痛い dangling; the artifact's own
+    // ruby reads お腹 as おなか and 痛い as いたい, and that is what is spoken.
+    const spoken = spokenRuby([
+      { ruby: "お腹", rt: "おなか" },
+      { ruby: "痛い", rt: "いたい" },
+      { ruby: "の", rt: null },
+      { ruby: "？", rt: null },
+    ]);
+    expect(spoken).toBe("おなかいたいの？");
+    expect(spoken).not.toContain("ふくつう");
+  });
+
+  it("is empty for nothing to say rather than the string 'undefined'", () => {
+    expect(spokenRuby([])).toBe("");
   });
 });
 

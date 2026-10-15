@@ -23,6 +23,23 @@ export function needsRuby(segment: Ruby): boolean {
 }
 
 /**
+ * A sentence in kana, as its furigana spells it: **what the voice is handed**.
+ *
+ * The screen draws the sentence as written; the sound is this. The readings are the
+ * corpus's own — every span of an imported sentence carries the `rt` its author's
+ * markup put there, and joining them chooses nothing — and that is the point, because
+ * the system voice *does* choose. Apple's Japanese front end reads a written sentence
+ * by its own analysis, and prefers the noun compound where the corpus wrote a
+ * sentence: `お腹痛いの？` is spoken `おふくつういの`, お + 腹痛(ふくつう) + the い of
+ * 痛い left dangling. Measured on the same voice that speaks here: `お腹が痛いの？`
+ * and `おなかいたいの？` render byte-identical audio, so a reading handed over whole
+ * is the sound exactly, and the kanji sentence is not that sound.
+ */
+export function spokenRuby(parts: Ruby[]): string {
+  return parts.map((part) => part.rt ?? part.ruby).join("");
+}
+
+/**
  * The word's reading as its furigana spells it.
  *
  * Falls back to the word's stored reading when there is no furigana: the small

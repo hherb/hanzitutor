@@ -355,6 +355,16 @@ export interface GrammarQuestion {
   blank: string;
   /** The sentence as written, for the reveal. */
   ja: string;
+  /**
+   * The same sentence in kana, the blank's own reading included: what `Hear it` says
+   * once the question is answered.
+   *
+   * The payload carries the blank as text with no reading of its own, so unlike the
+   * phrase and example screens this one cannot project what is spoken from the ruby
+   * it holds — the data layer names it. See `spokenRuby` in `words.ts` for why the
+   * voice is given kana rather than the sentence.
+   */
+  kana: string;
   /** The English the corpus pairs with the sentence. */
   en: string;
   /** The answer's pattern. */
@@ -449,6 +459,16 @@ export interface GrammarProductionVerdict {
   /** What the learner typed, read as kana; empty when none of it could be read. */
   produced: string;
   correct: boolean;
+  /**
+   * The sentence whole again **in kana**, the corpus's own readings of both halves and
+   * of the hole: what `Hear it` says.
+   *
+   * The reveal draws the two halves and the text that was taken out; this is that
+   * sentence as it is spoken, and it is Rust's answer rather than the screen's because
+   * the screen is not the thing that must not be trusted with a written sentence — the
+   * system voice is. See `spokenRuby` in `words.ts`.
+   */
+  kana: string;
 }
 
 /**
