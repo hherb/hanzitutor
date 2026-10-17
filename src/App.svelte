@@ -22,6 +22,7 @@
   import TonePairsPanel from "./lib/TonePairsPanel.svelte";
   import TonedPinyin from "./lib/TonedPinyin.svelte";
   import TonedText from "./lib/TonedText.svelte";
+  import { mnemonicFor, SOUND_NOTE } from "./lib/mnemonics";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import WordsPanel from "./lib/WordsPanel.svelte";
   import { setCharacterTones } from "./lib/tones.svelte";
@@ -3032,8 +3033,17 @@
                   <li>not practised yet</li>
                 {/if}
               </ul>
-              {#if answerVisible && character.etymology}
-                <p class="etymology">{character.etymology}</p>
+              {#if answerVisible}
+                {@const mnemonic = mnemonicFor(character.ch)}
+                {#if character.etymology}
+                  <p class="etymology">{character.etymology}</p>
+                {/if}
+                {#if mnemonic}
+                  <p class="mnemonic">{mnemonic.mnemonic}</p>
+                  {#if mnemonic.sound}
+                    <p class="mnemonic-sound">sound hook “{mnemonic.sound}” — {SOUND_NOTE}</p>
+                  {/if}
+                {/if}
               {/if}
             </div>
             {@render detailFold()}
@@ -3590,6 +3600,22 @@
     margin: 6px 0 0;
     font-size: 0.82rem;
     font-style: italic;
+    color: var(--muted);
+  }
+
+  /* The mnemonic is editorial content, not a measured fact: it sits below the
+     etymology the dataset supplies, and the sound hook carries its own caveat
+     because an English spelling is not a Chinese reading. */
+  .mnemonic {
+    margin: 8px 0 0;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: var(--muted-strong);
+  }
+  .mnemonic-sound {
+    margin: 2px 0 0;
+    font-size: 0.72rem;
+    line-height: 1.45;
     color: var(--muted);
   }
 

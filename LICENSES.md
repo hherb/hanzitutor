@@ -163,6 +163,30 @@ nothing derived from those sources. Its `r` radical field is ignored too, the
 radical coming from Make Me a Hanzi as before. The rank the app does show for a
 word is computed here from the MIT character frequency list.
 
+### The mnemonics — this project's own writing, CC BY-SA 4.0
+
+The memory hook shown beneath a character's etymology is **not** an upstream
+dataset and is **not** derived from Heisig, WaniKani, KKLC, Henshall or any Anki
+deck. It is written for this project, one character per line, in
+`data/mnemonics/zh-<level>.source.tsv`, and built into
+`data/mnemonics/mnemonics.json` by `scripts/build-mnemonics.py`. The component
+images the stories lean on come from the Make Me a Hanzi definitions already
+credited above.
+
+The prose is licensed **CC BY-SA 4.0**, the same share-alike terms as the
+CC-CEDICT text, so a fork that improves the stories owes the same terms back.
+The notice ships as `licences/MNEMONICS-CC-BY-SA-4.0.txt`, beside the full legal
+text already shipped for CC-CEDICT.
+
+Two honesty obligations travel with it, and the interface shows both:
+
+* **A mnemonic is not an etymology.** Where the real history is contested or
+  uninteresting the story is a sound or shape hook, and the Make Me a Hanzi
+  etymology hint on the same card is the one that makes a claim about history.
+* **A sound hook is not a pronunciation.** `sound` is an English approximation
+  chosen to jog the memory; the pinyin on the card is the reading. The note
+  under every hook says so.
+
 ### SQLite — <https://sqlite.org/>
 
 The study data — schedule, attempt log, vocabulary list and course cursor — lives

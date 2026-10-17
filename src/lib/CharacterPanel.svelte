@@ -20,6 +20,7 @@
   import ReadingList from "./ReadingList.svelte";
   import TonedPinyin from "./TonedPinyin.svelte";
   import TonedText from "./TonedText.svelte";
+  import { mnemonicFor, SOUND_NOTE } from "./mnemonics";
 
   interface Props {
     /**
@@ -287,6 +288,7 @@
 
       {#if shown}
         {@const card = cardFor.get(shown.ch)}
+        {@const mnemonic = mnemonicFor(shown.ch)}
         <aside class="detail" aria-label="Character details">
           <div class="head">
             <span class="big" lang="zh-Hans"><TonedText text={shown.ch} /></span>
@@ -318,6 +320,17 @@
 
           {#if shown.etymology}
             <p class="etymology">{shown.etymology}</p>
+          {/if}
+
+          <!-- The mnemonic is editorial, so it comes from the bundled set rather
+               than from the dataset. The sound hook is labelled where it is
+               shown: it is an English jog, not the reading, and the pinyin above
+               is the authority. -->
+          {#if mnemonic}
+            <p class="mnemonic">{mnemonic.mnemonic}</p>
+            {#if mnemonic.sound}
+              <p class="mnemonic-sound">sound hook “{mnemonic.sound}” — {SOUND_NOTE}</p>
+            {/if}
           {/if}
 
           {#if shown.components.parts.length > 0}
@@ -712,6 +725,23 @@
     font-size: 0.78rem;
     line-height: 1.5;
     color: var(--muted-strong);
+  }
+
+  .mnemonic {
+    margin: 0;
+    padding: 8px 10px;
+    border-left: 2px solid var(--accent);
+    font-size: 0.8rem;
+    line-height: 1.55;
+    color: var(--muted-strong);
+  }
+
+  .mnemonic-sound {
+    margin: -2px 0 0;
+    padding: 0 10px;
+    font-size: 0.72rem;
+    line-height: 1.45;
+    color: var(--muted);
   }
 
   /* What the character is built from: the parts, in reading order, each one

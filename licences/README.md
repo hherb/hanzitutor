@@ -18,6 +18,7 @@ there is exactly one copy of each to keep current.
 | `MIT-complete-hsk-vocabulary.txt` | The HSK 3.0 word list, its levels, and the locally derived rank | MIT |
 | `CC-CEDICT.txt` | The word readings and definitions, with the attribution and the changes this app made | CC BY-SA 4.0 |
 | `CC-BY-SA-4.0.txt` | The full legal text of the share-alike licence above | CC BY-SA 4.0 |
+| `MNEMONICS-CC-BY-SA-4.0.txt` | The mnemonic stories and English sound hooks bundled with the app, drafted here and edited in `data/mnemonics/` | CC BY-SA 4.0 |
 | `OFL-1.1.txt` | Noto Sans SC, the CJK face bundled for the interface | SIL Open Font License 1.1 |
 | `SQLite-Public-Domain.txt` | SQLite, the engine behind the study database — the first piece of third-party *code* in the binary | Public domain |
 | `MIT-rusqlite.txt` | The `rusqlite` bindings, and `libsqlite3-sys` which vendors SQLite | MIT |

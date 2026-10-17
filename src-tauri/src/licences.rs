@@ -186,6 +186,20 @@ pub const NOTICES: &[LicenceNotice] = &[
         text: include_str!("../../licences/CC-BY-SA-4.0.txt"),
     },
     LicenceNotice {
+        id: "mnemonics",
+        title: "Mnemonics — this app's own set",
+        licence: "CC BY-SA 4.0",
+        source: "https://github.com/hherb/hanzitutor/tree/main/data/mnemonics",
+        covers: "The story and the English sound hook shown beneath a character's \
+                 etymology. Drafted with a language model from this project's own \
+                 brief and edited here; share-alike because the rest of the \
+                 project's content is. The stories are memory hooks, not \
+                 etymologies, and the sound hooks are not pronunciations.",
+        file: "licences/MNEMONICS-CC-BY-SA-4.0.txt",
+        bundle_path: "licences/MNEMONICS-CC-BY-SA-4.0.txt",
+        text: include_str!("../../licences/MNEMONICS-CC-BY-SA-4.0.txt"),
+    },
+    LicenceNotice {
         id: "font",
         title: "Noto Sans SC — interface font",
         licence: "SIL Open Font License 1.1",

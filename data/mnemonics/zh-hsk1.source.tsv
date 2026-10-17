@@ -1,0 +1,186 @@
+# HSK 1 mnemonics — authored source.
+#
+# One character per line, tab separated:
+#   character <TAB> sound hook <TAB> meaning <TAB> mnemonic
+#
+# This file is the thing to edit. scripts/build-mnemonics.py joins in pinyin,
+# rank, decomposition and component glosses from data/raw/ and writes
+# zh-hsk1.jsonl plus zh-hsk1.preview.md. Keep the meaning to the sense the
+# course teaches; the dictionary's other senses belong in the dictionary.
+#
+# Drafts, not doctrine: a mnemonic is a memory hook, not an etymology. Edit
+# freely, keep the ones that fire, replace the ones that do not.
+的	duh	possessive particle	The white (白) spoon (勺) on the table is obviously mine — duh. It marks who owns what.
+一	ee	one	A single flat line: one. Say ee — one clean stroke, nothing to remember.
+是	sure	to be	The sun (日) stands on a foot (疋) at noon: it IS exactly here, sure.
+不	boo	not	A bird flaps up into a ceiling (一 over the wings): no way. Boo — refused.
+了	luh	completed-action particle	A baby swaddled and done up: the action is wrapped, finished. Luh — it is over.
+在	dzai	at, in	Your talent (才) is rooted in the earth (土): you are AT that spot.
+人	wren	person	Two legs mid-stride: a person. A wren is a tiny person with a tail.
+有	yo	to have	A hand holding meat (月): I HAVE dinner. Yo, it is mine.
+我	war	I, me	My hand (扌) grips a halberd (戈): I stand at war. Wǒ — I.
+他	ta	he, him	A person (亻) plus also (也): him too. Ta — he is off.
+这	juh	this	Walk (辶) up to the writing (文) and point: THIS one.
+个	guh	measure word, piece	One person (人) on a stick (丨): a single item. One grunt — guh — per piece.
+们	mun	plural marker	People (亻) pouring through a door (门): a crowd. -men makes many.
+中	jong	middle	A line (丨) straight through a box (口): dead centre, like a gong in the town square.
+来	lie	to come	Ripe wheat (未) with grain (丷) bends toward you: the harvest COMES. Lái — lie down here.
+上	shahng	up, on	A stroke above the line: up. Shàng — a rising note.
+大	dah	big	A person (人) with arms stretched wide (一): BIG. Dah — ta-da!
+和	her	and, with	Grain (禾) in every mouth (口): harmony. Hé — her, and everyone else too.
+国	gwor	country	Jade (玉) kept inside the borders (囗): the country's treasure.
+说	shwaw	to speak	Speech (讠) pouring out in a stream (兑): say it.
+时	sure	time	The sun (日) moves one inch (寸): that is time. Sure — time flies.
+出	chew	to go out	A sprout (屮) pushes out of its pot (凵): out. Chew your way through the lid.
+会	hway	can, to be able; meeting	People (人) gather like clouds (云): together we CAN. Huì — a meeting.
+你	knee	you	A person (亻) standing there: YOU. I point at your knee.
+对	dway	correct; toward	A hand (又) measuring an inch (寸): exactly right. Duì — correct.
+生	shung	to be born; life	A shoot (屮) breaks through the soil (土): life begins.
+能	nung	can, to be able	A bear (厶 head, ⺼ body, 匕匕 claws) can do anything. Néng — able.
+子	dzuh	child	A baby with arms out and legs wrapped: child.
+那	nah	that	That city over there (阝). Nah — not this one, THAT one.
+下	shyah	down, under	A stroke below the line: down. Xià — the low note.
+年	nyen	year	A man (干) carries the harvest home: another YEAR.
+后	hoe	after, behind	Behind the mouth (口) that speaks comes the reply: AFTER you. Hòu — hoe the row behind.
+作	dzwo	to make, do	A person (亻) starts something new (乍): makes it. Zuò — do it.
+里	lee	inside; li (distance)	Measure the field (田) in the soil (土): the village INSIDE the fields, a li across.
+家	jah	home, family	A roof (宀) over a pig (豕): home, where the family eats.
+多	dwor	many, much	Two nights (夕夕) in a row: many days, much work.
+么	muh	question suffix	A tiny hook and a private dot: a small question hanging in the air. Meh — what?
+去	chew	to go	Soil (土) on your feet and off you GO. Qù — chew up the road.
+学	shweh	to study	A roof (冖) over a child (子), sparks (⺍) of knowledge above: study.
+都	doh	all	Everyone in the city (阝): ALL of them. Dōu — doh, the whole lot.
+同	tong	same	One common (凡) mouth (口) for all: SAME. Tóng — same tongue.
+现	shyen	to appear	Jade (王) appears the moment you SEE (见) it.
+没	may	not have	Water (氵) and a hand (殳) closing on nothing: I have NOT. Méi — may not.
+面	myen	face; surface	A face drawn around an eye: face, surface.
+起	chee	to rise, get up	You lift YOURSELF (己) and walk (走) up: rise.
+看	can	to look, see	A hand (手) shading the eye (目): look far. Kàn — can you see?
+天	tyen	sky; day	Above (一) the big person (大) is the sky.
+分	fun	to divide; minute	Eight (八) pieces cut by a knife (刀): divide. Fēn — fun to share.
+好	how	good	Woman (女) with child (子): good. Hǎo — how good.
+小	shyow	small	A hook with two small dots: small.
+些	shyeh	some	This (此) and two (二) more: SOME.
+样	yahng	shape, kind	A tree (木) shaped like a sheep (羊): shape, pattern.
+她	ta	she	Woman (女) also (也): she too.
+本	bun	root; (measure word for books)	A line at the tree's base (木 plus 一): the ROOT, the origin.
+前	chyen	front, before	The dog (chien) runs in FRONT of you.
+开	kay	to open	Two hands (廾) lift the latch (一): OPEN.
+想	shyahng	to think, want	You look (相) with your heart (心): think, and want.
+机	gee	machine	Wood (木) on a frame (几): a machine. Jī — gee, it works.
+十	sure	ten	A cross: ten. Sure, ten fingers' worth.
+工	gong	work	A workman's spade: work. Gōng — the gong that starts the shift.
+明	ming	bright	Sun (日) and moon (月) together: bright.
+三	sahn	three	Three parallel lines: three.
+关	gwan	to close	Two horns (丷) over the sky (天): the gate CLOSES.
+点	dyen	dot; o'clock	Fire (灬) marks a DOT. Diǎn — a dot on the clock.
+高	gow	high, tall	A tall palace tower: HIGH.
+很	hun	very	Step (彳) after step (艮): VERY far.
+见	jen	to see	An eye on legs: SEE. Jiàn — I see you, Jen.
+什	shen	what (in 什么)	Ten (十) people (亻) all asking: WHAT?
+二	are	two	Two lines: two. Èr — are there two?
+果	gwor	fruit	Fruit (田) on a tree (木).
+西	she	west	A bird settling into its nest at sunset: west.
+月	yweh	moon, month	A crescent moon: month.
+话	hwah	speech, words	Speech (讠) from a tongue (舌): words.
+回	hway	to return	A mouth in a box, going round: return.
+老	low	old	A bent old person with long hair and a cane: old. Lǎo — low, close to the ground.
+先	shyen	first	A foot (止) stepping ahead of a person (儿): first.
+儿	are	son; child	A child with legs: son.
+东	dong	east	The sun (日) rising behind a tree (木): east.
+水	shway	water	A river running between two banks: water.
+名	ming	name	At night (夕) a mouth (口) calls your NAME.
+几	gee	how many; small table	A small table (几) with things to count: how many?
+认	ren	to recognize	Speech (讠) plus person (人): I know that person by their words.
+系	she	system; link	A thread (糸) tying things together: a system, a link.
+气	chee	air, gas	A person breathing steam: air, qi.
+打	dah	to hit, play	A hand (扌) with a nail (丁): HIT it.
+女	new	woman	A woman seated sideways.
+四	suh	four	A child (儿) in a room with four walls (囗): four.
+电	dyen	electricity	Lightning (乚) flashing from a cloud: electricity.
+少	show	few, little	A pinch of grains: LITTLE. Shǎo — show me just a few.
+太	tie	too, very	A big (大) person with a dot: TOO big.
+再	dzai	again	Two fish (冉) on one line (一): caught AGAIN.
+做	dzwo	to do, make	A person (亻) causing (故) things to happen: DO.
+期	chee	period, term	Its (其) own month (月): a set PERIOD.
+五	woo	five	A cross with an extra bar: five.
+书	shoe	book	A pen making marks on paper: book. Shū — shoe-shaped pages.
+听	ting	to listen	A mouth (口) and an axe (斤): LISTEN, or else.
+住	joo	to live, stay	A person (亻) who hosts (主): they LIVE here.
+北	bay	north	Two people (匕匕) standing back to back: north.
+觉	jweh	to feel; to wake	Under a roof (冖) you SEE (见) the light: wake up, feel.
+师	shir	teacher	A knife (刂) and a banner (帀): the teacher leads.
+今	jin	now, today	A mouth saying it right NOW.
+院	ywen	courtyard; hospital	A finished (完) place (阝): a walled courtyard.
+识	sure	to know	Speech (讠) plus only (只): I only know the words.
+候	hoe	to wait; time	A person (亻) standing and waiting.
+飞	fey	to fly	A bird flapping its wings: fly.
+车	chuh	vehicle	A cart with two wheels seen from above: vehicle.
+服	foo	clothes	A body (月) putting on (又) a coat: clothes.
+怎	dzun	how	A new (乍) heart (心) wonders: HOW?
+呢	nuh	question particle	A mouth (口) and ni: and what about...? Ne.
+叫	jyow	to call	A mouth (口) with a hook: CALL out.
+影	ying	shadow; film	Sunlight (景) with streaks (彡): a shadow.
+字	dzuh	character, word	A child (子) under a roof (宀) learning characters.
+爱	eye	to love	A hand (爫) brings a friend (友) under the roof (冖): love.
+商	shahng	commerce	A bright (冏) market stall: commerce.
+请	ching	please	Speech (讠) plus green (青): PLEASE.
+视	shir	to look at	An altar (礻) and an eye (见): observe.
+九	joe	nine	A bent elbow: nine.
+写	shyeh	to write	Under a cover (冖), a hand (与): WRITE.
+八	bah	eight	Two lines dividing: eight.
+吗	mah	question particle	A mouth (口) and a horse (马): a question.
+吃	chir	to eat	A mouth (口) begging (乞) for food: EAT.
+六	lyoh	six	A lid (亠) over eight (八): six.
+医	ee	doctor; medicine	An arrow (矢) in a box (匸): the doctor pulls it out.
+号	how	number; date	A mouth (口) shouting a number.
+语	yoo	language	The speech (讠) of me (吾): my language.
+七	chee	seven	A line with a hook: seven.
+兴	shing	interest; to thrive	Sparks (⺍) over a base: interest catches, things thrive.
+星	shing	star	The sun (日) born (生) into the night: a star.
+京	jing	capital	A tall capital building on a hill.
+米	mee	rice	Grains of rice scattered.
+客	kuh	guest	Each (各) person under the roof (宀) is a guest.
+友	yo	friend	Two hands (又又) joined: friend.
+钱	chyen	money	Metal (钅) coins: money.
+热	ruh	hot	Held (执) over fire (灬): HOT.
+坐	dzwo	to sit	Two people (从) on the earth (土): sit.
+校	shyow	school	A wooden (木) building where people meet (交): school.
+脑	now	brain	Flesh (⺼) with a box (凶): the brain.
+谁	shway	who	Speech (讠) to a bird (隹): WHO are you?
+哪	nah	which	A mouth (口) plus that (那): WHICH?
+喜	she	joy; to like	Drums (壴) and a mouth (口): joy.
+习	she	to practise	Wings flapping again and again: practice.
+欢	hwan	happy	A hand (又) and a yawn (欠): happy.
+冷	lung	cold	Ice (冫) plus a command (令): COLD.
+汉	hun	Han Chinese	The Han river (氵): Chinese.
+衣	ee	clothes	A dress: clothes.
+妈	ma	mother	Woman (女) with a horse (马): MAMA.
+读	do	to read	Speech (讠) sold (卖) by the page: READ.
+买	my	to buy	A coin and a head: BUY. Mǎi — my money.
+岁	sway	year of age	A mountain (山) of evenings (夕): years pass.
+块	kwai	piece; (currency unit)	A clod of earth (土): a PIECE.
+姐	jay	elder sister	Woman (女) and also (且): elder sister.
+亮	lyahng	bright	An oil lamp under a roof: bright.
+朋	pung	friend	Two moons (月月) side by side: friends.
+谢	shyeh	to thank	Speech (讠) shot (射) at you: THANKS.
+钟	jong	clock	Metal (钅) in the middle (中): a bell, a clock.
+雨	yoo	rain	Drops falling from a cloud: rain.
+饭	fan	meal, cooked rice	Food (饣) turned (反) into a meal.
+睡	shway	to sleep	Eyes (目) drooping (垂): sleep.
+喝	her	to drink	A mouth (口) and a question (曷): DRINK?
+午	woo	noon	The sun directly overhead: noon.
+店	dyen	shop	A building (广) occupied (占): a shop.
+爸	bah	father	Father (父) plus ba: DAD.
+桌	jwaw	table	Tall (卓) wood (木): a table.
+菜	tsai	vegetable; dish	Grass (艹) picked (采): vegetables.
+茶	cha	tea	Grass (艹), a person (人), a tree (木): tea.
+狗	go	dog	Animal (犭) plus a phrase (句): DOG.
+杯	bay	cup	Wood (木) plus not (不): a cup — though not wooden.
+租	zoo	to rent	Grain (禾) paid regularly (且): rent.
+昨	dzwaw	yesterday	The sun (日) newly (乍) set: YESTERDAY.
+漂	pyow	to float	Water (氵) plus a ticket (票): FLOAT.
+椅	ee	chair	Wood (木) plus strange (奇): a chair.
+猫	meow	cat	Animal (犭) in the sprouts (苗): CAT.
+喂	way	hello (on the phone)	A mouth (口) calling out: HEY.
+苹	ping	apple (in 苹果)	Grass (艹) plus flat (平): apple.

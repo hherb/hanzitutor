@@ -1,0 +1,17 @@
+Mnemonics — Hanzi Tutor's own mnemonic set
+
+Copyright © Horst Herb and contributors.
+
+The mnemonic text under data/mnemonics/ — the story and the English sound hook
+shown beneath a character's etymology — is licensed under the Creative Commons
+Attribution-ShareAlike 4.0 International licence (CC BY-SA 4.0). The full legal
+text is licences/CC-BY-SA-4.0.txt, distributed with this application; a copy of
+this notice and a link to the licence travel with the app.
+
+The set was drafted with a language model from the project's own brief, and it
+is edited in the repository's source files. It is memory-hook material: the
+stories are not etymologies, and the sound hooks are English approximations of
+the reading, not the reading itself. Read the pinyin on the card for the actual
+sound.
+
+Source: https://github.com/hherb/hanzitutor/tree/main/data/mnemonics
