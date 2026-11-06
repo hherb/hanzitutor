@@ -95,6 +95,12 @@ pub struct Word {
     /// The reading of the **whole word**, e.g. `"xuéxí"`. Measured from a
     /// dictionary rather than composed from the characters, which is what makes
     /// a polyphonic word such as 着急 come out `zháojí` and not `zhejí`.
+    ///
+    /// Written as pinyin writes a word: run together, with an apostrophe before
+    /// a vowel-initial syllable (`nǚ'ér`, `kě'ài`) and an erhua `r` on the
+    /// syllable it belongs to (`yīdiǎnr`). See
+    /// [`crate::pinyin::join_syllables`]; [`crate::pinyin::syllables`] divides it
+    /// back into one syllable per character, erhua's 儿 aside.
     pub pinyin: String,
     /// English definition. Several senses are joined with `"; "`.
     pub meaning: String,
@@ -877,7 +883,8 @@ impl Dataset {
     ///   is right (着急 → `zháojí`) and the meaning is a definition rather than
     ///   a guess.
     /// * **Anything else** gets a composed reading, because word pinyin is the
-    ///   characters' readings run together (学习 → `xuéxí`), and no meaning: a
+    ///   characters' readings run together (学习 → `xuéxí`, 很爱 → `hěn'ài`,
+    ///   by [`crate::pinyin::join_syllables`]), and no meaning: a
     ///   word's meaning cannot be composed from its parts, and inventing one
     ///   would be worse than leaving it blank. The per-character hints are
     ///   returned so the learner has the material to write it.
@@ -917,12 +924,13 @@ impl Dataset {
             // that is a definition rather than an invention.
             (word.pinyin.clone(), word.meaning.clone())
         } else {
-            // Readings run together, which is how word pinyin is written.
-            let composed: String = hints
-                .iter()
-                .filter_map(|h| h.pinyin.first())
-                .cloned()
-                .collect();
+            // Readings run together, which is how word pinyin is written — with
+            // the apostrophe pinyin puts before a vowel-initial syllable, so the
+            // draft divides back into its characters (很爱 is `hěn'ài`, not the
+            // `hěnài` that reads as hě + nài). A transcription is read against
+            // this reading, so a lost boundary there is a wrong syllable here.
+            let firsts: Vec<&String> = hints.iter().filter_map(|h| h.pinyin.first()).collect();
+            let composed = crate::pinyin::join_syllables(&firsts);
             (composed, String::new())
         };
 
@@ -1223,6 +1231,39 @@ mod tests {
         assert_eq!(lookup.pinyin, "zhōngguórén");
         assert_eq!(lookup.meaning, "");
         assert_eq!(lookup.characters.len(), 3);
+    }
+
+    #[test]
+    fn a_composed_reading_keeps_its_syllable_boundaries() {
+        // Issue #19: run together with nothing between them, 很 + 爱 read back as
+        // hě + nài, and 我爱你 and 你饿 could not be divided at all. The
+        // composed draft is what a transcription is read against, so it has to
+        // split back into the characters it was made from.
+        let dataset = Dataset::from_chars(vec![
+            speaker('很', &["hěn"], "very"),
+            speaker('爱', &["ài"], "love"),
+            speaker('我', &["wǒ"], "I"),
+            speaker('你', &["nǐ"], "you"),
+            speaker('饿', &["è"], "hungry"),
+            speaker('好', &["hǎo"], "good"),
+        ]);
+        let split = |text: &str| -> Vec<String> {
+            let reading = dataset.lookup_text(text).pinyin;
+            crate::pinyin::aligned_reading(text, &reading)
+                .unwrap_or_else(|| panic!("{text} ({reading}) should align"))
+                .into_iter()
+                .map(|s| s.text)
+                .collect()
+        };
+
+        assert_eq!(dataset.lookup_text("很爱").pinyin, "hěn'ài");
+        assert_eq!(split("很爱"), ["hěn", "ài"]);
+        assert_eq!(dataset.lookup_text("我爱你").pinyin, "wǒ'àinǐ");
+        assert_eq!(split("我爱你"), ["wǒ", "ài", "nǐ"]);
+        assert_eq!(dataset.lookup_text("你饿").pinyin, "nǐ'è");
+        assert_eq!(split("你饿"), ["nǐ", "è"]);
+        // And no apostrophe where pinyin does not write one.
+        assert_eq!(dataset.lookup_text("你好").pinyin, "nǐhǎo");
     }
 
     #[test]

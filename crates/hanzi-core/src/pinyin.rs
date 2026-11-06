@@ -19,11 +19,19 @@
 //!
 //! A full Mandarin syllable inventory is about 400 entries. It is not needed: a
 //! syllable is `[initial consonants] vowel-run [coda]`, the only codas are `n`,
-//! `ng` and `r`, and CC-CEDICT already writes an apostrophe at every ambiguous
-//! boundary (`xī'ān`, not `xiān`). So a vowel run followed by anything but a coda
-//! starts a new syllable, which is a rule rather than a table — and the caller
-//! checks the result against the number of characters, so a reading this gets
-//! wrong is refused rather than scored.
+//! `ng` and `r`, and pinyin writes an apostrophe before every syllable that starts
+//! with a vowel (`xī'ān`, not `xiān`; `nǚ'ér`, not `nǚér`). So a vowel run
+//! followed by anything but a coda starts a new syllable, and a consonant with a
+//! vowel straight after it opens the next syllable rather than closing this one —
+//! `qùnián` is `qù` + `nián`, and `quánguó` is `quán` + `guó`, because `quáng` +
+//! `uó` would have been written `quáng'uó`. An `r` with no vowel after it is erhua and stays
+//! on its syllable (`yīdiǎnr` is `yī` + `diǎnr`). That is a rule rather than a
+//! table — and the caller checks the result against the number of characters, so
+//! a reading this gets wrong is refused rather than scored.
+//!
+//! [`join_syllables`] is the other half of the rule: it writes syllables as one
+//! reading with the apostrophes pinyin uses, which is how the dataset stores a
+//! word's reading and how a reading composed from characters is written.
 
 use std::ops::Range;
 
@@ -92,10 +100,11 @@ impl ToneTarget {
 /// Is this character part of a syllable's vowel run?
 ///
 /// The syllabic nasals (`ń`, `ň`, `ǹ`, `ḿ`) count: 嗯 is `ń`, a syllable with no
-/// vowel letter in it at all.
+/// vowel letter in it at all. So do capitals: CC-CEDICT capitalises a proper
+/// noun, and the `É` of 俄语 `Éyǔ` starts a syllable the way `é` does.
 fn is_vowel(ch: char) -> bool {
     matches!(
-        ch,
+        lowercase(ch),
         'a' | 'e'
             | 'i'
             | 'o'
@@ -134,9 +143,18 @@ fn is_vowel(ch: char) -> bool {
     )
 }
 
+/// The lower-case form of a letter, when it is a single letter.
+fn lowercase(ch: char) -> char {
+    let mut lower = ch.to_lowercase();
+    match (lower.next(), lower.next()) {
+        (Some(only), None) => only,
+        _ => ch,
+    }
+}
+
 /// The tone a single accented vowel marks, if it marks one.
 fn marked_tone(ch: char) -> Option<u8> {
-    match ch {
+    match lowercase(ch) {
         'ā' | 'ē' | 'ī' | 'ō' | 'ū' | 'ǖ' | 'ń' | 'ḿ' => Some(1),
         'á' | 'é' | 'í' | 'ó' | 'ú' | 'ǘ' => Some(2),
         'ǎ' | 'ě' | 'ǐ' | 'ǒ' | 'ǔ' | 'ǚ' | 'ň' => Some(3),
@@ -184,28 +202,44 @@ fn split_run_spans(run: &str) -> Vec<(String, usize, usize)> {
             j += 1;
         }
 
+        let vowel_at = |k: usize| chars.get(k).copied().is_some_and(is_vowel);
         if j < chars.len() {
-            let next_is_vowel = j + 1 < chars.len() && is_vowel(chars[j + 1]);
+            let mut nasal = false;
             match chars[j] {
-                // `ng` is always a coda. A bare `n` is a coda unless a vowel
-                // follows it, in which case it is the next syllable's initial —
-                // this is what separates `qùnián` into `qù` + `nián`.
-                'n' if j + 1 < chars.len() && chars[j + 1] == 'g' => {
+                // `ng` is a coda unless a vowel follows it. Pinyin writes an
+                // apostrophe before a syllable that starts with a vowel
+                // (`píng'ān`), so an unmarked `ng` + vowel can only be `n`
+                // closing this syllable and `g` opening the next: `quánguó` is
+                // `quán` + `guó`, never `quáng` + `uó`.
+                'n' if chars.get(j + 1) == Some(&'g') && !vowel_at(j + 2) => {
                     current.push('n');
                     current.push('g');
                     j += 2;
+                    nasal = true;
                 }
-                'n' if !next_is_vowel => {
+                // A bare `n` is a coda unless a vowel follows it, in which case
+                // it is the next syllable's initial — this is what separates
+                // `qùnián` into `qù` + `nián`. Before `g` + vowel it is the coda,
+                // by the rule above.
+                'n' if !vowel_at(j + 1) => {
                     current.push('n');
                     j += 1;
+                    nasal = true;
                 }
                 // `r` is a coda only when a vowel does not follow: `ér` is one
-                // syllable, `nǚrén` is two.
-                'r' if !next_is_vowel => {
+                // syllable, `nǚrén` is two. After a vowel this is also erhua:
+                // `zhèr` is one syllable.
+                'r' if !vowel_at(j + 1) => {
                     current.push('r');
                     j += 1;
                 }
                 _ => {}
+            }
+            // Erhua after a nasal: `diǎnr`, `kòngr`. No syllable is a lone
+            // `r`, so an `r` with no vowel after it belongs to this one.
+            if nasal && chars.get(j) == Some(&'r') && !vowel_at(j + 1) {
+                current.push('r');
+                j += 1;
             }
         }
 
@@ -215,6 +249,40 @@ fn split_run_spans(run: &str) -> Vec<(String, usize, usize)> {
 
     if !current.is_empty() {
         out.push((current, start, chars.len()));
+    }
+    out
+}
+
+/// Write syllables as one word's reading, the way pinyin writes a word.
+///
+/// The syllables are run together (`nán` + `guò` → `nánguò`), with an
+/// apostrophe before a syllable that begins with `a`, `o` or `e` and is not the
+/// first (`nǚ` + `ér` → `nǚ'ér`, `hěn` + `ài` → `hěn'ài`). That is the
+/// orthography's own rule, and it is exactly the boundary [`syllables`] could not
+/// find without one: every other boundary is unambiguous to it, including an
+/// `n` or `ng` before a consonant-initial syllable (`quán` + `guó`). A part that
+/// is a bare erhua `r` is written onto the syllable before it, as pinyin writes
+/// it (`zhè` + `r` → `zhèr`).
+///
+/// A part may itself be several syllables already run together; the rule is
+/// applied at the joins only. Blank parts are skipped.
+pub fn join_syllables<S: AsRef<str>>(parts: &[S]) -> String {
+    let mut out = String::new();
+    for part in parts {
+        let part = part.as_ref().trim();
+        if part.is_empty() {
+            continue;
+        }
+        if !out.is_empty()
+            && !part.eq_ignore_ascii_case("r")
+            && part
+                .chars()
+                .next()
+                .is_some_and(|first| matches!(plain_vowel(lowercase(first)), 'a' | 'o' | 'e' | 'ê'))
+        {
+            out.push('\'');
+        }
+        out.push_str(part);
     }
     out
 }
@@ -961,6 +1029,113 @@ mod tests {
         // And the same letters without it are one syllable.
         assert_eq!(split("xiān"), ["xiān"]);
         assert_eq!(split("nǐ hǎo"), ["nǐ", "hǎo"]);
+    }
+
+    #[test]
+    fn an_unmarked_ng_before_a_vowel_is_n_then_g() {
+        // Pinyin writes an apostrophe before a syllable that starts with a vowel
+        // (`píng'ān`), so an `ng` with a vowel straight after it and no apostrophe
+        // is `n` closing one syllable and `g` opening the next. Issue #19: every
+        // one of these came back as `-ng` + a vowel-initial syllable.
+        assert_eq!(split("quánguó"), ["quán", "guó"]);
+        assert_eq!(split("jiànguò"), ["jiàn", "guò"]);
+        assert_eq!(split("nánguò"), ["nán", "guò"]);
+        assert_eq!(split("cānguān"), ["cān", "guān"]);
+        assert_eq!(split("bàngōngshì"), ["bàn", "gōng", "shì"]);
+        assert_eq!(split("réngōng"), ["rén", "gōng"]);
+        assert_eq!(tones("quánguó"), [2, 2]);
+        // An `ng` that is not followed by a vowel is still the coda.
+        assert_eq!(split("Zhōngguó"), ["Zhōng", "guó"]);
+        assert_eq!(split("péngyou"), ["péng", "you"]);
+        assert_eq!(split("chénglǐ"), ["chéng", "lǐ"]);
+        assert_eq!(split("zhuāng"), ["zhuāng"]);
+    }
+
+    #[test]
+    fn the_apostrophes_the_orthography_writes_are_boundaries() {
+        // The words issue #19 found refused or mis-split once the dataset's
+        // separators were lost, written the way the dataset now stores them.
+        assert_eq!(split("wǎn'ān"), ["wǎn", "ān"]);
+        assert_eq!(split("rán'ér"), ["rán", "ér"]);
+        assert_eq!(split("nǚ'ér"), ["nǚ", "ér"]);
+        assert_eq!(split("kě'ài"), ["kě", "ài"]);
+        assert_eq!(split("dì'èr"), ["dì", "èr"]);
+        assert_eq!(tones("nǚ'ér"), [3, 2]);
+        assert_eq!(tones("kě'ài"), [3, 4]);
+    }
+
+    #[test]
+    fn a_trailing_r_is_erhua_and_joins_its_syllable() {
+        // 儿化: the `r` is written onto the syllable before it and is not a
+        // syllable of its own, whatever coda that syllable already has.
+        assert_eq!(split("zhèr"), ["zhèr"]);
+        assert_eq!(split("nǎr"), ["nǎr"]);
+        assert_eq!(split("wánr"), ["wánr"]);
+        assert_eq!(split("yīdiǎnr"), ["yī", "diǎnr"]);
+        assert_eq!(split("yǒukòngr"), ["yǒu", "kòngr"]);
+        assert_eq!(split("bùyīhuǐr"), ["bù", "yī", "huǐr"]);
+        assert_eq!(tones("yīdiǎnr"), [1, 3]);
+        // An `r` with a vowel after it is still the next syllable's initial.
+        assert_eq!(split("ānrán"), ["ān", "rán"]);
+        assert_eq!(split("shēngrì"), ["shēng", "rì"]);
+    }
+
+    #[test]
+    fn a_capital_vowel_is_still_a_vowel() {
+        // 俄语: CC-CEDICT capitalises a proper noun, and `É` has to start a
+        // syllable the way `é` does.
+        assert_eq!(split("Éyǔ"), ["É", "yǔ"]);
+        assert_eq!(tones("Éyǔ"), [2, 3]);
+        assert_eq!(split("Ōuzhōu"), ["Ōu", "zhōu"]);
+    }
+
+    #[test]
+    fn syllables_are_joined_with_an_apostrophe_only_where_pinyin_writes_one() {
+        assert_eq!(join_syllables(&["nán", "guò"]), "nánguò");
+        assert_eq!(join_syllables(&["quán", "guó"]), "quánguó");
+        assert_eq!(join_syllables(&["nǚ", "ér"]), "nǚ'ér");
+        assert_eq!(join_syllables(&["kě", "ài"]), "kě'ài");
+        assert_eq!(join_syllables(&["dì", "èr"]), "dì'èr");
+        assert_eq!(join_syllables(&["wǎn", "ān"]), "wǎn'ān");
+        assert_eq!(join_syllables(&["hěn", "ài"]), "hěn'ài");
+        assert_eq!(join_syllables(&["Tiān", "ān", "mén"]), "Tiān'ānmén");
+        assert_eq!(join_syllables(&["É", "yǔ"]), "Éyǔ");
+        // An erhua `r` is written onto the syllable before it.
+        assert_eq!(join_syllables(&["zhè", "r"]), "zhèr");
+        assert_eq!(join_syllables(&["yī", "diǎn", "r"]), "yīdiǎnr");
+        // A leading vowel needs nothing in front of it, and blanks are skipped.
+        assert_eq!(join_syllables(&["ài", "hào"]), "àihào");
+        assert_eq!(join_syllables(&["", "ān", " "]), "ān");
+        assert_eq!(join_syllables::<&str>(&[]), "");
+    }
+
+    #[test]
+    fn a_joined_reading_splits_back_into_the_syllables_it_was_joined_from() {
+        // The join and the split are two halves of one rule, so every pair of
+        // initial-less and coda-ending syllables that could run together has to
+        // come back apart.
+        let cases: &[&[&str]] = &[
+            &["nán", "guò"],
+            &["quán", "guó"],
+            &["hěn", "ài"],
+            &["wǒ", "ài", "nǐ"],
+            &["nǐ", "è"],
+            &["xī", "ān"],
+            &["píng", "ān"],
+            &["fāng", "àn"],
+            &["fǎn", "gǔ"],
+            &["rén", "gōng"],
+            &["qù", "nián"],
+            &["nǚ", "rén"],
+            &["ān", "rán"],
+            &["ér", "nǚ"],
+            &["zhōng", "guó", "rén"],
+            &["bàn", "gōng", "shì"],
+        ];
+        for parts in cases {
+            let joined = join_syllables(parts);
+            assert_eq!(split(&joined), *parts, "{joined}");
+        }
     }
 
     #[test]

@@ -3756,6 +3756,19 @@ are reported, so the interface can show "tone 2 (dictionary 3)". Rules 2 and 3 d
 *which character* it is, not which tone, which is why the function takes the characters
 as well as the tones. README has the table and the full argument.
 
+**The stored reading keeps pinyin's own boundaries.** `prepare-data` used to delete
+the source's spaces, and the splitter then put about a hundred boundaries in the wrong
+place (全国 → `quáng` + `uó`, 晚安 → `wǎ` + `nān`) and could not divide 131 readings at
+all (女儿 `nǚér`, 可爱 `kěài`) — issue #19. The source is now joined by
+`pinyin::join_syllables`, which writes the apostrophe orthography requires before a
+vowel-initial syllable and nothing anywhere else (`nánguò`, `nǚ'ér`, erhua `zhèr`), so
+the artifact holds the reading a dictionary prints and the interface can show it as it
+is. The splitter's half of the same rule: an unmarked `ng` + vowel is `n` | `g`, and an
+`r` with no vowel after it is erhua. A reading composed from characters by
+`lookup_text` is joined the same way. `crates/hanzi-core/tests/words_artifact.rs` holds
+every word in the artifact to it. Erhua words (57) still make no tone target: their 儿
+is not a syllable, and a target is one syllable per character.
+
 **Do not "simplify" this by scoring character by character.** Sandhi is a word-level
 phenomenon; a per-character loop cannot see it.
 
