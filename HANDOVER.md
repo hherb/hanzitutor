@@ -3769,6 +3769,22 @@ is. The splitter's half of the same rule: an unmarked `ng` + vowel is `n` | `g`,
 every word in the artifact to it. Erhua words (57) still make no tone target: their 儿
 is not a syllable, and a target is one syllable per character.
 
+Three consequences of the same rule, each deliberate:
+
+- **`TonedPinyin` writes what the reading itself has between two syllables**
+  (`syllableGaps` in `tones.svelte.ts`), so an aligned `kě'ài` is shown with its
+  apostrophe rather than as `kěài`. It walks the text for the syllables Rust gave it;
+  it does not split anything.
+- **Character search reads a typed `n` + `g` + vowel both ways.** Typed pinyin has no
+  apostrophes, and `pingan` is `pin` + `gan` by the orthography, so `CharacterQuery`
+  also searches `ping` + `an`. Without that, 平安, 公安, 方案 and 嫦娥 typed toneless
+  stopped finding their characters.
+- **Readings saved by older builds are not migrated.** A vocabulary entry saved as
+  `píngān` (no apostrophe — what `prepare-data` used to store) now aligns as `pín` +
+  `gān`. The tones are unchanged and still on the right characters; only which
+  syllable the `g` is coloured with moves. Re-adding the word from the dictionary
+  stores `píng'ān`.
+
 **Do not "simplify" this by scoring character by character.** Sandhi is a word-level
 phenomenon; a per-character loop cannot see it.
 

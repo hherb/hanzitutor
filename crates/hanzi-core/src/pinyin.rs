@@ -19,8 +19,10 @@
 //!
 //! A full Mandarin syllable inventory is about 400 entries. It is not needed: a
 //! syllable is `[initial consonants] vowel-run [coda]`, the only codas are `n`,
-//! `ng` and `r`, and pinyin writes an apostrophe before every syllable that starts
-//! with a vowel (`xī'ān`, not `xiān`; `nǚ'ér`, not `nǚér`). So a vowel run
+//! `ng` and `r`, and pinyin writes an apostrophe before every non-initial syllable
+//! that starts with `a`, `o` or `e` (`xī'ān`, not `xiān`; `nǚ'ér`, not `nǚér`) —
+//! which is every vowel-initial syllable there is, because one that would start
+//! with `i`, `u` or `ü` is written with `y` or `w` instead. So a vowel run
 //! followed by anything but a coda starts a new syllable, and a consonant with a
 //! vowel straight after it opens the next syllable rather than closing this one —
 //! `qùnián` is `qù` + `nián`, and `quánguó` is `quán` + `guó`, because `quáng` +
@@ -203,17 +205,20 @@ fn split_run_spans(run: &str) -> Vec<(String, usize, usize)> {
         }
 
         let vowel_at = |k: usize| chars.get(k).copied().is_some_and(is_vowel);
+        // The codas are matched in lower case, as the vowels are, so a reading
+        // typed in capitals splits the way it does in lower case.
+        let letter_at = |k: usize| chars.get(k).copied().map(lowercase);
         if j < chars.len() {
             let mut nasal = false;
-            match chars[j] {
+            match lowercase(chars[j]) {
                 // `ng` is a coda unless a vowel follows it. Pinyin writes an
-                // apostrophe before a syllable that starts with a vowel
-                // (`píng'ān`), so an unmarked `ng` + vowel can only be `n`
+                // apostrophe before a syllable that starts with `a`, `o` or `e`
+                // (`píng'ān`), and no syllable starts with another vowel, so an unmarked `ng` + vowel can only be `n`
                 // closing this syllable and `g` opening the next: `quánguó` is
                 // `quán` + `guó`, never `quáng` + `uó`.
-                'n' if chars.get(j + 1) == Some(&'g') && !vowel_at(j + 2) => {
-                    current.push('n');
-                    current.push('g');
+                'n' if letter_at(j + 1) == Some('g') && !vowel_at(j + 2) => {
+                    current.push(chars[j]);
+                    current.push(chars[j + 1]);
                     j += 2;
                     nasal = true;
                 }
@@ -222,7 +227,7 @@ fn split_run_spans(run: &str) -> Vec<(String, usize, usize)> {
                 // `qùnián` into `qù` + `nián`. Before `g` + vowel it is the coda,
                 // by the rule above.
                 'n' if !vowel_at(j + 1) => {
-                    current.push('n');
+                    current.push(chars[j]);
                     j += 1;
                     nasal = true;
                 }
@@ -230,15 +235,15 @@ fn split_run_spans(run: &str) -> Vec<(String, usize, usize)> {
                 // syllable, `nǚrén` is two. After a vowel this is also erhua:
                 // `zhèr` is one syllable.
                 'r' if !vowel_at(j + 1) => {
-                    current.push('r');
+                    current.push(chars[j]);
                     j += 1;
                 }
                 _ => {}
             }
             // Erhua after a nasal: `diǎnr`, `kòngr`. No syllable is a lone
             // `r`, so an `r` with no vowel after it belongs to this one.
-            if nasal && chars.get(j) == Some(&'r') && !vowel_at(j + 1) {
-                current.push('r');
+            if nasal && letter_at(j) == Some('r') && !vowel_at(j + 1) {
+                current.push(chars[j]);
                 j += 1;
             }
         }
@@ -1087,6 +1092,23 @@ mod tests {
         assert_eq!(split("Éyǔ"), ["É", "yǔ"]);
         assert_eq!(tones("Éyǔ"), [2, 3]);
         assert_eq!(split("Ōuzhōu"), ["Ōu", "zhōu"]);
+    }
+
+    #[test]
+    fn a_reading_in_capitals_splits_as_it_does_in_lower_case() {
+        // Capital vowels are vowels, so capital codas have to be codas too, or
+        // ZHONGGUO comes apart as ZHO + NGGUO.
+        assert_eq!(split("ZHONGGUO"), ["ZHONG", "GUO"]);
+        assert_eq!(split("NIHAO"), ["NI", "HAO"]);
+        assert_eq!(split("QUANGUO"), ["QUAN", "GUO"]);
+        assert_eq!(split("NÜ'ÉR"), ["NÜ", "ÉR"]);
+        assert_eq!(split("YIDIANR"), ["YI", "DIANR"]);
+        assert_eq!(split("Nánjīng"), ["Nán", "jīng"]);
+        assert_eq!(
+            aligned_reading("你好", "NIHAO").map(|l| l.len()),
+            Some(2),
+            "two syllables, not five"
+        );
     }
 
     #[test]
