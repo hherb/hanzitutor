@@ -16,7 +16,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hanzi_core::progress::{build_queue, ReviewSource, MAX_HISTORY};
-use hanzi_core::{AttemptMeasures, BoardSize, CursorStore, Pace, ProgressStore, Rating, SettingsStore, VocabStore};
+use hanzi_core::{
+    AttemptMeasures, BoardSize, CursorStore, Pace, PracticeMode, ProgressStore, Rating,
+    SettingsStore, VocabStore,
+};
 use hanzi_store::{Db, SCHEMA_VERSION};
 
 /// A private directory per test, cleaned up by the caller's `finish`.
@@ -1486,6 +1489,158 @@ fn a_position_can_be_cleared() {
     let rows = db.vocab_cursors().unwrap();
     assert_eq!(rows.len(), 1, "cleared, not removed");
     assert_eq!(rows[0].entry_uuid, None);
+
+    finish(&dir);
+}
+
+#[test]
+fn a_traced_attempt_is_kept_with_its_measures_but_out_of_the_review_log() {
+    // A trace is not a review (issue #15): it must not reach the log the schedule
+    // is folded from — that log travels to every device, and each of them would
+    // schedule it — but its measures are still the learner's handwriting and are
+    // kept beside it.
+    let dir = dir("traced");
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+
+    let measures = some_measures();
+    store
+        .record_practice_at(
+            '好',
+            97.0,
+            "2026-09-19T09:00:00Z",
+            PracticeMode::Trace,
+            Some(measures),
+        )
+        .unwrap();
+    store.save().unwrap();
+
+    assert!(
+        db.attempts(None).unwrap().is_empty(),
+        "not in the review log"
+    );
+    assert!(
+        db.own_attempts().unwrap().is_empty(),
+        "so nothing to publish"
+    );
+    let reopened = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(reopened.is_new('好'), "and no card was written for it");
+
+    let conn = rusqlite::Connection::open(db.path()).unwrap();
+    let (ch, at, score, rating, shape, legible): (String, String, f32, String, f32, bool) = conn
+        .query_row(
+            "SELECT ch, at, score, rating, shape, legible FROM trace_attempt",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .expect("the trace is in its own table");
+    assert_eq!(
+        (
+            ch.as_str(),
+            at.as_str(),
+            score,
+            rating.as_str(),
+            shape,
+            legible
+        ),
+        (
+            "好",
+            "2026-09-19T09:00:00Z",
+            97.0,
+            "easy",
+            measures.shape,
+            measures.legible
+        )
+    );
+    drop(conn);
+
+    // A recall afterwards is the device's first logged attempt: the trace took no
+    // sequence number, so the published numbering has no hole in it.
+    let mut store = reopened;
+    store.record_at('好', 80.0, "2026-09-19T09:05:00Z").unwrap();
+    store.save().unwrap();
+    let own = db.own_attempts().unwrap();
+    assert_eq!(own.len(), 1);
+    assert_eq!(own[0].seq, 1);
+
+    finish(&dir);
+}
+
+#[test]
+fn traces_read_back_in_order_with_their_measures() {
+    let dir = dir("traced-read");
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    let measures = some_measures();
+    for (ch, score, at, measured) in [
+        ('学', 40.0, "2026-09-19T09:02:00Z", None),
+        ('好', 97.0, "2026-09-19T09:00:00Z", Some(measures)),
+    ] {
+        store
+            .record_practice_at(ch, score, at, PracticeMode::Trace, measured)
+            .unwrap();
+    }
+    // A review in the same save goes to the review log and nowhere else.
+    store.record_at('好', 80.0, "2026-09-19T09:01:00Z").unwrap();
+    store.save().unwrap();
+
+    let traces = db.traced_attempts().unwrap();
+    assert_eq!(traces.len(), 2);
+    assert_eq!((traces[0].ch.as_str(), traces[0].score), ("好", 97.0));
+    assert_eq!(traces[0].measures, Some(measures));
+    assert_eq!(
+        (traces[1].ch.as_str(), traces[1].rating.as_str()),
+        ("学", "again")
+    );
+    assert_eq!(traces[1].measures, None, "unmeasured stays unmeasured");
+    assert_eq!(db.attempts(None).unwrap().len(), 1);
+
+    finish(&dir);
+}
+
+#[test]
+fn a_schema_six_database_gains_the_trace_table_and_keeps_its_attempts() {
+    let dir = dir("older-traces");
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    store.record_at('好', 80.0, "2026-09-19T09:00:00Z").unwrap();
+    store.save().unwrap();
+    drop(store);
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        conn.execute("DROP TABLE trace_attempt", []).unwrap();
+        conn.execute("UPDATE meta SET value = '6' WHERE key = 'schema'", [])
+            .unwrap();
+    }
+
+    let db = Db::open(&dir).unwrap();
+    assert_eq!(
+        db.attempts(None).unwrap().len(),
+        1,
+        "the review log is untouched"
+    );
+    assert!(db.traced_attempts().unwrap().is_empty());
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    store
+        .record_practice_at(
+            '好',
+            90.0,
+            "2026-09-19T09:05:00Z",
+            PracticeMode::Trace,
+            None,
+        )
+        .unwrap();
+    store.save().unwrap();
+    assert_eq!(db.traced_attempts().unwrap().len(), 1, "and usable at once");
 
     finish(&dir);
 }

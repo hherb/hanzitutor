@@ -17,6 +17,7 @@ import type {
   LicenceNotice,
   MarkedTone,
   Point,
+  PracticeMode,
   MicrophoneStatus,
   ProgressView,
   RadicalGroup,
@@ -317,12 +318,17 @@ export const progress = () => invoke<ProgressView>("progress");
  * `measures` is the report the score came from. Passing it is what makes the
  * grader tunable later: nothing can recover the per-measure result once the
  * strokes are gone. It is optional so a caller with only a score still records.
+ *
+ * `mode` is how the board was set. A `trace` is logged and schedules nothing,
+ * and so is a recall made before the character was due (unless it failed);
+ * leaving it out means `recall`.
  */
 export const recordProgress = (
   ch: string,
   score: number,
   measures?: AttemptMeasures,
-) => invoke<ProgressView>("record_progress", { ch, score, measures });
+  mode?: PracticeMode,
+) => invoke<ProgressView>("record_progress", { ch, score, measures, mode });
 
 /** What is due for review now, most overdue first, from both sources. */
 export const reviewQueue = () => invoke<ReviewView>("review_queue");

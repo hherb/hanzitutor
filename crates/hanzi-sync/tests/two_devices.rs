@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hanzi_core::progress::CardState;
-use hanzi_core::{CursorStore, ProgressStore, VocabStore};
+use hanzi_core::{CursorStore, PracticeMode, ProgressStore, VocabStore};
 use hanzi_store::Db;
 use hanzi_sync::{full_log, own_log, read_attempts, recompute, sync, Baselines, FolderStore};
 
@@ -431,6 +431,58 @@ fn three_devices_all_end_up_with_the_same_log() {
     finish(&dir_a);
     finish(&dir_b);
     finish(&dir_c);
+    finish(&shared);
+}
+
+#[test]
+fn early_checks_on_two_devices_fold_to_one_review_on_both() {
+    // Issue #15, through sync. Each device checks the same character a couple of
+    // times in one sitting, the two sittings interleaved and neither device having
+    // seen the other's. Only the first attempt was a review — the rest came before
+    // the card was due — and that has to be what *both* devices conclude from the
+    // merged log, because neither schedule is merged: each is refolded.
+    //
+    // The laptop also traces the character once. A trace is not a review, so it is
+    // never published and the phone never hears of it.
+    let (dir_a, db_a, mut progress_a) = device("early-a");
+    let (dir_b, db_b, mut progress_b) = device("early-b");
+    let shared = scratch("early-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    record(&mut progress_a, '好', 80.0, "2026-09-19T09:00:00Z");
+    record(&mut progress_b, '好', 85.0, "2026-09-19T09:01:00Z");
+    record(&mut progress_a, '好', 88.0, "2026-09-19T09:02:00Z");
+    record(&mut progress_b, '好', 96.0, "2026-09-19T09:03:00Z");
+    progress_a
+        .record_practice_at(
+            '好',
+            99.0,
+            "2026-09-19T09:05:00Z",
+            PracticeMode::Trace,
+            None,
+        )
+        .unwrap();
+    progress_a.save().unwrap();
+
+    assert_eq!(
+        sync(&db_a, &remote).unwrap().published,
+        2,
+        "the trace stays home"
+    );
+    sync(&db_b, &remote).unwrap();
+    sync(&db_a, &remote).unwrap();
+
+    let on_laptop = card(&reload(&db_a), "好");
+    let on_phone = card(&reload(&db_b), "好");
+    assert_eq!(on_laptop, on_phone, "one log, one schedule");
+    assert_eq!(on_laptop.attempts, 4, "every check is in the history");
+    assert_eq!(on_laptop.repetitions, 1, "but only the first was a review");
+    assert_eq!(on_laptop.interval_days, 1.0);
+    assert_eq!(on_laptop.due, "2026-09-20T09:00:00Z");
+    assert_eq!(on_laptop.lapses, 0);
+
+    finish(&dir_a);
+    finish(&dir_b);
     finish(&shared);
 }
 

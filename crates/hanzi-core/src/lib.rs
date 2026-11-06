@@ -63,8 +63,8 @@ pub use raster::INK_WIDTH;
 pub use progress::{
     build_queue, entry_standing, fold_attempts, fold_from, Attempt, AttemptMeasures,
     AttemptRecord, CardState, CardView, CursorDocument, CursorSink, CursorStore, CursorView,
-    ProgressError, ProgressSink, ProgressStore, ProgressView, Rating, ReviewItem, ReviewSource,
-    ReviewView, Scheduler, Sm2, KNOWN_INTERVAL_DAYS,
+    PracticeMode, ProgressError, ProgressSink, ProgressStore, ProgressView, Rating, ReviewItem,
+    ReviewSource, ReviewView, Scheduler, Sm2, KNOWN_INTERVAL_DAYS,
 };
 pub use settings::{
     BoardSize, Pace, Settings, SettingsError, SettingsPatch, SettingsSink, SettingsStore,

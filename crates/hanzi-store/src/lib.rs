@@ -44,7 +44,7 @@ use hanzi_core::progress::{
 use hanzi_core::settings::{BoardSize, Pace, Settings, SettingsError, SettingsSink};
 use hanzi_core::time::now_iso8601;
 use hanzi_core::vocab::{Document as VocabDocument, VocabError, VocabSink};
-use hanzi_core::{Attempt, AttemptMeasures, AttemptRecord, CardState, Entry, Rating};
+use hanzi_core::{Attempt, AttemptMeasures, AttemptRecord, CardState, Entry, PracticeMode, Rating};
 use rusqlite::{params, Connection};
 
 pub use schema::SCHEMA_VERSION;
@@ -273,6 +273,40 @@ impl Db {
         Ok(out)
     }
 
+    /// The attempts written over the faint guide, oldest first.
+    ///
+    /// Not part of [`Db::attempts`] on purpose: that is the review log the schedule
+    /// is folded from and sync publishes, and a trace is neither. These are kept
+    /// for their measures alone, and only on the device that made them.
+    pub fn traced_attempts(&self) -> Result<Vec<TracedAttempt>, String> {
+        let conn = self.lock();
+        let path = self.path();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, ch, at, score, rating, shape, position, ink, ink_coverage,
+                        order_score, legible, order_correct
+                 FROM trace_attempt ORDER BY at, id",
+            )
+            .map_err(|e| at(&path, e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(TracedAttempt {
+                    id: row.get(0)?,
+                    ch: row.get(1)?,
+                    at: row.get(2)?,
+                    score: row.get(3)?,
+                    rating: row.get(4)?,
+                    measures: read_measures(row, 5)?,
+                })
+            })
+            .map_err(|e| at(&path, e))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| at(&path, e))?);
+        }
+        Ok(out)
+    }
+
     /// Merge attempts made elsewhere into the log, returning how many were new.
     ///
     /// An attempt already held — same `(device_id, seq)` — is left exactly as it
@@ -345,32 +379,7 @@ impl Db {
 
 /// Read one attempt row, in the column order [`ATTEMPT_COLUMNS`] selects.
 fn read_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoggedAttempt> {
-    // All seven measure columns are written together or not at all, so "is
-    // there a measure?" is one question. Asking it per column would invent a
-    // half-measured attempt that cannot occur, and `NULL` must stay distinct
-    // from a measured zero: `ink = 0.0` is a real verdict, "never measured" is
-    // not a verdict at all.
-    let shape: Option<f32> = row.get(7)?;
-    let position: Option<f32> = row.get(8)?;
-    let ink: Option<f32> = row.get(9)?;
-    let ink_coverage: Option<f32> = row.get(10)?;
-    let order: Option<f32> = row.get(11)?;
-    let legible: Option<bool> = row.get(12)?;
-    let order_correct: Option<bool> = row.get(13)?;
-    let measures = match (shape, position, ink, ink_coverage, order, legible, order_correct) {
-        (Some(shape), Some(position), Some(ink), Some(ink_coverage), Some(order), Some(legible), Some(order_correct)) => {
-            Some(AttemptMeasures {
-                shape,
-                position,
-                ink,
-                ink_coverage,
-                order,
-                legible,
-                order_correct,
-            })
-        }
-        _ => None,
-    };
+    let measures = read_measures(row, 7)?;
     let id: i64 = row.get(0)?;
     // A row with no device or no sequence number cannot be named, and it means the
     // database never finished the upgrade that adds them. Read as a plain `String`
@@ -404,6 +413,39 @@ fn read_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<LoggedAttempt> {
         rating: row.get(6)?,
         measures,
     })
+}
+
+/// Read the seven measure columns starting at `first`, in the order
+/// `shape, position, ink, ink_coverage, order_score, legible, order_correct`.
+///
+/// All seven are written together or not at all, so "is there a measure?" is one
+/// question. Asking it per column would invent a half-measured attempt that cannot
+/// occur, and `NULL` must stay distinct from a measured zero: `ink = 0.0` is a real
+/// verdict, "never measured" is not a verdict at all.
+fn read_measures(
+    row: &rusqlite::Row<'_>,
+    first: usize,
+) -> rusqlite::Result<Option<AttemptMeasures>> {
+    let shape: Option<f32> = row.get(first)?;
+    let position: Option<f32> = row.get(first + 1)?;
+    let ink: Option<f32> = row.get(first + 2)?;
+    let ink_coverage: Option<f32> = row.get(first + 3)?;
+    let order: Option<f32> = row.get(first + 4)?;
+    let legible: Option<bool> = row.get(first + 5)?;
+    let order_correct: Option<bool> = row.get(first + 6)?;
+    // Every column or none: one `NULL` among them means no measure at all.
+    let all = || {
+        Some(AttemptMeasures {
+            shape: shape?,
+            position: position?,
+            ink: ink?,
+            ink_coverage: ink_coverage?,
+            order: order?,
+            legible: legible?,
+            order_correct: order_correct?,
+        })
+    };
+    Ok(all())
 }
 
 /// The order the log is read in, and the order the schedule is folded in.
@@ -463,6 +505,23 @@ impl LoggedAttempt {
     pub fn origin(&self) -> (&str, i64) {
         (&self.device_id, self.seq)
     }
+}
+
+/// One attempt written over the faint guide — kept, but not a review.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TracedAttempt {
+    /// This file's rowid. A trace never leaves the device, so it needs no other
+    /// name.
+    pub id: i64,
+    pub ch: String,
+    /// When it happened, ISO-8601 UTC.
+    pub at: String,
+    pub score: f32,
+    /// `again`, `hard`, `good` or `easy`: what the score would have meant had it
+    /// been a review.
+    pub rating: String,
+    /// What the trace was graded from, when the caller had it.
+    pub measures: Option<AttemptMeasures>,
 }
 
 /// An attempt made on another device, on its way into this log.
@@ -540,10 +599,18 @@ impl ProgressSink for Db {
                 write_card(&tx, ch, card).map_err(|e| progress_error(&path, e))?;
             }
         }
+        // A trace is not a review: it goes to its own table, and takes no number
+        // from the device's sequence — see `trace_attempt` in the schema.
+        let (traced, reviewed): (Vec<&AttemptRecord>, Vec<&AttemptRecord>) = attempts
+            .iter()
+            .partition(|record| record.mode == PracticeMode::Trace);
         let first = next_seq(&tx, &self.device_id).map_err(|e| progress_error(&path, e))?;
-        for (seq, record) in (first..).zip(attempts.iter()) {
+        for (seq, record) in (first..).zip(reviewed) {
             insert_attempt(&tx, &self.device_id, seq, record)
                 .map_err(|e| progress_error(&path, e))?;
+        }
+        for record in traced {
+            insert_trace(&tx, record).map_err(|e| progress_error(&path, e))?;
         }
         tx.commit().map_err(|e| progress_error(&path, e))
     }
@@ -604,6 +671,31 @@ fn insert_attempt(
         params![
             device_id,
             seq,
+            record.ch,
+            record.attempt.at,
+            record.attempt.score,
+            record.attempt.rating.name(),
+            m.map(|m| m.shape),
+            m.map(|m| m.position),
+            m.map(|m| m.ink),
+            m.map(|m| m.ink_coverage),
+            m.map(|m| m.order),
+            m.map(|m| m.legible),
+            m.map(|m| m.order_correct),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Keep one traced attempt, with its measures, out of the review log.
+fn insert_trace(conn: &Connection, record: &AttemptRecord) -> rusqlite::Result<()> {
+    let m = record.measures;
+    conn.execute(
+        "INSERT INTO trace_attempt (ch, at, score, rating,
+                                    shape, position, ink, ink_coverage, order_score,
+                                    legible, order_correct)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
             record.ch,
             record.attempt.at,
             record.attempt.score,

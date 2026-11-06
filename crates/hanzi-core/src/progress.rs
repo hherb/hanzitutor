@@ -178,6 +178,29 @@ impl Rating {
     }
 }
 
+/// How an attempt was written: from memory, or over a visible guide.
+///
+/// The schedule is a model of what the learner can *recall*, so only a recall
+/// attempt is a review. Tracing a faint copy of the character tests the hand and
+/// not the memory — a perfect trace says nothing about whether the character could
+/// be written tomorrow without the guide — so a traced attempt is kept for its
+/// measures and never moves a card. See [`ProgressStore::record_practice_at`].
+///
+/// Spelled as the interface spells its board mode, which is what it is sent as.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PracticeMode {
+    /// Written from memory, with nothing on the board to follow. A review.
+    ///
+    /// The default because it is what every caller meant before the mode was
+    /// passed at all: an attempt that does not say how it was made is scheduled
+    /// the way every attempt used to be.
+    #[default]
+    Recall,
+    /// Written over the faint guide. Logged, not scheduled.
+    Trace,
+}
+
 /// One recorded attempt.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -211,7 +234,9 @@ pub struct CardState {
     pub interval_days: f32,
     /// SM-2's ease factor.
     pub ease: f32,
-    /// Consecutive successful reviews; reset by [`Rating::Again`].
+    /// Consecutive successful reviews; reset by [`Rating::Again`]. An attempt
+    /// made before the card was due is not a review and does not count — see
+    /// [`Sm2`].
     pub repetitions: u32,
     /// Recent attempts, oldest first, capped at [`MAX_HISTORY`].
     #[serde(default)]
@@ -268,7 +293,17 @@ impl CardState {
 /// more data than one learner produces quickly — without touching the store or
 /// the interface.
 pub trait Scheduler {
-    /// Apply one review to `card`, whose attempt has already been recorded.
+    /// Apply one recall attempt to `card`, whose attempt has already been
+    /// recorded.
+    ///
+    /// Every recall attempt reaches this, including one made before the card was
+    /// due; whether that is a review is the policy's decision, not the store's.
+    /// A traced attempt never does — it is not a recall at all.
+    ///
+    /// It must be a **pure function of the card, the rating and `at`**. Sync
+    /// rebuilds every card by folding the attempt log through this same method on
+    /// every device, so anything else it consulted — the clock, a setting, the
+    /// device — would leave two devices with two schedules for one history.
     fn review(&self, card: &mut CardState, rating: Rating, at: &str);
 }
 
@@ -286,21 +321,74 @@ pub trait Scheduler {
 ///
 /// One review produces one new due date. Nothing here is a live-updated model,
 /// which is what makes it testable.
+///
+/// ## Only a due card is reviewed
+///
+/// An attempt made **before** the card is due, and not failed, is practice: it is
+/// kept in the history and moves nothing — not the repetitions, not the interval,
+/// not the ease, not the due date. Without this every press of Check was a review,
+/// so four checks a minute apart climbed 1 → 6 → 15 → 37.5 days, and three good
+/// ones in a sitting could make a character "known". SM-2 itself says the same
+/// thing: its intervals are the gaps *between* repetitions, and an item re-drilled
+/// in the same session is drilled, not repeated. A failure is different, and still
+/// resets the card whenever it happens — forgetting is news even before the date,
+/// and a character the learner has just shown they cannot write must not keep a
+/// schedule that says they can.
+///
+/// Comparing `at` with the due date makes this a function of the card and the
+/// attempt alone, so a device folding a merged log reaches the same verdict on
+/// every attempt as the device that recorded it.
+///
+/// ## Ease and lapses belong to a learned card
+///
+/// A failure costs ease, and counts as a lapse, only when the card had been
+/// learned — `repetitions > 0`. A character met for the first time, or one still
+/// being relearned after a lapse, has nothing to lapse from, and charging it the
+/// textbook −0.54 each time pinned ease at the floor after two or three failures
+/// while first learning a character; every interval after that paid for it. The
+/// passing grades keep SM-2's textbook update — Good is neutral, Hard costs a
+/// little and Easy earns a little back — because a Good review that raised ease
+/// would let a run of ordinary passes outgrow the evidence; with the two gates
+/// above, a card no longer reaches the floor by being practised, only by being
+/// forgotten after it was known.
+///
+/// ## A due date is an instant, not a day
+///
+/// A one-day card practised at 21:00 is not due at an 08:00 session the next
+/// morning, so a learner who studies at different times of day sees daily
+/// intervals drift later, and an early-morning attempt on it is the early review
+/// above. Rounding to the start of the learner's local day would fix that, but
+/// the fold would then need the learner's time zone, recorded with each attempt
+/// so that every device rounds alike; it is left as a deliberate future change
+/// rather than slipped in here.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Sm2;
 
 impl Scheduler for Sm2 {
     fn review(&self, card: &mut CardState, rating: Rating, at: &str) {
+        let failed = matches!(rating, Rating::Again);
+        // Not due yet, and not forgotten: practice, which the history already
+        // holds. See the type's documentation for why a failure is the exception.
+        if !failed && !card.is_due(at) {
+            return;
+        }
+        let learned = card.repetitions > 0;
+
         // The textbook SM-2 ease update, on the 0..=5 quality scale: an easy
-        // answer raises ease slightly, a failure lowers it a lot.
-        let q = rating.quality() as f32;
-        card.ease =
-            (card.ease + (0.1 - (5.0 - q) * (0.08 + (5.0 - q) * 0.02))).clamp(MIN_EASE, MAX_EASE);
+        // answer raises ease slightly, a failure lowers it a lot — but only the
+        // failure of a card that had been learned.
+        if learned || !failed {
+            let q = rating.quality() as f32;
+            card.ease = (card.ease + (0.1 - (5.0 - q) * (0.08 + (5.0 - q) * 0.02)))
+                .clamp(MIN_EASE, MAX_EASE);
+        }
 
         match rating {
             Rating::Again => {
+                if learned {
+                    card.lapses += 1;
+                }
                 card.repetitions = 0;
-                card.lapses += 1;
                 card.interval_days = 0.0;
             }
             // A hard pass still advances, but more slowly than a clean one.
@@ -421,6 +509,13 @@ pub struct AttemptRecord {
     /// merged from a peer carries only the score, and so does one recorded
     /// before these existed.
     pub measures: Option<AttemptMeasures>,
+    /// Whether the attempt was a review or a trace.
+    ///
+    /// A sink must keep a [`PracticeMode::Trace`] record **out of the attempt log
+    /// the schedule is folded from**. The card was not moved by it, so a fold that
+    /// met it would schedule an attempt the store never scheduled — and a device
+    /// folding a log that held it would disagree with the device that recorded it.
+    pub mode: PracticeMode,
 }
 
 /// The per-measure grading result behind one attempt's headline score.
@@ -696,6 +791,69 @@ impl ProgressStore {
         self.record_with(ch, score, at, &Sm2, None)
     }
 
+    /// Record an attempt made now, made the way `mode` says.
+    ///
+    /// This is what an app with more than one way to write calls; see
+    /// [`Self::record_practice_at`] for what each mode does.
+    pub fn record_practice(
+        &mut self,
+        ch: char,
+        score: f32,
+        mode: PracticeMode,
+        measures: Option<AttemptMeasures>,
+    ) -> Result<Option<CardView>, ProgressError> {
+        self.record_practice_at(ch, score, &now_iso8601(), mode, measures)
+    }
+
+    /// Record an attempt at a caller-supplied time, made the way `mode` says.
+    ///
+    /// A [`PracticeMode::Recall`] attempt is [`Self::record_with`] under [`Sm2`],
+    /// and the card it leaves is returned.
+    ///
+    /// A [`PracticeMode::Trace`] attempt is **not a review**. It is handed to the
+    /// sink with its measures, marked as a trace, and the schedule is left exactly
+    /// as it was: no card is created, and an existing one does not change — not
+    /// its due date, not its count, not its history. The answer is the card as it
+    /// already stood, or `None` for a character never written from memory.
+    ///
+    /// Not even a failed trace resets a card, and that is a decision rather than
+    /// an omission. A trace that goes wrong with the guide on the board is a slip
+    /// of the pen, not evidence of forgetting, and the next recall review asks the
+    /// question that matters. It also keeps a trace out of the attempt log
+    /// entirely: anything that moved a card would have to travel to every device
+    /// and be folded there, and a trace that moves nothing needs neither. Behind
+    /// the JSON file, which holds cards and nothing else, a trace is not kept at
+    /// all; a sink with an attempt log keeps it beside that log.
+    pub fn record_practice_at(
+        &mut self,
+        ch: char,
+        score: f32,
+        at: &str,
+        mode: PracticeMode,
+        measures: Option<AttemptMeasures>,
+    ) -> Result<Option<CardView>, ProgressError> {
+        match mode {
+            PracticeMode::Recall => self.record_with(ch, score, at, &Sm2, measures).map(Some),
+            PracticeMode::Trace => {
+                if parse_iso8601(at).is_none() {
+                    return Err(ProgressError::InvalidTimestamp(at.to_string()));
+                }
+                let score = score.clamp(0.0, 100.0);
+                self.pending.push(AttemptRecord {
+                    ch: ch.to_string(),
+                    attempt: Attempt {
+                        at: at.to_string(),
+                        score,
+                        rating: Rating::from_score(score),
+                    },
+                    measures,
+                    mode: PracticeMode::Trace,
+                });
+                Ok(self.card(ch).map(|card| card.view(ch, at)))
+            }
+        }
+    }
+
     /// Record an attempt at a caller-supplied time under a chosen policy.
     ///
     /// This is what the [`Scheduler`] trait is for: the store does not care how
@@ -730,6 +888,7 @@ impl ProgressStore {
             ch: key.clone(),
             attempt: recorded,
             measures,
+            mode: PracticeMode::Recall,
         });
 
         // Re-borrow immutably: the card is certainly there, it was just inserted.
@@ -1358,10 +1517,14 @@ mod tests {
     fn ease_stays_within_its_bounds() {
         let mut store = ProgressStore::in_memory();
         let mut at = "2026-09-01T08:00:00Z".to_string();
-        for _ in 0..30 {
+        // Learned and forgotten, over and over: only a learned card's failure
+        // costs ease, so each round is one pass and one lapse.
+        for _ in 0..15 {
+            at = store.record_at('笨', 60.0, &at).unwrap().due;
             at = store.record_at('笨', 10.0, &at).unwrap().due;
         }
         assert_eq!(store.card('笨').unwrap().ease, MIN_EASE);
+        assert_eq!(store.card('笨').unwrap().lapses, 15);
         assert_eq!(
             store.card('笨').unwrap().interval_days,
             0.0,
@@ -1383,6 +1546,245 @@ mod tests {
             add_seconds(&last_review, (MAX_INTERVAL_DAYS as i64) * 86_400).unwrap(),
             "an easy review is never scheduled more than a year out"
         );
+    }
+
+    // ---- early, repeated and traced attempts (issue #15) -------------------
+
+    /// `minutes` after `at`.
+    fn later(at: &str, minutes: i64) -> String {
+        add_seconds(at, minutes * 60).unwrap()
+    }
+
+    #[test]
+    fn checking_again_inside_the_interval_does_not_grow_it() {
+        // Four checks a minute apart used to climb 1 → 6 → 15 → 37.5 days: every
+        // press of Check was a review whether or not anything was due.
+        let start = "2026-09-19T09:00:00Z";
+        let mut store = ProgressStore::in_memory();
+        let first = store.record_at('好', 80.0, start).unwrap();
+        assert_eq!(first.interval_days, 1.0);
+
+        for minute in 1..4 {
+            let card = store.record_at('好', 80.0, &later(start, minute)).unwrap();
+            assert_eq!(card.interval_days, 1.0, "minute {minute} is not a review");
+            assert_eq!(card.repetitions, 1);
+            assert_eq!(card.ease, START_EASE);
+            assert_eq!(card.due, first.due, "and the due date stays where it was");
+        }
+        // The attempts are still the learner's history.
+        let card = store.card('好').unwrap();
+        assert_eq!(card.attempts, 4);
+        assert_eq!(card.history.len(), 4);
+        assert_eq!(
+            card.last_practised.as_deref(),
+            Some(later(start, 3).as_str())
+        );
+    }
+
+    #[test]
+    fn three_easy_checks_in_one_sitting_do_not_make_a_character_known() {
+        let start = "2026-09-19T09:00:00Z";
+        let mut store = ProgressStore::in_memory();
+        for minute in 0..3 {
+            store.record_at('好', 95.0, &later(start, minute)).unwrap();
+        }
+        let card = store.card('好').unwrap();
+        assert_eq!(card.interval_days, 2.0, "one easy review, not three");
+        let now = later(start, 4);
+        assert_eq!(
+            entry_standing(&['好'], &store, &now).progress,
+            EntryProgress::Learning
+        );
+    }
+
+    #[test]
+    fn a_review_on_its_due_date_still_advances() {
+        // The rule is about attempts *before* the due date: one made at it, or
+        // after it, is the review the schedule asked for.
+        let start = "2026-09-19T09:00:00Z";
+        let mut store = ProgressStore::in_memory();
+        let first = store.record_at('好', 80.0, start).unwrap();
+        let on_time = store.record_at('好', 80.0, &first.due).unwrap();
+        assert_eq!(on_time.interval_days, 6.0);
+        let late = store
+            .record_at('好', 80.0, &add_seconds(&on_time.due, 3 * 86_400).unwrap())
+            .unwrap();
+        assert_eq!(late.repetitions, 3);
+        assert!(late.interval_days > 6.0);
+    }
+
+    #[test]
+    fn an_early_failure_still_resets_the_card() {
+        // Forgetting is news whenever it happens: a learned character written
+        // wrong before its date is not known, and waiting for the date to say so
+        // would schedule a character the learner has just shown they cannot write.
+        let start = "2026-09-19T09:00:00Z";
+        let mut store = ProgressStore::in_memory();
+        let learned = store.record_at('好', 80.0, start).unwrap();
+        assert_eq!(learned.repetitions, 1);
+
+        let failed = store.record_at('好', 20.0, &later(start, 30)).unwrap();
+        assert_eq!(failed.repetitions, 0);
+        assert_eq!(failed.interval_days, 0.0);
+        assert_eq!(failed.lapses, 1, "it had been learned, so this is a lapse");
+        assert!(failed.ease < START_EASE, "and a lapse costs ease");
+        assert_eq!(
+            failed.due,
+            add_seconds(&later(start, 30), AGAIN_SECONDS).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_first_ever_failure_is_not_a_lapse_and_costs_no_ease() {
+        // `lapses` is "failed after having been learned", and a character met for
+        // the first time has not been learned yet. Charging ease for it pinned a
+        // character at the floor after two or three failures while first learning
+        // it, and every later interval paid for that.
+        let start = "2026-09-19T09:00:00Z";
+        let mut store = ProgressStore::in_memory();
+        let mut at = start.to_string();
+        for _ in 0..3 {
+            let card = store.record_at('难', 20.0, &at).unwrap();
+            assert_eq!(card.lapses, 0);
+            assert_eq!(card.ease, START_EASE);
+            assert_eq!(card.repetitions, 0);
+            at = card.due;
+        }
+        // Then it is learned, and the first failure after that is a lapse.
+        let learned = store.record_at('难', 80.0, &at).unwrap();
+        assert_eq!(learned.repetitions, 1);
+        let lapsed = store.record_at('难', 20.0, &learned.due).unwrap();
+        assert_eq!(lapsed.lapses, 1);
+        assert!(lapsed.ease < START_EASE);
+
+        // Failing again while relearning is the same lapse, not a second one.
+        let again = store.record_at('难', 20.0, &lapsed.due).unwrap();
+        assert_eq!(again.lapses, 1, "still relearning the same lapse");
+        assert_eq!(again.ease, lapsed.ease, "and ease is charged once for it");
+    }
+
+    #[test]
+    fn a_correct_rewrite_inside_the_relearning_minute_does_not_count() {
+        // A failed character is due again in a minute. Rewriting it correctly
+        // straight away is practice, not the review the minute is for — the card
+        // stays due so the review queue still offers it.
+        let start = "2026-09-19T09:00:00Z";
+        let mut store = ProgressStore::in_memory();
+        store.record_at('好', 20.0, start).unwrap();
+        let rewrite = store.record_at('好', 90.0, &later(start, 0)).unwrap();
+        assert_eq!(rewrite.repetitions, 0);
+        assert!(store.card('好').unwrap().is_due(&later(start, 1)));
+    }
+
+    #[test]
+    fn a_traced_attempt_does_not_schedule() {
+        // Tracing a visible guide "mastered" a character in one sitting, because
+        // it was scheduled exactly like recall.
+        let start = "2026-09-19T09:00:00Z";
+        let mut store = ProgressStore::in_memory();
+
+        // On a character never written from memory, a trace creates nothing: the
+        // schedule is still waiting for the first recall.
+        let traced = store
+            .record_practice_at('好', 98.0, start, PracticeMode::Trace, None)
+            .unwrap();
+        assert!(traced.is_none(), "no card to show: {traced:?}");
+        assert!(store.is_new('好'));
+
+        // On a learned, due card it moves nothing at all — not even a failed
+        // trace, which is a slip of the pen over a guide and not forgetting.
+        let learned = store.record_at('学', 80.0, start).unwrap();
+        let before = store.card('学').unwrap().clone();
+        for (score, minutes) in [(100.0, 24 * 60), (10.0, 24 * 60 + 1)] {
+            let view = store
+                .record_practice_at(
+                    '学',
+                    score,
+                    &later(start, minutes),
+                    PracticeMode::Trace,
+                    None,
+                )
+                .unwrap()
+                .expect("the card exists");
+            assert_eq!(view.due, learned.due);
+        }
+        assert_eq!(store.card('学').unwrap(), &before, "the card is untouched");
+
+        // But the attempts are handed to the sink, with their measures and
+        // marked as traces, so a database can keep them out of the review log.
+        let traces: Vec<&AttemptRecord> = store
+            .pending
+            .iter()
+            .filter(|record| record.mode == PracticeMode::Trace)
+            .collect();
+        assert_eq!(traces.len(), 3);
+        assert_eq!(traces[0].ch, "好");
+        assert_eq!(traces[0].attempt.score, 98.0);
+        assert_eq!(traces[2].attempt.rating, Rating::Again);
+        assert_eq!(
+            store
+                .pending
+                .iter()
+                .filter(|r| r.mode == PracticeMode::Recall)
+                .count(),
+            1
+        );
+        assert!(
+            !store.dirty.contains("好"),
+            "a trace changes no card, so no card needs writing"
+        );
+    }
+
+    #[test]
+    fn a_recall_through_the_mode_api_is_an_ordinary_review() {
+        let mut store = ProgressStore::in_memory();
+        let view = store
+            .record_practice_at(
+                '好',
+                80.0,
+                "2026-09-19T09:00:00Z",
+                PracticeMode::Recall,
+                None,
+            )
+            .unwrap()
+            .expect("a recall creates the card");
+        assert_eq!(view.interval_days, 1.0);
+        assert_eq!(store.pending[0].mode, PracticeMode::Recall);
+        assert!(matches!(
+            store.record_practice_at('好', 80.0, "soon", PracticeMode::Trace, None),
+            Err(ProgressError::InvalidTimestamp(_))
+        ));
+    }
+
+    #[test]
+    fn the_practice_mode_is_spelled_as_the_board_spells_it() {
+        assert_eq!(
+            serde_json::to_string(&PracticeMode::Recall).unwrap(),
+            "\"recall\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PracticeMode::Trace).unwrap(),
+            "\"trace\""
+        );
+        assert_eq!(PracticeMode::default(), PracticeMode::Recall);
+    }
+
+    #[test]
+    fn folding_applies_the_same_early_review_rule() {
+        // Sync rebuilds a card from its log, so the rule has to be the fold's too:
+        // a minute-apart log folds to one review, exactly as it was recorded.
+        let start = "2026-09-19T09:00:00Z";
+        let log: Vec<Attempt> = (0..4)
+            .map(|minute| Attempt {
+                at: later(start, minute),
+                score: 80.0,
+                rating: Rating::Good,
+            })
+            .collect();
+        let folded = fold_attempts(&log, &Sm2).unwrap();
+        assert_eq!(folded.attempts, 4);
+        assert_eq!(folded.repetitions, 1);
+        assert_eq!(folded.interval_days, 1.0);
     }
 
     #[test]

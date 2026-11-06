@@ -34,7 +34,11 @@ use rusqlite::{Connection, TransactionBehavior};
 /// 6 — `vocab_cursor`, where the learner got to inside one of their own groups.
 ///     A new table rather than a column, so an older database gains it empty on
 ///     the next open and nothing has to be rewritten.
-pub const SCHEMA_VERSION: i64 = 6;
+/// 7 — `trace_attempt`, the attempts written over the faint guide. A trace is not
+///     a review, so it is kept out of `attempt` — the log the schedule is folded
+///     from, which sync publishes — and in a table of its own with its measures.
+///     Additive like 6: an older database gains it empty, and no row moves.
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// Everything the database needs, in one idempotent script.
 ///
@@ -128,6 +132,31 @@ CREATE TABLE IF NOT EXISTS vocab_cursor (
     updated_at TEXT NOT NULL,
     device_id  TEXT NOT NULL,
     revision   INTEGER NOT NULL DEFAULT 0
+);
+
+-- Attempts written over the faint guide in trace mode, with their measures.
+--
+-- Not rows in `attempt`, and that is the whole design. `attempt` is the log
+-- every schedule is folded from, on this device and on every device it syncs
+-- with; a trace is not a review and moves no card, so a fold that met one would
+-- schedule what the store never scheduled. A table of its own keeps every reader
+-- of `attempt` — the fold, the publish, the history, the export — correct
+-- without a filter each of them would have to remember, and takes no sequence
+-- number from the device's published numbering. It never leaves this device:
+-- the measures are what it is kept for, and a shard carries none.
+CREATE TABLE IF NOT EXISTS trace_attempt (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ch            TEXT NOT NULL,
+    at            TEXT NOT NULL,
+    score         REAL NOT NULL,
+    rating        TEXT NOT NULL,
+    shape         REAL,
+    position      REAL,
+    ink           REAL,
+    ink_coverage  REAL,
+    order_score   REAL,
+    legible       INTEGER,
+    order_correct INTEGER
 );
 ";
 

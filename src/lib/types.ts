@@ -96,6 +96,15 @@ export interface AttemptMeasures {
   orderCorrect: boolean;
 }
 
+/**
+ * How an attempt was written: from memory, or over the faint guide.
+ *
+ * Mirrors `hanzi_core::PracticeMode`. Only `recall` is a review; a `trace` is
+ * kept with its measures but moves no card, because following a visible guide
+ * says nothing about whether the character could be written without it.
+ */
+export type PracticeMode = "recall" | "trace";
+
 export interface Character {
   ch: string;
   /** Frequency rank, 1 = most common; 0 when not in the frequency list. */

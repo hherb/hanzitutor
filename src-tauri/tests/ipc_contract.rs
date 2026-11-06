@@ -3346,3 +3346,81 @@ fn a_group_remembers_where_the_learner_got_to() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn record_progress_is_told_how_the_attempt_was_written() {
+    // Issue #15: a trace over the faint guide was scheduled exactly like recall,
+    // because the board's mode never crossed the boundary. It now does, as an
+    // optional `mode` — absent means recall, which is what every caller that
+    // predates it meant.
+    let source =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands.rs"))
+            .expect("commands.rs is part of the crate");
+    let signature = source
+        .split("#[tauri::command]")
+        .skip(1)
+        .filter_map(|block| block.split("\npub ").nth(1)?.split('{').next())
+        .find(|s| s.contains("fn record_progress("))
+        .expect("record_progress should still be a command");
+    assert!(
+        signature.contains("mode: Option<PracticeMode>"),
+        "record_progress does not take the board's mode: {signature}"
+    );
+
+    // The wire spelling is the board's own, in both directions.
+    for (mode, wire) in [
+        (hanzi_core::PracticeMode::Recall, "\"recall\""),
+        (hanzi_core::PracticeMode::Trace, "\"trace\""),
+    ] {
+        assert_eq!(serde_json::to_string(&mode).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_str::<hanzi_core::PracticeMode>(wire).unwrap(),
+            mode
+        );
+    }
+
+    // And the client sends it under that name, typed as that union.
+    let client = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/lib");
+    let types = std::fs::read_to_string(client.join("types.ts")).unwrap();
+    assert!(
+        types.contains(r#"export type PracticeMode = "recall" | "trace";"#),
+        "types.ts should spell the mode the way serde does"
+    );
+    let api = std::fs::read_to_string(client.join("api.ts")).unwrap();
+    assert!(
+        api.contains(r#"invoke<ProgressView>("record_progress", { ch, score, measures, mode })"#),
+        "api.ts should send the mode with the attempt"
+    );
+}
+
+#[test]
+fn a_traced_attempt_reaches_the_database_but_not_the_schedule() {
+    let dir = data_dir("traced-progress");
+    let state = AppState::load(Some(dir.clone())).unwrap();
+    {
+        let mut progress = state.lock_progress();
+        progress
+            .store
+            .record_practice('好', 98.0, hanzi_core::PracticeMode::Trace, None)
+            .unwrap();
+        assert!(progress.save().is_none(), "saving should succeed");
+    }
+    assert!(
+        state.lock_progress().view().cards.is_empty(),
+        "a trace is not a review, so there is still nothing scheduled"
+    );
+    let message = state
+        .export_practice_log(&dir.join("log.jsonl"), "jsonl")
+        .unwrap();
+    assert!(
+        message.contains("0 attempts"),
+        "nor is it in the review log: {message}"
+    );
+
+    // Reopened from disk, so this is what was stored and not what was in memory.
+    drop(state);
+    let state = AppState::load(Some(dir.clone())).unwrap();
+    assert!(state.lock_progress().view().cards.is_empty());
+
+    std::fs::remove_dir_all(&dir).ok();
+}

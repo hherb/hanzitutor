@@ -36,6 +36,13 @@
 //! merges a *schedule*; it merges logs and recomputes schedules, which is why two
 //! devices that practised apart converge on one answer instead of one of them
 //! winning.
+//!
+//! That is also why every scheduling rule is a function of the card and the
+//! attempt alone. An attempt made before its card was due is folded as practice
+//! rather than a review on every device because each of them compares the same
+//! `at` with the same folded due date; nothing about it needs to travel. A trace
+//! over the faint guide is not in the log at all — `hanzi-store` keeps it in a
+//! table of its own — so it is never published and this format is unchanged.
 
 use std::collections::BTreeMap;
 

@@ -643,6 +643,21 @@ after each item) both do this now. The shape is the rule, not either file.
     obvious next step and should not require touching the store, the commands or
     the interface. The tests exercise a second implementation to keep that honest.
 
+    **Not every graded attempt is a review** (issue #15). `Sm2::review` ignores a
+    passing attempt made before the card is due — it stays in the history and
+    moves nothing — while a failure resets the card whenever it happens. Ease is
+    charged, and a lapse counted, only for the failure of a card that had been
+    learned (`repetitions > 0`). A **trace** is not a recall at all: `check()`
+    sends the board's mode, `record_practice_at` keeps a trace out of the card,
+    and `hanzi-store` writes it to `trace_attempt` (schema 7) rather than to
+    `attempt`, so it is never published, folded or exported as a review. Every
+    rule is a function of the card and the attempt, so a device folding the merged
+    log agrees with the one that recorded it, and the shard format is unchanged.
+    Due dates are still exact instants, not local days: a one-day card practised
+    at 21:00 is not due at 08:00 the next morning. Rounding to the learner's day
+    would need their time zone in the fold — the same on every device — and is
+    left for a deliberate change.
+
 15. **Placement is measured along the stroke, never from the sample mean.**
     Pointer samples arrive by *time*, not distance, so a stroke drawn slowly at
     one end and flicked at the other reaches the grader with its samples bunched:

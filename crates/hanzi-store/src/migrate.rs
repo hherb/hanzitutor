@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use hanzi_core::progress::{CursorStore, ProgressError, ProgressStore};
 use hanzi_core::time::now_iso8601;
 use hanzi_core::vocab::{VocabError, VocabStore};
-use hanzi_core::AttemptRecord;
+use hanzi_core::{AttemptRecord, PracticeMode};
 use rusqlite::Connection;
 
 use crate::{
@@ -76,6 +76,8 @@ pub(crate) fn progress(
                 // measures behind it — and the strokes those came from are long
                 // gone, so this is unrecoverable rather than merely missing.
                 measures: None,
+                // The old documents recorded only what was scheduled.
+                mode: PracticeMode::Recall,
             };
             insert_attempt(&tx, device_id, seq, &record).map_err(|e| progress_error(&db, e))?;
             seq += 1;

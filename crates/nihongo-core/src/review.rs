@@ -426,7 +426,9 @@ mod tests {
         );
         assert!(due.iter().all(|item| item.kind == ReviewKind::Kana));
         assert_eq!(due[0].attempts, 1);
-        assert_eq!(due[0].lapses, 1);
+        // A character failed the first time it was met has not been learned, so
+        // it has nothing to lapse from (hanzi-core's `Sm2`, issue #15).
+        assert_eq!(due[0].lapses, 0);
         assert!(due[0].interval_days < 1.0);
     }
 

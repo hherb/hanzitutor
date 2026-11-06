@@ -45,6 +45,7 @@
     LicenceNotice,
     Point,
     PracticeItem,
+    PracticeMode,
     ProgressView,
     RadicalGroup,
     ReviewView,
@@ -64,7 +65,11 @@
     WordSearchView,
   } from "./lib/types";
 
-  type Mode = "trace" | "recall";
+  /**
+   * The board's mode is the backend's `PracticeMode`, so the value `check()`
+   * records with cannot drift from the one the schedule understands.
+   */
+  type Mode = PracticeMode;
   /** Which of the eight top-level screens is showing. */
   type View =
     | "course"
@@ -1756,15 +1761,24 @@
       // nothing can recover the per-measure result once the strokes are gone,
       // and that result is the only thing the grading tolerances can be checked
       // against — so it is recorded while it still exists.
-      await recordProgress(character.ch, graded.overall, {
-        shape: graded.shapeScore,
-        position: graded.positionScore,
-        ink: graded.inkScore,
-        inkCoverage: graded.inkCoverage,
-        order: graded.orderScore,
-        legible: graded.legible,
-        orderCorrect: graded.orderCorrect,
-      });
+      //
+      // So does the mode. Tracing the faint guide is practice, not recall, and
+      // the backend logs it without scheduling it; sending recall for a trace
+      // would let one sitting of tracing "master" a character.
+      await recordProgress(
+        character.ch,
+        graded.overall,
+        {
+          shape: graded.shapeScore,
+          position: graded.positionScore,
+          ink: graded.inkScore,
+          inkCoverage: graded.inkCoverage,
+          order: graded.orderScore,
+          legible: graded.legible,
+          orderCorrect: graded.orderCorrect,
+        },
+        mode,
+      );
     } catch (cause) {
       error = `Grading failed: ${cause}`;
     } finally {
@@ -1815,9 +1829,10 @@
     ch: string,
     score: number,
     measures?: AttemptMeasures,
+    practiceMode?: PracticeMode,
   ) {
     try {
-      const next = await api.recordProgress(ch, score, measures);
+      const next = await api.recordProgress(ch, score, measures, practiceMode);
       applyProgress(next);
       const card = next.cards.find((candidate) => candidate.ch === ch);
       void api.log(
@@ -3139,7 +3154,7 @@
                     ? "Hint: a faint copy of the character is on the board. Switch to recall"
                     : "Hint: the character is hidden until you check. Switch to trace, where a faint copy is on the board"}
                   title={mode === "trace"
-                    ? "Trace: a faint copy is on the board to follow. Press for recall, which hides the character until you press ✓. Either way the board is cleared."
+                    ? "Trace: a faint copy is on the board to follow, and tracing is not counted as a review. Press for recall, which hides the character until you press ✓. Either way the board is cleared."
                     : "Recall: the character is hidden until you press ✓. Press for trace, where a faint copy is on the board. Either way the board is cleared."}
                   onclick={toggleMode}
                 >
