@@ -3946,8 +3946,8 @@ Neutral tone was refused for a long time: it is short and its pitch is set by th
 syllable before it, so scoring it from one syllable looked like it needed context this
 module does not have. What that missed is that "level" is still judgeable — and that the
 cost was paid on 的, the most common character in the language, whose tone button could
-not be pressed at all. (README's "What it deliberately does not do" still says neutral
-tone is not scored; the code and this file are right.)
+not be pressed at all. (README once said neutral tone was not scored; it now says what
+the code does, including the asymmetry below.)
 
 Three things were wrong, and only one was in `tone.rs`:
 
@@ -3972,6 +3972,22 @@ is not scored at all. That limit is said to the learner every time (`NEUTRAL_LIM
 because 85 for a neutral tone means less than 85 for a rising one. If that ever needs to
 be more than "level", duration is the thing to add — the part of a neutral tone a
 listener actually hears — and it would need real recordings to calibrate.
+
+**A neutral syllable counts towards the word only when it matched** (issue #18). The
+aggregate in `ToneReport::finish` once filtered on `(1..=4)` and ignored the neutral
+tone entirely, so 的 said well read "Nothing in this could be scored" and a word with a
+wrong neutral syllable read "All 1 tones are right". Counting it fully was tried and
+was worse: the level rule is context-free (a match only within `FLAT_ST`, 1.2 st), and a
+real neutral tone is a 2–5 st transition — a fall after tones 1, 2 and 4, a rise after a
+half-third tone 3 — so correctly spoken 妈妈, 谢谢, 东西, 朋友, 你们 and 的 failed on
+synthetic contours, and 妈妈's voiced `m` leaks enough glide into the segment that even
+a level neutral can fail. So a match counts, a miss is shown on its syllable's chart and
+named in the summary but does not count, and a report left with nothing but a missed
+neutral syllable is uncertain, worded by that syllable. **Follow-up, before counting it
+both ways:** make the neutral rule depend on the preceding tone — after 1, 2 or 4 accept
+level or falling, after 3 accept level or rising, and cap the fall so that 谢谢 said as
+two full tone 4s still fails. With it goes a second problem: a half-third tone 3 before
+a neutral syllable (the 你 of 你们) is a low fall and is heard as tone 4.
 
 ### A phrase with no tone target is recognised, not refused
 
