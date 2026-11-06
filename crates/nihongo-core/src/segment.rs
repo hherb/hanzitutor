@@ -286,8 +286,47 @@ pub(crate) fn reading_from_fields(
         .and_then(|(base, reading)| {
             spelled_inflection(surface, base, &normalise_to_hiragana(reading))
         })
-        .filter(|spelled| spells(spelled, &pronounced));
+        .filter(|spelled| spells(spelled, &pronounced))
+        .or_else(|| spelled_from_pronunciation(surface, &pronounced));
     Some(spelled.unwrap_or(pronounced))
+}
+
+/// The second way to spell an inflected `surface`, for when its base form's
+/// reading cannot: the stem as the pronunciation says it, and the okurigana as the
+/// surface writes it.
+///
+/// A verb whose kanji changes its reading as it inflects has no stem in its base
+/// form's reading to borrow — 来よう is こよう, and the stem of くる spells く — so
+/// the pronunciation was all that was left, and it says こよー. But the long vowel
+/// it marks is in the okurigana, and the okurigana is written out in the surface:
+/// よう. So the pronunciation's kana for the stem, こ, and the surface's own tail
+/// make こよう. This is only tried where the pronunciation has a ー to put right,
+/// only where that ー falls in the tail — a ー in the stem's pronunciation is a
+/// spelling this cannot know — and only where the result still [`spells`] the
+/// pronunciation.
+fn spelled_from_pronunciation(surface: &str, pronounced: &str) -> Option<String> {
+    if !pronounced.contains('ー') {
+        return None;
+    }
+    let tail: String = {
+        let mut kana: Vec<char> = surface
+            .chars()
+            .rev()
+            .take_while(|&ch| all_kana(ch.encode_utf8(&mut [0; 4])))
+            .collect();
+        kana.reverse();
+        kana.into_iter().collect()
+    };
+    let (tail_len, said_len) = (tail.chars().count(), pronounced.chars().count());
+    if tail_len == 0 || tail_len == surface.chars().count() || said_len <= tail_len {
+        return None;
+    }
+    let stem: String = pronounced.chars().take(said_len - tail_len).collect();
+    if stem.contains('ー') {
+        return None;
+    }
+    let spelled = format!("{stem}{}", normalise_to_hiragana(&tail));
+    spells(&spelled, pronounced).then_some(spelled)
 }
 
 /// The reading of an inflected `surface`, spelled from its base form and the base
@@ -527,6 +566,33 @@ mod tests {
         );
         assert_eq!(inflected("来", "来る", "クル", "キ").as_deref(), Some("き"));
         assert_eq!(inflected("来", "来る", "クル", "コ").as_deref(), Some("こ"));
+    }
+
+    /// Where the base form's reading cannot spell the stem, the okurigana still can:
+    /// it is written out in the surface. 来よう is こよう, not the こよー the
+    /// pronunciation says, and 行こう read as ゆこう is ゆこう. A long vowel in the
+    /// stem's own pronunciation is a spelling the surface does not show, so that one
+    /// stays as it is pronounced.
+    #[test]
+    fn an_inflected_reading_the_base_form_cannot_spell_takes_its_okurigana_from_the_surface() {
+        assert_eq!(
+            inflected("来よう", "来る", "クル", "コヨー").as_deref(),
+            Some("こよう")
+        );
+        assert_eq!(
+            inflected("行こう", "行く", "イク", "ユコー").as_deref(),
+            Some("ゆこう")
+        );
+        assert_eq!(
+            inflected("来", "来る", "クル", "コー").as_deref(),
+            Some("こー"),
+            "a surface with no okurigana has nothing to spell the ー with"
+        );
+        assert_eq!(
+            inflected("通っ", "通じる", "ツウジル", "トーッ").as_deref(),
+            Some("とーっ"),
+            "a ー in the stem's pronunciation is not the surface's to spell"
+        );
     }
 
     /// A token that is its own base form takes `reading`, which is the conventional
