@@ -309,6 +309,14 @@
   let listening = $state(false);
   /** True while the device is opening or the recording is being scored. */
   let toneBusy = $state(false);
+  /**
+   * True while the recording is being scored — the second half of `toneBusy`.
+   *
+   * Its own flag so the button can say which: with the recognition model installed
+   * the first judgement loads the model before it decodes, which takes seconds, and
+   * a button that only goes grey for that long looks broken.
+   */
+  let scoring = $state(false);
   /** Why the last attempt could not even be recorded. */
   let toneError = $state<string | null>(null);
   /** The text captured when the button went down, which is what gets judged. */
@@ -1321,6 +1329,7 @@
     if (!listening) return;
     listening = false;
     toneBusy = true;
+    scoring = true;
     // The text is frozen for the duration of the attempt: the Rust side derives
     // the tones from it, so what is scored is what was on screen when the learner
     // pressed, even if the board advanced while they were speaking.
@@ -1331,6 +1340,7 @@
       toneError = String(cause);
     } finally {
       toneBusy = false;
+      scoring = false;
     }
   }
 
@@ -3218,6 +3228,7 @@
                   onpointercancel={() => void stopListening()}
                   oncontextmenu={(event) => event.preventDefault()}
                   disabled={sayBlocked !== null || toneBusy}
+                  aria-busy={toneBusy}
                   aria-label={listening
                     ? "Hold to speak — listening, release to hear what was read back"
                     : sayBlocked
@@ -3228,7 +3239,7 @@
                   title={sayBlocked ?? sayPrompt}
                 >
                   <span class="tool-glyph"><Icon name="mic" /></span>
-                  <span class="tool-word">(hold…)</span>
+                  <span class="tool-word">{scoring ? "Scoring…" : "(hold…)"}</span>
                 </button>
               </div>
 

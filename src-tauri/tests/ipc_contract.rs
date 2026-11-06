@@ -3346,3 +3346,83 @@ fn a_group_remembers_where_the_learner_got_to() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// How a command in `source` is dispatched: `true` when Tauri runs it off the main
+/// thread, `false` when it runs on the thread the webview paints on.
+///
+/// Tauri 2 decides this from the attribute and the signature alone — a plain
+/// `#[tauri::command]` on a plain `fn` is called inline from the IPC handler, which
+/// the webview invokes on the main thread, while `#[tauri::command(async)]` or an
+/// `async fn` is spawned on the async runtime (`tauri-macros`, `body_blocking` against
+/// `body_async`). So the source is the thing to read, and nothing behavioural can see it.
+fn runs_off_the_main_thread(source: &str, name: &str) -> bool {
+    let needle = format!("fn {name}(");
+    let at = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("{name} should still be a command"));
+    let before = &source[..at];
+    let attribute = before
+        .rfind("#[tauri::command")
+        .unwrap_or_else(|| panic!("{name} has no command attribute"));
+    // Everything from the attribute to the name: the attribute itself, any doc
+    // comment or `pub` after it, and the `async` keyword when there is one.
+    let head = &before[attribute..];
+    assert!(
+        !head.contains("fn "),
+        "the nearest command attribute above {name} belongs to another function"
+    );
+    head.starts_with("#[tauri::command(async)]") || head.contains("async ")
+}
+
+#[test]
+fn the_slow_commands_do_not_run_on_the_main_thread() {
+    // A plain `#[tauri::command]` runs on the main thread, so a slow one freezes the
+    // window: releasing the microphone used to hang it for the seconds the first
+    // recognition spends loading 228 MB of ONNX, and the fingerprint switch raised
+    // its prompt from the thread that has to draw it (issue #26). Each of these can
+    // block for seconds — a model load or a decode, a synthesis, a fingerprint
+    // prompt, a recursive delete of hundreds of megabytes, a permission prompt in
+    // front of the microphone — or waits on a lock one of the others holds that long.
+    let source =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands.rs"))
+            .expect("commands.rs is part of the crate");
+
+    for name in [
+        "listen_start",
+        "listen_stop",
+        "asr_install",
+        "asr_remove",
+        "say_speak",
+        "say_remove",
+        "sync_set_lock",
+        // Already off it, and pinned so they stay there.
+        "sync_status",
+        "sync_connect_finish",
+        "sync_now",
+        "sync_disconnect",
+        "sync_auto",
+        "vocab_export",
+        "vocab_import",
+        "export_practice_log",
+        "backup_export",
+        "backup_import",
+    ] {
+        assert!(
+            runs_off_the_main_thread(&source, name),
+            "{name} is a plain command again, so it runs on the main thread and freezes \
+             the window while it works: mark it `#[tauri::command(async)]`"
+        );
+    }
+
+    // And the other way round. Starting and stopping the platform voice are quick,
+    // and they are the two whose *order* matters: each tap cuts off the utterance
+    // before it, and two taps that overtook each other on the runtime's threads would
+    // leave the earlier word the one still speaking. The main thread runs them in the
+    // order they were sent.
+    for name in ["speak", "stop_speaking"] {
+        assert!(
+            !runs_off_the_main_thread(&source, name),
+            "{name} should stay in order on the main thread"
+        );
+    }
+}

@@ -1084,6 +1084,39 @@ after each item) both do this now. The shape is the rule, not either file.
       `[profile.release.package.…] debug = 1` entries are still what make a release
       iOS build link. Re-check when a Tauri release makes them `public`.
 
+39. **A command that can take seconds runs off the main thread, and says why.**
+    In Tauri 2 a plain `#[tauri::command]` on a plain `fn` is called inline from
+    the IPC handler, which the webview invokes on the main thread — checked in
+    `tauri-macros` 2.7.3, where it is `body_blocking`; `#[tauri::command(async)]`
+    or an `async fn` is `body_async`, spawned on the Tokio runtime (issue #26).
+    So `listen_start` (up to the eight-second open timeout behind a microphone
+    prompt), `listen_stop` (the first recognition loads 228 MB of ONNX, then
+    decodes), `say_speak`, `asr_install`, `asr_remove`, `say_remove` and
+    `sync_set_lock` (the fingerprint prompt, and Android's `canLock` round trip)
+    are `(async)` in the full app, and the microphone and recogniser commands
+    likewise in the Tone Trainer. Three consequences to keep:
+
+    - **A lock a moved command holds for seconds must not be one a main-thread
+      command takes**, or the freeze only moves. The recorder's slot, the
+      recogniser's and the synthesiser's are taken only by commands that are off
+      it too; the main-thread readers (`microphone_status`, `asr_status`,
+      `speech_target`) take none of them.
+    - **Two of them can now overlap, so the overlaps are decided.** An uninstall
+      holds the model's slot *through* its delete and a load re-checks the files
+      once it has the slot (`Asr::remove`/`engine`, `Say::remove`/`speak`), so a
+      model is never loaded from a half-deleted directory; a recognition already
+      decoding keeps the model it has. `SyncService::switching` lets one writer
+      of the stored sign-in in at a time (connect, the switch, disconnect), so two
+      presses cannot leave the switch disagreeing with the item. Both interfaces
+      refuse a new recording while one is being scored, and say "Scoring…"; the
+      phrases panel plays only the latest tap's synthesis, since two need not
+      come back in the order they were asked for.
+    - **`speak` and `stop_speaking` stay on the main thread on purpose**: they are
+      quick, and each tap cuts off the one before, so two that overtook each other
+      on the runtime would leave the wrong word speaking. `the_slow_commands_do_not_run_on_the_main_thread`
+      (`tests/ipc_contract.rs`, and `apps/tone-trainer/src-tauri/tests/dispatch.rs`)
+      reads the source and pins both halves.
+
 ## 5. The verification loop
 
 Run before every commit:

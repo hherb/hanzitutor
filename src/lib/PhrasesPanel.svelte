@@ -130,6 +130,10 @@
       const clip = slow ? phrase.audio?.slow : phrase.audio?.normal;
       if (!clip) {
         const spoken = await api.saySpeak(phrase.text);
+        // Synthesis runs off the window's thread now, so another phrase can be
+        // tapped while this one is being made — and the two need not come back in
+        // the order they were asked for. Only the latest tap is played.
+        if (playingId !== phrase.id) return;
         if (!spoken) {
           error =
             "That phrase has no recording, and no speech model is installed. " +

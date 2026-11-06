@@ -135,6 +135,15 @@
   let listening = $state(false);
   /** True between pressing the button and the device actually opening. */
   let starting = $state(false);
+  /**
+   * True between letting go and the judgement coming back.
+   *
+   * With the recognition model installed that is the model loading and decoding,
+   * which can be seconds on the first attempt. The command runs off the window's
+   * thread, so the button can say so; and no new recording starts until the answer
+   * is back, so two judgements are never in flight at once.
+   */
+  let scoring = $state(false);
   let result = $state<ScoreResult | null>(null);
   let scoreFailure = $state<string | null>(null);
   /**
@@ -495,7 +504,7 @@
   }
 
   async function startListening() {
-    if (listening || starting) return;
+    if (listening || starting || scoring) return;
     starting = true;
     scoreFailure = null;
     try {
@@ -519,6 +528,7 @@
     const reading = drillReading;
     if (!listening || text === null || reading === null) return;
     listening = false;
+    scoring = true;
     try {
       // What was on screen while the learner spoke, sent so the judgement cannot be
       // made against something the interface invented. One call for a character and
@@ -529,6 +539,8 @@
       scoreFailure = null;
     } catch (cause) {
       scoreFailure = `Could not judge that: ${cause}`;
+    } finally {
+      scoring = false;
     }
   }
 
@@ -915,7 +927,10 @@
               <button
                 class="mic"
                 class:listening
-                disabled={starting || (microphone !== null && !microphone.available)}
+                disabled={starting ||
+                  scoring ||
+                  (microphone !== null && !microphone.available)}
+                aria-busy={starting || scoring}
                 onpointerdown={(event) => {
                   event.preventDefault();
                   void startListening();
@@ -929,6 +944,8 @@
                   Opening the microphone…
                 {:else if listening}
                   ● Listening — release to judge
+                {:else if scoring}
+                  Scoring…
                 {:else}
                   Hold to say {drill?.kind === "word" ? (drillWord?.text ?? "") : (drillMember?.reading ?? "")}
                 {/if}

@@ -253,14 +253,23 @@ impl Say {
     }
 
     /// Remove the weights and report the resulting state.
+    ///
+    /// The model's slot is taken **before** the files go and held until they have:
+    /// `say_speak` and `say_remove` run off the main thread (issue #26), so a phrase
+    /// can be loading or speaking while this is called. Taking the slot first waits
+    /// for that phrase to finish, and holding it means the next one cannot load
+    /// weights from a directory that is half deleted — it looks at the files again
+    /// once it has the slot, and finds none.
     pub fn remove(&self) -> Result<(), String> {
+        let mut model = self.model.lock().expect("say model slot");
+        *model = None;
         if let Some(dir) = self.model_dir() {
             if dir.exists() {
                 fs::remove_dir_all(&dir)
                     .map_err(|e| format!("could not remove {}: {e}", dir.display()))?;
             }
         }
-        *self.model.lock().expect("say model slot") = None;
+        drop(model);
         let mut install = self.install.lock().expect("say install slot");
         install.state = InstallState::Absent;
         install.downloaded = 0;
@@ -279,6 +288,11 @@ impl Say {
             return Ok(None);
         }
         let mut slot = self.model.lock().expect("say model slot");
+        // Asked again now that the slot is held: a removal may have had it first
+        // and deleted the files since the check above — see [`Self::remove`].
+        if slot.is_none() && !self.is_installed() {
+            return Ok(None);
+        }
         if slot.is_none() {
             let dir = self
                 .model_dir()
@@ -486,6 +500,46 @@ mod tests {
         assert!(!model_dir.exists(), "the model directory should be gone");
         assert_eq!(say.status().state, InstallState::Absent);
         assert_eq!(say.speak("你好").unwrap(), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_phrase_waiting_on_an_uninstall_does_not_load_what_it_deleted() {
+        // `say_speak` and `say_remove` run off the main thread (issue #26), so a
+        // removal can now land while a phrase is waiting for the model. The phrase
+        // must not go on to load weights from a directory deleted underneath it:
+        // it is told there is no model, and the caller falls back to the platform
+        // voice. Holding the slot here stands in for `remove`, which deletes under
+        // it.
+        let dir = scratch("remove-race");
+        let model_dir = dir.join("say").join(MODEL.stem);
+        fs::create_dir_all(&model_dir).unwrap();
+        // The right sizes, so this reads as an install, without writing 50 MB:
+        // `set_len` on a fresh file leaves it sparse.
+        for spec in MODEL.files {
+            fs::File::create(model_dir.join(spec.name))
+                .unwrap()
+                .set_len(spec.bytes)
+                .unwrap();
+        }
+        let say = Say::new(Some(&dir));
+        assert!(say.is_installed());
+
+        let spoken = std::thread::scope(|scope| {
+            let slot = say.model.lock().unwrap();
+            let waiting = scope.spawn(|| say.speak("你好"));
+            // Long enough for the phrase to have checked the files and be queued
+            // on the slot.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            fs::remove_dir_all(&model_dir).unwrap();
+            drop(slot);
+            waiting.join().unwrap()
+        });
+        assert_eq!(
+            spoken,
+            Ok(None),
+            "a model removed while the phrase waited is a model that is not installed"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

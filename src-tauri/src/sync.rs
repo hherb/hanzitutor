@@ -307,6 +307,17 @@ pub struct SyncService {
     /// pull, and a learner told about a sync the other one had already overtaken. A
     /// sync that finds this shut is not a failure: it is a sync with nothing to add.
     gate: Mutex<()>,
+    /// One writer of the stored sign-in at a time: connecting, the fingerprint
+    /// switch and disconnecting.
+    ///
+    /// Each of those writes the item and the record of how it is protected, and the
+    /// switch writes the preference as well. They all run off the main thread
+    /// (issue #26), so two can overlap — a second press of the switch while the
+    /// first is still rewriting the item — and two that interleave can leave the
+    /// switch saying "off" over an item that asks for a fingerprint at every launch.
+    /// Held across the keychain write, which can be a prompt waiting on a person,
+    /// and never by a sync, which only reads.
+    switching: Mutex<()>,
     /// An access token fetched for a publish, and when it was fetched.
     ///
     /// The one piece of state that exists for the change-publish path. See
@@ -348,6 +359,7 @@ impl SyncService {
             open: Mutex::new(Open::Unread),
             reach,
             gate: Mutex::new(()),
+            switching: Mutex::new(()),
             publish_token: Mutex::new(None),
             positions_owed: AtomicBool::new(false),
             publishing_positions: AtomicBool::new(false),
@@ -359,6 +371,11 @@ impl SyncService {
         self.gate.try_lock().map_err(|_| {
             "A sync is already running. Its result will appear here when it finishes.".to_string()
         })
+    }
+
+    /// The right to write the stored sign-in. See [`Self::switching`].
+    fn take_switch(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.switching.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The status the screen shows.
@@ -414,6 +431,10 @@ impl SyncService {
             account_id: tokens.account_id.clone(),
         };
 
+        // Taken after the exchange rather than before it, so the switch does not
+        // wait out a network round trip; what it guards is the preference read
+        // here and the write that follows it.
+        let _switching = self.take_switch();
         // The preference, not the default: a learner who asked for a fingerprint
         // gets one from the first read, not from the second connection.
         let protection = self.tokens.save(&account, self.locked())?;
@@ -444,6 +465,9 @@ impl SyncService {
     /// Rewrites the stored item when there is one, because the constraint is fixed
     /// when a keychain item is created and cannot be changed afterwards.
     pub fn set_lock(&self, locked: bool) -> Result<SyncView, String> {
+        // For the whole of it: the preference below and the item rewritten after it
+        // must be one press's answer, not two presses' halves.
+        let _switching = self.take_switch();
         if locked && !self.tokens.can_lock() {
             return Err(no_biometric());
         }
@@ -498,6 +522,10 @@ impl SyncService {
         let Ok(_running) = self.gate.try_lock() else {
             return self.after("A sync is running. Press Disconnect again in a moment.");
         };
+        // A switch pressed while this runs would otherwise write the item back after
+        // it had been cleared, and the record with it: connected again, to a token
+        // Dropbox has just been told to forget.
+        let _switching = self.take_switch();
         // Revoking first is the point: forgetting the token locally would leave the
         // authorization standing on Dropbox's side, which is not what "disconnect"
         // means to somebody who pressed it. A failure to revoke is reported rather
@@ -2279,6 +2307,91 @@ mod tests {
         assert!(!after.connected);
         assert!(after.locked, "who wants a fingerprint still wants one");
         assert_eq!(db.meta_value(LOCK_KEY).unwrap().as_deref(), Some("on"));
+    }
+
+    /// The memory store, with its next write held until the test lets it go.
+    ///
+    /// What a slow keychain write looks like from in here — and a write behind a
+    /// fingerprint is the slowest thing this module does, because it waits on a
+    /// person.
+    struct HeldWrite {
+        inner: std::sync::Arc<MemoryStore>,
+        /// Told when the held write has started, and waited on before it finishes.
+        hold: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    }
+
+    impl TokenStore for HeldWrite {
+        fn available(&self) -> bool {
+            self.inner.available()
+        }
+        fn can_lock(&self) -> bool {
+            self.inner.can_lock()
+        }
+        fn load(&self) -> Result<Option<(Account, Protection)>, String> {
+            self.inner.load()
+        }
+        fn save(&self, account: &Account, locked: bool) -> Result<Protection, String> {
+            let held = self.hold.lock().unwrap().take();
+            if let Some((started, release)) = held {
+                started.send(()).unwrap();
+                release.recv().unwrap();
+            }
+            self.inner.save(account, locked)
+        }
+        fn clear(&self) -> Result<(), String> {
+            self.inner.clear()
+        }
+    }
+
+    #[test]
+    fn two_presses_of_the_fingerprint_switch_cannot_leave_it_disagreeing_with_the_item() {
+        // `sync_set_lock` runs off the main thread (issue #26), so two of them can
+        // now overlap — a second press while the first is still rewriting the item.
+        // Each writes the preference and then the item, and two that interleave
+        // could leave the preference saying one thing and the item the other: a
+        // switch showing "off" over an item that asks for a fingerprint at every
+        // launch, which is the one outcome this module exists to prevent.
+        let db = database("lock-overlap");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        connect(&with_store(Some(db.clone()), &store, connecting()));
+
+        let (started_tx, started) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let service = SyncService::with_parts(
+            Some(db.clone()),
+            Box::new(HeldWrite {
+                inner: std::sync::Arc::clone(&store),
+                hold: Mutex::new(Some((started_tx, release_rx))),
+            }),
+            Box::new(FakeHttp::default()),
+            Box::new(FakeReach(true)),
+        );
+
+        std::thread::scope(|scope| {
+            // On: its preference is written, and its write to the item is held.
+            let first = scope.spawn(|| service.set_lock(true));
+            started.recv().unwrap();
+            // Off, pressed while the first is still writing.
+            let second = scope.spawn(|| service.set_lock(false));
+            // Long enough for the second to have finished, were nothing holding it.
+            std::thread::sleep(Duration::from_millis(200));
+            release.send(()).unwrap();
+            first.join().unwrap().unwrap();
+            second.join().unwrap().unwrap();
+        });
+
+        let view = service.view();
+        assert!(!view.locked, "the last press was off");
+        assert_eq!(
+            view.protection,
+            Protection::DeviceOnly,
+            "and the item must say the same as the switch"
+        );
+        assert_eq!(
+            store.account.lock().unwrap().as_ref().map(|(_, p)| *p),
+            Some(Protection::DeviceOnly),
+            "which is what the store itself holds"
+        );
     }
 
     #[test]

@@ -736,7 +736,14 @@ pub fn speech_report() -> Result<SpeechReport, String> {
 
 /// Begin listening. Resolves once the device is actually open, so a failure is
 /// reported to the caller rather than swallowed in the audio thread.
-#[tauri::command]
+///
+/// Off the main thread, like every command in this section that can take seconds
+/// (issue #26): opening the device can wait up to `hanzi_voice`'s eight-second open
+/// timeout behind a microphone permission prompt, and a plain command would hold the
+/// window frozen for all of it. The recorder's slot is held while the device opens,
+/// so a [`listen_stop`] that arrives meanwhile waits for it rather than finding
+/// nothing to stop — and no command that runs on the main thread takes that slot.
+#[tauri::command(async)]
 pub fn listen_start(state: State<'_, AppState>) -> Result<(), String> {
     state.capture.start()
 }
@@ -758,7 +765,17 @@ pub fn listen_start(state: State<'_, AppState>) -> Result<(), String> {
 /// refusal: text that cannot be tone-scored is recognised instead, and text that
 /// can be neither is not offered a button in the first place — see
 /// [`speech_target`].
-#[tauri::command]
+///
+/// **Off the main thread, and that is the point of the attribute** (issue #26). The
+/// first call after the model is installed loads 228 MB of ONNX before it decodes,
+/// and on the main thread that froze the window for seconds after the button was
+/// released — with the "busy" state the interface sets unable to paint until it was
+/// over. Nothing this takes is a lock a main-thread command waits on: the
+/// recogniser's slot is shared only with [`asr_install`] and [`asr_remove`], which
+/// are off the main thread too, and is not held during the decode itself. Two of
+/// these cannot judge one recording: the first takes it out of the recorder, and the
+/// second is told nothing is being recorded.
+#[tauri::command(async)]
 pub fn listen_stop(state: State<'_, AppState>, text: String) -> Result<ToneResult, String> {
     let recording = state.capture.stop()?;
     Ok(state.score_speech(&recording, &text))
@@ -784,7 +801,11 @@ pub fn asr_status(state: State<'_, AppState>) -> AsrStatus {
 /// when it finishes, so the interface is not held for the minutes a 163 MB
 /// transfer takes; the outcome and the progress come back through
 /// [`asr_status`], which the settings screen polls.
-#[tauri::command]
+///
+/// Off the main thread although it returns at once, because the first thing it
+/// does is empty the recogniser's slot — and a [`listen_stop`] loading the model
+/// holds that slot for the second or two the load takes.
+#[tauri::command(async)]
 pub fn asr_install(state: State<'_, AppState>) -> Result<(), String> {
     state.asr.install()
 }
@@ -793,7 +814,11 @@ pub fn asr_install(state: State<'_, AppState>) -> Result<(), String> {
 ///
 /// Returns the new status so the screen has one thing to render rather than two
 /// calls that could disagree.
-#[tauri::command]
+///
+/// Off the main thread: it deletes a few hundred megabytes, and waits for a model
+/// that is being loaded to finish first. A recognition already decoding keeps the
+/// model it loaded — see `Asr::remove`.
+#[tauri::command(async)]
 pub fn asr_remove(state: State<'_, AppState>) -> Result<AsrStatus, String> {
     state.asr.remove()?;
     Ok(state.asr.status())
@@ -831,7 +856,10 @@ pub fn say_install(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 /// Delete the synthesis model, and report the resulting state.
-#[tauri::command]
+///
+/// Off the main thread for [`asr_remove`]'s reasons: a recursive delete of the
+/// weights, after waiting for a phrase being spoken with them to finish.
+#[tauri::command(async)]
 pub fn say_remove(state: State<'_, AppState>) -> Result<SayStatus, String> {
     state.say.remove()?;
     Ok(state.say.status())
@@ -855,7 +883,12 @@ pub struct SpokenAudio {
 /// Answers `None` when no model is installed, which is how the app ships. That is
 /// not a failure: the caller falls back to the platform synthesiser, and nothing
 /// is reported as an error for a feature the learner never asked for.
-#[tauri::command]
+///
+/// Off the main thread (issue #26): the first phrase loads the model, and every
+/// phrase runs it over up to [`SAY_MAX_CHARS`] characters, which is long enough to
+/// freeze the window. Two taps can now overlap; the model's slot makes them take
+/// turns, so they are synthesised one after the other rather than at once.
+#[tauri::command(async)]
 pub fn say_speak(state: State<'_, AppState>, text: String) -> Result<Option<SpokenAudio>, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -1645,7 +1678,15 @@ pub fn sync_auto(state: State<'_, AppState>, sync: State<'_, Arc<SyncService>>) 
 /// is rewritten only when there is one — which is the one moment turning the prompt
 /// *off* has to read it. See `crate::sync` for why asking for nothing is the default
 /// and why drawing the screen never unlocks anything.
-#[tauri::command]
+///
+/// Off the main thread, for `sync_status`'s reason and more urgently (issue #26):
+/// with the prompt on, a run that has not read the sign-in yet reads it here, and on
+/// Apple that read *is* the fingerprint prompt — raised from the thread that has to
+/// draw it, and blocking it until the learner answers. On Android, asking whether a
+/// fingerprint can be asked for at all waits on the platform's main thread. Two
+/// presses cannot interleave: `SyncService` lets one writer of the sign-in in at a
+/// time.
+#[tauri::command(async)]
 pub fn sync_set_lock(sync: State<'_, Arc<SyncService>>, locked: bool) -> Result<SyncView, String> {
     sync.set_lock(locked)
 }
