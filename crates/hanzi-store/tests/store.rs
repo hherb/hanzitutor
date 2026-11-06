@@ -846,7 +846,7 @@ fn a_new_identity_moves_only_the_attempts_it_is_given_and_every_handle_follows()
     }
     let old = db.device_id();
 
-    let new = db.rotate_device_id(&[3, 2]).unwrap();
+    let new = db.rotate_device_id(&|attempt| attempt.seq == 1).unwrap();
     assert_ne!(new, old);
     assert_eq!(db.device_id(), new);
     let origins: Vec<(String, i64, String)> = db
@@ -878,6 +878,28 @@ fn a_new_identity_moves_only_the_attempts_it_is_given_and_every_handle_follows()
         own,
         vec![(new.clone(), 1), (new.clone(), 2), (new.clone(), 3)]
     );
+
+    // The old name is remembered, and an attempt that turns up under it later can
+    // be moved over, numbered on after the current name's newest.
+    assert_eq!(db.former_device_ids().unwrap(), vec![old.clone()]);
+    let straggler = hanzi_store::IncomingAttempt {
+        device_id: old.clone(),
+        seq: 2,
+        ch: "好".into(),
+        at: "2026-09-19T13:00:00Z".into(),
+        score: 50.0,
+        rating: Rating::Hard,
+        measures: None,
+    };
+    db.merge_attempts(&[straggler]).unwrap();
+    assert_eq!(
+        db.reclaim_attempts(&old, &|attempt| attempt.seq == 1)
+            .unwrap(),
+        1
+    );
+    let moved = db.own_attempts().unwrap().pop().unwrap();
+    assert_eq!((moved.seq, moved.at.as_str()), (4, "2026-09-19T13:00:00Z"));
+    assert_eq!(db.attempts(None).unwrap().len(), 5, "moved, not copied");
 
     // And it is the name the database answers to from now on.
     assert_eq!(Db::open(&dir).unwrap().device_id(), new);

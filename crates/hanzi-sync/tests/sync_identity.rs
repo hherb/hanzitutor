@@ -17,12 +17,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use hanzi_core::ProgressStore;
+use hanzi_core::{ProgressStore, Rating};
 use hanzi_store::backup::Backup;
-use hanzi_store::Db;
+use hanzi_store::{Db, IncomingAttempt};
 use hanzi_sync::{
-    full_log, local_baselines, read_attempts, recompute, sync, FolderStore, MergedAttempt,
-    RemoteStore,
+    attempts_shard_name, baseline_shard_name, full_log, local_baselines, own_log, read_attempts,
+    recompute, sync, write_attempts, FolderStore, MergedAttempt, RemoteStore,
 };
 
 fn scratch(name: &str) -> PathBuf {
@@ -241,7 +241,7 @@ fn a_cloned_database_used_alongside_its_original_becomes_a_second_device() {
     // the next sync repairs; what is checked here is only whose name it writes.)
     let renamed = db_b.device_id().to_string();
     record(&mut progress_b, '人', 90.0, "2026-09-21T10:00:00Z");
-    let own: Vec<(String, i64)> = hanzi_sync::own_log(&db_b)
+    let own: Vec<(String, i64)> = own_log(&db_b)
         .unwrap()
         .into_iter()
         .map(|a| (a.device_id, a.seq))
@@ -273,6 +273,7 @@ fn a_store_that_is_empty_is_given_the_whole_history() {
 
     let (db_a, mut progress_a) = open(&dir_a);
     let (db_b, mut progress_b) = open(&dir_b);
+    let (id_a, id_b) = (db_a.device_id(), db_b.device_id());
     record(&mut progress_a, '好', 88.0, "2026-09-19T09:00:00Z");
     record(&mut progress_a, '好', 91.0, "2026-09-19T21:00:00Z");
     record(&mut progress_a, '好', 34.0, "2026-09-21T09:00:00Z");
@@ -300,15 +301,14 @@ fn a_store_that_is_empty_is_given_the_whole_history() {
     let b = sync(&db_b, &new).unwrap();
     assert_eq!(b.published, 0, "{b:?}");
     assert_eq!(b.pulled, 0);
-    assert_eq!(db_a.device_id(), card_owner(&db_a), "nobody changed name");
+    // Nobody took a new name: the move is not mistaken for a copy.
+    assert_eq!(db_a.device_id(), id_a);
+    assert_eq!(db_b.device_id(), id_b);
+    assert!(on_remote(&new)
+        .iter()
+        .all(|(device, ..)| *device == id_a || *device == id_b));
 
     finish(&[&dir_a, &dir_b, &dir_new, &old_store, &new_store]);
-}
-
-/// The device id this database's own attempts carry — a check that moving stores
-/// did not make anybody rotate.
-fn card_owner(db: &Db) -> String {
-    hanzi_sync::own_log(db).unwrap()[0].device_id.clone()
 }
 
 /// A backup file of `db`, read back the way the restore screen reads it, merged into
@@ -345,6 +345,7 @@ fn attempts_restored_from_a_backup_file_reach_a_peer() {
     record(&mut progress_old, '人', 70.0, "2026-09-20T09:00:00Z");
 
     let (db_new, mut progress_new) = open(&dir_new);
+    let (old_id, new_id) = (db_old.device_id(), db_new.device_id());
     assert_eq!(restore_backup(&db_old, &db_new), 3);
     record(&mut progress_new, '好', 50.0, "2026-10-02T09:00:00Z");
     let new = sync(&db_new, &remote).unwrap();
@@ -355,7 +356,6 @@ fn attempts_restored_from_a_backup_file_reach_a_peer() {
 
     // They travel under the old phone's name, which is who made them — so a copy
     // published by anybody else is the same attempt, never a second one.
-    let old_id = db_old.device_id().to_string();
     let remote_now = on_remote(&remote);
     assert_eq!(
         remote_now
@@ -366,9 +366,10 @@ fn attempts_restored_from_a_backup_file_reach_a_peer() {
     );
     assert_eq!(
         db_new.device_id(),
-        card_owner(&db_new),
+        new_id,
         "the new phone kept its own name"
     );
+    assert!(remote_now.contains(&(new_id.clone(), 1, "2026-10-02T09:00:00Z".to_string())));
 
     let (db_peer, _) = open(&dir_peer);
     assert_eq!(sync(&db_peer, &remote).unwrap().pulled, 4);
@@ -381,6 +382,12 @@ fn attempts_restored_from_a_backup_file_reach_a_peer() {
     let old = sync(&db_old, &remote).expect("the old phone is not broken");
     assert_eq!(old.published, 0, "{old:?}");
     assert_eq!(old.pulled, 1);
+    assert_eq!(
+        db_old.device_id(),
+        old_id,
+        "and keeps its name: the store agrees with it"
+    );
+    assert_eq!(db_new.device_id(), new_id);
     assert_eq!(sync(&db_peer, &remote).unwrap().pulled, 0);
     assert_eq!(card(&db_peer, "好").attempts, 3);
 
@@ -417,4 +424,254 @@ fn two_phones_restoring_the_same_backup_publish_it_once() {
     assert_eq!(card(&db_peer, "好").attempts, 2);
 
     finish(&[&dir_old, &dir_one, &dir_two, &dir_peer, &shared]);
+}
+
+#[test]
+fn an_attempt_left_under_a_former_name_is_moved_rather_than_left_to_collide() {
+    // The rename asks of every row inside its own transaction, so a review that
+    // records while a sync runs cannot leave an attempt behind under the old name.
+    // One can still get there another way — a build without that care, or a backup
+    // from before the rename restored on top — and once the original publishes the
+    // same number, the two would disagree on every pull from then on. This puts one
+    // there directly and checks that the next sync moves it instead.
+    let dir_a = scratch("straggler-a");
+    let dir_backup = scratch("straggler-backup");
+    let dir_r = scratch("straggler-r");
+    let dir_c = scratch("straggler-c");
+    let shared = scratch("straggler-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    let old_id = {
+        let (db_a, mut progress_a) = open(&dir_a);
+        record(&mut progress_a, '好', 88.0, "2026-09-19T09:00:00Z");
+        record(&mut progress_a, '好', 91.0, "2026-09-19T21:00:00Z");
+        sync(&db_a, &remote).unwrap();
+        db_a.device_id()
+    };
+    copy_dir(&dir_a, &dir_backup);
+    let (db_a, mut progress_a) = open(&dir_a);
+    record(&mut progress_a, '好', 70.0, "2026-09-22T09:00:00Z");
+    sync(&db_a, &remote).unwrap();
+
+    copy_dir(&dir_backup, &dir_r);
+    let (db_r, mut progress_r) = open(&dir_r);
+    record(&mut progress_r, '好', 99.0, "2026-10-01T09:00:00Z");
+    sync(&db_r, &remote).unwrap();
+    let new_id = db_r.device_id();
+    assert_ne!(new_id, old_id);
+
+    // A straggler under the old name, numbered where the original goes next.
+    let straggler = IncomingAttempt {
+        device_id: old_id.clone(),
+        seq: 4,
+        ch: "好".into(),
+        at: "2026-10-01T10:00:00Z".into(),
+        score: 55.0,
+        rating: Rating::from_score(55.0),
+        measures: None,
+    };
+    assert_eq!(db_r.merge_attempts(&[straggler]).unwrap(), 1);
+    // And the original publishes its own attempt 4.
+    record(&mut progress_a, '好', 60.0, "2026-10-02T09:00:00Z");
+    sync(&db_a, &remote).unwrap();
+
+    let repaired = sync(&db_r, &remote).expect("the straggler does not break the copy");
+    assert_eq!(repaired.published, 1, "the straggler, under the new name");
+    assert_eq!(repaired.pulled, 1, "and the original's attempt 4");
+    assert!(on_remote(&remote).contains(&(new_id.clone(), 2, "2026-10-01T10:00:00Z".into())));
+    assert!(on_remote(&remote).contains(&(old_id, 4, "2026-10-02T09:00:00Z".into())));
+    assert_eq!(db_r.device_id(), new_id, "no further rename was needed");
+
+    let (db_c, _) = open(&dir_c);
+    sync(&db_c, &remote).expect("a peer is not broken");
+    sync(&db_a, &remote).expect("nor is the original");
+    assert_eq!(in_log(&db_a), on_remote(&remote));
+    assert_eq!(in_log(&db_r), on_remote(&remote));
+    assert_eq!(in_log(&db_c), on_remote(&remote));
+    assert_eq!(on_remote(&remote).len(), 6);
+    assert_eq!(card(&db_a, "好"), card(&db_r, "好"));
+    assert_eq!(card(&db_c, "好"), card(&db_r, "好"));
+
+    finish(&[&dir_a, &dir_backup, &dir_r, &dir_c, &shared]);
+}
+
+/// Write a `progress.json` whose card remembers `attempts` attempts but kept only
+/// the newest `kept` of them — what the pre-M10 format produces once a history is
+/// longer than it stored — and open a database over it, which imports it.
+///
+/// The same document as `two_devices.rs`'s helper of the same name.
+fn migrated_short_log(path: &Path, ch: char, attempts: usize, kept: usize) {
+    let mut progress = ProgressStore::open(path.join("progress.json")).unwrap();
+    for i in 0..attempts {
+        let at = format!("2026-09-19T09:{i:02}:00Z");
+        progress.record_at(ch, 80.0, &at).unwrap();
+    }
+    progress.save().unwrap();
+    drop(progress);
+
+    let file = path.join("progress.json");
+    let text = fs::read_to_string(&file).unwrap();
+    let mut document: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let key = ch.to_string();
+    let history = document["cards"][&key]["history"].as_array().unwrap();
+    let newest = history[history.len() - kept..].to_vec();
+    document["cards"][&key]["history"] = serde_json::Value::Array(newest);
+    fs::write(&file, serde_json::to_string(&document).unwrap()).unwrap();
+
+    // Imported here, so a copy of the directory is a copy of the database.
+    let (db, _) = open(path);
+    assert_eq!(full_log(&db).unwrap().len(), kept);
+}
+
+#[test]
+fn a_copy_made_before_the_first_baseline_folds_from_the_originals() {
+    // A database with a migrated card is copied before it has ever synced, so the
+    // copy has no baseline of its own; the original then syncs and publishes one.
+    // The copy must take the original's — it is the same history — rather than
+    // capture one that claims the original's attempts and overwrites its file.
+    let dir_a = scratch("baseline-copy-a");
+    let dir_r = scratch("baseline-copy-r");
+    let dir_c = scratch("baseline-copy-c");
+    let shared = scratch("baseline-copy-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    migrated_short_log(&dir_a, '好', 5, 2);
+    copy_dir(&dir_a, &dir_r);
+
+    let (db_a, mut progress_a) = open(&dir_a);
+    sync(&db_a, &remote).unwrap();
+    let id_a = db_a.device_id();
+    let baseline_file = shared.join(baseline_shard_name(&id_a));
+    let original_baseline = fs::read(&baseline_file).expect("the original published one");
+    record(&mut progress_a, '好', 40.0, "2026-10-01T09:00:00Z");
+    record(&mut progress_a, '好', 45.0, "2026-10-02T09:00:00Z");
+    sync(&db_a, &remote).unwrap();
+    let (db_c, _) = open(&dir_c);
+    sync(&db_c, &remote).unwrap();
+
+    let (db_r, mut progress_r) = open(&dir_r);
+    record(&mut progress_r, '好', 95.0, "2026-10-01T12:00:00Z");
+    sync(&db_r, &remote).expect("the copy syncs");
+    assert_ne!(db_r.device_id(), id_a, "and is a device of its own");
+
+    for _ in 0..2 {
+        sync(&db_a, &remote).unwrap();
+        sync(&db_c, &remote).unwrap();
+        sync(&db_r, &remote).unwrap();
+    }
+    let on_a = card(&db_a, "好");
+    assert_eq!(card(&db_r, "好"), on_a, "one history, one schedule");
+    assert_eq!(card(&db_c, "好"), on_a);
+    assert_eq!(
+        on_a.attempts, 8,
+        "five from the baseline, two since, one from the copy"
+    );
+    assert_eq!(
+        fs::read(&baseline_file).unwrap(),
+        original_baseline,
+        "the original's baseline was not overwritten"
+    );
+    assert!(
+        !shared.join(baseline_shard_name(&db_r.device_id())).exists(),
+        "and the copy did not publish one of its own: it has nothing the original's lacks"
+    );
+
+    finish(&[&dir_a, &dir_r, &dir_c, &shared]);
+}
+
+#[test]
+fn a_copy_that_has_to_rename_with_no_baseline_to_adopt_does_not_invent_one() {
+    // The original synced only with a build that predates baselines, so the store
+    // has none to adopt. A baseline the copy captured now would count the attempt
+    // its rename is about to move, so it captures none and leaves the migrated card
+    // alone — what a missing baseline has always meant.
+    let dir_a = scratch("no-baseline-a");
+    let dir_r = scratch("no-baseline-r");
+    let shared = scratch("no-baseline-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    migrated_short_log(&dir_a, '好', 5, 2);
+    copy_dir(&dir_a, &dir_r);
+    {
+        // The older build: its own attempts in shards, a watermark, no baseline.
+        let (db_a, mut progress_a) = open(&dir_a);
+        record(&mut progress_a, '好', 40.0, "2026-10-01T09:00:00Z");
+        write_attempts(&remote, &db_a.device_id(), &own_log(&db_a).unwrap()).unwrap();
+        db_a.set_meta_value("sync:published_seq", "3").unwrap();
+    }
+
+    let (db_r, mut progress_r) = open(&dir_r);
+    let id = db_r.device_id();
+    record(&mut progress_r, '好', 95.0, "2026-10-01T12:00:00Z");
+    // The schedule, without the recent-history window, which is read from the log
+    // and so grows by the original's attempt whatever happens to the card.
+    let schedule = |db: &Db| {
+        let mut card = card(db, "好");
+        card.history.clear();
+        card
+    };
+    let before = schedule(&db_r);
+    let summary = sync(&db_r, &remote).unwrap();
+    assert_ne!(db_r.device_id(), id, "it renamed");
+    assert_eq!(summary.left_alone, 1, "{summary:?}");
+    assert_eq!(
+        schedule(&db_r),
+        before,
+        "the migrated card is left as it was"
+    );
+    assert!(!shared.join(baseline_shard_name(&id)).exists());
+    assert!(!shared.join(baseline_shard_name(&db_r.device_id())).exists());
+
+    finish(&[&dir_a, &dir_r, &shared]);
+}
+
+#[test]
+fn an_existing_database_with_a_watermark_publishes_only_what_is_new() {
+    // The upgrade path: a database that has synced under the watermark, with its
+    // shards where that build put them. Reading what is published from the store
+    // must agree with the watermark exactly — no rename, nothing republished, no
+    // shard touched.
+    let dir_a = scratch("upgrade-a");
+    let dir_c = scratch("upgrade-c");
+    let shared = scratch("upgrade-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    let (db_a, mut progress_a) = open(&dir_a);
+    let id = db_a.device_id();
+    record(&mut progress_a, '好', 88.0, "2026-09-19T09:00:00Z");
+    record(&mut progress_a, '好', 91.0, "2026-09-19T21:00:00Z");
+    record(&mut progress_a, '好', 34.0, "2026-09-21T09:00:00Z");
+    write_attempts(&remote, &id, &own_log(&db_a).unwrap()).unwrap();
+    db_a.set_meta_value("sync:published_seq", "3").unwrap();
+    record(&mut progress_a, '好', 70.0, "2026-09-22T09:00:00Z");
+    record(&mut progress_a, '好', 75.0, "2026-09-23T09:00:00Z");
+    let newer: Vec<_> = own_log(&db_a)
+        .unwrap()
+        .into_iter()
+        .filter(|attempt| attempt.seq > 3)
+        .collect();
+    write_attempts(&remote, &id, &newer).unwrap();
+    db_a.set_meta_value("sync:published_seq", "5").unwrap();
+    let (db_c, _) = open(&dir_c);
+    assert_eq!(sync(&db_c, &remote).unwrap().pulled, 5);
+
+    let shard_bytes = |first: i64| fs::read(shared.join(attempts_shard_name(&id, first))).unwrap();
+    let (first, fourth) = (shard_bytes(1), shard_bytes(4));
+    record(&mut progress_a, '好', 50.0, "2026-09-24T09:00:00Z");
+    let upgraded = sync(&db_a, &remote).unwrap();
+    assert_eq!(upgraded.published, 1, "only the new one: {upgraded:?}");
+    assert_eq!(upgraded.pulled, 0);
+    assert_eq!(db_a.device_id(), id, "no rename");
+    assert_eq!(shard_bytes(1), first);
+    assert_eq!(shard_bytes(4), fourth);
+    assert!(shared.join(attempts_shard_name(&id, 6)).exists());
+    assert_eq!(
+        db_a.meta_value("sync:published_seq").unwrap().as_deref(),
+        Some("6"),
+        "and the watermark an older build would read moved with it"
+    );
+    assert_eq!(sync(&db_c, &remote).unwrap().pulled, 1);
+    assert!(sync(&db_a, &remote).unwrap().is_empty());
+
+    finish(&[&dir_a, &dir_c, &shared]);
 }

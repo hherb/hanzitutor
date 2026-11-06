@@ -66,9 +66,9 @@ use hanzi_core::progress::{CardState, ProgressError, ProgressSink};
 use hanzi_store::{Db, IncomingAttempt, LoggedAttempt};
 
 use crate::document::{
-    merge_cursor, merge_vocab, merge_vocab_cursors, read_baselines, read_cursor, read_vocab,
-    read_vocab_cursors, write_baseline, write_cursor, write_vocab, write_vocab_cursors,
-    Baseline, Baselines,
+    baseline_shard_name, merge_cursor, merge_vocab, merge_vocab_cursors, read_baselines,
+    read_cursor, read_vocab, read_vocab_cursors, write_baseline, write_cursor, write_vocab,
+    write_vocab_cursors, Baseline, Baselines,
 };
 use crate::shard::{
     attempts_shard_name, fold_cards, merge_attempts, parse_attempts_shard, read_attempts,
@@ -194,12 +194,7 @@ fn publish_against(
         .map(|attempt| ((attempt.device_id.as_str(), attempt.seq), attempt))
         .collect();
 
-    // Before the identity can change: the baseline names the rows it accounts for
-    // by this device's name, and has to be taken under the name those rows have.
-    // It is captured once and read back afterwards, so this is a no-op for any
-    // device that has synced before.
-    capture_baseline(db)?;
-    settle_identity(db, &held)?;
+    settle_identity(db, store, &held)?;
     let device = db.device_id();
 
     let mut fresh: BTreeMap<String, Vec<MergedAttempt>> = BTreeMap::new();
@@ -273,9 +268,38 @@ fn publish_against(
 /// whatever the other copy did. Every device ends up with every attempt, each
 /// under exactly one name, and nothing on the store was rewritten.
 ///
+/// ## Attempts left under a former name
+///
+/// The rename asks of every row, inside its own transaction, whether the store
+/// holds it — so an attempt a review records *while* this runs is either moved or
+/// written under the new name, never left behind under the old one. An attempt can
+/// still turn up under a former name some other way: a database renamed by a build
+/// without that care, or a backup restored from before the rename. If the store
+/// holds a *different* attempt under that name and number, only this device can
+/// have made this one, so it is moved to the current name as well
+/// ([`Db::reclaim_attempts`]) rather than left to fail every pull with
+/// [`SyncError::Rewritten`]. A former name's attempts that the store does not hold
+/// at all are left alone: they are as likely to be the original's, pulled before a
+/// move to an empty store, and are published under that name like anyone else's.
+///
+/// ## What it cannot do
+///
+/// - **Repair a store the old behaviour already damaged.** A build without this
+///   check overwrote the original's shard; a peer that had pulled the original's
+///   attempt still disagrees with the store about it, and still fails with
+///   [`SyncError::Rewritten`] — there is no telling, from here, which copy is the
+///   real one. Worse, the *original* now finds the copy's attempt under its own
+///   name, takes a new one itself, and republishes its own overwritten attempt
+///   under it, so a peer that kept the first copy holds it twice.
+/// - **Judge "unpublished" against any store but this one.** A copy used with two
+///   accounts in turn renames what the *current* store lacks, which can include
+///   attempts it already published to the other; were the two stores' contents
+///   ever brought together, those would be there twice.
+///
 /// Returns the new name, if there is one.
 fn settle_identity(
     db: &Db,
+    store: &dyn RemoteStore,
     held: &HashMap<(&str, i64), &MergedAttempt>,
 ) -> Result<Option<String>, SyncError> {
     let device = db.device_id();
@@ -287,16 +311,78 @@ fn settle_identity(
         .iter()
         .filter(|((owner, _), _)| *owner == device)
         .any(|((_, seq), remote)| own.get(seq) != Some(*remote));
-    if !someone_else {
-        return Ok(None);
+
+    // Before the name can change, because a baseline accounts for rows by name.
+    settle_baseline(db, store, someone_else)?;
+
+    let renamed = if someone_else {
+        let published = |row: &LoggedAttempt| held_as_is(held, row);
+        Some(db.rotate_device_id(&published).map_err(SyncError::Io)?)
+    } else {
+        None
+    };
+
+    for former in db.former_device_ids().map_err(SyncError::Io)? {
+        let keep = |row: &LoggedAttempt| {
+            held.get(&(former.as_str(), row.seq))
+                .is_none_or(|remote| **remote == MergedAttempt::from(row.clone()))
+        };
+        db.reclaim_attempts(&former, &keep).map_err(SyncError::Io)?;
     }
-    let unpublished: Vec<i64> = own
-        .values()
-        .filter(|attempt| held.get(&(device.as_str(), attempt.seq)) != Some(attempt))
-        .map(|attempt| attempt.seq)
-        .collect();
-    db.rotate_device_id(&unpublished)
-        .map(Some)
+    Ok(renamed)
+}
+
+/// Whether the store holds exactly this attempt, under its name and number.
+fn held_as_is(held: &HashMap<(&str, i64), &MergedAttempt>, row: &LoggedAttempt) -> bool {
+    held.get(&(row.device_id.as_str(), row.seq))
+        .is_some_and(|remote| **remote == MergedAttempt::from(row.clone()))
+}
+
+/// Settle this device's baseline before its name is checked, once.
+///
+/// A baseline says "this device's rows up to here are already inside these cards",
+/// by name and number, so it has to agree with the store about both. Capturing one
+/// here, the way a device that has never synced does, is wrong for a copy:
+///
+/// - **The store already holds a baseline under this name.** Then this database is
+///   a copy of the device that captured it, taken before it did. That baseline is
+///   *this* history too — the copy shares it up to the moment it was taken — and
+///   every peer already folds from it, so it is adopted as this device's own. A
+///   baseline of the copy's own would cover the original's attempts it never saw,
+///   claim its own new ones, and overwrite the original's file besides.
+/// - **The name is about to change.** The attempts the rename moves are inside the
+///   cards as they stand, and would sit outside a baseline taken under the old name
+///   — folded on top of a state that already counts them. There is no range under
+///   one name that describes the cards, so none is captured: an empty one is
+///   written down, and a migrated card is left alone rather than rebuilt wrong,
+///   which is what a missing baseline has always meant. If the original publishes
+///   its own later, every device folds from that.
+///
+/// Anything else is the ordinary first capture.
+fn settle_baseline(db: &Db, store: &dyn RemoteStore, renaming: bool) -> Result<(), SyncError> {
+    if own_baseline(db)?.is_some() {
+        return Ok(());
+    }
+    let device = db.device_id();
+    let adopted = read_baselines(store)?
+        .into_iter()
+        .find(|baseline| baseline.device_id == device);
+    let baseline = match adopted {
+        Some(baseline) => baseline,
+        None if renaming => Baseline {
+            device_id: device,
+            from: 0,
+            to: 0,
+            cards: BTreeMap::new(),
+        },
+        None => {
+            capture_baseline(db)?;
+            return Ok(());
+        }
+    };
+    let text = serde_json::to_string(&baseline)
+        .map_err(|e| SyncError::Malformed(format!("the baseline could not be encoded: {e}")))?;
+    db.set_meta_value(BASELINE_KEY, &text)
         .map_err(SyncError::Io)
 }
 
@@ -337,10 +423,25 @@ pub fn publish_documents(db: &Db, store: &dyn RemoteStore) -> Result<(), SyncErr
     // device's attempts must be able to read the baseline that says how to fold
     // them. A peer that misses it folds what it can and is corrected by its next
     // sync, which is the right direction to fail in.
+    //
+    // Only under this device's current name, or where the store has none for the
+    // name it carries. A device that has been renamed still holds the baseline of
+    // its former name, and the store's copy of that is the former name's to keep:
+    // two devices writing one baseline file is how a peer's would be overwritten.
+    // Republishing it to a store that lacks one — a move to a new account — is what
+    // lets the new account fold that name's attempts correctly.
     if let Some(baseline) = capture_baseline(db)? {
-        write_baseline(store, &baseline)?;
+        if baseline.device_id == device || !holds_baseline_of(store, &baseline.device_id)? {
+            write_baseline(store, &baseline)?;
+        }
     }
     Ok(())
+}
+
+/// Whether the store holds a baseline for `device_id`.
+fn holds_baseline_of(store: &dyn RemoteStore, device_id: &str) -> Result<bool, SyncError> {
+    let name = baseline_shard_name(device_id);
+    Ok(store.list()?.iter().any(|entry| entry.name == name))
 }
 
 /// This device's baseline, captured on first use and read back afterwards.

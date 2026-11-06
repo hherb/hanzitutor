@@ -181,7 +181,7 @@ impl Db {
             .clone()
     }
 
-    /// Give this device a new identity, and move the named attempts over to it.
+    /// Give this device a new identity, and move its unpublished attempts to it.
     ///
     /// This is what sync does when it finds this device's name already holding
     /// attempts this log does not have — a database restored from a backup, or
@@ -190,34 +190,48 @@ impl Db {
     /// `hanzi_sync`'s `settle_identity` for when it is called; this is only the
     /// storage half.
     ///
-    /// `unpublished` is the `seq` of every attempt of the *current* identity that
-    /// no shard holds yet. Those, and only those, are renumbered from 1 under the
-    /// new identity, in the order they were made. Everything the old name has
-    /// already published stays under the old name: it is somebody's history now —
-    /// a peer may hold it — and renaming it would make it a second attempt on
-    /// every device that already has the first.
+    /// `published` answers, for one attempt of the *current* identity, whether a
+    /// shard already holds exactly that attempt. Every attempt it says no to is
+    /// renumbered from 1 under the new identity, in the order they were made.
+    /// Everything the old name has already published stays under the old name: it
+    /// is somebody's history now — a peer may hold it — and renaming it would make
+    /// it a second attempt on every device that already has the first.
     ///
-    /// One transaction for the new name and the moved rows, so a failure leaves
-    /// the database as it was rather than holding attempts under a name it does
-    /// not answer to. Returns the new identity.
-    pub fn rotate_device_id(&self, unpublished: &[i64]) -> Result<String, String> {
+    /// ## Why it is asked of every row, inside the transaction
+    ///
+    /// Rather than handed a list of rows decided beforehand. A review can record an
+    /// attempt while a sync runs, and an attempt saved between "these are the
+    /// unpublished ones" and the rename would be numbered under the old name, left
+    /// behind by a list that predates it, and collide with the original's attempt
+    /// of the same number for good. Asked here, with the connection held, the
+    /// question covers every row that exists at the moment of the rename, and no
+    /// row can be written under the old name afterwards — see `device_id` on
+    /// [`Db`]. `published` is called with the connection held, so it must not
+    /// touch this database.
+    ///
+    /// The old name is remembered among the [former](Db::former_device_ids) ones.
+    /// One transaction for all of it, so a failure leaves the database as it was
+    /// rather than holding attempts under a name it does not answer to. Returns the
+    /// new identity.
+    pub fn rotate_device_id(
+        &self,
+        published: &dyn Fn(&LoggedAttempt) -> bool,
+    ) -> Result<String, String> {
         let path = self.path();
         let mut conn = self.lock();
         let old = self.device();
         let new = uuid::Uuid::new_v4().to_string();
-        let mut seqs = unpublished.to_vec();
-        seqs.sort_unstable();
-        seqs.dedup();
 
         let tx = conn.transaction().map_err(|e| at(&path, e))?;
-        set_meta(&tx, schema::DEVICE_ID_KEY, &new).map_err(|e| at(&path, e))?;
-        for (fresh, seq) in (1i64..).zip(&seqs) {
-            tx.execute(
-                "UPDATE attempt SET device_id = ?1, seq = ?2 WHERE device_id = ?3 AND seq = ?4",
-                params![new, fresh, old, seq],
-            )
-            .map_err(|e| at(&path, e))?;
+        let mut former = former_ids(&tx).map_err(|e| at(&path, e))?;
+        if !former.contains(&old) {
+            former.push(old.clone());
         }
+        let text = serde_json::to_string(&former)
+            .map_err(|e| format!("{}: the former device ids: {e}", path.display()))?;
+        set_meta(&tx, FORMER_DEVICE_IDS_KEY, &text).map_err(|e| at(&path, e))?;
+        set_meta(&tx, schema::DEVICE_ID_KEY, &new).map_err(|e| at(&path, e))?;
+        move_attempts(&tx, &old, &new, published).map_err(|e| at(&path, e))?;
         tx.commit().map_err(|e| at(&path, e))?;
 
         // Still holding the connection, so no write can slip in between the
@@ -228,6 +242,43 @@ impl Db {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = new.clone();
         drop(conn);
         Ok(new)
+    }
+
+    /// The names this device has given up, oldest first.
+    ///
+    /// Sync needs them because an attempt under a former name is not quite a
+    /// stranger's: see [`Db::reclaim_attempts`].
+    pub fn former_device_ids(&self) -> Result<Vec<String>, String> {
+        let conn = self.lock();
+        former_ids(&conn).map_err(|e| at(&self.path(), e))
+    }
+
+    /// Move attempts of a former name to the current one, renumbered after its
+    /// newest, returning how many moved.
+    ///
+    /// Every attempt of `former` that `keep` says no to is moved; the question is
+    /// asked inside the transaction, with the same care as in
+    /// [`Db::rotate_device_id`], and `keep` must not touch this database either.
+    /// This is the repair for an attempt that ended up under a former name anyway
+    /// — a database renamed by a build without that care, or one restored from a
+    /// backup taken before the rename — and that the store already holds a
+    /// different attempt for, under the same number. Only this device can have
+    /// made it, so it is moved to this device's name rather than left to collide.
+    pub fn reclaim_attempts(
+        &self,
+        former: &str,
+        keep: &dyn Fn(&LoggedAttempt) -> bool,
+    ) -> Result<usize, String> {
+        let path = self.path();
+        let mut conn = self.lock();
+        let current = self.device();
+        if former == current {
+            return Ok(0);
+        }
+        let tx = conn.transaction().map_err(|e| at(&path, e))?;
+        let moved = move_attempts(&tx, former, &current, keep).map_err(|e| at(&path, e))?;
+        tx.commit().map_err(|e| at(&path, e))?;
+        Ok(moved)
     }
 
     /// The database file.
@@ -411,6 +462,50 @@ impl Db {
         let conn = self.lock();
         set_meta(&conn, key, value).map_err(|e| at(&self.path(), e))
     }
+}
+
+/// Where the names this device has given up are kept, as a JSON list.
+///
+/// Beside `device_id` in `meta`, so a backup carries the history of the name with
+/// the name itself.
+const FORMER_DEVICE_IDS_KEY: &str = "former_device_ids";
+
+/// The former names, from `meta`. A value that cannot be read is treated as none,
+/// which costs only the repair in [`Db::reclaim_attempts`], never an attempt.
+fn former_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    Ok(meta_get(conn, FORMER_DEVICE_IDS_KEY)?
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default())
+}
+
+/// Move every attempt of `from` that `keep` says no to over to `to`, numbered on
+/// from `to`'s newest, in the order `from` numbered them.
+///
+/// By rowid rather than by `(device_id, seq)`, so that a row moved early in the
+/// loop can never be mistaken for one still waiting to move.
+fn move_attempts(
+    conn: &Connection,
+    from: &str,
+    to: &str,
+    keep: &dyn Fn(&LoggedAttempt) -> bool,
+) -> rusqlite::Result<usize> {
+    let rows: Vec<LoggedAttempt> = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {ATTEMPT_COLUMNS} FROM attempt WHERE device_id = ?1 ORDER BY seq"
+        ))?;
+        let rows = stmt.query_map([from], read_attempt)?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let first = next_seq(conn, to)?;
+    let mut moved = 0usize;
+    for (fresh, row) in (first..).zip(rows.iter().filter(|row| !keep(row))) {
+        conn.execute(
+            "UPDATE attempt SET device_id = ?1, seq = ?2 WHERE id = ?3",
+            params![to, fresh, row.id],
+        )?;
+        moved += 1;
+    }
+    Ok(moved)
 }
 
 /// Read one attempt row, in the column order [`ATTEMPT_COLUMNS`] selects.
