@@ -833,8 +833,8 @@ pub fn heard_against_readings(
     } else if !same_count {
         format!(
             "Heard {base_text} — {} syllable{} where {wanted_text} ({}) was asked for.{}",
-            wanted.len(),
-            if wanted.len() == 1 { "" } else { "s" },
+            heard_syllables.len(),
+            if heard_syllables.len() == 1 { "" } else { "s" },
             wanted.len(),
             if tone_follows {
                 " The tone below is still judged from the pitch."
@@ -1250,8 +1250,30 @@ mod tests {
         let heard = heard_against("你", "nǐ", &target);
         assert!(!heard.same_count);
         assert!(!heard.all_matched());
-        assert!(heard.detail.contains("2 syllables"), "{}", heard.detail);
-        assert!(heard.detail.contains("ni"), "{}", heard.detail);
+        // One syllable was heard and two were wanted, and the sentence has to
+        // give both counts: it used to print the wanted count twice, as "2
+        // syllables where ni hao (2) was asked for".
+        assert!(
+            heard
+                .detail
+                .contains("Heard ni — 1 syllable where ni hao (2) was asked for."),
+            "{}",
+            heard.detail
+        );
+    }
+
+    #[test]
+    fn more_syllables_heard_than_wanted_are_counted_as_heard() {
+        let wanted: Vec<String> = ["nǐ", "hǎo"].iter().map(|s| s.to_string()).collect();
+        let heard = heard_against_readings("你好吗", "nǐhǎoma", &wanted, false);
+        assert!(!heard.same_count);
+        assert!(
+            heard
+                .detail
+                .contains("Heard ni hao ma — 3 syllables where ni hao (2) was asked for."),
+            "{}",
+            heard.detail
+        );
     }
 
     #[test]
