@@ -647,13 +647,15 @@ after each item) both do this now. The shape is the rule, not either file.
     passing attempt made before the card is due — it stays in the history and
     moves nothing — while a failure resets the card whenever it happens. Ease is
     charged, and a lapse counted, only for the failure of a card that had been
-    learned (`repetitions > 0`) **and was due**: if early failures were charged
-    while early passes earn nothing, a sitting of drilling could only lower ease.
+    learned: one review in, only if it was due (if early failures were charged
+    while early passes earn nothing, a sitting of drilling could only lower ease);
+    two or more reviews in — which no single sitting can reach — early or not.
     A **trace** is not a recall at all: `check()` sends the board's mode,
     `record_practice_at` keeps a trace out of the card, and `hanzi-store` writes
     it to `trace_attempt` (schema 7) rather than to `attempt`, so it is never
     published or folded. It is still the learner's handwriting, so the practice
-    log export carries it (a `mode` field/column; no device or sequence number),
+    log export carries it (a `mode` field, and a last CSV column so positional
+    readers do not shift; no device or sequence number),
     the backup carries it (an optional `traces` array, no `BACKUP_VERSION` bump),
     and `ProgressView.traced` counts it per character so a traced-only character
     reads "traced N× · not yet written from memory" rather than untouched. Every
@@ -661,7 +663,8 @@ after each item) both do this now. The shape is the rule, not either file.
     log agrees with the one that recorded it, and the shard format is unchanged.
 
     **Upgrading.** Cards built by an older build are rebuilt once: the upgrade to
-    schema 7 leaves a `refold:schema7` marker in `meta` (same transaction), and
+    schema 7 leaves a `refold:schema7` marker in `meta` (same transaction), as
+    does the import of a pre-database `progress.json` that holds any card, and
     `AppState::assemble` folds the log through `hanzi_sync::recompute` from this
     device's own baseline and removes it — so a device that never syncs is
     corrected like one that does. **Until every device is upgraded, the older

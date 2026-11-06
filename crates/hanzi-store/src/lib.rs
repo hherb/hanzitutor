@@ -356,7 +356,8 @@ impl Db {
     /// Whether the schedule still has to be rebuilt once under this build's rules.
     ///
     /// Set by the upgrade to schema 7, in the same transaction, for a database an
-    /// older build wrote. Those builds advanced a card on every Check, early or
+    /// older build wrote — and by the import of the pre-database JSON schedule,
+    /// in the import's transaction, for an install older still. Those builds advanced a card on every Check, early or
     /// repeated, and scheduled traces as reviews (issue #15), so their cards can
     /// be weeks too far out. A syncing device gets them refolded by its next sync;
     /// this is what makes a device that never syncs get the same correction, so

@@ -158,6 +158,11 @@ CREATE TABLE IF NOT EXISTS trace_attempt (
     legible       INTEGER,
     order_correct INTEGER
 );
+-- What `Db::merge_traces` asks to tell a restored trace it already has from a
+-- new one. Without it every restored row scanned the whole table, under the
+-- database lock. Added here rather than by a version bump: it is idempotent, and
+-- a schema-7 database that lacks it gains it on the next open.
+CREATE INDEX IF NOT EXISTS trace_attempt_identity ON trace_attempt (ch, at);
 ";
 
 /// Create anything missing, add any column this build needs, and record the

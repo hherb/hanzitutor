@@ -3432,7 +3432,7 @@ fn a_traced_attempt_reaches_the_database_but_not_the_schedule() {
         .unwrap();
     assert!(csv_message.contains("1 traces"), "{csv_message}");
     let csv = std::fs::read_to_string(dir.join("log.csv")).unwrap();
-    assert!(csv.lines().nth(1).unwrap().contains(",trace,"), "{csv}");
+    assert!(csv.lines().nth(1).unwrap().ends_with(",trace"), "{csv}");
 
     // Reopened from disk, so this is what was stored and not what was in memory:
     // still no card, but the view knows it was traced.
@@ -3572,6 +3572,59 @@ fn a_schedule_an_older_build_inflated_is_rebuilt_once_on_upgrade() {
         "the rebuild ran once, at the upgrade"
     );
     drop(state);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_json_era_schedule_is_rebuilt_when_it_is_imported() {
+    // An install older than the database: its `progress.json` was scheduled by a
+    // build that advanced a card on every Check, and the database it is imported
+    // into is new, so only the import can ask for the rebuild.
+    let dir = data_dir("refold-json");
+    let history: Vec<serde_json::Value> = (0..4)
+        .map(|minute| {
+            serde_json::json!({
+                "at": format!("2026-09-19T09:0{minute}:00Z"),
+                "score": 80.0,
+                "rating": "good",
+            })
+        })
+        .collect();
+    let document = serde_json::json!({
+        "version": 1,
+        "cards": {
+            "好": {
+                "attempts": 4,
+                "lapses": 0,
+                "bestScore": 80.0,
+                "lastScore": 80.0,
+                "lastPractised": "2026-09-19T09:03:00Z",
+                "due": "2026-10-26T21:03:00Z",
+                "intervalDays": 37.5,
+                "ease": 2.5,
+                "repetitions": 4,
+                "history": history,
+            }
+        }
+    });
+    std::fs::write(dir.join("progress.json"), document.to_string()).unwrap();
+
+    let state = AppState::load(Some(dir.clone())).unwrap();
+    let card = state.lock_progress().store.card('好').cloned().unwrap();
+    assert_eq!(card.repetitions, 1, "only the first check was a review");
+    assert_eq!(card.interval_days, 1.0);
+    assert_eq!(card.due, "2026-09-20T09:00:00Z");
+    assert_eq!(card.attempts, 4);
+    assert!(
+        !state
+            .db
+            .as_ref()
+            .unwrap()
+            .schedule_refold_pending()
+            .unwrap(),
+        "and it was done once"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

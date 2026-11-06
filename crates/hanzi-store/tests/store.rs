@@ -1702,3 +1702,67 @@ fn restored_traces_are_kept_once_and_counted_for_the_view() {
 
     finish(&dir);
 }
+
+#[test]
+fn an_imported_json_schedule_asks_to_be_rebuilt_once() {
+    // An install from before the database had its cards scheduled by a build that
+    // advanced one on every Check. Its database is new, so the schema upgrade has
+    // nothing to say about it; the import is what has to ask.
+    let dir = dir("refold-import");
+    write_legacy_documents(&dir);
+    let db = Db::open(&dir).unwrap();
+    assert!(
+        !db.schedule_refold_pending().unwrap(),
+        "nothing imported yet"
+    );
+    let _progress = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(db.schedule_refold_pending().unwrap(), "the import asked");
+    db.finish_schedule_refold().unwrap();
+
+    // Opened again, the import is already done and does not ask again.
+    let db = Db::open(&dir).unwrap();
+    let _progress = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(!db.schedule_refold_pending().unwrap());
+
+    finish(&dir);
+}
+
+#[test]
+fn an_empty_json_schedule_asks_for_nothing() {
+    let dir = dir("refold-import-empty");
+    ProgressStore::open(dir.join("progress.json"))
+        .unwrap()
+        .save()
+        .unwrap();
+    let db = Db::open(&dir).unwrap();
+    let _progress = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(!db.schedule_refold_pending().unwrap());
+    finish(&dir);
+}
+
+#[test]
+fn restoring_traces_looks_them_up_by_index() {
+    // `merge_traces` asks "do I already have this one?" once per restored row. On
+    // a table scan that is O(rows × table) under the database lock — seconds for a
+    // year of traces — so the lookup has to be an index search.
+    let dir = dir("traces-index");
+    let db = Db::open(&dir).unwrap();
+    let conn = rusqlite::Connection::open(db.path()).unwrap();
+    let plan: Vec<String> = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT 1 FROM trace_attempt
+             WHERE ch = 'a' AND at = 'b' AND score = 1.0 AND rating = 'good'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        plan.iter()
+            .any(|step| step.contains("USING INDEX trace_attempt_identity")),
+        "the duplicate check scans the table: {plan:?}"
+    );
+    drop(conn);
+    finish(&dir);
+}

@@ -187,8 +187,11 @@ pub fn attempts_to_jsonl(
 }
 
 /// The columns of the CSV export, in order.
-const CSV_HEADER: &str = "ch,at,score,rating,device_id,seq,mode,shape,position,ink,\
-                          ink_coverage,order_score,legible,order_correct";
+///
+/// `mode` is last because it was added last: a reader that picks columns by
+/// position keeps finding every older column where it was.
+const CSV_HEADER: &str = "ch,at,score,rating,device_id,seq,shape,position,ink,\
+                          ink_coverage,order_score,legible,order_correct,mode";
 
 /// The attempts and traces as CSV: a header row, then one row each, oldest first.
 ///
@@ -210,7 +213,6 @@ pub fn attempts_to_csv(attempts: &[LoggedAttempt], traces: &[TracedAttempt]) -> 
             line.rating.to_string(),
             line.device_id.unwrap_or_default().to_string(),
             line.seq.map(|seq| seq.to_string()).unwrap_or_default(),
-            line.mode.name().to_string(),
             opt(m.map(|m| m.shape)),
             opt(m.map(|m| m.position)),
             opt(m.map(|m| m.ink)),
@@ -218,6 +220,7 @@ pub fn attempts_to_csv(attempts: &[LoggedAttempt], traces: &[TracedAttempt]) -> 
             opt(m.map(|m| m.order)),
             m.map(|m| m.legible.to_string()).unwrap_or_default(),
             m.map(|m| m.order_correct.to_string()).unwrap_or_default(),
+            line.mode.name().to_string(),
         ];
         let row: Vec<String> = fields.iter().map(|f| csv_field(f)).collect();
         out.push_str(&row.join(","));
@@ -293,9 +296,10 @@ mod tests {
         assert!(lines[1].contains("0.95"));
         assert!(lines[1].contains(",false,true"));
 
-        // `学`'s row ends with five empty measures and two empty verdicts.
+        // `学`'s row ends with five empty measures and two empty verdicts, then
+        // the mode.
         assert!(
-            lines[2].ends_with(",,,,,,,"),
+            lines[2].ends_with(",,,,,,,,recall"),
             "an unmeasured attempt is empty, not zeroed: {}",
             lines[2]
         );
@@ -370,14 +374,20 @@ mod tests {
 
         let csv = attempts_to_csv(&rows, &traces);
         let csv: Vec<&str> = csv.lines().collect();
-        assert!(csv[0].starts_with("ch,at,score,rating,device_id,seq,mode,"));
+        assert!(csv[0].starts_with("ch,at,score,rating,device_id,seq,shape,"));
         assert!(
-            csv[1].starts_with("学,2026-09-22T08:59:00Z,97,easy,,,trace,0.82"),
+            csv[0].ends_with(",order_correct,mode"),
+            "mode is the last column"
+        );
+        assert!(
+            csv[1].starts_with("学,2026-09-22T08:59:00Z,97,easy,,,0.82")
+                && csv[1].ends_with(",trace"),
             "{}",
             csv[1]
         );
-        assert!(csv[2].contains(",device-a,7,recall,"), "{}", csv[2]);
-        assert!(csv[3].ends_with(",,,trace,,,,,,,"), "{}", csv[3]);
+        assert!(csv[2].contains(",device-a,7,0.82,"), "{}", csv[2]);
+        assert!(csv[2].ends_with(",recall"), "{}", csv[2]);
+        assert!(csv[3].ends_with(",,,,,,,,,trace"), "{}", csv[3]);
         for line in &csv {
             assert_eq!(line.split(',').count(), csv[0].split(',').count());
         }

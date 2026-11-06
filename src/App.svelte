@@ -29,6 +29,7 @@
   import { INTRO_PAGES, notesFor } from "./lib/startupPages";
   import type { Page } from "./lib/startupPages";
   import { dueLabel, unwrittenLabel } from "./lib/due";
+  import { summariseWord } from "./lib/wordAttempt";
   import { shortcutFor } from "./lib/shortcuts";
   import type { ShortcutId } from "./lib/shortcuts";
   import { INK_WIDTH, polylineLength } from "./lib/render";
@@ -2595,8 +2596,14 @@
       return;
     }
 
-    const scores = entryCharacters.map((_, i) => wordSlots[i]!.report!.overall);
-    const mean = scores.reduce((total, value) => total + value, 0) / scores.length;
+    // Summarised now, from this word's own slots: the block below moves the board
+    // to the next entry, after which `wordSlots` and `entryCharacters` are its.
+    const { scores, mean, traced } = summariseWord(
+      entryCharacters.map((_, i) => ({
+        report: wordSlots[i]!.report!,
+        mode: wordSlots[i]!.mode,
+      })),
+    );
     const finished = currentItem;
     const entryId = finished.entryId;
 
@@ -2614,7 +2621,6 @@
     // A word with any character traced over the guide was not written from
     // memory, so the entry's own attempt count and best score — which say how
     // well it is written — are left alone, as the schedule leaves its cards.
-    const traced = entryCharacters.some((_, i) => wordSlots[i]?.mode === "trace");
     const note =
       `${finished.text}: ${Math.round(mean)}/100 ` +
       (traced ? "traced, not counted as an attempt" : "recorded") +

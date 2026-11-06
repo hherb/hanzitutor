@@ -482,13 +482,17 @@ fn refold_once(db: &Db) -> bool {
             return false;
         }
     }
+    // Timed because it runs on the startup path, which on mobile is a race; one
+    // fold of the log is milliseconds, and the log line is how to tell if not.
+    let started = std::time::Instant::now();
     let rebuilt =
         hanzi_sync::local_baselines(db).and_then(|baselines| hanzi_sync::recompute(db, &baselines));
     match rebuilt {
         Ok((recomputed, left_alone)) => {
             eprintln!(
-                "rebuilt {recomputed} schedules under the new review rules \
-                 ({left_alone} left alone, as their history predates the log)"
+                "rebuilt {recomputed} schedules under the new review rules in {} ms \
+                 ({left_alone} left alone, as their history predates the log)",
+                started.elapsed().as_millis()
             );
             if let Err(error) = db.finish_schedule_refold() {
                 // Harmless if it happens: the next launch folds the same log to the

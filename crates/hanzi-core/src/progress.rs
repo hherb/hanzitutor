@@ -353,19 +353,26 @@ pub trait Scheduler {
 /// ## Ease and lapses belong to a learned card that was due
 ///
 /// A failure costs ease, and counts as a lapse, only when the card had been
-/// learned — `repetitions > 0` — **and** was due. A character met for the first
-/// time, or one still being relearned after a lapse, has nothing to lapse from,
-/// and charging it the textbook −0.54 each time pinned ease at the floor after two
-/// or three failures while first learning a character; every interval after that
-/// paid for it. A failure before the date resets the card but is not charged
-/// either, for the mirror of the reason early passes are ignored: if early passes
-/// earned nothing and early failures still cost, a sitting of fail, pass at the
-/// minute, fail again could only grind ease down. The
-/// passing grades keep SM-2's textbook update — Good is neutral, Hard costs a
+/// learned. A character met for the first time, or one still being relearned
+/// after a lapse, has nothing to lapse from, and charging it the textbook −0.54
+/// each time pinned ease at the floor after two or three failures while first
+/// learning a character; every interval after that paid for it.
+///
+/// "Learned" depends on how far the card got. With one review behind it, only a
+/// failure **when it was due** is charged: an early failure resets it but costs
+/// nothing, for the mirror of the reason early passes are ignored — if early
+/// passes earned nothing and early failures still cost, a sitting of fail, pass at
+/// the minute, fail again could only grind ease down. With two or more reviews
+/// behind it — which takes a pass that was due on a later day, so no single sitting
+/// can get there — any failure is a lapse, early or not: a card forty days out
+/// that is written wrong two days before its date has been forgotten, and since
+/// the failure resets it, a rule that waited for the date would never charge it.
+///
+/// The passing grades keep SM-2's textbook update — Good is neutral, Hard costs a
 /// little and Easy earns a little back — because a Good review that raised ease
 /// would let a run of ordinary passes outgrow the evidence; with these gates, a
 /// card no longer reaches the floor by being practised, only by being forgotten
-/// when it was asked for.
+/// once it was known.
 ///
 /// ## A due date is an instant, not a day
 ///
@@ -387,11 +394,14 @@ impl Scheduler for Sm2 {
         if !failed && !card.is_due(at) {
             return;
         }
-        // A lapse is a learned card forgotten *when it was asked for*. A failure
-        // before the date still resets the card below, but is not charged: early
-        // passes move nothing, so charging early failures would let a sitting of
-        // drilling only ever lower ease.
-        let lapsed = failed && card.repetitions > 0 && card.is_due(at);
+        // A lapse is a learned card forgotten. One review in, only a failure when
+        // it was asked for counts: early passes move nothing, so charging early
+        // failures of a card that has just reached its first interval would let a
+        // sitting of drilling only ever lower ease. Two reviews in — which takes
+        // a pass on a later day — the card was genuinely known, and forgetting it
+        // early is still forgetting; it is reset either way, so waiting for the
+        // date would mean it was never charged at all.
+        let lapsed = failed && (card.repetitions > 1 || (card.repetitions > 0 && card.is_due(at)));
 
         // The textbook SM-2 ease update, on the 0..=5 quality scale: an easy
         // answer raises ease slightly, a failure lowers it a lot — but only a
@@ -1657,8 +1667,10 @@ mod tests {
         // Forgetting is news whenever it happens: a learned character written
         // wrong before its date is not known, and waiting for the date to say so
         // would schedule a character the learner has just shown they cannot write.
-        // But a failure before the date is not charged as a lapse — see
-        // `drilling_a_character_in_one_sitting_cannot_grind_its_ease_down`.
+        // But a card one review in is not charged for failing before its date —
+        // see `drilling_a_character_in_one_sitting_cannot_grind_its_ease_down`,
+        // and `a_well_learned_card_forgotten_before_its_date_is_a_lapse` for a
+        // card further along.
         let start = "2026-09-19T09:00:00Z";
         let mut store = ProgressStore::in_memory();
         let learned = store.record_at('好', 80.0, start).unwrap();
@@ -1673,6 +1685,28 @@ mod tests {
             failed.due,
             add_seconds(&later(start, 30), AGAIN_SECONDS).unwrap()
         );
+    }
+
+    #[test]
+    fn a_well_learned_card_forgotten_before_its_date_is_a_lapse() {
+        // Five reviews in, forty days out, and written wrong in lesson practice two
+        // days early. That is forgetting, whatever the date says — and since the
+        // failure resets the card, waiting for the date to charge it would mean
+        // it was never charged at all.
+        let mut store = ProgressStore::in_memory();
+        let mut at = "2026-01-01T09:00:00Z".to_string();
+        for _ in 0..5 {
+            at = store.record_at('学', 80.0, &at).unwrap().due;
+        }
+        let before = store.card('学').unwrap().clone();
+        assert_eq!(before.repetitions, 5);
+        assert!(before.interval_days > 21.0);
+
+        let early = add_seconds(&before.due, -2 * 86_400).unwrap();
+        let failed = store.record_at('学', 20.0, &early).unwrap();
+        assert_eq!(failed.repetitions, 0, "it is reset");
+        assert_eq!(failed.lapses, 1, "and it lapsed");
+        assert!(failed.ease < before.ease, "which costs ease");
     }
 
     #[test]
