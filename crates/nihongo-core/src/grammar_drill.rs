@@ -218,9 +218,20 @@ pub fn lumps(pattern: &str) -> Vec<String> {
             }
         }
     }
-    out.sort_by_key(|lump| std::cmp::Reverse(lump.chars().count()));
-    out.dedup();
+    longest_first_once(&mut out);
     out
+}
+
+/// Put lumps longest first, each once.
+///
+/// The duplicates are dropped before the sort rather than after it: sorting by
+/// length alone leaves two copies apart whenever a lump of the same length was
+/// written between them, and `dedup` only removes neighbours. Lumps of equal length
+/// keep the order they were found in, which is the order the pattern writes them.
+pub(crate) fn longest_first_once(lumps: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    lumps.retain(|lump| seen.insert(lump.clone()));
+    lumps.sort_by_key(|lump| std::cmp::Reverse(lump.chars().count()));
 }
 
 /// One piece of a pattern with each bracketed group either kept or dropped.
@@ -1095,6 +1106,16 @@ mod tests {
         // And ASCII brackets are the same thing: the corpus uses both, and this is
         // an optional よ rather than a gloss.
         assert_eq!(lumps("〜(よ)うものなら"), vec!["ようものなら", "うものなら"]);
+    }
+
+    /// A lump two alternatives both write is listed once, even when a lump of the
+    /// same length stands between the two copies once they are sorted.
+    #[test]
+    fn a_lump_two_alternatives_share_is_listed_once() {
+        assert_eq!(
+            lumps("〜あい〜うえ / 〜あい"),
+            vec!["あいうえ", "あい", "うえ"]
+        );
     }
 
     #[test]
