@@ -81,8 +81,13 @@ impl<R: Runtime> ChosenFile for PickedFile<'_, R> {
 
     fn write(&self, contents: &[u8]) -> Result<(), String> {
         // No `sync_all`: a cloud provider on Android hands back one end of a pipe,
-        // and `fsync` on a pipe is `EINVAL`. Closing the descriptor is what tells
-        // the provider the document is complete, exactly as `std::fs::write` does.
+        // and `fsync` on a pipe is `EINVAL`. On desktop, closing the file ends the
+        // write as `std::fs::write` does. On Android, tauri-plugin-fs 2.6 detaches
+        // the descriptor (`ParcelFileDescriptor.detachFd()`) before Rust writes, so
+        // a provider that waits on its close listener to upload — a cloud drive —
+        // is told "detached" up front rather than "done" afterwards. Local storage
+        // gets the bytes; whether a cloud provider does is a device check in #25's
+        // PR, and the fix if it does not is a ContentResolver stream bridge.
         self.app
             .fs()
             .open(self.path.clone(), write_options())

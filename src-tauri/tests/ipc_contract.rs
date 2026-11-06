@@ -3063,6 +3063,29 @@ fn no_file_command_takes_a_path_from_the_webview() {
     }
 }
 
+/// Issue #25, second half: the App Store build is sandboxed, and a sandboxed app
+/// can use the file a save or open panel hands it only with the user-selected
+/// files entitlement. Without it backup, export and restore fail in exactly the
+/// build the sandbox was added for.
+#[test]
+fn the_sandboxed_build_may_use_the_file_the_learner_chose() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let plist = std::fs::read_to_string(root.join("Entitlements.plist")).unwrap();
+    let entitled = |key: &str| {
+        plist
+            .split(&format!("<key>{key}</key>"))
+            .nth(1)
+            .is_some_and(|rest| rest.trim_start().starts_with("<true/>"))
+    };
+    if entitled("com.apple.security.app-sandbox") {
+        assert!(
+            entitled("com.apple.security.files.user-selected.read-write"),
+            "Entitlements.plist sandboxes the app without \
+             com.apple.security.files.user-selected.read-write, so every file panel fails"
+        );
+    }
+}
+
 #[test]
 fn a_chosen_file_is_opened_through_the_fs_plugin_and_not_as_a_path() {
     // Issue #25. On Android the dialog answers with a `content://` URI, and the
