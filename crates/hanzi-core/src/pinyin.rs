@@ -438,7 +438,7 @@ fn push_run(
             Some(number) => match syllable_tone(&syllable.text)? {
                 // No mark yet: the number is written as one.
                 5 => mark_syllable(&syllable.text, number)?,
-                marked if marked == number => syllable.text,
+                marked if marked == number => syllable.text.chars().map(umlaut).collect(),
                 _ => return None,
             },
         };
@@ -490,6 +490,8 @@ pub fn marked_reading(reading: &str) -> String {
 
 /// Write `tone` onto one syllable, in the place a pinyin tone mark belongs.
 ///
+/// A `v` is written as the `ü` it stands for, wherever it is (`nve` → `nüè`).
+///
 /// The placement is the standard rule rather than a choice: `a` takes the mark
 /// if there is one, then `o`, then `e`, and failing all three the last of
 /// `i`/`u`/`ü` — which is what puts the mark on the `u` of `iu` and the `i` of
@@ -507,7 +509,7 @@ pub fn mark_syllable(syllable: &str, tone: u8) -> Option<String> {
     if !(1..=5).contains(&tone) {
         return None;
     }
-    let plain: Vec<char> = syllable.chars().map(plain_vowel).collect();
+    let plain: Vec<char> = syllable.chars().map(plain_vowel).map(umlaut).collect();
     if tone == 5 {
         return Some(plain.into_iter().collect());
     }
@@ -584,6 +586,18 @@ pub fn mark_tone_at(reading: &str, caret: usize, tone: u8) -> Option<(String, us
     out.extend(characters[span.end..].iter());
     let into = (caret - span.start).min(marked.chars().count());
     Some((out, start + into))
+}
+
+/// `v` as the `ü` it is typed for, keeping its case.
+///
+/// Pinyin has no `v`, so a syllable being written with a tone writes every `v`
+/// in it as `ü`, not only one the mark lands on: `nve` + 4 is 虐's `nüè`.
+fn umlaut(ch: char) -> char {
+    match ch {
+        'v' => 'ü',
+        'V' => 'Ü',
+        other => other,
+    }
 }
 
 /// The plain letter under a tone mark, so a mark can be moved or taken off.
@@ -744,10 +758,13 @@ pub fn spoken_tones(characters: &[char], citation: &[u8]) -> Vec<u8> {
             '一' if tones[i] == 1 => {
                 let before = i.checked_sub(1).map(|k| characters[k]);
                 let after = characters[..count].get(i + 1).copied();
-                if before.is_some() && before == after && before != Some('一') {
+                // 一X一X (一个一个, 一天一天) repeats a count, not a verb.
+                let counting = i >= 2 && characters[i - 2] == '一';
+                if before.is_some() && before == after && before != Some('一') && !counting {
                     // A一A: a verb, a light 一, the verb again.
                     tones[i] = 5;
                 } else if before == Some('第')
+                    || is_ordinal_without_di(&characters[i + 1..count])
                     || before.is_some_and(is_digit)
                     || after.is_some_and(|ch| is_digit(ch) || matches!(ch, '月' | '号'))
                     || (before == Some('月') && after == Some('日'))
@@ -787,12 +804,29 @@ pub fn spoken_tones(characters: &[char], citation: &[u8]) -> Vec<u8> {
     tones
 }
 
+/// Does 一 followed by `rest` name a rank, though no 第 is written?
+///
+/// A short list, of the ones a dictionary reads `yī`: 一线 (the front line), 一等
+/// (first class, 一等奖) and 一年级 (first grade — 一年 alone is a year, counted).
+/// 一流 and 一把手 are left out on purpose: speakers vary, and the counted
+/// reading (`yìliú`, `yìbǎshǒu`) is as common as the ordinal one. 一线 also reads
+/// `yíxiàn` in 一线希望, "a ray of hope", which this cannot tell apart.
+fn is_ordinal_without_di(rest: &[char]) -> bool {
+    matches!(rest, ['线', ..] | ['等', ..] | ['年', '级', ..])
+}
+
 /// A character that names a digit, as 一 is read beside one: 十一, 一二三.
 ///
 /// 十 is here because 十一 is "ten-one", 一 read as the digit it is. 百, 千, 万
 /// and 亿 are not: 一百 counts a hundred, and that 一 changes (`yìbǎi`). 两 is
 /// not either, because it is the counting form of two and never sits beside a
 /// digit-reading 一.
+///
+/// A trade-off, accepted: a 一 that ends one word beside a 一 that starts the
+/// next is read as a digit pair, so the counted 一 of 唯一一个 and 统一一下 keeps
+/// tone 1 where it is said `yí`. And 号 is read as a date, so 大一号 and 小一号
+/// ("a size larger, smaller") keep tone 1 where they are `yí hào`. Both need the
+/// sentence to tell apart, and none of them is in the word list.
 fn is_digit(ch: char) -> bool {
     matches!(
         ch,
@@ -1753,6 +1787,9 @@ mod tests {
         // `v` is the way a plain keyboard writes `ü`.
         assert_eq!(mark_syllable("nv", 3).as_deref(), Some("nǚ"));
         assert_eq!(mark_syllable("nü", 3).as_deref(), Some("nǚ"));
+        // Wherever the mark lands: `nve` is 虐's `nüè`, not `nvè`.
+        assert_eq!(mark_syllable("nve", 4).as_deref(), Some("nüè"));
+        assert_eq!(mark_syllable("lv", 5).as_deref(), Some("lü"));
         // Tapping a second tone changes the mark rather than stacking one.
         assert_eq!(mark_syllable("xué", 4).as_deref(), Some("xuè"));
         // A neutral tone is the syllable with no mark at all.
@@ -1854,6 +1891,28 @@ mod tests {
     }
 
     #[test]
+    fn yi_counting_one_by_one_is_not_a_reduplication() {
+        // 一X一X repeats a count, not a verb: the second 一 counts as the first
+        // does, though the characters either side of it are the same.
+        assert_eq!(spoken("一个一个", &[1, 4, 1, 4]), [2, 4, 2, 4]);
+        assert_eq!(spoken("一天一天", &[1, 1, 1, 1]), [4, 1, 4, 1]);
+        assert_eq!(spoken("一步一步", &[1, 4, 1, 4]), [2, 4, 2, 4]);
+        assert_eq!(spoken("一点一点", &[1, 3, 1, 3]), [4, 3, 4, 3]);
+        assert_eq!(spoken("看一看", &[4, 1, 4]), [4, 5, 4]);
+    }
+
+    #[test]
+    fn yi_in_an_ordinal_written_without_di_keeps_its_first_tone() {
+        // The front line, first class, first grade: ordinals with no 第.
+        assert_eq!(spoken("一线", &[1, 4]), [1, 4]);
+        assert_eq!(spoken("一等", &[1, 3]), [1, 3]);
+        assert_eq!(spoken("一等奖", &[1, 3, 3]), [1, 2, 3]);
+        assert_eq!(spoken("一年级", &[1, 2, 2]), [1, 2, 2]);
+        // 一年 on its own is a year, counted.
+        assert_eq!(spoken("一年", &[1, 2]), [4, 2]);
+    }
+
+    #[test]
     fn the_sentence_says_no_change_where_yi_keeps_its_tone() {
         let ordinal = tone_target("第一次", "dìyīcì").expect("three and three");
         assert_eq!(ordinal.spoken(), [4, 1, 4]);
@@ -1920,6 +1979,14 @@ mod tests {
         assert_eq!(split("nü3er2"), ["nǚ", "ér"]);
         assert_eq!(split("NI3HAO3"), ["NǏ", "HǍO"]);
         assert_eq!(split("Lu:4"), ["Lǜ"]);
+        // A `v` is `ü` wherever the syllable is numbered, not only where the
+        // mark lands on it.
+        assert_eq!(split("nve4"), ["nüè"]);
+        assert_eq!(split("lve4"), ["lüè"]);
+        assert_eq!(split("lv5"), ["lü"]);
+        assert_eq!(split("nv5"), ["nü"]);
+        assert_eq!(split("Nv3"), ["Nǚ"]);
+        assert_eq!(split("NVE4"), ["NÜÈ"]);
         assert_eq!(tone_from_pinyin("hao3"), Some(3));
         // A number that agrees with a mark is the same tone; one that does not
         // is two tones on one syllable, and refused.

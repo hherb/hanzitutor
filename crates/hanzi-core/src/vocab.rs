@@ -227,7 +227,13 @@ pub struct VocabEntryView {
 impl VocabEntryView {
     /// The entry on its own, with no standing: what [`VocabStore::view`] can
     /// answer on its own.
-    fn untagged(entry: Entry) -> Self {
+    ///
+    /// A reading saved with tone numbers by an older build, or imported that
+    /// way, is shown with the marks its syllables are aligned as
+    /// ([`crate::pinyin::marked_reading`]), so the interface can find each one
+    /// in the text. The document on disk is left as it is.
+    fn untagged(mut entry: Entry) -> Self {
+        entry.pinyin = crate::pinyin::marked_reading(&entry.pinyin);
         let (tones, syllables) = crate::pinyin::aligned_reading(&entry.text, &entry.pinyin)
             .map(|list| {
                 (
@@ -879,6 +885,40 @@ mod tests {
             .update_entry(added.id, "  ni hao? ", "hello", None)
             .unwrap();
         assert_eq!(kept.pinyin, "ni hao?");
+    }
+
+    #[test]
+    fn a_numbered_reading_saved_by_an_older_build_is_shown_with_marks() {
+        // An entry already on disk as `xi1'an1` (or imported so) is shown with
+        // the marks its syllables are aligned as, so the interface finds each
+        // syllable in the text and keeps the separator between them.
+        let json = r#"{"version":1,"nextId":3,"groups":[],"entries":[
+            {"id":1,"text":"西安","pinyin":"xi1'an1","meaning":"Xi'an","group":null,
+             "addedAt":"2026-01-01T00:00:00Z","attempts":0,"bestScore":null,"lastPractised":null},
+            {"id":2,"text":"你好","pinyin":"ni3 hao3","meaning":"hello","group":null,
+             "addedAt":"2026-01-01T00:00:00Z","attempts":0,"bestScore":null,"lastPractised":null}
+        ]}"#;
+        let mut store = VocabStore::in_memory();
+        store.import_json(json, false).unwrap();
+        let view = store.view();
+        let shown = |text: &str| {
+            view.entries
+                .iter()
+                .find(|e| e.entry.text == text)
+                .unwrap_or_else(|| panic!("{text} was imported"))
+        };
+        let xian = shown("西安");
+        assert_eq!(xian.entry.pinyin, "xī'ān");
+        assert_eq!(xian.syllables, vec!["xī".to_string(), "ān".to_string()]);
+        let hello = shown("你好");
+        assert_eq!(hello.entry.pinyin, "nǐ hǎo");
+        assert_eq!(hello.tones, vec![3, 3]);
+        // Each syllable is found in the text as shown.
+        for entry in [xian, hello] {
+            for syllable in &entry.syllables {
+                assert!(entry.entry.pinyin.contains(syllable.as_str()), "{syllable}");
+            }
+        }
     }
 
     #[test]
