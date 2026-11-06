@@ -1622,7 +1622,10 @@ fn the_review_queue_crosses_with_the_due_characters() {
     // jōyō kanji, and a radical head form the character course cannot reach.
     assert_eq!(items[0]["ch"], "あ");
     assert_eq!(items[0]["kind"], "kana", "the tag the interface switches on");
-    assert_eq!(items[0]["hint"], "a", "the prompt comes from the readings");
+    assert_eq!(
+        items[0]["hint"], "a · hiragana",
+        "the prompt comes from the readings, and names the script"
+    );
     assert_eq!(items[0]["attempts"], 2);
     assert_eq!(items[0]["lapses"], 1);
     assert!(items[0]["radical"].is_null());

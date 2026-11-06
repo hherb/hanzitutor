@@ -1621,8 +1621,15 @@ Three things follow, and each is pinned:
   required `traced` flag: the guide was on, or the stroke animation had drawn the
   character (`board.ts`'s `isTraced`). Such an attempt is graded and shown, comes
   back with `traced: true` and `scheduled: false`, and the screen says "Traced — not
-  counted as a review". The Review screen shows only the prompt before grading, has
-  no guide, and reveals the character with the verdict.
+  counted as a review", worded by what helped (guide, animation, or an answer
+  already shown). The Review screen shows only the prompt before grading, has no
+  guide, and reveals the character with the verdict; a radical head form is shown
+  from the start, because the table has no names to recall one from. Since the
+  prompt is the whole question, `review.rs`'s `hint_for` makes it unique: a kana
+  names its script and which of a pair it is (small kana, じ/ぢ and ず/づ by row,
+  を as the particle, っ and ー by what they do), and a kanji takes further glosses,
+  then its readings, until no other kanji shares it. Both are pinned over the
+  shipped tables.
 * **A write that fails still counts.** The card is updated in memory, the failure
   travels as `warning`, and the verdict is still returned: a learner asked for a
   grade and the grade happened. Under the harness's file sandbox this is the

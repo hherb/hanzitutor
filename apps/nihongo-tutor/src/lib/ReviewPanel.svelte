@@ -38,22 +38,34 @@
    * ## Recall, not copying
    *
    * A review asks for the character from its prompt alone — a kana's sound and
-   * script, a kanji's meaning, a radical's number (`review.ts`'s `reviewPrompt`
-   * over Rust's `hint_for`). So the character is not printed above the board or
-   * in the queue, and the board has no guide. It appears once the attempt is
-   * graded, as the answer. Two things can still show it before then, and both
-   * make the attempt **traced**, which is graded and never scheduled: the stroke
-   * animation, and a verdict already given on this character (a second try after
-   * seeing the answer is not recall either).
+   * script, a kanji's glosses, each one no other kana or kanji shares (Rust's
+   * `hint_for`, shown by `review.ts`'s `reviewPrompt`). So the character is not
+   * printed above the board or in the queue, the board has no guide, and the
+   * voice's tooltip does not name it. It appears once the attempt is graded, as
+   * the answer. A radical head form is shown from the start: the table has no
+   * names for the 214, so its review is of how the shown form is written.
+   *
+   * Two things can still show the character before an attempt, and both make it
+   * **traced**, which is graded and never scheduled: the stroke animation, and a
+   * verdict already given on it (a second try after seeing the answer is not
+   * recall either). Both are remembered per card for as long as the panel is up,
+   * so choosing the same card again does not make it look unseen.
+   *
+   * A grade or a geometry fetch that comes back after another card was chosen is
+   * dropped rather than applied to the card now on the board, and Grade waits
+   * until the board holds the character the chosen card asks for.
    */
+  import { SvelteSet } from "svelte/reactivity";
   import KanaCanvas from "./KanaCanvas.svelte";
   import SpeakButton from "./SpeakButton.svelte";
-  import { afterGradeInQueue, isTraced } from "./board";
+  import { afterGradeInQueue, traceReason } from "./board";
   import { joinedLabel } from "./kana";
   import { courseOf, type Section } from "./nav";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
   import {
+    cardKey,
     hasNextDue,
+    isSameCard,
     nextDue,
     overdueLabel,
     reviewPrompt,
@@ -92,10 +104,18 @@
   let board = $state<ReturnType<typeof KanaCanvas> | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
-  /** Whether the stroke animation has drawn the character on the board. */
-  let watched = $state(false);
-  /** Whether an attempt on this character has been graded, which shows it. */
-  let answered = $state(false);
+  /** The cards the stroke animation has drawn while this panel has been up. */
+  const watchedCards = new SvelteSet<string>();
+  /** The cards a verdict has been shown for, which showed their character. */
+  const answeredCards = new SvelteSet<string>();
+  const watched = $derived(chosen !== null && watchedCards.has(cardKey(chosen)));
+  const answered = $derived(chosen !== null && answeredCards.has(cardKey(chosen)));
+  /**
+   * Whether the board holds the character the chosen card asks for. Between a
+   * choice and its geometry arriving it holds the previous one, and an attempt
+   * drawn on that is not an answer to this card.
+   */
+  const ready = $derived(drawn !== null && chosen !== null && drawn.ch === chosen.ch);
 
   async function load() {
     try {
@@ -113,6 +133,10 @@
 
   /** Put a due character on the board, fetching the geometry its kind implies. */
   async function open(item: DueItem) {
+    // The card already on the board: nothing to do. Starting it again would
+    // clear the verdict and the attempt while the board kept the strokes, and
+    // would hide a character the learner has just been shown.
+    if (isSameCard(item, chosen) && drawn?.ch === item.ch) return;
     try {
       error = null;
       chosen = item;
@@ -120,14 +144,15 @@
       joined = [];
       note = null;
       attempt = [];
-      watched = false;
-      answered = false;
-      drawn =
+      const found =
         item.kind === "kana"
           ? await api.kana(item.ch)
           : item.kind === "kanji"
             ? await api.kanji(item.ch)
             : await api.radical(item.radical ?? 0);
+      // Another card was chosen while this one's geometry was on its way.
+      if (chosen !== item) return;
+      drawn = found;
     } catch (e) {
       error = String(e);
     }
@@ -144,21 +169,26 @@
   }
 
   async function grade() {
-    if (!drawn) return;
+    if (!drawn || !chosen || !ready) return;
+    const item = chosen;
     try {
       busy = true;
       error = null;
       // Recall is the rule here: there is no guide, so the attempt is traced only
       // when the animation, or an earlier verdict, has already shown the character.
-      const graded = await api.gradeAttempt(
-        drawn.ch,
-        attempt,
-        isTraced(false, watched || answered),
-      );
+      const reason = traceReason({ guide: false, watched, answered });
+      const graded = await api.gradeAttempt(drawn.ch, attempt, reason !== null);
+      if (chosen !== item) {
+        // The learner chose another card while this was being graded. The
+        // schedule has its answer; the verdict belongs to a card no longer on
+        // the board, so it is not put up over the new one.
+        await load();
+        return;
+      }
       report = graded.report;
       joined = graded.joined;
-      answered = true;
-      note = scheduleNote(graded, new Date().toISOString());
+      answeredCards.add(cardKey(item));
+      note = scheduleNote(graded, new Date().toISOString(), reason);
       // The character may have left the due list; the verdict stays up either
       // way, so the learner sees what they earned before the list moves.
       await load();
@@ -253,14 +283,17 @@
     <nav aria-label="Due for review">
       {#if queue && queue.due > 0}
         {#each queue.items as item (item.ch)}
+          {@const prompt = reviewPrompt(item, false)}
           <button
             class="due"
-            class:active={item.ch === chosen?.ch}
+            class:active={isSameCard(item, chosen)}
             onclick={() => open(item)}
           >
             <!-- The prompt, never the character: the list is above the board, and
-                 a glyph here would be the answer to the question below it. -->
-            <span class="what">{reviewPrompt(item, false).hint}</span>
+                 a glyph here would be the answer to the question below it. Only a
+                 radical head form, which is shown on the board too, has one. -->
+            {#if prompt.glyph}<span class="glyph">{prompt.glyph}</span>{/if}
+            <span class="what">{prompt.hint}</span>
             <span class="when">{overdueLabel(item.due, now)}</span>
           </button>
         {/each}
@@ -279,11 +312,13 @@
         <p class="empty">
           {#if queue.cards === 0}
             {#if section === "kana"}
-              Nothing is scheduled yet. Grade a kana on Practice and it will come
-              back here.
+              Nothing is scheduled yet. Write a kana from memory on Practice —
+              with the hint off — and it will come back here. A traced kana is
+              practice and is not scheduled.
             {:else}
-              Nothing is scheduled yet. Grade a character on Kanji, or a head form
-              on Radicals, and it will come back here.
+              Nothing is scheduled yet. Write a character from memory on Kanji, or
+              a head form on Radicals — with the hint off — and it will come back
+              here. A traced one is practice and is not scheduled.
             {/if}
           {:else if queue.nextDue}
             Nothing is due right now —
@@ -320,7 +355,9 @@
           {report}
           guide={false}
           onchange={onStrokes}
-          onanimate={() => (watched = true)}
+          onanimate={() => {
+            if (chosen) watchedCards.add(cardKey(chosen));
+          }}
         />
 
         <div class="actions">
@@ -332,7 +369,7 @@
               Kangxi number. A kana is the one due item whose character *is* its
               pronunciation, so it is the one that gets a button.
             -->
-            <SpeakButton text={drawn.ch} {voice} />
+            <SpeakButton text={drawn.ch} {voice} title="Hear the sound" />
           {/if}
           <button
             onclick={() => board?.animate()}
@@ -372,7 +409,11 @@
               Nothing due
             </button>
           {:else}
-            <button class="primary" disabled={busy || attempt.length === 0} onclick={grade}>
+            <button
+              class="primary"
+              disabled={busy || !ready || attempt.length === 0}
+              onclick={grade}
+            >
               Grade
             </button>
           {/if}
@@ -471,6 +512,11 @@
     color: var(--ink);
     cursor: pointer;
     text-align: left;
+  }
+
+  .due .glyph {
+    font-size: 1.4rem;
+    line-height: 1.2;
   }
 
   .due .what {

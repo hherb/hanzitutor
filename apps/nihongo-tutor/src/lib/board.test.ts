@@ -5,7 +5,7 @@ import {
   afterGradeInQueue,
   ghostAfterAnimation,
   isStroke,
-  isTraced,
+  traceReason,
   pointerToDisplay,
   sweepAt,
 } from "./board";
@@ -151,17 +151,23 @@ describe("afterGradeInQueue", () => {
   });
 });
 
-describe("isTraced", () => {
-  it("is false only for an attempt written from memory", () => {
-    expect(isTraced(false, false)).toBe(false);
+describe("traceReason", () => {
+  it("is null only for an attempt written from memory", () => {
+    expect(traceReason({ guide: false, watched: false, answered: false })).toBeNull();
   });
 
-  it("is true while the guide is on the board", () => {
-    expect(isTraced(true, false)).toBe(true);
+  it("names the guide while it is on the board", () => {
+    expect(traceReason({ guide: true, watched: false, answered: false })).toBe("guide");
+    expect(traceReason({ guide: true, watched: true, answered: true })).toBe("guide");
   });
 
-  it("is true after the stroke animation drew the character, even with the guide off", () => {
-    expect(isTraced(false, true)).toBe(true);
+  it("names the stroke animation when it drew the character with the guide off", () => {
+    expect(traceReason({ guide: false, watched: true, answered: false })).toBe("animation");
+    expect(traceReason({ guide: false, watched: true, answered: true })).toBe("animation");
+  });
+
+  it("names an earlier verdict, which showed the character as the answer", () => {
+    expect(traceReason({ guide: false, watched: false, answered: true })).toBe("answered");
   });
 });
 

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  cardKey,
   hasNextDue,
-  kanaScript,
+  isSameCard,
   nextDue,
   overdueLabel,
   reviewPrompt,
@@ -140,6 +141,20 @@ describe("scheduleNote", () => {
     expect(note?.text).toMatch(/^Traced — not counted as a review/);
   });
 
+  it("words a traced attempt by what helped, so the advice fits the screen", () => {
+    const traced = { scheduled: false, traced: true, nextDue: null, warning: null };
+    expect(scheduleNote(traced, now, "guide")?.text).toContain("Turn the hint off");
+    const animation = scheduleNote(traced, now, "animation")?.text ?? "";
+    expect(animation).toContain("stroke order");
+    expect(animation).not.toContain("hint");
+    const answered = scheduleNote(traced, now, "answered")?.text ?? "";
+    expect(answered).toContain("answer");
+    expect(answered).not.toContain("hint");
+    for (const reason of ["guide", "animation", "answered"] as const) {
+      expect(scheduleNote(traced, now, reason)?.text).toContain("not counted as a review");
+    }
+  });
+
   it("still puts a failed write ahead of a traced attempt", () => {
     const note = scheduleNote(
       { scheduled: false, traced: true, nextDue: null, warning: "the schedule could not be opened" },
@@ -214,19 +229,6 @@ describe("hasNextDue", () => {
   });
 });
 
-describe("kanaScript", () => {
-  it("tells the two scripts apart by block", () => {
-    expect(kanaScript("か")).toBe("hiragana");
-    expect(kanaScript("カ")).toBe("katakana");
-    expect(kanaScript("ー")).toBe("katakana");
-  });
-
-  it("answers nothing for a character that is not a kana", () => {
-    expect(kanaScript("学")).toBeNull();
-    expect(kanaScript("")).toBeNull();
-  });
-});
-
 describe("reviewPrompt", () => {
   /** A due item with the prompt Rust sends for it. */
   const item = (ch: string, kind: "kana" | "kanji" | "radical", hint: string): DueItem => ({
@@ -234,15 +236,11 @@ describe("reviewPrompt", () => {
     hint,
   });
 
-  it("never shows the character before the attempt is graded", () => {
-    for (const entry of [
-      item("か", "kana", "ka"),
-      item("学", "kanji", "study"),
-      item("亅", "radical", "radical 6 of 214"),
-    ]) {
+  it("never shows a kana or a kanji before the attempt is graded", () => {
+    for (const entry of [item("か", "kana", "ka · hiragana"), item("学", "kanji", "study")]) {
       const prompt = reviewPrompt(entry, false);
       expect(prompt.glyph).toBeNull();
-      expect(prompt.hint).not.toContain(entry.ch);
+      expect(prompt.hint).toBe(entry.hint);
     }
   });
 
@@ -250,15 +248,25 @@ describe("reviewPrompt", () => {
     expect(reviewPrompt(item("学", "kanji", "study"), true).glyph).toBe("学");
   });
 
-  it("names the script of a kana, so ka is answerable as か or カ", () => {
-    expect(reviewPrompt(item("か", "kana", "ka"), false).hint).toBe("ka · hiragana");
-    expect(reviewPrompt(item("カ", "kana", "ka"), false).hint).toBe("ka · katakana");
+  it("shows a radical head form, which has no name to recall it from", () => {
+    const prompt = reviewPrompt(item("亅", "radical", "radical 6 of 214"), false);
+    expect(prompt.glyph).toBe("亅");
+    expect(prompt.hint).toBe("radical 6 of 214");
+  });
+});
+
+describe("cardKey and isSameCard", () => {
+  it("tell a character from the same character's radical", () => {
+    expect(cardKey(due("人", "kanji"))).not.toBe(cardKey(due("人", "radical")));
+    expect(isSameCard(due("人", "kanji"), due("人", "radical"))).toBe(false);
   });
 
-  it("says what kind of character a kanji prompt is asking for", () => {
-    expect(reviewPrompt(item("学", "kanji", "study"), false).hint).toBe("study · kanji");
-    expect(reviewPrompt(item("亅", "radical", "radical 6 of 214"), false).hint).toBe(
-      "radical 6 of 214",
-    );
+  it("are the same for the same card, whichever copy of the queue it came from", () => {
+    expect(cardKey(due("あ"))).toBe(cardKey({ ...due("あ"), attempts: 9 }));
+    expect(isSameCard(due("あ"), { ...due("あ"), attempts: 9 })).toBe(true);
+  });
+
+  it("is never the same as nothing", () => {
+    expect(isSameCard(due("あ"), null)).toBe(false);
   });
 });

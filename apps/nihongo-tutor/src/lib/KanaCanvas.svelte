@@ -156,10 +156,22 @@
     return pointerToDisplay(event, canvas!.getBoundingClientRect());
   }
 
+  /**
+   * Stop an animation that is still running, and put the guide back to the
+   * board's resting state rather than leaving the strokes it had reached: with
+   * the guide off, a half-drawn copy left on the board would be traced over.
+   */
+  function stopSweep() {
+    cancelAnimationFrame(raf);
+    if (sweep && character) {
+      ghostCount = ghostAfterAnimation(guide, character.medians.length);
+    }
+    sweep = null;
+  }
+
   function down(event: PointerEvent) {
     if (!character) return;
-    cancelAnimationFrame(raf);
-    sweep = null;
+    stopSweep();
     drawing = true;
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
     current = [toDisplay(event)];
@@ -188,6 +200,7 @@
 
   /** Undo the last stroke. */
   export function undo() {
+    stopSweep();
     strokes = strokes.slice(0, -1);
     onchange?.(strokes);
     paint();
@@ -195,6 +208,7 @@
 
   /** Clear the board. */
   export function clear() {
+    stopSweep();
     strokes = [];
     current = null;
     onchange?.(strokes);

@@ -110,7 +110,7 @@ export function kana(ch: string): Promise<Kana> {
  * out.
  *
  * `traced` says whether the attempt was helped — written over the faint guide,
- * or after the stroke animation drew the character (`board.ts`'s `isTraced`). It
+ * or after the stroke animation drew the character (`board.ts`'s `traceReason`). It
  * is required by the command: a traced attempt is graded and shown and never
  * reaches the schedule, because copying a character is not remembering it.
  */

@@ -1025,7 +1025,12 @@ export type ReviewKind = "kana" | "kanji" | "radical";
 export interface DueItem {
   ch: string;
   kind: ReviewKind;
-  /** The prompt beside it: a kana's reading, a kanji's gloss, or the radical's number. */
+  /**
+   * The prompt the character is written from: a kana's sound and script ("ji (da
+   * row) · hiragana"), a kanji's glosses, or the radical's number. No two kana and
+   * no two kanji share one, because the Review screen hides the character until
+   * the attempt is graded and the prompt is then the whole question.
+   */
   hint: string;
   /**
    * The Kangxi number, for a head form the character course cannot reach — 92 of

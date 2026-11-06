@@ -11,6 +11,7 @@
  * "2 days overdue" testable at all.
  */
 
+import type { TraceReason } from "./board";
 import type { DueItem } from "./types";
 
 /** The milliseconds in a day, for the difference arithmetic below. */
@@ -65,13 +66,26 @@ export function upcomingLabel(due: string, now: string): string {
   return `in ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
 }
 
+/** What a traced attempt's note says, by what helped it. */
+const TRACED_NOTE: Record<TraceReason | "unknown", string> = {
+  guide:
+    "Traced — not counted as a review. Turn the hint off and write it from memory for it to count.",
+  animation:
+    "Written after watching the stroke order — not counted as a review. It counts when written from memory without watching it first.",
+  answered:
+    "Written after the answer was shown — practice, not counted as a review.",
+  unknown: "Traced — not counted as a review.",
+};
+
 /**
  * What to say about a graded attempt's schedule, or null when there is nothing.
  *
  * The four cases — counted, traced and so not counted, not counted because it
  * was not due, and an attempt that could not be saved — are a rule about the
  * schedule rather than about the drawing, so they are decided here and the panel
- * only gives them a colour.
+ * only gives them a colour. A traced attempt is worded by `reason`, what helped
+ * it, because the way to make the next one count differs: the Review screen has
+ * no hint to turn off, and after the animation the hint is already off.
  */
 export function scheduleNote(
   graded: {
@@ -81,14 +95,10 @@ export function scheduleNote(
     warning: string | null;
   },
   now: string,
+  reason: TraceReason | null = null,
 ): { tone: "ok" | "plain" | "bad"; text: string } | null {
   if (graded.warning) return { tone: "bad", text: graded.warning };
-  if (graded.traced) {
-    return {
-      tone: "plain",
-      text: "Traced — not counted as a review. Turn the hint off and write it from memory for it to count.",
-    };
-  }
+  if (graded.traced) return { tone: "plain", text: TRACED_NOTE[reason ?? "unknown"] };
   if (!graded.scheduled) {
     return {
       tone: "plain",
@@ -103,45 +113,34 @@ export function scheduleNote(
 }
 
 /**
- * Which script a kana belongs to, read from its Unicode block, or null for a
- * character that is not a kana.
- *
- * The review prompt for a kana is its sound, and か and カ share one, so the
- * prompt has to name the script for the question to have a single answer. ー sits
- * in the katakana block and is answered as katakana, which is where this app
- * teaches it.
- */
-export function kanaScript(ch: string): "hiragana" | "katakana" | null {
-  const code = ch.codePointAt(0);
-  if (code === undefined) return null;
-  if (code >= 0x3041 && code <= 0x309f) return "hiragana";
-  if ((code >= 0x30a0 && code <= 0x30ff) || (code >= 0x31f0 && code <= 0x31ff)) {
-    return "katakana";
-  }
-  return null;
-}
-
-/**
  * What the Review screen shows for a due character: the prompt, and the
  * character itself only once the attempt has been graded.
  *
  * A review is recall. Rust sends a prompt that does not contain the character
- * (`nihongo_core::review`'s `hint_for`: a kana's sound, a kanji's meaning, a
- * radical's number), and printing the character above the board, or in the
- * queue, would turn the review into copying it. After the verdict the character
- * is the answer, and showing it then is how the learner checks themselves.
+ * and that no other kana or kanji shares (`nihongo_core::review`'s `hint_for`: a
+ * kana's sound and script, a kanji's glosses), and printing the character above
+ * the board, or in the queue, would turn the review into copying it. After the
+ * verdict the character is the answer, and showing it then is how the learner
+ * checks themselves.
+ *
+ * A **radical head form** is the exception, and it is shown from the start. The
+ * table has no names for the 214, so "radical 6 of 214" is a number nobody
+ * recalls a shape from; what a radical's review asks is how the shown form is
+ * written — stroke order and proportion, with no guide on the board.
  */
 export function reviewPrompt(
   item: DueItem,
   graded: boolean,
 ): { glyph: string | null; hint: string } {
-  const glyph = graded ? item.ch : null;
-  if (item.kind === "kana") {
-    const script = kanaScript(item.ch);
-    return { glyph, hint: script ? `${item.hint} · ${script}` : item.hint };
-  }
-  if (item.kind === "kanji") return { glyph, hint: `${item.hint} · kanji` };
-  return { glyph, hint: item.hint };
+  return { glyph: graded || item.kind === "radical" ? item.ch : null, hint: item.hint };
+}
+
+/**
+ * A card's identity as one string, for a set of the cards a screen has already
+ * shown. Keyed with the kind for the reason [`isSameCard`] compares it.
+ */
+export function cardKey(item: DueItem): string {
+  return `${item.kind}:${item.ch}`;
 }
 
 /**
@@ -151,7 +150,7 @@ export function reviewPrompt(
  * same character can be offered as a kana, a jōyō kanji or a radical head form —
  * 人 is both a character and radical 9.
  */
-function isSameCard(item: DueItem, other: DueItem | null): boolean {
+export function isSameCard(item: DueItem, other: DueItem | null): boolean {
   return item.ch === other?.ch && item.kind === other?.kind;
 }
 

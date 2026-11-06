@@ -45,7 +45,7 @@
   import SpeakButton from "./SpeakButton.svelte";
   import WordCard from "./WordCard.svelte";
   import { untrack } from "svelte";
-  import { afterGrade, isTraced } from "./board";
+  import { afterGrade, traceReason } from "./board";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
   import { scheduleNote } from "./review";
   import { canHear, voiceNote, type VoiceStatus } from "./speech";
@@ -120,7 +120,7 @@
   let guide = $state(true);
   /**
    * Whether the stroke animation has drawn this character since it was opened.
-   * With the guide, it makes an attempt traced (`board.ts`'s `isTraced`): the
+   * With the guide, it makes an attempt traced (`board.ts`'s `traceReason`): the
    * learner has just watched it written, so writing it now is copying it.
    */
   let watched = $state(false);
@@ -243,9 +243,10 @@
       error = null;
       // Grading and scheduling are one command: the report comes back with what
       // the review schedule did with the attempt beside it.
-      const graded = await api.gradeAttempt(drawn.ch, attempt, isTraced(guide, watched));
+      const reason = traceReason({ guide, watched, answered: false });
+      const graded = await api.gradeAttempt(drawn.ch, attempt, reason !== null);
       report = graded.report;
-      note = scheduleNote(graded, new Date().toISOString());
+      note = scheduleNote(graded, new Date().toISOString(), reason);
     } catch (e) {
       error = String(e);
     } finally {
@@ -560,7 +561,8 @@
 
                 {#if openedWord}
                   <div class="word-slot">
-                    <WordCard word={openedWord} {voice} />
+                    <!-- A lookup: the row that opened it shows the reading. -->
+                    <WordCard word={openedWord} {voice} askReading={false} />
                   </div>
                 {/if}
               </div>
