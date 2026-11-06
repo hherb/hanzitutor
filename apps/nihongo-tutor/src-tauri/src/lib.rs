@@ -1314,15 +1314,16 @@ impl AppState {
     /// reason 大人 is おとな and not だいじん. Romaji is accepted, and so is kana
     /// typed directly, because a learner who can already read kana should not have
     /// to transliterate to answer. The comparison is the production exercise's,
-    /// [`nihongo_core::check_kana_text`], so Hepburn's `onna` and the IME's `onnna`
-    /// are both おんな, and `ti` is ティ in a loanword.
+    /// [`nihongo_core::check_kana_text_with`] with the word's own particle positions,
+    /// so Hepburn's `onna` and the IME's `onnna` are both おんな, `ti` is ティ in a
+    /// loanword, and 今日は is `konnichiwa` while 花 is never `wana`.
     pub fn check_word(&self, text: &str, reading: &str, typed: &str) -> Result<ReadingCheck, String> {
         let word = self
             .words
             .find(text, reading)
             .ok_or_else(|| format!("{text} ({reading}) is not in the vocabulary"))?;
 
-        let check = nihongo_core::check_kana_text(&word.reading, typed);
+        let check = nihongo_core::check_kana_text_with(&word.reading, typed, &word.particles());
         Ok(ReadingCheck {
             correct: check.correct,
             produced: check.produced,
@@ -3878,8 +3879,12 @@ mod tests {
         let check = |text, reading, typed| state.check_word(text, reading, typed).expect("a word");
         assert!(check("女", "おんな", "onna").correct);
         assert!(check("女", "おんな", "onnna").correct);
-        // The verdict shows the reading that matched, not the IME's おんあ.
         assert_eq!(check("女", "おんな", "onna").produced, "おんな");
+        // 今日は ends in its particle, said `wa`; 花 begins with a は that is not one.
+        assert!(check("今日は", "こんにちは", "konnichiwa").correct);
+        assert!(!check("花", "はな", "wana").correct);
+        assert!(!check("禁煙", "きんえん", "kinen").correct);
+        assert!(check("禁煙", "きんえん", "kin'en").correct);
         // を inside a word is said `o`, and a space between its parts is a word break.
         for typed in ["kiotsukeru", "kiwotsukeru", "ki o tsukeru"] {
             assert!(check("気をつける", "きをつける", typed).correct, "{typed}");

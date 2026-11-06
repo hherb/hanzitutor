@@ -111,9 +111,9 @@ pub use kanji::{
     JOYO_COUNT, JOYO_GRADES, KANJI_ARTIFACT_MAGIC, RADICAL_COUNT,
 };
 pub use input::{
-    check_kana_text, continuations, fold_yotsugana, matches_kana_text, matches_reading,
-    matches_word, normalise_to_hiragana, produce_kana, romaji_for, to_kana, to_kana_in,
-    KanaTextCheck, RomajiError,
+    check_kana_text, check_kana_text_with, continuations, fold_yotsugana, matches_kana_text,
+    matches_reading, matches_word, normalise_to_hiragana, particles_in, produce_kana,
+    romaji_for, to_kana, to_kana_in, KanaTextCheck, RomajiError,
 };
 pub use readings::{reading, Reading};
 pub use review::{due_items, kind_of, queue, DueItem, Queue, ReviewKind, Section};

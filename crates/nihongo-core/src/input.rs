@@ -22,9 +22,17 @@
 //!   is っ too, so `matcha` is まっちゃ and `kotchi` is こっち, as `cch` already was.
 //! * **ん.** `n` before a consonant or at the end is ん; `n` before a vowel or
 //!   `y` belongs to the syllable (`na`, `nya`). `n'` forces it, which is how
-//!   `shin'ya` stays しんや and does not become しにゃ, and `nn` is ん **taking both
-//!   letters**, which is what every IME teaches: `honn` is ほん, `konnnichiha` is
-//!   こんにちは, and `kinnyoubi` is きんようび.
+//!   `shin'ya` stays しんや and does not become しにゃ. `nn` is ん **taking both
+//!   letters**, which is what every IME teaches — `honn` is ほん, `sannpo` さんぽ,
+//!   `konnnichiha` こんにちは — **except before a vowel or `y`**, where it is
+//!   Hepburn's ん plus an n-syllable: `onna` is おんな, `konnichiwa` こんにちわ,
+//!   `konnyaku` こんにゃく. That exception is the one place this table departs from
+//!   Mozc's, which reads `onna` as おんあ, and it is deliberate. Where there is no
+//!   answer to compare with — a sentence the learner composes, which is saved,
+//!   spoken and checked as it reads back — the app cannot tell a Hepburn writer
+//!   from an IME typist, and Hepburn is what the course itself prints. The cost is
+//!   the IME's `kinnyoubi`, which reads here as きんにょうび; an IME typist writes
+//!   きんようび as `kin'youbi` or, against an answer, as `kinnyoubi` still.
 //! * **Small kana.** `x` or `l` prefixes the small form, as in a real IME:
 //!   `xtu` is っ, `xya` is ゃ. Without this there is no way to type ぁ ぃ ぅ ぇ ぉ
 //!   at all.
@@ -40,26 +48,32 @@
 //!
 //! ## Typing an answer is not the same as typing
 //!
-//! [`to_kana`] has to give one answer, and it gives the IME's. But a learner
-//! answering a question has an answer to be compared with, and three things a
-//! real typist does are right by sound while the IME reads them otherwise:
+//! [`to_kana`] has to give one answer. But a learner answering a question has an
+//! answer to be compared with, and three things a real typist does are right by
+//! sound or by habit while [`to_kana`] reads them otherwise:
 //!
 //! * the particles は, を and へ are said `wa`, `o` and `e`, and the corpus's
 //!   romaji spells them so;
-//! * Hepburn writes んな as `nna` (`onna`, `konnichiwa`), which the IME reads as
-//!   んあ — the IME wants `onnna`;
+//! * the IME writes ん before an n-syllable or a vowel as `nn` (`kinnyoubi` for
+//!   きんようび), which [`to_kana`] reads Hepburn's way;
 //! * Hepburn writes ティ, ディ, トゥ, ドゥ and ウォ as `ti`, `di`, `tu`, `du` and
 //!   `wo`, which the IME reads as ち, ぢ, つ, づ and を.
 //!
-//! So [`check_kana_text`] does not convert and then compare. It reads the typing
-//! **against** the expected answer, trying every way the romaji could be read, and
-//! accepts it when one of them is the answer. Each leniency is tied to a position
-//! in the answer: `wa` is right where the answer has は and wrong where it has
-//! anything else, so `ha` for わ, `wo` for お and `he` for え are all still wrong.
+//! So [`check_kana_text_with`] does not convert and then compare. It reads the
+//! typing **against** the expected answer, trying every way the romaji could be
+//! read, and accepts it when one of them is the answer. Each leniency is tied to a
+//! position in the answer. を is only ever a particle, so `o` is right wherever the
+//! answer has を. は and へ are particles only sometimes — 花 is `hana`, never
+//! `wana` — so `wa` and `e` are right only at the positions the caller names: a
+//! grammar answer's are read off the corpus's romaji with [`particles_in`], and a
+//! word's are its own word-final は or へ (今日は, 又は). `ha` for わ, `wo` for お and
+//! `he` for え are wrong everywhere.
 
 use crate::curriculum::{to_hiragana, to_katakana, yoon, SMALL_KANA};
 use crate::readings::{hiragana_with_readings, katakana_only_with_readings};
 use crate::Script;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 /// Why a romaji string could not be converted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,7 +286,7 @@ const EXTENDED: &[(&str, &str)] = &[
 /// for five extended katakana, where the IME reads the same letters as an older
 /// kana (`ti` is ち there, `wo` is を).
 ///
-/// These are tried only by [`check_kana_text`], against an answer, so `ti` is
+/// These are tried only by [`check_kana_text_with`], against an answer, so `ti` is
 /// accepted for ティ and still types ち.
 const HEPBURN_ONLY: &[(&str, &str)] = &[
     ("ti", "てぃ"),
@@ -283,11 +297,6 @@ const HEPBURN_ONLY: &[(&str, &str)] = &[
     ("tyu", "てゅ"),
     ("dyu", "でゅ"),
 ];
-
-/// The particles that are written with one kana and said with another, as
-/// `(written, said)`. An answer holding the written kana accepts a typing that
-/// gives the said one, at that position and nowhere else.
-const PARTICLES: &[(char, char)] = &[('は', 'わ'), ('を', 'お'), ('へ', 'え')];
 
 /// One way of typing one kana, or one digraph, with both scripts' renderings.
 struct Entry {
@@ -318,7 +327,13 @@ fn claim(pairs: &mut Vec<(String, String)>, romaji: &str, hiragana: &str) {
 /// There is one table, not one per script: each spelling carries both renderings,
 /// and the caller picks. A spelling claimed by hiragana must still produce
 /// katakana when katakana was asked for, which one shared entry gives for free.
-fn table() -> Vec<Entry> {
+/// Built once: every conversion and every check reads it.
+fn table() -> &'static [Entry] {
+    static TABLE: OnceLock<Vec<Entry>> = OnceLock::new();
+    TABLE.get_or_init(build_table)
+}
+
+fn build_table() -> Vec<Entry> {
     let mut pairs: Vec<(String, String)> = Vec::new();
 
     // Where the IME and the readings both claim a spelling, the IME's comes first,
@@ -422,11 +437,16 @@ fn n_rule(rest: &str) -> Option<usize> {
         return None;
     }
     match chars.next() {
-        // `n'` is the explicit separator, and `nn` is ん taking both letters, as an
-        // IME reads it: `honn` is ほん and `konnnichiha` is こんにちは. Which is also
-        // why the IME reads Hepburn's `onna` as おんあ — and why an answer is not
-        // graded by this rule alone (see `check_kana_text`).
-        Some('\'') | Some('n') => Some(2),
+        // `n'` is the explicit separator.
+        Some('\'') => Some(2),
+        // `nn` before a vowel or `y` is Hepburn's ん plus an n-syllable — `onna` is
+        // おんな, `konnichiwa` こんにちわ, `konnyaku` こんにゃく — and anywhere else it is
+        // the IME's ん taking both letters: `honn` is ほん, `sannpo` さんぽ, and
+        // `onnna` and `konnnichiha` reach the same kana as the Hepburn spellings.
+        Some('n') => match chars.next() {
+            Some(c) if is_vowel(c) || c == 'y' => Some(1),
+            _ => Some(2),
+        },
         // A bare final `n`.
         None => Some(1),
         // Before a vowel or `y` the `n` belongs to the syllable: na, ni, nya.
@@ -584,7 +604,7 @@ pub fn produce_kana(typed: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KanaTextCheck {
     /// The kana the typing spelled, read the way that matched the answer when one
-    /// did — `onna` against おんな shows おんな, not the IME's おんあ — and as
+    /// did — `kinnyoubi` against きんようび shows きんようび, not きんにょうび — and as
     /// [`produce_kana`] reads it otherwise.
     pub produced: String,
     /// Whether it says what the answer says.
@@ -593,6 +613,16 @@ pub struct KanaTextCheck {
 
 /// Grade a typed reading against the expected kana, and say what was typed.
 ///
+/// [`check_kana_text_with`] with no particle positions: を is still accepted as
+/// `o`, but は and へ only as written. Right for a caller that cannot say which of
+/// an answer's は are particles; see that function for one that can.
+pub fn check_kana_text(expected: &str, typed: &str) -> KanaTextCheck {
+    check_kana_text_with(expected, typed, &[])
+}
+
+/// Grade a typed reading against the expected kana, where the caller knows which
+/// of its は and へ are particles.
+///
 /// The rule a *production* exercise needs — the learner writes the reading of
 /// something, in romaji or in kana, and this is the comparison. Kana typed directly
 /// is compared as written, with katakana folded to hiragana, the two yotsugana
@@ -600,17 +630,23 @@ pub struct KanaTextCheck {
 /// answer** rather than converted first, so that each of these is right where the
 /// answer has the kana it names and wrong anywhere else:
 ///
-/// * `wa`, `o` and `e` for the particles は, を and へ;
+/// * `o` for を, which in modern Japanese is only ever the particle;
+/// * `wa` for は and `e` for へ, at the positions `particles` names — the index of
+///   the kana in `expected`, counted in characters with spaces skipped. Nowhere
+///   else: 花 is `hana` and never `wana`, and はず is `hazu`. The caller knows where
+///   the particles are and this function cannot — [`particles_in`] reads them off
+///   a romanisation, and a word knows its own;
 /// * Hepburn's `nn` for ん plus an n-syllable (`onna` for おんな), beside the IME's
-///   `nn` for ん alone (`onnna`);
+///   `nn` for ん alone (`kinnyoubi` for きんようび);
 /// * Hepburn's `ti`, `di`, `tu`, `du` and `wo` for ティ, ディ, トゥ, ドゥ and ウォ;
 /// * `ji` and `zu` for ぢ and づ, and every other spelling the readings give a kana
 ///   even where a commoner kana owns it in [`to_kana`].
 ///
-/// Anything [`to_kana`] reads as the answer is accepted here too: this widens what
-/// the plain conversion accepts and never narrows it, so a spelling
-/// [`romaji_for`] hands out is always right.
-pub fn check_kana_text(expected: &str, typed: &str) -> KanaTextCheck {
+/// A bare `n` before a vowel or `y` is never ん here, as it is not in [`to_kana`]:
+/// `kinen` is きねん and not 禁煙's きんえん, which is `kin'en`. Anything [`to_kana`]
+/// reads as the answer is accepted: this widens what the plain conversion accepts
+/// and never narrows it, so a spelling [`romaji_for`] hands out is always right.
+pub fn check_kana_text_with(expected: &str, typed: &str, particles: &[usize]) -> KanaTextCheck {
     let typed = typed.trim();
     let expected: Vec<char> = without_spaces(&normalise_to_hiragana(expected))
         .chars()
@@ -629,10 +665,12 @@ pub fn check_kana_text(expected: &str, typed: &str) -> KanaTextCheck {
             correct,
         };
     }
-    let lowered: Vec<char> = typed.to_ascii_lowercase().chars().collect();
-    match Reader::new(&expected, &lowered).read() {
+    let particle: Vec<bool> = (0..expected.len())
+        .map(|at| particles.contains(&at))
+        .collect();
+    match read_against(&expected, &particle, typed) {
         Some(produced) => KanaTextCheck {
-            produced,
+            produced: produced.into_iter().collect(),
             correct: true,
         },
         None => KanaTextCheck {
@@ -648,134 +686,234 @@ pub fn matches_kana_text(expected: &str, typed: &str) -> bool {
     check_kana_text(expected, typed).correct
 }
 
+/// Which of the は and へ in `kana` a romanisation of it spells `wa` and `e` — the
+/// particle positions [`check_kana_text_with`] takes, read off the corpus's own
+/// romaji rather than guessed from the kana.
+///
+/// `wake de wa nai` against わけではない gives `[3]`; `hazu da` against はずだ gives
+/// none, so `wazuda` stays wrong. A romanisation that does not spell the kana at all
+/// gives none, which is the strict answer rather than a lenient one.
+pub fn particles_in(kana: &str, romaji: &str) -> Vec<usize> {
+    let expected: Vec<char> = without_spaces(&normalise_to_hiragana(kana))
+        .chars()
+        .collect();
+    let particle: Vec<bool> = expected
+        .iter()
+        .map(|ch| matches!(ch, 'は' | 'へ'))
+        .collect();
+    let Some(produced) = read_against(&expected, &particle, &romaji.trim().to_ascii_lowercase())
+    else {
+        return Vec::new();
+    };
+    expected
+        .iter()
+        .zip(&produced)
+        .enumerate()
+        .filter(|(_, (kana, read))| matches!((**kana, **read), ('は', 'わ') | ('へ', 'え')))
+        .map(|(at, _)| at)
+        .collect()
+}
+
 fn without_spaces(text: &str) -> String {
     text.chars().filter(|ch| !ch.is_whitespace()).collect()
 }
 
-/// Whether two kana say the same thing for grading: equal once the yotsugana are
-/// folded, or a particle's written kana in the answer against its said kana typed.
-fn agrees(expected: char, typed: char) -> bool {
+/// A spelling the reader may try: the letters, and the kana they give.
+type Spelling = (Vec<char>, Vec<char>);
+
+/// Every spelling [`read_against`] tries, grouped by first letter: [`table`]'s, every
+/// spelling the readings give any kana, and [`HEPBURN_ONLY`].
+///
+/// Two kinds are left out. The small kana, for the reason `table` leaves them out:
+/// ゃ's reading is `ya`, and `kiya` must not be read as きゃ. And ん, whose reading is
+/// `n`: as a spelling it would let `n` be ん before a vowel, which is the one thing
+/// the ん rule exists to refuse. ん is read by the rule alone.
+fn reader_spellings() -> &'static HashMap<char, Vec<Spelling>> {
+    static SPELLINGS: OnceLock<HashMap<char, Vec<Spelling>>> = OnceLock::new();
+    SPELLINGS.get_or_init(|| {
+        let table = table()
+            .iter()
+            .map(|e| (e.romaji.chars().collect(), e.hiragana.chars().collect()));
+        let read = hiragana_with_readings()
+            .chain(katakana_only_with_readings())
+            .filter(|(kana, _)| !SMALL_KANA.contains(kana))
+            .flat_map(|(kana, reading)| {
+                reading
+                    .spellings()
+                    .map(move |s| (s.chars().collect(), vec![kana]))
+            });
+        let hepburn = HEPBURN_ONLY
+            .iter()
+            .map(|(r, k)| (r.chars().collect(), k.chars().collect()));
+        let mut by_letter: HashMap<char, Vec<Spelling>> = HashMap::new();
+        for spelling in table.chain(read).chain(hepburn) {
+            let (romaji, kana): &Spelling = &spelling;
+            if kana.as_slice() == ['ん'] {
+                continue;
+            }
+            let bucket = by_letter.entry(romaji[0]).or_default();
+            if !bucket.contains(&spelling) {
+                bucket.push(spelling);
+            }
+        }
+        by_letter
+    })
+}
+
+/// A point in reading an answer: (letters read, kana matched).
+type State = (usize, usize);
+
+/// Romaji read against an expected answer: the kana it spells, one for each kana of
+/// the answer, when some reading of the letters is the answer.
+///
+/// Word breaks are taken out before the search and kept as marks between letters,
+/// so they cost nothing to skip and still end a word: no spelling and no sokuon
+/// runs across one, and an `n` before one is ん. The search is a walk over
+/// (letters read, kana matched) that tries every reading at each step, readings
+/// [`to_kana`] would choose first, and never visits a state twice. It keeps its own
+/// stack rather than recursing, and it is bounded by the answer: every kana takes
+/// at least one letter and at most four (`xtsu`), so a state whose remaining
+/// letters cannot fit the remaining kana is never entered — and a typing that
+/// cannot fit the whole answer is refused before any search at all.
+fn read_against(expected: &[char], particle: &[bool], typed: &str) -> Option<Vec<char>> {
+    let mut letters = Vec::new();
+    let mut cut = Vec::new();
+    let mut broken = false;
+    for ch in typed.chars() {
+        if is_separator(ch) {
+            broken = true;
+            continue;
+        }
+        letters.push(ch);
+        cut.push(broken);
+        broken = false;
+    }
+    let reader = Reader {
+        expected,
+        particle,
+        letters: &letters,
+        cut: &cut,
+        spellings: reader_spellings(),
+    };
+    let (n, m) = (letters.len(), expected.len());
+    let fits = |(i, j): State| {
+        let (left, wanted) = (n - i, m - j);
+        left >= wanted && left <= 4 * wanted
+    };
+    if !fits((0, 0)) {
+        return None;
+    }
+    let mut came_from: HashMap<State, (State, &'static [char])> = HashMap::new();
+    let mut seen = HashSet::from([(0, 0)]);
+    let mut stack = vec![(0, 0)];
+    while let Some((i, j)) = stack.pop() {
+        if i == n {
+            // `fits` says every kana is matched when every letter is read.
+            let mut produced = Vec::new();
+            let mut at = (i, j);
+            while let Some(&(before, kana)) = came_from.get(&at) {
+                produced.extend(kana.iter().rev());
+                at = before;
+            }
+            produced.reverse();
+            return Some(produced);
+        }
+        // Pushed in reverse, so the first reading is the first explored.
+        for (length, kana) in reader.moves(i, j).into_iter().rev() {
+            let to = (i + length, j + kana.len());
+            if fits(to) && seen.insert(to) {
+                came_from.insert(to, ((i, j), kana));
+                stack.push(to);
+            }
+        }
+    }
+    None
+}
+
+/// Whether a typed kana says what the answer's kana says: equal once the yotsugana
+/// are folded, お for を anywhere, and わ for は or え for へ where the answer's kana
+/// is a particle.
+fn agrees(expected: char, typed: char, particle: bool) -> bool {
     let fold = |ch| match ch {
         'ぢ' => 'じ',
         'づ' => 'ず',
         other => other,
     };
-    fold(expected) == fold(typed) || PARTICLES.contains(&(expected, typed))
+    fold(expected) == fold(typed)
+        || (expected, typed) == ('を', 'お')
+        || (particle && matches!((expected, typed), ('は', 'わ') | ('へ', 'え')))
 }
 
-/// Romaji read against an expected answer: every way the letters could be read is
-/// tried, and the first that spells the answer wins.
-///
-/// The spellings are [`table`]'s, every spelling the readings give any kana, and
-/// [`HEPBURN_ONLY`]; the rules are [`to_kana_in`]'s, with Hepburn's `nn` before a
-/// syllable allowed beside the IME's. A position that has been tried and failed is
-/// remembered, so the search is linear in practice — an answer is a handful of
-/// kana, and each position has at most a few readings.
+const SOKUON: &[char] = &['っ'];
+const MORAIC_N: &[char] = &['ん'];
+
+/// What [`read_against`] reads with. `cut[k]` is true when a word break stood
+/// before `letters[k]`.
 struct Reader<'a> {
     expected: &'a [char],
-    typed: &'a [char],
-    spellings: Vec<(Vec<char>, Vec<char>)>,
-    failed: std::collections::HashSet<(usize, usize)>,
+    particle: &'a [bool],
+    letters: &'a [char],
+    cut: &'a [bool],
+    spellings: &'static HashMap<char, Vec<Spelling>>,
 }
 
-impl<'a> Reader<'a> {
-    fn new(expected: &'a [char], typed: &'a [char]) -> Self {
-        let mut spellings: Vec<(Vec<char>, Vec<char>)> = table()
-            .into_iter()
-            .map(|e| (e.romaji.chars().collect(), e.hiragana.chars().collect()))
-            .collect();
-        // The small kana are left out for the reason `table` leaves them out: ゃ's
-        // reading is `ya`, and `kiya` must not be read as きゃ.
-        let read = hiragana_with_readings()
-            .chain(katakana_only_with_readings())
-            .filter(|(kana, _)| !SMALL_KANA.contains(kana))
-            .flat_map(|(kana, reading)| reading.spellings().map(move |s| (s, kana.to_string())));
-        let hepburn = HEPBURN_ONLY.iter().map(|(r, k)| (*r, k.to_string()));
-        for (romaji, kana) in read.chain(hepburn) {
-            let pair = (romaji.chars().collect(), kana.chars().collect());
-            if !spellings.contains(&pair) {
-                spellings.push(pair);
-            }
-        }
-        Reader {
-            expected,
-            typed,
-            spellings,
-            failed: Default::default(),
-        }
+impl Reader<'_> {
+    /// The letter at `k`, if it belongs to the same word as the one before it.
+    fn joined(&self, k: usize) -> Option<char> {
+        (k < self.letters.len() && !self.cut[k]).then(|| self.letters[k])
     }
 
-    fn read(&mut self) -> Option<String> {
-        self.from(0, 0)
-    }
-
-    /// The kana `typed[i..]` spells if it can be read as `expected[j..]`.
-    fn from(&mut self, i: usize, j: usize) -> Option<String> {
-        if i == self.typed.len() {
-            return (j == self.expected.len()).then(String::new);
-        }
-        if self.failed.contains(&(i, j)) {
-            return None;
-        }
-        let found = self.step(i, j);
-        if found.is_none() {
-            self.failed.insert((i, j));
-        }
-        found
-    }
-
-    fn step(&mut self, i: usize, j: usize) -> Option<String> {
-        let (typed, expected) = (self.typed, self.expected);
-        let letter = typed[i];
-        let next = typed.get(i + 1).copied();
-        if is_separator(letter) {
-            return self.from(i + 1, j);
-        }
-        let wanted = expected.get(j).copied();
+    /// Every way to read on from `letters[i]` that spells `expected[j..]`'s next
+    /// kana, as (letters taken, kana spelled), in the order to try them.
+    fn moves(&self, i: usize, j: usize) -> Vec<(usize, &'static [char])> {
+        let mut moves: Vec<(usize, &'static [char])> = Vec::new();
+        let letter = self.letters[i];
+        let next = self.joined(i + 1);
+        let wanted = self.expected[j];
 
         // The sokuon: a doubled consonant, or Hepburn's `tch`.
-        if wanted == Some('っ') {
-            let rest: String = typed[i..].iter().collect();
-            if sokuon_rule(&rest) == Some(1) {
-                if let Some(tail) = self.from(i + 1, j + 1) {
-                    return Some(format!("っ{tail}"));
-                }
+        if wanted == 'っ' {
+            let doubled = letter != 'n'
+                && letter.is_ascii_alphabetic()
+                && !is_vowel(letter)
+                && next == Some(letter);
+            let tch = letter == 't' && next == Some('c') && self.joined(i + 2) == Some('h');
+            if doubled || tch {
+                moves.push((1, SOKUON));
             }
         }
 
-        // ん, by `nn`, `n'` or `n` alone. `n` alone is ん before anything but a
-        // vowel or `y` — including before another `n`, which is how Hepburn's `onna`
-        // reads as おんな while the IME's `nn` reads `onnna` the same way.
-        if wanted == Some('ん') && letter == 'n' {
-            if matches!(next, Some('n') | Some('\'')) {
-                if let Some(tail) = self.from(i + 2, j + 1) {
-                    return Some(format!("ん{tail}"));
-                }
+        // ん, by `nn`, `n'`, `xn` or `n` alone. `n` alone is ん before anything but
+        // a vowel, `y` or an apostrophe — including before another `n`, which is how
+        // the IME's `kinnyoubi` reads as きんようび while Hepburn's `onna` reads as
+        // おんな.
+        if wanted == 'ん' {
+            if (letter == 'n' && matches!(next, Some('n') | Some('\'')))
+                || (letter == 'x' && next == Some('n'))
+            {
+                moves.push((2, MORAIC_N));
             }
-            if !next.is_some_and(|c| is_vowel(c) || c == 'y' || c == '\'') {
-                if let Some(tail) = self.from(i + 1, j + 1) {
-                    return Some(format!("ん{tail}"));
-                }
+            if letter == 'n' && !next.is_some_and(|c| is_vowel(c) || c == 'y' || c == '\'') {
+                moves.push((1, MORAIC_N));
             }
         }
 
-        // Every spelling that starts here and spells the answer's next kana.
-        let candidates: Vec<(usize, Vec<char>)> = self
-            .spellings
-            .iter()
-            .filter(|(romaji, kana)| {
-                typed[i..].starts_with(romaji)
-                    && kana.len() <= expected.len() - j
-                    && kana.iter().zip(&expected[j..]).all(|(k, e)| agrees(*e, *k))
-            })
-            .map(|(romaji, kana)| (romaji.len(), kana.clone()))
-            .collect();
-        for (length, kana) in candidates {
-            if let Some(tail) = self.from(i + length, j + kana.len()) {
-                return Some(kana.iter().collect::<String>() + &tail);
+        // Every spelling that starts here, stays inside the word, and spells the
+        // answer's next kana.
+        for (romaji, kana) in self.spellings.get(&letter).into_iter().flatten() {
+            let fits = self.letters[i..].starts_with(romaji)
+                && !self.cut[i + 1..i + romaji.len()].contains(&true)
+                && kana.len() <= self.expected.len() - j
+                && kana
+                    .iter()
+                    .zip(&self.expected[j..])
+                    .zip(&self.particle[j..])
+                    .all(|((k, e), particle)| agrees(*e, *k, *particle));
+            if fits {
+                moves.push((romaji.len(), kana.as_slice()));
             }
         }
-        None
+        moves
     }
 }
 
@@ -798,8 +936,9 @@ fn is_kana(ch: char) -> bool {
 /// longest run of kana one spelling covers (ふぁ as `fa`, not `fu` and `xa`) and,
 /// among spellings of the same kana, the first the table claimed — Hepburn's. Two
 /// repairs follow. ん is spelled `n` and takes an apostrophe when the syllable after
-/// it starts with a vowel, `y` or `n`, because `na` is な and `nn` is ん alone, so
-/// んあ is `n'a` and んな is `n'na`. っ doubles the consonant after it, `tch` before
+/// it starts with a vowel or `y`, because `na` is な, so んあ is `n'a` — and before
+/// another ん, because `nn` at the end of a word is one ん, so んん is `n'n`. Before
+/// an n-syllable it needs none: `nna` is んな. っ doubles the consonant after it, `tch` before
 /// `ch`, and is `xtu` where there is none to double. The result is **verified by
 /// typing it back**, so a spelling this function hands out is one [`to_kana`] really
 /// produces; a walk that fails to round-trip answers `None` rather than a spelling
@@ -831,7 +970,8 @@ pub fn romaji_for(kana: &str) -> Option<String> {
         match *piece {
             "ん" => {
                 out.push('n');
-                if next.starts_with(|ch: char| is_vowel(ch) || ch == 'y' || ch == 'n') {
+                let next_is_n = pieces.get(i + 1).is_some_and(|(piece, _)| *piece == "ん");
+                if next_is_n || next.starts_with(|ch: char| is_vowel(ch) || ch == 'y') {
                     out.push('\'');
                 }
             }
@@ -943,11 +1083,9 @@ mod tests {
     #[test]
     fn n_before_a_consonant_or_at_the_end_is_the_moraic_n() {
         assert_eq!(kana("shinbun"), "しんぶん");
+        // Hepburn's `onna` and the IME's `onnna` are both おんな.
+        assert_eq!(kana("onna"), "おんな");
         assert_eq!(kana("onnna"), "おんな");
-        // `nn` is ん taking both letters, so Hepburn's `onna` is the IME's おんあ.
-        // Graded against an answer of おんな it is still right; see
-        // `a_hepburn_double_n_is_still_accepted_where_the_answer_has_it`.
-        assert_eq!(kana("onna"), "おんあ");
         assert_eq!(kana("kangae"), "かんがえ");
         assert_eq!(kana("hon"), "ほん");
     }
@@ -1188,33 +1326,98 @@ mod tests {
     // Issue #21, one example at a time. The sweep over the shipped course is in
     // `tests/romaji_artifact.rs`.
 
+    /// The check with particle positions read off a romanisation, as the grammar
+    /// drill does.
+    fn spoken(expected: &str, romaji: &str, typed: &str) -> bool {
+        check_kana_text_with(expected, typed, &particles_in(expected, romaji)).correct
+    }
+
     #[test]
     fn the_particles_are_typed_by_how_they_sound() {
         // は, を and へ as particles are said `wa`, `o` and `e`, and a learner types
         // what they hear — the corpus's own romaji spells them that way too.
-        assert!(matches_kana_text("わけではない", "wakedewanai"));
+        assert_eq!(particles_in("わけではない", "wake de wa nai"), vec![3]);
+        assert!(spoken("わけではない", "wake de wa nai", "wakedewanai"));
+        assert!(spoken("には", "ni wa", "niwa"));
+        assert!(spoken("へ", "e", "e"));
+        assert!(check_kana_text_with("へ", "e", &[0]).correct);
+        // を is only ever the particle, so `o` needs no position.
         assert!(matches_kana_text("をください", "okudasai"));
-        assert!(matches_kana_text("へ", "e"));
-        assert!(matches_kana_text("には", "niwa"));
         assert!(matches_kana_text("を", "o"));
         // The written forms are still right.
-        assert!(matches_kana_text("わけではない", "wakedehanai"));
+        assert!(spoken("わけではない", "wake de wa nai", "wakedehanai"));
         assert!(matches_kana_text("をください", "wokudasai"));
         assert!(matches_kana_text("へ", "he"));
-        // But only where the answer has the particle kana: わ is not typed `ha`,
-        // お is not typed `wo`, and え is not typed `he`.
+        // But only where the answer has the particle: わ is not typed `ha`, お is
+        // not typed `wo`, and え is not typed `he`.
         assert!(!matches_kana_text("わ", "ha"));
         assert!(!matches_kana_text("お", "wo"));
         assert!(!matches_kana_text("え", "he"));
-        assert!(!matches_kana_text("わけではない", "wakedewanaii"));
+        assert!(!spoken("わけではない", "wake de wa nai", "wakedewanaii"));
+        // A は or へ that is not a particle is not said `wa` or `e`: 花 is not `wana`,
+        // はず is not `wazu`, 下手 is not `eta`. With no positions, none is lenient.
+        assert!(!matches_kana_text("はな", "wana"));
+        assert!(!matches_kana_text("へた", "eta"));
+        assert!(particles_in("はずだ", "hazu da").is_empty());
+        assert!(!spoken("はずだ", "hazu da", "wazuda"));
+        assert!(!spoken("てはじめて", "te hajimete", "tewajimete"));
+        assert!(spoken("てはじめて", "te hajimete", "te hajimete"));
+        // And only the particle among several は: はずはない's second is, its first
+        // is not.
+        assert_eq!(particles_in("はずはない", "hazu wa nai"), vec![2]);
+        assert!(!spoken("はずはない", "hazu wa nai", "wazuwanai"));
+        assert!(spoken("はずはない", "hazu wa nai", "hazuwanai"));
+        // A romanisation that does not spell the kana names no particle.
+        assert!(particles_in("わけではない", "nonsense").is_empty());
         // Kana typed directly is writing, not sound, and is compared as written.
-        assert!(!matches_kana_text("わけではない", "わけでわない"));
+        assert!(!check_kana_text_with("わけではない", "わけでわない", &[3]).correct);
+    }
+
+    #[test]
+    fn a_bare_n_before_a_vowel_is_never_the_moraic_n() {
+        // `kinen` is きねん, so it is not 禁煙's きんえん, which is `kin'en`; and so on
+        // for every ん before a vowel or `y`.
+        for (expected, wrong, right) in [
+            ("きんえん", "kinen", "kin'en"),
+            ("れんあい", "renai", "ren'ai"),
+            ("たんい", "tani", "tan'i"),
+            ("こんや", "konya", "kon'ya"),
+            ("ぜんいん", "zenin", "zen'in"),
+            ("げんいん", "genin", "gen'in"),
+            ("ほんを", "hono", "hon o"),
+            ("しんや", "shinya", "shin'ya"),
+        ] {
+            assert!(
+                !matches_kana_text(expected, wrong),
+                "{wrong} for {expected}"
+            );
+            assert!(matches_kana_text(expected, right), "{right} for {expected}");
+        }
+        // The IME's `nn` before the vowel is right, as it is in the IME.
+        assert!(matches_kana_text("きんえん", "kinnen"));
+        assert!(matches_kana_text("ほんを", "honnwo"));
+    }
+
+    #[test]
+    fn a_long_or_hostile_typing_is_refused_without_a_long_search() {
+        // Word breaks cost nothing: they are taken out before the search.
+        let hyphens = format!("{}ka", "-".repeat(40_000));
+        assert!(matches_kana_text("か", &hyphens));
+        // A typing too long for the answer is refused before any search.
+        assert!(!matches_kana_text("か", &"ka".repeat(20_000)));
+        // And one that fits is searched without recursion.
+        let ns = "ん".repeat(2_000);
+        assert!(matches_kana_text(&ns, &"n".repeat(4_000)));
+        assert!(!matches_kana_text(&ns, &format!("{}a", "n".repeat(4_000))));
     }
 
     #[test]
     fn spaces_and_hyphens_separate_words_rather_than_spoil_them() {
-        assert!(matches_kana_text("わけではない", "wake de wa nai"));
-        assert!(matches_kana_text("わけではない", "wake-de-wa-nai"));
+        assert!(spoken("わけではない", "wake de wa nai", "wake de wa nai"));
+        assert!(spoken("わけではない", "wake de wa nai", "wake-de-wa-nai"));
+        // A spelling or a sokuon does not run across a break.
+        assert!(!matches_kana_text("か", "k a"));
+        assert!(!matches_kana_text("かった", "kat ta"));
         assert!(matches_kana_text("てください", "te kudasai"));
         assert_eq!(kana("wake de wa nai"), "わけでわない");
         assert_eq!(produce_kana("wake de wa nai"), "わけでわない");
@@ -1227,12 +1430,22 @@ mod tests {
 
     #[test]
     fn a_doubled_n_is_one_moraic_n() {
-        // `nn` is ん and takes both letters, as in every IME.
+        // `nn` is ん and takes both letters, as in every IME, except before a vowel
+        // or `y`, where it is Hepburn's ん plus an n-syllable.
         assert_eq!(kana("honn"), "ほん");
         assert_eq!(kana("sannpo"), "さんぽ");
         assert_eq!(kana("konnnichiha"), "こんにちは");
-        assert_eq!(kana("kinnyoubi"), "きんようび");
         assert_eq!(kana("nn"), "ん");
+        assert_eq!(kana("konnichiwa"), "こんにちわ");
+        assert_eq!(kana("minna"), "みんな");
+        assert_eq!(kana("konna"), "こんな");
+        assert_eq!(kana("sonna ni"), "そんなに");
+        assert_eq!(kana("onnanoko"), "おんなのこ");
+        assert_eq!(kana("konnyaku"), "こんにゃく");
+        // The IME's `kinnyoubi` is the cost: without an answer it reads Hepburn's
+        // way. Against the answer it is still right.
+        assert_eq!(kana("kinnyoubi"), "きんにょうび");
+        assert!(matches_kana_text("きんようび", "kinnyoubi"));
         assert!(matches_reading('ん', "nn"));
         assert!(matches_reading('ん', "n'"));
         assert!(matches_reading('ん', "n"));
@@ -1246,7 +1459,10 @@ mod tests {
         // an answer, both readings are tried, so a learner typing either way is right.
         assert!(matches_kana_text("おんな", "onna"));
         assert!(matches_kana_text("おんな", "onnna"));
-        assert!(matches_kana_text("こんにちは", "konnichiwa"));
+        // (The greeting's は is said `wa`; a word's own final は is a particle
+        // position, which the caller names.)
+        assert!(check_kana_text_with("こんにちは", "konnichiwa", &[4]).correct);
+        assert!(matches_kana_text("こんにちは", "konnichiha"));
         assert!(matches_kana_text("こんにちは", "konnnichiha"));
         assert!(matches_kana_text("きんようび", "kinnyoubi"));
         assert!(matches_kana_text("きんようび", "kin'youbi"));
