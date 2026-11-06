@@ -1704,7 +1704,11 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    // Linux only, because only there can the directory exist at all: APFS (macOS,
+    // iOS) refuses a name that is not valid UTF-8 with EILSEQ, so on Apple systems
+    // the path this protects cannot arise. Android's ext4/f2fs accept it, as Linux
+    // does, and are covered by the same code.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_bad_file_in_a_directory_whose_name_is_not_utf8_is_still_moved_aside() {
         // A data directory's name is the platform's, not necessarily UTF-8. Building
