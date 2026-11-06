@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+mod chosen_file;
 mod commands;
 pub mod licences;
 mod platform;
@@ -16,6 +17,7 @@ pub use commands::{
     CharacterLevelCount, CharacterSearchView, CharacterSummary, LevelCount, MarkedTone, SpokenAudio,
     StartupView, VocabOutcome, VoiceOption, VoicesView, WordSearchView, TONE_SET_PAGE,
 };
+pub use chosen_file::ChosenFile;
 pub use licences::{AppInfo, LicenceNotice};
 // Recognition lives in a crate of its own now, shared with the tone trainer.
 pub use hanzi_hearing::{Asr, AsrStatus, InstallState};
@@ -62,6 +64,11 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Reads and writes the file the dialog chose, which on Android is a
+        // `content://` URI that `std::fs` cannot open — see `chosen_file.rs`.
+        // Rust is its only caller: the capability grants it no permission, so
+        // none of its commands is reachable from the webview.
+        .plugin(tauri_plugin_fs::init())
         // Opens the Dropbox authorization page in the system browser. A plugin
         // rather than `window.open`, because that would put Dropbox's sign-in
         // inside a webview — which Dropbox asks against, and which Google's policy

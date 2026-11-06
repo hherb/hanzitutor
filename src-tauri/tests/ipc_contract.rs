@@ -12,12 +12,31 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use hanzi_core::{AttemptMeasures, GradeOptions, Point, ProgressStore, ReviewSource, VocabStore};
-use hanzi_tutor_lib::{AppState, SpokenAudio, StartupView, REVIEW_LIMIT};
+use hanzi_tutor_lib::{AppState, ChosenFile, SpokenAudio, StartupView, REVIEW_LIMIT};
 
 fn state() -> AppState {
     // `None` keeps the study documents in memory, so tests never touch the
     // user's real data files.
     AppState::load(None).expect("the embedded dataset should decode")
+}
+
+/// A plain file standing in for the one a learner picks in the native dialog.
+///
+/// The commands wrap the dialog's answer in a `PickedFile`, which opens it through
+/// the fs plugin and so needs an app; what is *written* and *read* is decided in
+/// `AppState` against the `ChosenFile` trait, and that is what these tests drive.
+struct LocalFile(PathBuf);
+
+impl ChosenFile for LocalFile {
+    fn describe(&self) -> String {
+        self.0.display().to_string()
+    }
+    fn read_to_string(&self) -> Result<String, String> {
+        std::fs::read_to_string(&self.0).map_err(|e| e.to_string())
+    }
+    fn write(&self, contents: &[u8]) -> Result<(), String> {
+        std::fs::write(&self.0, contents).map_err(|e| e.to_string())
+    }
 }
 
 /// A private directory for one test, so tests never collide.
@@ -3045,6 +3064,65 @@ fn no_file_command_takes_a_path_from_the_webview() {
 }
 
 #[test]
+fn a_chosen_file_is_opened_through_the_fs_plugin_and_not_as_a_path() {
+    // Issue #25. On Android the dialog answers with a `content://` URI, and the
+    // commands turned it into a path with `FilePath::into_path` — which refuses
+    // any URL but `file://` — before handing it to `std::fs`. Every export,
+    // import, backup and restore therefore failed on the phone, where restoring a
+    // backup is exactly what moving to a new one needs.
+    //
+    // `content://` cannot be opened on this machine, so the property is checked
+    // where it lives: the commands hand the dialog's answer to `PickedFile`, the
+    // only thing that opens it, and `run` registers the plugin that does.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let commands = std::fs::read_to_string(root.join("src/commands.rs")).unwrap();
+    for forbidden in ["into_path()", "std::fs::write(", "std::fs::read_to_string("] {
+        assert!(
+            !commands.contains(forbidden),
+            "commands.rs opens a chosen file with `{forbidden}` again, which fails \
+             for the content:// URI the Android dialog answers with"
+        );
+    }
+    assert!(
+        commands.matches("PickedFile::from_dialog(").count() >= 2,
+        "the save and the open dialog should each hand their answer to PickedFile"
+    );
+
+    let state = std::fs::read_to_string(root.join("src/state.rs")).unwrap();
+    for method in ["export_practice_log", "export_backup", "import_backup"] {
+        let signature = state
+            .split(&format!("pub fn {method}("))
+            .nth(1)
+            .and_then(|rest| rest.split('{').next())
+            .unwrap_or_else(|| panic!("AppState::{method} should exist"));
+        assert!(
+            signature.contains("&dyn ChosenFile"),
+            "AppState::{method} should take the chosen file, not a path: {signature}"
+        );
+    }
+
+    // `app.fs()` panics unless the plugin is registered — on every platform, so
+    // a missing registration would break the desktop build too, not just Android.
+    let lib = std::fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    assert!(
+        lib.contains(".plugin(tauri_plugin_fs::init())"),
+        "run() must register tauri-plugin-fs, or every PickedFile panics"
+    );
+
+    // And the plugin stays Rust-only: no capability grants the webview any of its
+    // commands, so the frontend still cannot name a file.
+    for entry in std::fs::read_dir(root.join("capabilities")).unwrap() {
+        let path = entry.unwrap().path();
+        let capability = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !capability.contains("\"fs:"),
+            "{} grants the webview an fs permission",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn the_practice_log_exports_every_attempt_with_its_measures() {
     // The end of the tuning chain: what a learner wrote leaves the database as a
     // file. The measures have to be in it, because they are the reason the log is
@@ -3076,7 +3154,7 @@ fn the_practice_log_exports_every_attempt_with_its_measures() {
     }
 
     let message = state
-        .export_practice_log(&export, "jsonl")
+        .export_practice_log(&LocalFile(export.clone()), "jsonl")
         .expect("exporting should work");
     assert!(message.contains("2 attempts"), "{message}");
     assert!(message.contains("1 with grading measures"), "{message}");
@@ -3108,7 +3186,7 @@ fn the_practice_log_exports_every_attempt_with_its_measures() {
     // The same rows in the other shape: a header and one line per attempt.
     let csv = dir.join("log.csv");
     state
-        .export_practice_log(&csv, "csv")
+        .export_practice_log(&LocalFile(csv.clone()), "csv")
         .expect("the CSV export should work too");
     let written = std::fs::read_to_string(&csv).unwrap();
     let lines: Vec<&str> = written.lines().collect();
@@ -3117,7 +3195,7 @@ fn the_practice_log_exports_every_attempt_with_its_measures() {
 
     // A format nobody knows is refused rather than written as something else.
     assert!(state
-        .export_practice_log(&export, "xlsx")
+        .export_practice_log(&LocalFile(export.clone()), "xlsx")
         .is_err());
 
     std::fs::remove_dir_all(&dir).ok();
@@ -3166,7 +3244,9 @@ fn a_backup_carries_the_list_and_the_log_and_restores_both() {
     }
 
     let file = source_dir.join("backup.json");
-    let message = source.export_backup(&file).expect("backing up should work");
+    let message = source
+        .export_backup(&LocalFile(file.clone()))
+        .expect("backing up should work");
     assert!(message.contains("2 vocabulary entries"), "{message}");
     assert!(message.contains("2 attempts"), "{message}");
     assert!(message.contains("1 with grading measures"), "{message}");
@@ -3177,7 +3257,7 @@ fn a_backup_carries_the_list_and_the_log_and_restores_both() {
     assert_eq!(target.lock_vocab().store.entries().len(), 0);
 
     let outcome = target
-        .import_backup(&file, true)
+        .import_backup(&LocalFile(file.clone()), true)
         .expect("restoring should work");
     assert_eq!(outcome.view.entries.len(), 2, "{}", outcome.message);
     assert_eq!(outcome.view.groups, vec!["SiLu".to_string()]);
@@ -3213,7 +3293,9 @@ fn a_backup_carries_the_list_and_the_log_and_restores_both() {
 
     // Restoring the same file again adds nothing and counts nothing twice: an
     // attempt is named by (device, seq), and the pair already names it.
-    let again = target.import_backup(&file, true).unwrap();
+    let again = target
+        .import_backup(&LocalFile(file.clone()), true)
+        .unwrap();
     assert_eq!(again.view.entries.len(), 2, "no duplicate entries");
     assert!(again.message.contains("left 2 already there"), "{}", again.message);
     assert!(
@@ -3240,7 +3322,7 @@ fn replacing_from_a_backup_replaces_the_list_and_never_the_log() {
         assert!(vocab.save().is_none());
     }
     let file = source_dir.join("backup.json");
-    source.export_backup(&file).unwrap();
+    source.export_backup(&LocalFile(file.clone())).unwrap();
 
     let target_dir = data_dir("backup-replace-target");
     let target = AppState::load(Some(target_dir.clone())).unwrap();
@@ -3259,7 +3341,7 @@ fn replacing_from_a_backup_replaces_the_list_and_never_the_log() {
         assert!(progress.save().is_none());
     }
 
-    let outcome = target.import_backup(&file, false).unwrap();
+    let outcome = target.import_backup(&LocalFile(file.clone()), false).unwrap();
     let texts: Vec<&str> = outcome
         .view
         .entries
@@ -3284,7 +3366,7 @@ fn replacing_from_a_backup_replaces_the_list_and_never_the_log() {
         assert!(vocab.save().is_none());
     }
     let error = target
-        .import_backup(&list_file, true)
+        .import_backup(&LocalFile(list_file.clone()), true)
         .expect_err("a list export is not a backup");
     assert!(error.contains("vocabulary-list export"), "{error}");
 

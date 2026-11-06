@@ -24,6 +24,7 @@ use hanzi_hearing::Asr;
 use crate::commands::{
     SpeechTarget, ToneResult, ToneSyllableResult, VoiceOption, VoicesView, LESSON_SIZE,
 };
+use crate::chosen_file::ChosenFile;
 use crate::say::Say;
 // Capture and synthesis are shared with the standalone tone trainer, so they
 // live in `hanzi-voice` now rather than in this binary.
@@ -1240,19 +1241,20 @@ impl AppState {
             .collect()
     }
 
-    /// Write the whole practice log to `path`, as JSON Lines or CSV.
+    /// Write the whole practice log to `to`, as JSON Lines or CSV.
     ///
     /// Here rather than in the command so it can be tested without a window —
     /// this is the one path by which a learner's own handwriting leaves the
-    /// database, so what it writes is worth a test of its own. `path` is the file
-    /// the learner chose in a native dialog; the command that shows that dialog
-    /// is what keeps a free-form path off the IPC boundary.
+    /// database, so what it writes is worth a test of its own. `to` is the file
+    /// the learner chose in a native dialog — a path on desktop, a `content://`
+    /// URI on Android; see [`crate::chosen_file`] — and the command that shows
+    /// that dialog is what keeps a free-form path off the IPC boundary.
     ///
     /// Every attempt is written, measured or not: a row without measures is one
     /// recorded before schema 5 or merged in from another device, and silently
     /// dropping it would shorten the history to the part that happens to be
     /// measurable.
-    pub fn export_practice_log(&self, path: &std::path::Path, format: &str) -> Result<String, String> {
+    pub fn export_practice_log(&self, to: &dyn ChosenFile, format: &str) -> Result<String, String> {
         let db = self
             .db
             .as_ref()
@@ -1266,13 +1268,12 @@ impl AppState {
             "csv" => (hanzi_store::export::attempts_to_csv(&attempts), "CSV"),
             other => return Err(format!("unknown export format {other:?}")),
         };
-        std::fs::write(path, contents)
-            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        to.write(contents.as_bytes())?;
         let measured = attempts.iter().filter(|a| a.measures.is_some()).count();
         Ok(format!(
             "Exported {} attempts ({measured} with grading measures) as {label} to {}",
             attempts.len(),
-            path.display()
+            to.describe()
         ))
     }
 
@@ -1286,7 +1287,7 @@ impl AppState {
     /// Here rather than in the command for the same reason as
     /// [`Self::export_practice_log`]: what leaves the app is worth a test that
     /// needs no window.
-    pub fn export_backup(&self, path: &std::path::Path) -> Result<String, String> {
+    pub fn export_backup(&self, to: &dyn ChosenFile) -> Result<String, String> {
         let db = self
             .db
             .as_ref()
@@ -1304,15 +1305,14 @@ impl AppState {
             .map_err(|e| e.to_string())?;
         let measured = backup.measured_count();
         let text = backup.to_json().map_err(|e| e.to_string())?;
-        std::fs::write(path, text)
-            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        to.write(text.as_bytes())?;
 
         Ok(format!(
             "Backed up {entries} vocabulary {} and {} attempts ({measured} with \
              grading measures) to {}",
             if entries == 1 { "entry" } else { "entries" },
             attempts.len(),
-            path.display()
+            to.describe()
         ))
     }
 
@@ -1331,15 +1331,14 @@ impl AppState {
     /// would be tagged against the pre-restore schedule.
     pub fn import_backup(
         &self,
-        path: &std::path::Path,
+        from: &dyn ChosenFile,
         merge: bool,
     ) -> Result<BackupOutcome, String> {
         let db = self
             .db
             .as_ref()
             .ok_or("there is nowhere to keep study data, so there is nothing to restore into")?;
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        let text = from.read_to_string()?;
         let backup = Backup::parse(&text).map_err(|e| e.to_string())?;
 
         // The log, through the same door a sync uses, so the identity rule that
