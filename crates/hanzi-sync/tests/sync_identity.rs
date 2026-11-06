@@ -314,16 +314,25 @@ fn a_store_that_is_empty_is_given_the_whole_history() {
 /// A backup file of `db`, read back the way the restore screen reads it, merged into
 /// `into` and the schedule rebuilt — what `import_backup` does in the app.
 fn restore_backup(from: &Db, into: &Db) -> usize {
-    let attempts = from.attempts(None).unwrap();
-    let text = Backup::build(
+    import_backup(into, &backup_of(from))
+}
+
+/// The backup file the app would write for `db`, as it stands now.
+fn backup_of(db: &Db) -> String {
+    let attempts = db.attempts(None).unwrap();
+    Backup::build(
         "2026-10-01T00:00:00Z",
         r#"{"nextId":1,"entries":[]}"#,
         &attempts,
     )
     .unwrap()
     .to_json()
-    .unwrap();
-    let backup = Backup::parse(&text).unwrap();
+    .unwrap()
+}
+
+/// Restore a backup file into `into`, returning how many attempts were new.
+fn import_backup(into: &Db, text: &str) -> usize {
+    let backup = Backup::parse(text).unwrap();
     let added = into.merge_attempts(&backup.incoming_attempts()).unwrap();
     recompute(into, &local_baselines(into).unwrap()).unwrap();
     added
@@ -674,4 +683,112 @@ fn an_existing_database_with_a_watermark_publishes_only_what_is_new() {
     assert!(sync(&db_a, &remote).unwrap().is_empty());
 
     finish(&[&dir_a, &dir_c, &shared]);
+}
+
+#[test]
+fn an_attempt_under_a_name_no_device_could_have_neither_breaks_nor_repeats_a_sync() {
+    // A name that is not a plain one — a hand-edited backup, say — would be a path on
+    // the store: `..` and a backslash are refused there, failing every sync, and `.`
+    // writes somewhere sync never reads back, so it would be written again every time.
+    // Such an attempt stays in the log and is simply not published.
+    let dir_a = scratch("odd-names-a");
+    let shared = scratch("odd-names-store");
+    let remote = FolderStore::open(&shared).unwrap();
+    let (db_a, mut progress_a) = open(&dir_a);
+    let id = db_a.device_id();
+    record(&mut progress_a, '好', 88.0, "2026-09-19T09:00:00Z");
+    let odd: Vec<IncomingAttempt> = ["..", ".", "a\\b", "a/b"]
+        .iter()
+        .enumerate()
+        .map(|(i, device)| IncomingAttempt {
+            device_id: device.to_string(),
+            seq: 1,
+            ch: "人".into(),
+            at: format!("2026-09-20T09:00:0{i}Z"),
+            score: 70.0,
+            rating: Rating::from_score(70.0),
+            measures: None,
+        })
+        .collect();
+    assert_eq!(db_a.merge_attempts(&odd).unwrap(), 4);
+
+    let first = sync(&db_a, &remote).expect("an odd name does not fail the sync");
+    assert_eq!(
+        first.published, 1,
+        "only the attempt with a real name: {first:?}"
+    );
+    let second = sync(&db_a, &remote).unwrap();
+    assert_eq!(
+        second.published, 0,
+        "and nothing is written again: {second:?}"
+    );
+    assert!(on_remote(&remote).iter().all(|(device, ..)| *device == id));
+    let written: Vec<_> = fs::read_dir(shared.join("devices"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(written, vec![id], "no directory for any of them");
+
+    finish(&[&dir_a, &shared]);
+}
+
+#[test]
+fn a_backup_from_before_the_rename_does_not_bring_its_moved_attempts_back() {
+    // A copy records two attempts under the name it inherited and exports a backup.
+    // Its next sync renames it and moves both. Restoring that backup afterwards must
+    // not bring them back under the old name — one would come back as a second copy
+    // of an attempt already published under the new one, counted twice everywhere.
+    let dir_a = scratch("old-backup-a");
+    let dir_b = scratch("old-backup-b");
+    let dir_c = scratch("old-backup-c");
+    let shared = scratch("old-backup-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    let old_id = {
+        let (db_a, mut progress_a) = open(&dir_a);
+        record(&mut progress_a, '好', 88.0, "2026-09-19T09:00:00Z");
+        record(&mut progress_a, '好', 91.0, "2026-09-19T21:00:00Z");
+        sync(&db_a, &remote).unwrap();
+        db_a.device_id()
+    };
+    copy_dir(&dir_a, &dir_b);
+    let (db_a, mut progress_a) = open(&dir_a);
+    record(&mut progress_a, '好', 70.0, "2026-09-22T09:00:00Z");
+    sync(&db_a, &remote).unwrap();
+
+    let (db_b, mut progress_b) = open(&dir_b);
+    record(&mut progress_b, '好', 99.0, "2026-10-01T09:00:00Z");
+    record(&mut progress_b, '好', 98.0, "2026-10-01T10:00:00Z");
+    let before_the_rename = backup_of(&db_b);
+    sync(&db_b, &remote).unwrap();
+    assert_ne!(db_b.device_id(), old_id, "the copy renamed");
+
+    assert_eq!(
+        import_backup(&db_b, &before_the_rename),
+        0,
+        "every attempt in it is already here, one of them under the new name"
+    );
+    for db in [&db_b, &db_a, &db_b] {
+        sync(db, &remote).expect("nobody is broken");
+    }
+    let (db_c, _) = open(&dir_c);
+    sync(&db_c, &remote).unwrap();
+
+    assert_eq!(
+        db_a.device_id(),
+        old_id,
+        "the original had no reason to rename"
+    );
+    let stored = on_remote(&remote);
+    let distinct: BTreeSet<&String> = stored.iter().map(|(_, _, at)| at).collect();
+    assert_eq!(stored.len(), 5, "{stored:?}");
+    assert_eq!(distinct.len(), 5, "each attempt once: {stored:?}");
+    for db in [&db_a, &db_b, &db_c] {
+        assert_eq!(in_log(db), stored);
+        assert_eq!(card(db, "好").attempts, 5);
+    }
+    assert_eq!(card(&db_a, "好"), card(&db_b, "好"));
+    assert_eq!(card(&db_c, "好"), card(&db_b, "好"));
+
+    finish(&[&dir_a, &dir_b, &dir_c, &shared]);
 }

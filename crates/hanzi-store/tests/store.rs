@@ -901,6 +901,39 @@ fn a_new_identity_moves_only_the_attempts_it_is_given_and_every_handle_follows()
     assert_eq!((moved.seq, moved.at.as_str()), (4, "2026-09-19T13:00:00Z"));
     assert_eq!(db.attempts(None).unwrap().len(), 5, "moved, not copied");
 
+    // A copy, under the old name, of an attempt the rename moved — a backup from
+    // before the rename — is the same attempt, so it is not let back in...
+    let moved_one = db.own_attempts().unwrap().remove(0);
+    let copy = hanzi_store::IncomingAttempt {
+        device_id: old.clone(),
+        seq: 9,
+        ch: moved_one.ch.clone(),
+        at: moved_one.at.clone(),
+        score: moved_one.score,
+        rating: Rating::from_name(&moved_one.rating).unwrap(),
+        measures: None,
+    };
+    assert_eq!(db.merge_attempts(&[copy]).unwrap(), 0);
+    // ...and one that got in anyway is dropped.
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO attempt (device_id, seq, ch, at, score, rating)
+             VALUES (?1, 9, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                old,
+                moved_one.ch,
+                moved_one.at,
+                moved_one.score,
+                moved_one.rating
+            ],
+        )
+        .unwrap();
+    assert_eq!(db.attempts(None).unwrap().len(), 6);
+    assert_eq!(db.forget_moved_copies().unwrap(), 1);
+    assert_eq!(db.attempts(None).unwrap().len(), 5);
+    assert_eq!(db.forget_moved_copies().unwrap(), 0, "and nothing else");
+
     // And it is the name the database answers to from now on.
     assert_eq!(Db::open(&dir).unwrap().device_id(), new);
     finish(&dir);

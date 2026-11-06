@@ -108,6 +108,10 @@ pub struct Summary {
     pub recomputed: usize,
     /// Characters deliberately left alone because their log is incomplete.
     pub left_alone: usize,
+    /// Attempts the store lacks that were *not* published, because the device
+    /// they name has a name no device of this app could have — see
+    /// `publishable_name`. They stay in the log; this says they are there.
+    pub unpublishable: usize,
     /// Vocabulary entries and groups whose stored form changed.
     pub vocab_changed: usize,
     /// Whether the course position moved.
@@ -150,7 +154,7 @@ pub fn own_log(db: &Db) -> Result<Vec<MergedAttempt>, SyncError> {
 /// the pull together. See `publish_against` for what is published, and why.
 pub fn publish(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
     let remote = read_attempts(store)?;
-    publish_against(db, store, &remote)
+    Ok(publish_against(db, store, &remote)?.0)
 }
 
 /// Publish against a reading of the store already in hand.
@@ -188,7 +192,7 @@ fn publish_against(
     db: &Db,
     store: &dyn RemoteStore,
     remote: &[MergedAttempt],
-) -> Result<usize, SyncError> {
+) -> Result<(usize, usize), SyncError> {
     let held: HashMap<(&str, i64), &MergedAttempt> = remote
         .iter()
         .map(|attempt| ((attempt.device_id.as_str(), attempt.seq), attempt))
@@ -198,15 +202,16 @@ fn publish_against(
     let device = db.device_id();
 
     let mut fresh: BTreeMap<String, Vec<MergedAttempt>> = BTreeMap::new();
+    let mut unpublishable = 0usize;
     for attempt in full_log(db)? {
         if held.contains_key(&(attempt.device_id.as_str(), attempt.seq)) {
             continue;
         }
         if attempt.device_id != device && !publishable_name(&attempt.device_id) {
-            // A name arrived in a backup file, which is text anybody can edit,
-            // and one that would not read back as a shard would be written on
-            // every sync and never found. This device's own name is generated
-            // here and is always fine.
+            // A name arrived in a backup file, which is text anybody can edit.
+            // Skipped and counted rather than written — see `publishable_name`.
+            // This device's own name is generated here and is always fine.
+            unpublishable += 1;
             continue;
         }
         fresh
@@ -237,7 +242,7 @@ fn publish_against(
         .unwrap_or(0);
     db.set_meta_value(PUBLISHED_THROUGH, &highest.to_string())
         .map_err(SyncError::Io)?;
-    Ok(published)
+    Ok((published, unpublishable))
 }
 
 /// Make sure this device's name is its own before anything is written under it.
@@ -295,6 +300,25 @@ fn publish_against(
 ///   accounts in turn renames what the *current* store lacks, which can include
 ///   attempts it already published to the other; were the two stores' contents
 ///   ever brought together, those would be there twice.
+/// - **Help a third device with a copy's old backup.** A backup exported on a copy
+///   *before* it renamed holds its attempts under the inherited name. Restored on
+///   this device, they are dropped, because the rename recorded where they went
+///   ([`Db::merge_attempts`]). Restored on any *other* device, nothing says so:
+///   that device holds them as the inherited name's, publishes those the store
+///   lacks, and one that collides with the original's attempt of the same number
+///   leaves it failing with [`SyncError::Rewritten`] for good — much as restoring
+///   any backup that disagrees with the store already did.
+/// - **Cover the group positions published between syncs.** The app publishes a
+///   group position on its own, outside a sync (`publish_positions_to` in
+///   `src-tauri/src/sync.rs`), under whatever name the database has at that
+///   moment. Before a copy's first sync, or in the moment around a rename, that is
+///   the inherited name, so the copy can overwrite the original's
+///   `vocab-cursor.json` once. Positions are settled per group by their stamps and
+///   the file is rewritten whole on every publish, so the original's next publish
+///   restores it; no attempt is involved and nothing fails.
+/// - **Rebuild a migrated card when there is no baseline to adopt.** A rename with
+///   none leaves a pre-M10 card stale on the copy — see `settle_baseline` — until
+///   the original publishes a baseline, and for good if it never does.
 ///
 /// Returns the new name, if there is one.
 fn settle_identity(
@@ -322,6 +346,10 @@ fn settle_identity(
         None
     };
 
+    // A copy under a former name of an attempt the rename already moved — a backup
+    // from before the rename, restored by a build that let it in — goes first, so
+    // that it is neither reclaimed below as a second attempt nor published again.
+    db.forget_moved_copies().map_err(SyncError::Io)?;
     for former in db.former_device_ids().map_err(SyncError::Io)? {
         let keep = |row: &LoggedAttempt| {
             held.get(&(former.as_str(), row.seq))
@@ -386,14 +414,21 @@ fn settle_baseline(db: &Db, store: &dyn RemoteStore, renaming: bool) -> Result<(
         .map_err(SyncError::Io)
 }
 
-/// Whether a device name can be written as a shard and read back as the same name.
+/// Whether a device name is one this device may write a shard under.
 ///
-/// A name with a `/` in it, or an empty one, would be written somewhere that
-/// [`parse_attempts_shard`] does not recognise, so its attempts would never be
-/// found again — and would be written again on every sync.
+/// Strictly a name a device of this app could have ([`hanzi_store::is_valid_device_id`]),
+/// not merely one a path can hold. A name is a directory on the store, and the
+/// names that are not plain are the dangerous ones: `..` or a backslash is refused
+/// by a folder store and would fail *every* sync, and `.` or a `/` writes
+/// somewhere [`parse_attempts_shard`] never reads back, so the same attempts would
+/// be written again on every sync and never found. A restored backup is refused
+/// such a name before it reaches the log; this is the guard for one that got in
+/// some other way. The round trip is checked as well, so the two rules can never
+/// drift apart.
 fn publishable_name(device_id: &str) -> bool {
     let name = attempts_shard_name(device_id, 1);
-    parse_attempts_shard(&name) == Some((device_id, 1))
+    hanzi_store::is_valid_device_id(device_id)
+        && parse_attempts_shard(&name) == Some((device_id, 1))
 }
 
 /// Publish this device's vocabulary list and course position.
@@ -652,7 +687,7 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
     // Read once, for both halves: the publish decides from it what the store
     // lacks, and the pull merges it.
     let remote = read_attempts(store)?;
-    let published = publish_against(db, store, &remote)?;
+    let (published, unpublishable) = publish_against(db, store, &remote)?;
     publish_documents(db, store)?;
     let pulled = pull_from(db, remote)?;
     let vocab_changed = pull_vocab(db, store)?;
@@ -674,6 +709,7 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
         pulled,
         recomputed,
         left_alone,
+        unpublishable,
         vocab_changed,
         cursor_moved,
     })

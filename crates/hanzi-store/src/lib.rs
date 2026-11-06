@@ -281,6 +281,49 @@ impl Db {
         Ok(moved)
     }
 
+    /// Drop every attempt under a former name that this database also holds under
+    /// a newer one, returning how many went.
+    ///
+    /// The same rule [`Db::merge_attempts`] applies on the way in, applied to what
+    /// is already here, so that a copy which got in some other way — a build
+    /// without that rule — is neither published again under the old name nor
+    /// folded into the schedule twice. A rename only ever moves an attempt to a
+    /// *newer* name, so the copy under the older one is the one to drop.
+    pub fn forget_moved_copies(&self) -> Result<usize, String> {
+        let path = self.path();
+        let mut conn = self.lock();
+        let current = self.device();
+        let tx = conn.transaction().map_err(|e| at(&path, e))?;
+        let former = former_ids(&tx).map_err(|e| at(&path, e))?;
+        let mut dropped = 0usize;
+        for name in &former {
+            let rows: Vec<LoggedAttempt> = {
+                let mut stmt = tx
+                    .prepare(&format!(
+                        "SELECT {ATTEMPT_COLUMNS} FROM attempt WHERE device_id = ?1"
+                    ))
+                    .map_err(|e| at(&path, e))?;
+                let rows = stmt
+                    .query_map([name], read_attempt)
+                    .map_err(|e| at(&path, e))?;
+                rows.collect::<rusqlite::Result<_>>()
+                    .map_err(|e| at(&path, e))?
+            };
+            let newer = newer_names(&former, &current, name);
+            for row in rows {
+                if copy_under(&tx, newer, &row.ch, &row.at, row.score, &row.rating)
+                    .map_err(|e| at(&path, e))?
+                {
+                    tx.execute("DELETE FROM attempt WHERE id = ?1", [row.id])
+                        .map_err(|e| at(&path, e))?;
+                    dropped += 1;
+                }
+            }
+        }
+        tx.commit().map_err(|e| at(&path, e))?;
+        Ok(dropped)
+    }
+
     /// The database file.
     pub fn path(&self) -> PathBuf {
         self.dir.join(Self::FILE_NAME)
@@ -414,8 +457,28 @@ impl Db {
         let path = self.path();
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(|e| at(&path, e))?;
+        let current = self.device();
+        let former = former_ids(&tx).map_err(|e| at(&path, e))?;
         let mut added = 0usize;
         for attempt in incoming {
+            // An attempt under a name this database has given up, which it already
+            // holds under a newer one: it was this device's, and the rename moved
+            // it. That is a backup taken before the rename coming back, and letting
+            // it in would put the same attempt in the log twice — once under each
+            // name — and on the store twice after the next sync.
+            let newer = newer_names(&former, &current, &attempt.device_id);
+            let moved = copy_under(
+                &tx,
+                newer,
+                &attempt.ch,
+                &attempt.at,
+                attempt.score,
+                attempt.rating.name(),
+            )
+            .map_err(|e| at(&path, e))?;
+            if moved {
+                continue;
+            }
             let m = attempt.measures;
             added += tx
                 .execute(
@@ -478,6 +541,60 @@ fn former_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
         .unwrap_or_default())
 }
 
+/// The names newer than `name` among this database's own, oldest first: the former
+/// names after it, then the current one.
+///
+/// Empty when `name` is not a former name of this database, which is how every
+/// other device's name is answered — the duplicate rule below is about this
+/// device's own renames and nobody else's attempts.
+fn newer_names<'a>(former: &'a [String], current: &'a str, name: &str) -> NewerNames<'a> {
+    match former.iter().position(|f| f == name) {
+        Some(at) => NewerNames {
+            former: &former[at + 1..],
+            current: Some(current),
+        },
+        None => NewerNames {
+            former: &[],
+            current: None,
+        },
+    }
+}
+
+/// See [`newer_names`].
+#[derive(Clone, Copy)]
+struct NewerNames<'a> {
+    former: &'a [String],
+    current: Option<&'a str>,
+}
+
+/// Whether one of `names` holds an attempt with these exact contents.
+///
+/// The contents, not the number: a moved attempt was renumbered, so its number
+/// under the newer name says nothing. The character, the second it happened, the
+/// score and the rating together are an attempt's fingerprint — two genuinely
+/// different attempts agreeing on all four is not a case worth designing for.
+fn copy_under(
+    conn: &Connection,
+    names: NewerNames<'_>,
+    ch: &str,
+    at: &str,
+    score: f32,
+    rating: &str,
+) -> rusqlite::Result<bool> {
+    for name in names.former.iter().map(String::as_str).chain(names.current) {
+        let found: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM attempt WHERE device_id = ?1 AND ch = ?2
+                           AND at = ?3 AND score = ?4 AND rating = ?5)",
+            params![name, ch, at, score, rating],
+            |row| row.get(0),
+        )?;
+        if found {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Move every attempt of `from` that `keep` says no to over to `to`, numbered on
 /// from `to`'s newest, in the order `from` numbered them.
 ///
@@ -506,6 +623,21 @@ fn move_attempts(
         moved += 1;
     }
     Ok(moved)
+}
+
+/// Whether `id` is a name a device of this app could have.
+///
+/// Every device names itself with a UUID ([`schema`]'s `device_id`), so this is
+/// letters, digits, `-` and `_`, and not too long — deliberately narrower than
+/// "anything a filesystem accepts". A device name becomes a directory on the sync
+/// store, and the names that are not plain ones are exactly the dangerous ones:
+/// `..` and a backslash are refused by a folder store outright, and `.` names a
+/// directory sync writes to and never reads back.
+pub fn is_valid_device_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Read one attempt row, in the column order [`ATTEMPT_COLUMNS`] selects.
