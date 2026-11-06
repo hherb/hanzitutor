@@ -33,9 +33,9 @@
 //! across the whole reference character *and* every stroke written, so a
 //! missing stroke is penalised everywhere it should be, an extra one is
 //! penalised the same way, and a blank canvas scores zero rather than
-//! collecting easy marks for a flawless ordering of nothing. An attempt with the
-//! wrong number of strokes is also held below the good band, at
-//! [`MISCOUNTED_CEILING`]: it is not the character that was asked for.
+//! collecting easy marks for a flawless ordering of nothing. An attempt with a
+//! missing stroke, or a full-length extra one, is also held below the good
+//! band, at [`MISCOUNTED_CEILING`]: it is not the character that was asked for.
 //!
 //! Separating them means a character written beautifully but in the wrong
 //! order still reports as legible, with the order faults called out
@@ -100,8 +100,9 @@ pub const HEADLINE_POSITION: f32 = 0.25;
 pub const HEADLINE_ORDER: f32 = 0.25;
 pub const HEADLINE_INK: f32 = 0.25;
 
-/// The highest headline score an attempt with the wrong number of strokes can
-/// have: the top of the fair band, so the scheduler records it as hard.
+/// The highest headline score an attempt with a missing stroke, or with an
+/// extra stroke long enough to be one, can have: the top of the fair band, so
+/// the scheduler records it as hard.
 ///
 /// The per-stroke measures cannot see this fault on their own. Many characters
 /// differ from another by exactly one stroke — 大 and 太, 王 and 玉, 日 and 目,
@@ -117,15 +118,33 @@ pub const HEADLINE_INK: f32 = 0.25;
 ///
 /// It is a ceiling rather than a fixed verdict, so an attempt that is poor for
 /// other reasons — twelve scribbles over a correct character keep a quarter of
-/// the marks — still scores what its measures say. Taps too short to be a stroke
-/// are discarded before strokes are counted, so an accidental touch never
-/// brings it into play. It is a whole number so that the rounded score a screen
-/// prints reads as fair too.
+/// the marks — still scores what its measures say. It is a whole number so that
+/// the rounded score a screen prints reads as fair too.
+///
+/// An extra mark only brings it into play when it is at least 40 design units
+/// long after any global fit (`EXTRA_STROKE_MIN_LEN`). Taps below
+/// `min_stroke_len` are discarded before strokes are counted, but that bar is
+/// deliberately low — 12 design units, and only 2 for 黧, whose shortest real
+/// stroke is 4 — so a small slip of the pen survives it, and holding a perfect character at 74 for a 13-unit dash
+/// would be a verdict about the pointer rather than the character. Such a mark
+/// still counts in the denominator of every measure and still makes the count
+/// wrong, so it costs its share and the attempt is not legible; it just does not
+/// also cap the score.
 ///
 /// Public because the attempt log's analysis recomputes the headline score from
 /// the recorded measures, which do not record the stroke count, and has to
 /// recognise a score held here.
 pub const MISCOUNTED_CEILING: f32 = 74.0;
+
+/// Length, in design units out of 1024 and measured after any global fit, from
+/// which an unpaired attempt stroke holds the score at [`MISCOUNTED_CEILING`].
+///
+/// Set from the dataset rather than guessed: 4 of the 87,609 strokes of the
+/// teachable characters are shorter than this, and the first percentile of all
+/// strokes is 68.8, so an extra stroke that is a real stroke of another character — 太's
+/// dot is 142, 玉's is 153 — is well clear of it, while a dash of a few pixels
+/// is not.
+const EXTRA_STROKE_MIN_LEN: f32 = 40.0;
 
 /// Tunables for a grading run.
 ///
@@ -299,7 +318,8 @@ pub struct GradeReport {
     /// no stroke to have been written that the character does not have.
     pub order_score: f32,
     /// Headline score, 0..=100: the weighted headline measures, held at
-    /// [`MISCOUNTED_CEILING`] when the stroke count is wrong.
+    /// [`MISCOUNTED_CEILING`] when a stroke is missing or a full-length extra
+    /// one was written.
     pub overall: f32,
     /// Are the strokes recognisable and correctly placed? Independent of order:
     /// a legible character may still have been written in the wrong order.
@@ -602,16 +622,25 @@ fn grade_inner(
     let ink_score = ink.per_stroke.iter().sum::<f32>() / denom;
     let order_score = coverage * ordered_score;
     let count_ok = n_user == n_ref;
+    // Every unpaired stroke has already cost its share above. Only a stroke
+    // that is genuinely missing, or an extra one long enough to be a stroke of
+    // some character, is evidence of the wrong character; see
+    // `EXTRA_STROKE_MIN_LEN` for why a short slip is not.
+    let missing_stroke = strokes.iter().any(|s| s.user_index.is_none());
+    let long_extra_stroke = kept.iter().any(|k| {
+        assignment[k.original_index].is_none()
+            && geom::path_length(&k.points) >= EXTRA_STROKE_MIN_LEN
+    });
     let measured = (100.0
         * (HEADLINE_SHAPE * shape_score
             + HEADLINE_POSITION * position_score
             + HEADLINE_ORDER * order_score
             + HEADLINE_INK * ink_score))
         .clamp(0.0, 100.0);
-    let overall = if count_ok {
-        measured
-    } else {
+    let overall = if missing_stroke || long_extra_stroke {
         measured.min(MISCOUNTED_CEILING)
+    } else {
+        measured
     };
     let grade = Grade::from_score(overall);
 
@@ -1945,6 +1974,38 @@ mod tests {
         for report in grade_both_ways('王', &attempt) {
             assert!(report.overall < 75.0, "{:.1}", report.overall);
             assert_eq!(report.grade, Grade::Fair, "{:.1}", report.overall);
+        }
+    }
+
+    #[test]
+    fn a_short_slip_of_the_pen_is_penalised_but_not_held_at_the_ceiling() {
+        // A dash that survives the tap filter but is far shorter than any real
+        // stroke: a slip, not a stroke of another character. 黧 is the case
+        // that matters most, since its tap filter stops at 2 design units.
+        for ch in ['王', '黧'] {
+            let reference = character(ch);
+            let n_ref = reference.medians.len();
+            for length in [13.0, 30.0] {
+                let mut attempt = reference.medians.clone();
+                attempt.push(line((60.0, 980.0), (60.0 + length, 980.0), 6));
+                for report in grade_both_ways(ch, &attempt) {
+                    assert_eq!(report.stray_strokes, 0, "{ch}: the dash is kept");
+                    assert!(!report.count_ok && !report.legible, "{ch}");
+                    // It still costs its share of every measure...
+                    let share = 100.0 * n_ref as f32 / (n_ref + 1) as f32;
+                    assert!(
+                        (report.overall - share).abs() < 0.5,
+                        "{ch} with a {length}-unit dash scored {:.1}, not {share:.1}",
+                        report.overall
+                    );
+                    // ...and nothing more.
+                    assert!(
+                        report.overall > MISCOUNTED_CEILING,
+                        "{ch} with a {length}-unit dash was held at {:.1}",
+                        report.overall
+                    );
+                }
+            }
         }
     }
 

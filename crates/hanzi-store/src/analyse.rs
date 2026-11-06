@@ -186,8 +186,8 @@ pub fn analyse(attempts: &[LoggedAttempt]) -> AttemptAnalysis {
                 + HEADLINE_POSITION * measures.position
                 + HEADLINE_ORDER * measures.order
                 + HEADLINE_INK * measures.ink);
-        // An attempt with the wrong stroke count is held at the grader's ceiling,
-        // and the measures do not record the count. A score exactly at the ceiling
+        // An attempt with a missing or a full-length extra stroke is held at the
+        // grader's ceiling, and the measures do not record the strokes. A score exactly at the ceiling
         // over measures that weigh more is that rule at work, not a deviation;
         // anywhere else the weights alone must reproduce the score.
         let rebuilt = if attempt.score == MISCOUNTED_CEILING {
