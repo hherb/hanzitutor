@@ -9,6 +9,7 @@ import {
   hostOf,
   reviewHeadline,
   settingsNote,
+  settingsStayOpen,
 } from "./model";
 import type { ModelReview, ModelStatus, ModelVerdict } from "./types";
 
@@ -18,6 +19,7 @@ const status = (over: Partial<ModelStatus> = {}): ModelStatus => ({
   keySet: true,
   configured: true,
   warning: null,
+  keyNotice: null,
   ...over,
 });
 
@@ -116,5 +118,27 @@ describe("failureLine", () => {
       "Incorrect API key provided",
     );
     expect(failureLine("   ")).toBe("The model check did not finish.");
+  });
+});
+
+describe("settingsStayOpen", () => {
+  it("closes the settings once a save has left something to send", () => {
+    expect(settingsStayOpen(status())).toBe(false);
+  });
+
+  it("keeps them open while nothing is configured", () => {
+    expect(settingsStayOpen(status({ configured: false }))).toBe(true);
+  });
+
+  it("keeps them open when a save left the key behind, so the learner can type the new one", () => {
+    // Rust drops a stored key when the endpoint moves to another host, and says so;
+    // the field that asks for the key is the one place that sentence is any use.
+    const moved = status({
+      endpoint: "http://192.168.1.20:11434/v1",
+      keySet: false,
+      keyNotice:
+        "the saved key was for api.openai.com and has not been kept for 192.168.1.20:11434: enter the key for the new endpoint, if it needs one",
+    });
+    expect(settingsStayOpen(moved)).toBe(true);
   });
 });

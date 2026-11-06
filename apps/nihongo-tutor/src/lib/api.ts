@@ -534,9 +534,12 @@ export function modelStatus(): Promise<ModelStatus> {
  *
  * `key` of `null` means **leave the stored key alone**: the field shows a placeholder
  * rather than the secret, so an untouched field must not clear it. An empty string is
- * the request to forget it. It rejects only an address it cannot use: settings that
- * were accepted but could not be written resolve as the status with `warning` set,
- * because this session uses them either way.
+ * the request to forget it. A stored key is kept only while the endpoint keeps its
+ * scheme, host and port: one left behind by a new address resolves with `keyNotice`
+ * set. It rejects only an address it cannot use, or a key that would go over plain
+ * `http://` to a host that is neither this machine nor the local network: settings
+ * that were accepted but could not be written resolve as the status with `warning`
+ * set, because this session uses them either way.
  */
 export function saveModelSettings(
   endpoint: string,

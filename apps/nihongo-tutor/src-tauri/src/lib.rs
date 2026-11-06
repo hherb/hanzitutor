@@ -929,6 +929,7 @@ impl AppState {
             key_set: settings.key.as_deref().is_some_and(|key| !key.trim().is_empty()),
             configured: settings.configured(),
             warning: store.notice(),
+            key_notice: None,
         }
     }
 
@@ -937,13 +938,17 @@ impl AppState {
     /// `key` of `None` means **leave the stored key alone**, which is what the screen
     /// sends when the learner did not retype it: the field shows a placeholder rather
     /// than the secret, so an empty field is not a request to forget it. `Some("")`
-    /// is that request, and is how a key is removed.
+    /// is that request, and is how a key is removed. "Alone" holds only while the
+    /// endpoint keeps its origin: a stored key does not follow the address to another
+    /// scheme, host or port, and the status's `key_notice` says it was left behind
+    /// (`crate::model::settings_to_save` has the rule).
     ///
     /// The address is validated here rather than at the first sentence: a scheme this
-    /// client cannot speak is a typo worth hearing about while the learner is looking
-    /// at the field they typed it into. That is the only error: settings that were
-    /// accepted but could not be written come back as the status, with `warning`
-    /// saying so, because this session is using them either way.
+    /// client cannot speak, or a key that would cross the internet over plain
+    /// `http://`, is worth hearing about while the learner is looking at the field they
+    /// typed it into. That is the only error, and it leaves the stored settings as they
+    /// were: settings that were accepted but could not be written come back as the
+    /// status, with `warning` saying so, because this session is using them either way.
     pub fn save_model_settings(
         &self,
         endpoint: &str,
@@ -954,18 +959,8 @@ impl AppState {
             .model
             .lock()
             .expect("the model store is not poisoned");
-        let stored = store.settings().key.clone();
-        let settings = crate::model::ModelSettings {
-            endpoint: endpoint.trim().to_string(),
-            model: model.trim().to_string(),
-            key: match key {
-                Some(typed) => {
-                    let typed = typed.trim().to_string();
-                    (!typed.is_empty()).then_some(typed)
-                }
-                None => stored,
-            },
-        };
+        let (settings, key_notice) =
+            crate::model::settings_to_save(store.settings(), endpoint, model, key);
         settings.validate()?;
         // The status is built from the settings in hand rather than by asking
         // `model_status`, which would take this same lock again — `std::sync::Mutex` is
@@ -977,6 +972,7 @@ impl AppState {
             key_set: settings.key.is_some(),
             configured: settings.configured(),
             warning: None,
+            key_notice,
         };
         // A failed write is a warning on the status rather than an error instead of
         // it: the settings are this session's from here on, and an error would leave
@@ -1821,6 +1817,11 @@ pub struct ModelStatus {
     /// this session, or did not take the settings just saved. Never the key, and
     /// never a reason to hide the fields.
     pub warning: Option<String>,
+    /// Set on a save that left the stored key behind, because the endpoint moved to a
+    /// different scheme, host or port and no key was typed with it: the sentence asks
+    /// the learner to enter the key for the new endpoint. Said by that save alone —
+    /// `model_status` never sets it — and never the key.
+    pub key_notice: Option<String>,
 }
 
 /// A yōon digraph.
@@ -2662,58 +2663,20 @@ fn save_model_settings(
 
 /// Ask the configured model to check a sentence of the learner's own.
 ///
-/// The whole call is short by design: read the settings and the pattern on this thread,
-/// then do the blocking HTTP request on a thread of the runtime's own, so a model that
-/// takes a minute to answer cannot hold up the window. Nothing is written anywhere —
-/// the answer is handed back, shown, and forgotten (invariant 43).
+/// The whole call is `AppState::check_sentence` — the path the tests drive, over the
+/// real client — on a thread of the runtime's own, so a model that takes a minute to
+/// answer cannot hold up the window. The app handle is what crosses to that thread:
+/// it is `'static`, where the `State` a command is lent is not, and the state is
+/// looked up again on the other side. Nothing is written anywhere — the answer is
+/// handed back, shown, and forgotten (invariant 43).
 #[tauri::command]
 async fn check_sentence(
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
     point: String,
     typed: String,
 ) -> Result<crate::model::ModelVerdict, String> {
-    // Everything the request needs is owned before the blocking call, so nothing
-    // borrowed from the app state crosses a thread boundary.
-    let (settings, pattern, reading, sentence) = {
-        let pattern = state
-            .grammar
-            .get(&point)
-            .ok_or_else(|| format!("{point:?} is not a pattern of this course"))?;
-        let sentence = spoken_form(&typed).ok_or_else(|| {
-            "this app could not read that as Japanese, so there is nothing to check".to_string()
-        })?;
-        let settings = state
-            .model
-            .lock()
-            .expect("the model store is not poisoned")
-            .settings()
-            .clone();
-        if !settings.configured() {
-            return Err(
-                "no model is configured yet: set an endpoint and a model name first".to_string(),
-            );
-        }
-        (
-            settings,
-            pattern.pattern.clone(),
-            pattern.reading.clone(),
-            sentence,
-        )
-    };
     tauri::async_runtime::spawn_blocking(move || {
-        let review = crate::model::check(
-            &settings,
-            &pattern,
-            reading.as_deref(),
-            &sentence,
-            &crate::model::UreqHttp::new(),
-        )?;
-        Ok(crate::model::ModelVerdict {
-            review,
-            model: settings.model.clone(),
-            host: settings.host(),
-            sent: crate::model::sent_line(&pattern, &sentence),
-        })
+        app.state::<AppState>().check_sentence(&point, &typed)
     })
     .await
     .map_err(|err| format!("the model check did not finish: {err}"))?
@@ -4506,6 +4469,67 @@ mod tests {
         // And an address this client cannot speak is refused while the learner is
         // looking at the field, rather than at the first sentence.
         assert!(state.save_model_settings("127.0.0.1:1234", "m", None).is_err());
+    }
+
+    /// A stored key belongs to the origin it was typed for: a new address on the same
+    /// scheme, host and port keeps it, and any other drops it and says so — the
+    /// learner who saved an OpenAI key and then typed a LAN address has not sent it
+    /// there by leaving the field blank.
+    #[test]
+    fn a_saved_key_stays_with_its_endpoints_origin_and_the_screen_is_told_when_it_does_not() {
+        let state = state();
+        state
+            .save_model_settings(
+                "https://api.openai.com/v1",
+                "gpt-4o-mini",
+                Some("sk-openai".to_string()),
+            )
+            .expect("saves");
+
+        let same = state
+            .save_model_settings("https://api.openai.com/v1/", "gpt-4o", None)
+            .expect("saves");
+        assert!(same.key_set, "the same origin keeps the key");
+        assert_eq!(same.key_notice, None);
+
+        let moved = state
+            .save_model_settings("http://192.168.1.20:11434/v1", "llama3.1", None)
+            .expect("saves");
+        assert!(
+            !moved.key_set,
+            "the key followed the endpoint to another host"
+        );
+        let notice = moved.key_notice.as_deref().expect("the screen is told");
+        assert!(notice.contains("api.openai.com"), "{notice}");
+        assert!(notice.contains("enter the key"), "{notice}");
+        assert_eq!(state.model.lock().expect("the store").settings().key, None);
+        assert_eq!(
+            state.model_status().key_notice,
+            None,
+            "said on the save, not on every status"
+        );
+
+        // And a key is not sent in the clear to the internet: refused at the save, with
+        // the settings in hand left as they were.
+        let error = state
+            .save_model_settings(
+                "http://api.example.com/v1",
+                "m",
+                Some("sk-other".to_string()),
+            )
+            .unwrap_err();
+        assert!(error.contains("https://"), "{error}");
+        assert_eq!(
+            state.model_status().endpoint,
+            "http://192.168.1.20:11434/v1"
+        );
+
+        // The command's own path refuses the same way, with no socket opened.
+        let unconfigured = AppState::load();
+        let error = unconfigured
+            .check_sentence("wa", "これは本です。")
+            .unwrap_err();
+        assert!(error.contains("no model is configured"), "{error}");
     }
 
     /// The check sends the pattern and the learner's own sentence, in the form the app

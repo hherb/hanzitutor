@@ -44,9 +44,14 @@
 
 	  The exception is deliberately the **narrow** one. `NSAllowsLocalNetworking`
 	  permits plain HTTP to local hosts — unqualified names, `.local` and the private
-	  address ranges — while leaving ATS in force for everything else, so an
-	  internet endpoint is still required to be HTTPS. `NSAllowsArbitraryLoads` would
-	  have been the blunt version, and it is not here.
+	  address ranges — while leaving ATS in force for everything else.
+	  `NSAllowsArbitraryLoads` would have been the blunt version, and it is not here.
+
+	  ATS is not what keeps a key off plain HTTP, though: it governs Apple's own URL
+	  loading, and the model client (`ureq`) opens its own sockets, which ATS never
+	  sees. That rule is the app's — `crate::model::key_may_go_to` — and it is the
+	  same on every platform: a key goes over https://, or over http:// only to this
+	  machine or the local network.
 
 	  `NSLocalNetworkUsageDescription` is the string iOS 14 and later shows in the
 	  one-time "allow this app to find devices on your local network" prompt. It is

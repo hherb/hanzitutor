@@ -2226,7 +2226,18 @@ fn the_model_settings_cross_without_the_key_and_with_the_shape_the_screen_reads(
     let status = serde_json::to_value(state.model_status()).expect("serialises");
     assert_eq!(
         keys(&status),
-        vec!["configured", "endpoint", "keySet", "model", "warning"]
+        vec![
+            "configured",
+            "endpoint",
+            "keyNotice",
+            "keySet",
+            "model",
+            "warning"
+        ]
+    );
+    assert!(
+        status["keyNotice"].is_null(),
+        "there is no stored key for a new address to have dropped"
     );
     assert!(
         status["warning"].is_null(),
@@ -2276,6 +2287,48 @@ fn the_model_settings_cross_without_the_key_and_with_the_shape_the_screen_reads(
     // the field, and the six-file rule is untouched by any of it.
     assert!(state.save_model_settings("127.0.0.1:11434", "llama3.1", None).is_err());
     assert!(state.save_model_settings("", "llama3.1", None).is_err());
+}
+
+#[test]
+fn a_stored_key_left_behind_by_a_new_host_crosses_as_the_sentence_the_screen_shows() {
+    // `GrammarComposition.svelte` keeps the settings open and shows `keyNotice` beside
+    // the key field: a key typed for one host is not sent to another because the
+    // learner left the field blank.
+    let state = state();
+    state
+        .save_model_settings(
+            "https://api.openai.com/v1",
+            "gpt-4o-mini",
+            Some("sk-typed-once".to_string()),
+        )
+        .expect("saves");
+    let kept = serde_json::to_value(
+        state
+            .save_model_settings("https://api.openai.com/v1", "gpt-4o", None)
+            .expect("saves"),
+    )
+    .expect("serialises");
+    assert_eq!(kept["keySet"], true, "the same origin keeps it");
+    assert!(kept["keyNotice"].is_null(), "{kept}");
+
+    let moved = serde_json::to_value(
+        state
+            .save_model_settings("http://127.0.0.1:11434/v1", "llama3.1", None)
+            .expect("saves"),
+    )
+    .expect("serialises");
+    assert_eq!(moved["keySet"], false, "the key did not follow the address");
+    let notice = moved["keyNotice"].as_str().expect("the screen is told why");
+    assert!(notice.contains("api.openai.com"), "{notice}");
+    assert!(notice.contains("enter the key"), "{notice}");
+    assert!(!moved.to_string().contains("sk-typed-once"), "{moved}");
+
+    // A key for a public host over plain http is refused while the learner is looking
+    // at the field, rather than sent at the first sentence.
+    let error = state
+        .save_model_settings("http://api.example.com/v1", "m", Some("sk-x".to_string()))
+        .unwrap_err();
+    assert!(error.contains("https://"), "{error}");
 }
 
 #[test]

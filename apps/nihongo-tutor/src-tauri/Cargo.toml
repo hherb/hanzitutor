@@ -34,3 +34,8 @@ hanzi-voice = { path = "../../../crates/hanzi-voice", default-features = false }
 # root certificates bundled by `webpki-roots` — so no system certificate store is read,
 # which matters under a sandbox and on the mobile builds alike.
 ureq = "2"
+# The endpoint parsed the way `ureq` will parse it — `ureq` is built on this crate —
+# so the decisions made before a request (whose origin a stored key belongs to, and
+# whether a host is this machine or the local network) are about the same host the
+# socket then opens, and a `user@host` or a `#` cannot make the two disagree.
+url = "2"

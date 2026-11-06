@@ -31,6 +31,18 @@ export function settingsNote(): string {
   return "The endpoint, the model name and any key are kept in this app's own data directory, in a file only you can read. A local server needs no key. Nothing is sent anywhere until you press the button below.";
 }
 
+/**
+ * Whether the settings stay open after a save.
+ *
+ * They close once there is something to send — the fold switches to what it will send,
+ * which is the confirmation — except when the save left the stored key behind because
+ * the endpoint moved to another host. Then the key field is where the learner has to
+ * be, so the fields stay drawn with the sentence that says why.
+ */
+export function settingsStayOpen(status: ModelStatus): boolean {
+  return !status.configured || status.keyNotice !== null;
+}
+
 /** What leaves the machine, before it does. */
 export function disclosureLine(status: ModelStatus, pattern: string): string {
   const host = hostOf(status.endpoint);
