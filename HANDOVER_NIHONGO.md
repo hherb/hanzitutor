@@ -620,8 +620,10 @@ crates/nihongo-core/              the data layer. No UI, no Tauri.
                                   which vocabulary word a token is (`lexeme`, so
                                   食べた links to 食べる) and which UniDic field to
                                   read a reading from (the base form's `reading` for
-                                  an uninflected word, the surface's
-                                  `phonological_surface_form` for an inflected one).
+                                  an uninflected word, and for an inflected one the
+                                  base form's reading re-spelled with the surface's
+                                  okurigana, checked against
+                                  `phonological_surface_form` — see §14).
                                   Behind `tokenize`
   src/readings.rs        (386)    Hepburn and Kunrei-shiki, and the enumeration
                                   hiragana_with_readings the input table is built from
@@ -3516,6 +3518,25 @@ and use `reading` when they are equal, the pronunciation field when they are not
 and to let the **course's own reading win** when the token is written exactly as the
 vocabulary word is, so a passage saying 私 cannot disagree with the card behind it
 about わたし and わたくし. `tests/passages_artifact.rs` asserts all four rows.
+
+**And the pronunciation field was wrong too, in the one way the table above already
+shows: it writes long vowels as ー.** Taking it for every inflected token drew
+歌おう as うたおー, 行こう as いこー, 大きく as おーきく, 聞い as きー and 放っ as ほーっ —
+28 tokens in the shipped phrases — and, by the same rule, 続け as つずけ and 片づけ as
+かたずけ in 9 more, because づ is pronounced ず. Fuller UniDic releases carry the
+surface in kana (仮名形出現形, the field that would answer this directly), but
+`unidic-mecab-2.1.2`, the dictionary `lindera-unidic` builds, has 21 columns and no
+such field. So the reading of an inflected token is now **spelled** from what the
+dictionary does have: the base form's `reading` with the base form's kana tail taken
+off and the surface's put on — 歌う is ウタウ, its tail after 歌 is う, so 歌おう is
+うた + おう — and that spelling is used only if it **says** what
+`phonological_surface_form` says, kana for kana, with ー standing for a vowel and
+づ/ぢ for ず/じ (`reading_from_fields` in `segment.rs`). The check is what keeps 来た
+at きた: the stem of くる spells く, the pronunciation says キ, and the pronunciation
+wins, as it did before. Regenerating moved **37 token readings** and nothing else —
+the same 1,400 phrases, bands, word links and tokens — and the passages and the
+grammar notes did not move at all. `tests/phrases_artifact.rs` asserts that no reading
+holds ー unless the surface or the linked word's card reading does.
 
 **And that last clause was wrong for the units a number counts, which is the one
 thing in this section that had to be corrected rather than measured first.** "The

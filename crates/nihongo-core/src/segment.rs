@@ -207,6 +207,25 @@ fn context_may_choose(text: &str, reading: &str, counted: bool) -> bool {
 /// The reading the analyser gives a token in the sentence it came from, in
 /// hiragana, or `None` when it has none.
 ///
+/// The fields are read here and the decision is [`reading_from_fields`]'s, which
+/// is where the reasoning is and what the tests reach without a dictionary.
+fn analyser_reading(token: &mut Token<'_>) -> Option<String> {
+    let surface = token.surface.to_string();
+    let orthographic_surface = token.get("orthographic_surface_form").map(str::to_string);
+    let orthographic_base = token.get("orthographic_base_form").map(str::to_string);
+    let reading = token.get("reading").map(str::to_string);
+    let pronunciation = token.get("phonological_surface_form").map(str::to_string);
+    reading_from_fields(
+        &surface,
+        orthographic_surface.as_deref(),
+        orthographic_base.as_deref(),
+        reading.as_deref(),
+        pronunciation.as_deref(),
+    )
+}
+
+/// The reading of a token, in hiragana, from the UniDic fields that describe it.
+///
 /// **Which field to read is not obvious, and getting it wrong renders the wrong
 /// ruby.** UniDic publishes two candidates and neither is right on its own:
 ///
@@ -220,31 +239,118 @@ fn context_may_choose(text: &str, reading: &str, counted: bool) -> bool {
 ///   キョー and は gives ワ, which is not — は is written は and read は however it
 ///   is pronounced.
 ///
-/// So the rule follows from that: when the surface **is** the base form, take
-/// `reading`; when it is inflected, take the surface's pronunciation. UniDic says
-/// which is which through `orthographic_surface_form` and
-/// `orthographic_base_form`, which this compares rather than inferring from the
-/// part of speech.
+/// So when the surface **is** the base form, `reading` is the answer. UniDic says
+/// which is which through `orthographic_surface_form` and `orthographic_base_form`,
+/// which this compares rather than inferring from the part of speech.
+///
+/// **When it is inflected, the reading is spelled out of the base form's.** The
+/// pronunciation was the answer here once, and it drew 歌おう as うたおー, 大きく as
+/// おーきく and 聞い as きー: pronunciation notation writes every long vowel as ー,
+/// and whether that ー is spelled う or お is exactly what it does not say. Fuller
+/// UniDic releases carry the surface in kana (仮名形出現形), but
+/// `unidic-mecab-2.1.2` — the dictionary `lindera-unidic` builds — has no such
+/// field, so the spelling is put together from what it does have. The base form
+/// and the surface share a stem, 歌 in 歌う and 歌おう; the base form's reading ends
+/// in the base form's own kana tail, ウタ + ウ; and swapping that tail for the
+/// surface's gives うた + おう. See [`spelled_inflection`].
+///
+/// That spelling is then **checked against the pronunciation**, sound for sound,
+/// with ー allowed to stand for a vowel (see [`spells`]). The check is what keeps a
+/// verb whose kanji changes its reading as it inflects from being spelled wrong:
+/// 来た is きた, and the stem of くる spells く, which the pronunciation キ refuses.
+/// Where the check fails, or the shapes do not line up at all, the pronunciation is
+/// the reading, as it was before.
 ///
 /// UniDic writes `*` for a reading it does not have, and katakana for the ones it
 /// does, so the result is folded to hiragana — the artifacts' readings and their
 /// furigana are hiragana throughout, and a screen should not have to know which of
 /// the two it is looking at.
-fn analyser_reading(token: &mut Token<'_>) -> Option<String> {
-    let surface_form = token.get("orthographic_surface_form").map(str::to_string);
-    let base_form = token.get("orthographic_base_form").map(str::to_string);
-    let inflected = matches!((&surface_form, &base_form), (Some(surface), Some(base)) if surface != base);
-    let field = if inflected {
-        "phonological_surface_form"
-    } else {
-        "reading"
-    };
+pub(crate) fn reading_from_fields(
+    surface: &str,
+    orthographic_surface: Option<&str>,
+    orthographic_base: Option<&str>,
+    reading: Option<&str>,
+    pronunciation: Option<&str>,
+) -> Option<String> {
+    let inflected = matches!(
+        (orthographic_surface, orthographic_base),
+        (Some(surface), Some(base)) if surface != base
+    );
+    if !inflected {
+        return known(reading).map(normalise_to_hiragana);
+    }
 
-    token
-        .get(field)
+    let pronounced = known(pronunciation).map(normalise_to_hiragana)?;
+    let spelled = orthographic_base
+        .zip(known(reading))
+        .and_then(|(base, reading)| {
+            spelled_inflection(surface, base, &normalise_to_hiragana(reading))
+        })
+        .filter(|spelled| spells(spelled, &pronounced));
+    Some(spelled.unwrap_or(pronounced))
+}
+
+/// The reading of an inflected `surface`, spelled from its base form and the base
+/// form's reading in hiragana, or `None` when the two do not line up.
+///
+/// The stem is the longest start the surface and the base form share, and what
+/// follows it on either side has to be kana — the okurigana that inflects. The base
+/// form's reading has to end in the base form's tail, and the stem's reading is
+/// what is left when it is taken off: 食べる is たべる, its tail after 食べ is る,
+/// so 食べ reads たべ and 食べよう reads たべ + よう.
+fn spelled_inflection(surface: &str, base: &str, base_reading: &str) -> Option<String> {
+    let stem: usize = surface
+        .chars()
+        .zip(base.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum();
+    let (surface_tail, base_tail) = (&surface[stem..], &base[stem..]);
+    if stem == 0 || !all_kana(surface_tail) || !all_kana(base_tail) {
+        return None;
+    }
+    let stem_reading = base_reading.strip_suffix(normalise_to_hiragana(base_tail).as_str())?;
+    if stem_reading.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{stem_reading}{}",
+        normalise_to_hiragana(surface_tail)
+    ))
+}
+
+/// Whether a text is kana throughout, as okurigana is. The empty tail of a surface
+/// that is all stem — 小さ in 小さすぎる — counts.
+fn all_kana(text: &str) -> bool {
+    text.chars()
+        .all(|ch| matches!(ch as u32, 0x3041..=0x309F | 0x30A1..=0x30FA | 0x30FC))
+}
+
+/// Whether `spelled` is a spelling of what `pronounced` says, both in hiragana.
+///
+/// Kana for kana, with the three differences between spelling and pronunciation
+/// that can occur inside a word: ー stands for the vowel it lengthens, so おー is
+/// おう or おお; づ is pronounced ず and ぢ is pronounced じ. Anything else — a
+/// different consonant, a different length — is a different word, and the spelling
+/// is refused.
+fn spells(spelled: &str, pronounced: &str) -> bool {
+    spelled.chars().count() == pronounced.chars().count()
+        && spelled
+            .chars()
+            .zip(pronounced.chars())
+            .all(|(written, said)| {
+                written == said
+                    || (said == 'ー' && "あいうえお".contains(written))
+                    || (written, said) == ('づ', 'ず')
+                    || (written, said) == ('ぢ', 'じ')
+            })
+}
+
+/// A field's value, or `None` for the `*` UniDic writes where it has none.
+fn known(field: Option<&str>) -> Option<&str> {
+    field
         .map(str::trim)
-        .filter(|reading| !reading.is_empty() && *reading != "*")
-        .map(normalise_to_hiragana)
+        .filter(|value| !value.is_empty() && *value != "*")
 }
 
 /// The reading to draw over a token, in hiragana.
@@ -290,7 +396,7 @@ fn reading_for(
 
 #[cfg(test)]
 mod tests {
-    use super::{context_may_choose, is_numeral_surface};
+    use super::{context_may_choose, is_numeral_surface, reading_from_fields};
 
     /// What a counter may follow, and what it may not.
     ///
@@ -331,5 +437,120 @@ mod tests {
         assert!(!context_may_choose("四", "よん", false), "四月一日です is しがつ");
         assert!(!context_may_choose("寒気", "かんき", false), "寒気がする is さむけ");
         assert!(!context_may_choose("市場", "しじょう", false), "市場に行く is いちば");
+    }
+
+    /// The reading of an inflected token in UniDic's own words: its surface, then
+    /// the fields `orthographic_surface_form`, `orthographic_base_form`, `reading`
+    /// and `phonological_surface_form`, copied from the rows of
+    /// `unidic-mecab-2.1.2/lex.csv` the shipped phrases segmented to.
+    fn inflected(surface: &str, base: &str, reading: &str, pronunciation: &str) -> Option<String> {
+        reading_from_fields(
+            surface,
+            Some(surface),
+            Some(base),
+            Some(reading),
+            Some(pronunciation),
+        )
+    }
+
+    /// **A reading is spelled, not pronounced.** These are the shapes the shipped
+    /// phrases drew with ー — 歌おう as うたおー, 大きく as おーきく — because the
+    /// pronunciation field writes every long vowel as ー, and おう and おお are two
+    /// spellings of the same sound. The base form's reading is what knows which.
+    #[test]
+    fn an_inflected_reading_spells_its_long_vowels() {
+        // The volitional: おう and よう, pronounced おー and よー.
+        assert_eq!(
+            inflected("歌おう", "歌う", "ウタウ", "ウタオー").as_deref(),
+            Some("うたおう")
+        );
+        assert_eq!(
+            inflected("行こう", "行く", "イク", "イコー").as_deref(),
+            Some("いこう")
+        );
+        assert_eq!(
+            inflected("食べよう", "食べる", "タベル", "タベヨー").as_deref(),
+            Some("たべよう")
+        );
+        // The い-onbin, where き + い is pronounced きー.
+        assert_eq!(
+            inflected("聞い", "聞く", "キク", "キー").as_deref(),
+            Some("きい")
+        );
+        assert_eq!(
+            inflected("言い", "言う", "イウ", "イー").as_deref(),
+            Some("いい")
+        );
+        // And the long vowel inside the stem, which is spelled おお in one word and
+        // おう in another: no rule on the sound alone can tell 大き from 放っ.
+        assert_eq!(
+            inflected("大きく", "大きい", "オオキイ", "オーキク").as_deref(),
+            Some("おおきく")
+        );
+        assert_eq!(
+            inflected("放っ", "放る", "ホウル", "ホーッ").as_deref(),
+            Some("ほうっ")
+        );
+        assert_eq!(
+            inflected("小さ", "小さい", "チイサイ", "チーサ").as_deref(),
+            Some("ちいさ")
+        );
+        assert_eq!(
+            inflected("遠", "遠い", "トオイ", "トー").as_deref(),
+            Some("とお")
+        );
+    }
+
+    /// The other difference between the two notations that occurs inside a word:
+    /// づ is pronounced ず, so the pronunciation field drew 続け as つずけ.
+    #[test]
+    fn an_inflected_reading_spells_its_zu_the_way_the_word_does() {
+        assert_eq!(
+            inflected("続け", "続ける", "ツヅケル", "ツズケ").as_deref(),
+            Some("つづけ")
+        );
+    }
+
+    /// An inflected reading with no long vowel in it is what it always was, and a
+    /// verb whose kanji changes its reading as it inflects is read the way the
+    /// sentence says it. 来る is the one: 来た is きた, which no stem of くる spells,
+    /// so the pronunciation is the answer — and it has no ー to be wrong about.
+    #[test]
+    fn an_inflected_reading_the_base_form_cannot_spell_is_the_pronounced_one() {
+        assert_eq!(
+            inflected("行き", "行く", "イク", "イキ").as_deref(),
+            Some("いき")
+        );
+        assert_eq!(
+            inflected("食べ", "食べる", "タベル", "タベ").as_deref(),
+            Some("たべ")
+        );
+        assert_eq!(inflected("来", "来る", "クル", "キ").as_deref(), Some("き"));
+        assert_eq!(inflected("来", "来る", "クル", "コ").as_deref(), Some("こ"));
+    }
+
+    /// A token that is its own base form takes `reading`, which is the conventional
+    /// spelling: 今日 is きょう although it is pronounced きょー, and は is は.
+    #[test]
+    fn an_uninflected_reading_is_the_dictionary_one() {
+        let reading = |surface: &str, reading: &str, pronunciation: &str| {
+            reading_from_fields(
+                surface,
+                Some(surface),
+                Some(surface),
+                Some(reading),
+                Some(pronunciation),
+            )
+        };
+        assert_eq!(
+            reading("今日", "キョウ", "キョー").as_deref(),
+            Some("きょう")
+        );
+        assert_eq!(reading("は", "ハ", "ワ").as_deref(), Some("は"));
+        assert_eq!(
+            reading("珈琲", "コーヒー", "コーヒー").as_deref(),
+            Some("こーひー")
+        );
+        assert_eq!(reading("何", "*", "*"), None);
     }
 }
