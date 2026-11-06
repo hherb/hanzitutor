@@ -46,6 +46,18 @@ describe("hostOf", () => {
     expect(hostOf("http://127.0.0.1:1234/v1/")).toBe("127.0.0.1:1234");
     expect(hostOf("")).toBe("");
   });
+
+  it("names the host the request goes to, never a name or password before an @", () => {
+    expect(hostOf("https://api.openai.com@evil.example/v1")).toBe("evil.example");
+    expect(hostOf("https://user:hunter2@host.example/v1")).toBe("host.example");
+    expect(hostOf("https://API.OpenAI.com:443/v1")).toBe("api.openai.com");
+    expect(hostOf("http://[::1]:8080/v1")).toBe("[::1]:8080");
+  });
+
+  it("falls back to the text when it is not an address at all", () => {
+    expect(hostOf("not an address at all")).toBe("not an address at all");
+    expect(hostOf("127.0.0.1:1234/v1")).toBe("127.0.0.1:1234");
+  });
 });
 
 describe("settingsNote", () => {

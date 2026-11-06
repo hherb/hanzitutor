@@ -2329,6 +2329,17 @@ fn a_stored_key_left_behind_by_a_new_host_crosses_as_the_sentence_the_screen_sho
         .save_model_settings("http://api.example.com/v1", "m", Some("sk-x".to_string()))
         .unwrap_err();
     assert!(error.contains("https://"), "{error}");
+
+    // And a key typed into the address instead of the key field is refused too: the
+    // client would send it as a Basic credential, in the clear.
+    let error = state
+        .save_model_settings("http://sk-x@api.example.com/v1", "m", None)
+        .unwrap_err();
+    assert!(error.contains("key field"), "{error}");
+    assert!(
+        !error.contains("sk-x"),
+        "the refusal echoed the key: {error}"
+    );
 }
 
 #[test]

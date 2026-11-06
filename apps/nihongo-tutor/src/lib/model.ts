@@ -49,9 +49,26 @@ export function disclosureLine(status: ModelStatus, pattern: string): string {
   return `Sends the pattern ${pattern} and your sentence — in the form this app reads it back — to ${host} (${status.model}). Nothing else: no notes, no examples, and nothing is kept.`;
 }
 
-/** The endpoint's host, for a line that names where a sentence goes. */
+/**
+ * The endpoint's host, for a line that names where a sentence goes.
+ *
+ * Parsed as a URL first, so the host named is the one the request goes to: in
+ * `https://api.openai.com@evil.example` that is `evil.example`, and a name or password
+ * before an `@` is never drawn. The port is named only when it is not the scheme's own,
+ * as `URL.host` does. Text that is not an http(s) address is cut by hand, as before,
+ * because the line still has to say something. Rust's `ModelSettings::host` holds the
+ * same rule for the attribution it sends.
+ */
 export function hostOf(endpoint: string): string {
   const trimmed = endpoint.trim();
+  try {
+    const parsed = new URL(trimmed);
+    if ((parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.host !== "") {
+      return parsed.host;
+    }
+  } catch {
+    // Not an address: fall through to the text itself.
+  }
   const afterScheme = trimmed.includes("://") ? trimmed.split("://")[1] : trimmed;
   const host = afterScheme.split("/")[0];
   return host === "" ? trimmed : host;
