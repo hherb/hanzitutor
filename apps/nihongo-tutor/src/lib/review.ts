@@ -68,15 +68,27 @@ export function upcomingLabel(due: string, now: string): string {
 /**
  * What to say about a graded attempt's schedule, or null when there is nothing.
  *
- * The three cases — counted, not counted because it was not due, and an attempt
- * that could not be saved — are a rule about the schedule rather than about the
- * drawing, so they are decided here and the panel only gives them a colour.
+ * The four cases — counted, traced and so not counted, not counted because it
+ * was not due, and an attempt that could not be saved — are a rule about the
+ * schedule rather than about the drawing, so they are decided here and the panel
+ * only gives them a colour.
  */
 export function scheduleNote(
-  graded: { scheduled: boolean; nextDue: string | null; warning: string | null },
+  graded: {
+    scheduled: boolean;
+    traced?: boolean;
+    nextDue: string | null;
+    warning: string | null;
+  },
   now: string,
 ): { tone: "ok" | "plain" | "bad"; text: string } | null {
   if (graded.warning) return { tone: "bad", text: graded.warning };
+  if (graded.traced) {
+    return {
+      tone: "plain",
+      text: "Traced — not counted as a review. Turn the hint off and write it from memory for it to count.",
+    };
+  }
   if (!graded.scheduled) {
     return {
       tone: "plain",
@@ -88,6 +100,48 @@ export function scheduleNote(
     tone: "ok",
     text: `Saved for review — next ${upcomingLabel(graded.nextDue, now)}.`,
   };
+}
+
+/**
+ * Which script a kana belongs to, read from its Unicode block, or null for a
+ * character that is not a kana.
+ *
+ * The review prompt for a kana is its sound, and か and カ share one, so the
+ * prompt has to name the script for the question to have a single answer. ー sits
+ * in the katakana block and is answered as katakana, which is where this app
+ * teaches it.
+ */
+export function kanaScript(ch: string): "hiragana" | "katakana" | null {
+  const code = ch.codePointAt(0);
+  if (code === undefined) return null;
+  if (code >= 0x3041 && code <= 0x309f) return "hiragana";
+  if ((code >= 0x30a0 && code <= 0x30ff) || (code >= 0x31f0 && code <= 0x31ff)) {
+    return "katakana";
+  }
+  return null;
+}
+
+/**
+ * What the Review screen shows for a due character: the prompt, and the
+ * character itself only once the attempt has been graded.
+ *
+ * A review is recall. Rust sends a prompt that does not contain the character
+ * (`nihongo_core::review`'s `hint_for`: a kana's sound, a kanji's meaning, a
+ * radical's number), and printing the character above the board, or in the
+ * queue, would turn the review into copying it. After the verdict the character
+ * is the answer, and showing it then is how the learner checks themselves.
+ */
+export function reviewPrompt(
+  item: DueItem,
+  graded: boolean,
+): { glyph: string | null; hint: string } {
+  const glyph = graded ? item.ch : null;
+  if (item.kind === "kana") {
+    const script = kanaScript(item.ch);
+    return { glyph, hint: script ? `${item.hint} · ${script}` : item.hint };
+  }
+  if (item.kind === "kanji") return { glyph, hint: `${item.hint} · kanji` };
+  return { glyph, hint: item.hint };
 }
 
 /**

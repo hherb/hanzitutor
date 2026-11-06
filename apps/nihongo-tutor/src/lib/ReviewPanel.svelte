@@ -34,14 +34,32 @@
    * to go back to — and `board.ts`'s `afterGradeInQueue` is the rule. The next
    * character is asked of the **refreshed** queue: grading reloads it, and an
    * attempt that counted as a review takes its character out of the due list.
+   *
+   * ## Recall, not copying
+   *
+   * A review asks for the character from its prompt alone — a kana's sound and
+   * script, a kanji's meaning, a radical's number (`review.ts`'s `reviewPrompt`
+   * over Rust's `hint_for`). So the character is not printed above the board or
+   * in the queue, and the board has no guide. It appears once the attempt is
+   * graded, as the answer. Two things can still show it before then, and both
+   * make the attempt **traced**, which is graded and never scheduled: the stroke
+   * animation, and a verdict already given on this character (a second try after
+   * seeing the answer is not recall either).
    */
   import KanaCanvas from "./KanaCanvas.svelte";
   import SpeakButton from "./SpeakButton.svelte";
-  import { afterGradeInQueue } from "./board";
+  import { afterGradeInQueue, isTraced } from "./board";
   import { joinedLabel } from "./kana";
   import { courseOf, type Section } from "./nav";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
-  import { hasNextDue, nextDue, overdueLabel, scheduleNote, upcomingLabel } from "./review";
+  import {
+    hasNextDue,
+    nextDue,
+    overdueLabel,
+    reviewPrompt,
+    scheduleNote,
+    upcomingLabel,
+  } from "./review";
   import * as api from "./api";
   import type { Drawable, DueItem, GradeReport, Point, ReviewQueueView } from "./types";
   import type { VoiceStatus } from "./speech";
@@ -74,6 +92,10 @@
   let board = $state<ReturnType<typeof KanaCanvas> | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
+  /** Whether the stroke animation has drawn the character on the board. */
+  let watched = $state(false);
+  /** Whether an attempt on this character has been graded, which shows it. */
+  let answered = $state(false);
 
   async function load() {
     try {
@@ -98,6 +120,8 @@
       joined = [];
       note = null;
       attempt = [];
+      watched = false;
+      answered = false;
       drawn =
         item.kind === "kana"
           ? await api.kana(item.ch)
@@ -124,9 +148,16 @@
     try {
       busy = true;
       error = null;
-      const graded = await api.gradeAttempt(drawn.ch, attempt);
+      // Recall is the rule here: there is no guide, so the attempt is traced only
+      // when the animation, or an earlier verdict, has already shown the character.
+      const graded = await api.gradeAttempt(
+        drawn.ch,
+        attempt,
+        isTraced(false, watched || answered),
+      );
       report = graded.report;
       joined = graded.joined;
+      answered = true;
       note = scheduleNote(graded, new Date().toISOString());
       // The character may have left the due list; the verdict stays up either
       // way, so the learner sees what they earned before the list moves.
@@ -204,9 +235,10 @@
       </p>
     {/if}
     <p class="hint">
-      Every character graded on a board comes back here on SM-2's schedule. A
-      character that is new or due counts as a review; writing it again before
-      then is practice, and the schedule does not move.
+      Every character graded on a board comes back here on SM-2's schedule. Write
+      it from the prompt alone: the character is shown once the attempt is graded.
+      An attempt after watching the stroke order is practice, as is writing it
+      again before it is due, and the schedule does not move.
     </p>
   </header>
 
@@ -226,8 +258,9 @@
             class:active={item.ch === chosen?.ch}
             onclick={() => open(item)}
           >
-            <span class="glyph">{item.ch}</span>
-            <span class="what">{item.hint} · {item.kind}</span>
+            <!-- The prompt, never the character: the list is above the board, and
+                 a glyph here would be the answer to the question below it. -->
+            <span class="what">{reviewPrompt(item, false).hint}</span>
             <span class="when">{overdueLabel(item.due, now)}</span>
           </button>
         {/each}
@@ -270,15 +303,25 @@
     </nav>
 
     <section class="practice">
-      {#if drawn}
+      {#if drawn && chosen}
+        {@const prompt = reviewPrompt(chosen, answered)}
         <div class="prompt">
-          <span class="big">{drawn.ch}</span>
-          <span class="reading">{chosen?.hint ?? ""}</span>
+          <span class="big" aria-label={prompt.glyph ? undefined : "the character to write"}
+            >{prompt.glyph ?? "？"}</span
+          >
+          <span class="reading">{prompt.hint}</span>
           <span class="strokes">{drawn.strokeCount}
             {drawn.strokeCount === 1 ? "stroke" : "strokes"}</span>
         </div>
 
-        <KanaCanvas bind:this={board} character={drawn} {report} onchange={onStrokes} />
+        <KanaCanvas
+          bind:this={board}
+          character={drawn}
+          {report}
+          guide={false}
+          onchange={onStrokes}
+          onanimate={() => (watched = true)}
+        />
 
         <div class="actions">
           {#if chosen?.kind === "kana"}
@@ -291,7 +334,12 @@
             -->
             <SpeakButton text={drawn.ch} {voice} />
           {/if}
-          <button onclick={() => board?.animate()}>Show stroke order</button>
+          <button
+            onclick={() => board?.animate()}
+            title="Shows the character — an attempt after it is practice, not a review"
+          >
+            Show stroke order
+          </button>
           <button onclick={() => board?.undo()}>Undo</button>
           <button onclick={() => board?.clear()}>Clear</button>
           {#if after === "next"}
@@ -304,9 +352,11 @@
             <button
               class="primary"
               onclick={() => void advance()}
-              aria-label="Next due character{nextItem ? `: ${nextItem.ch}` : ""}"
+              aria-label="Next due character{nextItem
+                ? `: ${reviewPrompt(nextItem, false).hint}`
+                : ""}"
               title={nextItem
-                ? `On to ${nextItem.ch} — ${nextItem.hint}`
+                ? `On to ${reviewPrompt(nextItem, false).hint}`
                 : "Showing the next due characters"}
             >
               Next
@@ -423,14 +473,9 @@
     text-align: left;
   }
 
-  .due .glyph {
-    font-size: 1.4rem;
-    line-height: 1.2;
-  }
-
   .due .what {
-    font-size: 0.74rem;
-    color: var(--muted);
+    font-size: 0.95rem;
+    line-height: 1.3;
   }
 
   .due .when {

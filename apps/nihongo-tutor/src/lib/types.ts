@@ -997,6 +997,12 @@ export interface GradedAttempt {
   joined: number[][];
   /** True when the character was new or due, so the attempt advanced the schedule. */
   scheduled: boolean;
+  /**
+   * True when the attempt was sent as traced: written over the guide, or after
+   * the stroke animation. It was graded and never reached the schedule, so
+   * `scheduled` is false beside it.
+   */
+  traced: boolean;
   /** When the character comes back, ISO-8601 UTC. */
   nextDue: string | null;
   /**

@@ -15,7 +15,7 @@
    */
   import { untrack } from "svelte";
   import { drawScene, type Scene } from "./render";
-  import { isStroke, pointerToDisplay, sweepAt } from "./board";
+  import { ghostAfterAnimation, isStroke, pointerToDisplay, sweepAt } from "./board";
   import type { Drawable, GradeReport, Point } from "./types";
 
   interface Props {
@@ -224,7 +224,10 @@
       if (elapsed < sweepMs) {
         raf = requestAnimationFrame(step);
       } else {
-        ghostCount = total;
+        // Back to the board's resting state: the whole guide when tracing, and a
+        // blank board in recall, where the animation was a demonstration and not
+        // a copy to write over.
+        ghostCount = ghostAfterAnimation(guide, total);
         sweep = null;
         paint();
       }

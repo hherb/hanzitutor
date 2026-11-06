@@ -144,3 +144,30 @@ export function afterGradeInQueue(graded: boolean, hasNext: boolean): AfterQueue
   if (!graded) return "grade";
   return hasNext ? "next" : "nothing";
 }
+
+/**
+ * Whether an attempt was written with help, and so is practice rather than a
+ * review.
+ *
+ * Two kinds of help put the character in front of the learner: the faint guide
+ * on the board, and the stroke-order animation, which draws the whole character
+ * before the learner starts. Either one turns writing it into copying it, so the
+ * attempt is sent as traced and the schedule leaves the card alone (see the app's
+ * `grade_and_schedule`). Practice stays traced by default because that is how a
+ * new character is learnt; it is the hint toggle that makes an attempt recall.
+ */
+export function isTraced(guide: boolean, watched: boolean): boolean {
+  return guide || watched;
+}
+
+/**
+ * How many reference strokes stay on the board once the stroke animation ends.
+ *
+ * With the guide on that is all of them, which is the board's resting state.
+ * With it off, the animation is a demonstration and the board goes back to blank:
+ * leaving the faint copy up afterwards would turn the attempt that follows into a
+ * trace without the hint toggle saying so.
+ */
+export function ghostAfterAnimation(guide: boolean, total: number): number {
+  return guide ? total : 0;
+}

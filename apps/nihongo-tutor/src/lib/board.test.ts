@@ -3,7 +3,9 @@ import {
   MIN_POINTS,
   afterGrade,
   afterGradeInQueue,
+  ghostAfterAnimation,
   isStroke,
+  isTraced,
   pointerToDisplay,
   sweepAt,
 } from "./board";
@@ -146,5 +148,29 @@ describe("afterGradeInQueue", () => {
     // The queue's end is a state, not the stage's `finish`: there is nowhere to
     // go and nothing to go back to, so the control reads "nothing due".
     expect(afterGradeInQueue(true, false)).toBe("nothing");
+  });
+});
+
+describe("isTraced", () => {
+  it("is false only for an attempt written from memory", () => {
+    expect(isTraced(false, false)).toBe(false);
+  });
+
+  it("is true while the guide is on the board", () => {
+    expect(isTraced(true, false)).toBe(true);
+  });
+
+  it("is true after the stroke animation drew the character, even with the guide off", () => {
+    expect(isTraced(false, true)).toBe(true);
+  });
+});
+
+describe("ghostAfterAnimation", () => {
+  it("leaves the whole guide up when the guide is on", () => {
+    expect(ghostAfterAnimation(true, 3)).toBe(3);
+  });
+
+  it("takes the guide away again in recall", () => {
+    expect(ghostAfterAnimation(false, 3)).toBe(0);
   });
 });

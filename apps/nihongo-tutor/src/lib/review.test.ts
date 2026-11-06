@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { hasNextDue, nextDue, overdueLabel, scheduleNote, upcomingLabel } from "./review";
+import {
+  hasNextDue,
+  kanaScript,
+  nextDue,
+  overdueLabel,
+  reviewPrompt,
+  scheduleNote,
+  upcomingLabel,
+} from "./review";
 import type { DueItem } from "./types";
 
 /**
@@ -123,6 +131,23 @@ describe("scheduleNote", () => {
     expect(note?.text).toContain("could not be saved");
   });
 
+  it("says a traced attempt was not counted, whatever the schedule did not do", () => {
+    const note = scheduleNote(
+      { scheduled: false, traced: true, nextDue: "2026-09-20T09:00:00Z", warning: null },
+      now,
+    );
+    expect(note?.tone).toBe("plain");
+    expect(note?.text).toMatch(/^Traced — not counted as a review/);
+  });
+
+  it("still puts a failed write ahead of a traced attempt", () => {
+    const note = scheduleNote(
+      { scheduled: false, traced: true, nextDue: null, warning: "the schedule could not be opened" },
+      now,
+    );
+    expect(note?.tone).toBe("bad");
+  });
+
   it("has nothing to say about nothing", () => {
     expect(scheduleNote({ scheduled: true, nextDue: null, warning: null }, now)).toEqual({
       tone: "ok",
@@ -186,5 +211,54 @@ describe("hasNextDue", () => {
   it("is false only for a queue with nothing left in it", () => {
     expect(hasNextDue({ items: [due("あ")], due: 1 }, due("あ"))).toBe(false);
     expect(hasNextDue({ items: [], due: 0 }, null)).toBe(false);
+  });
+});
+
+describe("kanaScript", () => {
+  it("tells the two scripts apart by block", () => {
+    expect(kanaScript("か")).toBe("hiragana");
+    expect(kanaScript("カ")).toBe("katakana");
+    expect(kanaScript("ー")).toBe("katakana");
+  });
+
+  it("answers nothing for a character that is not a kana", () => {
+    expect(kanaScript("学")).toBeNull();
+    expect(kanaScript("")).toBeNull();
+  });
+});
+
+describe("reviewPrompt", () => {
+  /** A due item with the prompt Rust sends for it. */
+  const item = (ch: string, kind: "kana" | "kanji" | "radical", hint: string): DueItem => ({
+    ...due(ch, kind),
+    hint,
+  });
+
+  it("never shows the character before the attempt is graded", () => {
+    for (const entry of [
+      item("か", "kana", "ka"),
+      item("学", "kanji", "study"),
+      item("亅", "radical", "radical 6 of 214"),
+    ]) {
+      const prompt = reviewPrompt(entry, false);
+      expect(prompt.glyph).toBeNull();
+      expect(prompt.hint).not.toContain(entry.ch);
+    }
+  });
+
+  it("reveals the character once the attempt is graded", () => {
+    expect(reviewPrompt(item("学", "kanji", "study"), true).glyph).toBe("学");
+  });
+
+  it("names the script of a kana, so ka is answerable as か or カ", () => {
+    expect(reviewPrompt(item("か", "kana", "ka"), false).hint).toBe("ka · hiragana");
+    expect(reviewPrompt(item("カ", "kana", "ka"), false).hint).toBe("ka · katakana");
+  });
+
+  it("says what kind of character a kanji prompt is asking for", () => {
+    expect(reviewPrompt(item("学", "kanji", "study"), false).hint).toBe("study · kanji");
+    expect(reviewPrompt(item("亅", "radical", "radical 6 of 214"), false).hint).toBe(
+      "radical 6 of 214",
+    );
   });
 });
