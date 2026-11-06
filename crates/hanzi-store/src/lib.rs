@@ -60,7 +60,15 @@ pub struct Db {
     /// This device's identity, read once at open. It is what makes an attempt's
     /// `(device_id, seq)` pair mean the same thing on every device, so two logs
     /// can be merged without a row colliding — see [`schema`]'s `upgrade`.
-    device_id: String,
+    ///
+    /// Shared between the clones rather than copied into each, because it can
+    /// change once the database is open: sync gives a device a new name when it
+    /// finds its old one already in use — see [`Db::rotate_device_id`]. A clone
+    /// that kept the old name would go on numbering attempts under it, which is
+    /// the collision the new name exists to end. It is only ever changed with the
+    /// connection held, and every write reads it with the connection held, so a
+    /// write sees one name or the other and never half of a rename.
+    device_id: Arc<Mutex<String>>,
     /// Whether this app had run in this directory before this launch — see
     /// [`Db::is_first_run`]. Read once, before the schema was stamped.
     first_run: bool,
@@ -133,7 +141,7 @@ impl Db {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             dir,
-            device_id,
+            device_id: Arc::new(Mutex::new(device_id)),
             first_run: existing_schema.is_none() && !legacy_documents_present(&path),
         })
     }
@@ -156,8 +164,70 @@ impl Db {
     }
 
     /// This device's identity, for the sync layer to name its shards with.
-    pub fn device_id(&self) -> &str {
-        &self.device_id
+    ///
+    /// An owned value rather than a borrow, because the identity can change while
+    /// the database is open — see [`Db::rotate_device_id`].
+    pub fn device_id(&self) -> String {
+        self.device()
+    }
+
+    /// The identity, read from the shared cell.
+    fn device(&self) -> String {
+        // Poisoning is recovered from for the same reason as in `lock`: the
+        // string is still a whole string.
+        self.device_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Give this device a new identity, and move the named attempts over to it.
+    ///
+    /// This is what sync does when it finds this device's name already holding
+    /// attempts this log does not have — a database restored from a backup, or
+    /// copied to a second phone, carries its id with it, and both copies would
+    /// otherwise number their next attempts from the same place. See
+    /// `hanzi_sync`'s `settle_identity` for when it is called; this is only the
+    /// storage half.
+    ///
+    /// `unpublished` is the `seq` of every attempt of the *current* identity that
+    /// no shard holds yet. Those, and only those, are renumbered from 1 under the
+    /// new identity, in the order they were made. Everything the old name has
+    /// already published stays under the old name: it is somebody's history now —
+    /// a peer may hold it — and renaming it would make it a second attempt on
+    /// every device that already has the first.
+    ///
+    /// One transaction for the new name and the moved rows, so a failure leaves
+    /// the database as it was rather than holding attempts under a name it does
+    /// not answer to. Returns the new identity.
+    pub fn rotate_device_id(&self, unpublished: &[i64]) -> Result<String, String> {
+        let path = self.path();
+        let mut conn = self.lock();
+        let old = self.device();
+        let new = uuid::Uuid::new_v4().to_string();
+        let mut seqs = unpublished.to_vec();
+        seqs.sort_unstable();
+        seqs.dedup();
+
+        let tx = conn.transaction().map_err(|e| at(&path, e))?;
+        set_meta(&tx, schema::DEVICE_ID_KEY, &new).map_err(|e| at(&path, e))?;
+        for (fresh, seq) in (1i64..).zip(&seqs) {
+            tx.execute(
+                "UPDATE attempt SET device_id = ?1, seq = ?2 WHERE device_id = ?3 AND seq = ?4",
+                params![new, fresh, old, seq],
+            )
+            .map_err(|e| at(&path, e))?;
+        }
+        tx.commit().map_err(|e| at(&path, e))?;
+
+        // Still holding the connection, so no write can slip in between the
+        // committed rename and the name every clone answers to.
+        *self
+            .device_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = new.clone();
+        drop(conn);
+        Ok(new)
     }
 
     /// The database file.
@@ -263,7 +333,7 @@ impl Db {
             ))
             .map_err(|e| at(&path, e))?;
         let rows = stmt
-            .query_map([&self.device_id], read_attempt)
+            .query_map([self.device()], read_attempt)
             .map_err(|e| at(&path, e))?;
 
         let mut out = Vec::new();
@@ -510,7 +580,7 @@ fn settings_error(path: &Path, e: rusqlite::Error) -> SettingsError {
 impl ProgressSink for Db {
     fn load(&self) -> Result<ProgressDocument, ProgressError> {
         let mut conn = self.lock();
-        migrate::progress(&mut conn, self.dir(), &self.device_id)?;
+        migrate::progress(&mut conn, self.dir(), &self.device())?;
         let path = self.path();
         let mut cards = read_cards(&conn, &path)?;
         read_histories(&conn, &path, &mut cards)?;
@@ -540,10 +610,10 @@ impl ProgressSink for Db {
                 write_card(&tx, ch, card).map_err(|e| progress_error(&path, e))?;
             }
         }
-        let first = next_seq(&tx, &self.device_id).map_err(|e| progress_error(&path, e))?;
+        let device = self.device();
+        let first = next_seq(&tx, &device).map_err(|e| progress_error(&path, e))?;
         for (seq, record) in (first..).zip(attempts.iter()) {
-            insert_attempt(&tx, &self.device_id, seq, record)
-                .map_err(|e| progress_error(&path, e))?;
+            insert_attempt(&tx, &device, seq, record).map_err(|e| progress_error(&path, e))?;
         }
         tx.commit().map_err(|e| progress_error(&path, e))
     }
@@ -778,7 +848,7 @@ impl CursorSink for Db {
                  updated_at = excluded.updated_at,
                  device_id = excluded.device_id,
                  revision = course_cursor.revision + 1",
-            params![document.index as i64, document.updated_at, self.device_id],
+            params![document.index as i64, document.updated_at, self.device()],
         )
         .map_err(|e| progress_error(&path, e))?;
         Ok(())
@@ -790,7 +860,7 @@ impl CursorSink for Db {
 impl VocabSink for Db {
     fn load(&self) -> Result<VocabDocument, VocabError> {
         let mut conn = self.lock();
-        migrate::vocabulary(&mut conn, self.dir(), &self.device_id)?;
+        migrate::vocabulary(&mut conn, self.dir(), &self.device())?;
         let path = self.path();
 
         let next_id = meta_i64(&conn, "vocab_next_id")
@@ -854,7 +924,7 @@ impl VocabSink for Db {
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(|e| vocab_error(&path, e))?;
         let now = now_iso8601();
-        let device = self.device_id.clone();
+        let device = self.device();
 
         // Nothing is deleted any more, and that is the change sync forced. An
         // entry that disappears from the document is **tombstoned**: a row saying
@@ -1724,7 +1794,7 @@ impl Db {
                  updated_at = excluded.updated_at,
                  device_id  = excluded.device_id,
                  revision   = vocab_cursor.revision + 1",
-            params![group, uuid, now_iso8601(), self.device_id],
+            params![group, uuid, now_iso8601(), self.device()],
         )
         .map_err(|e| at(&path, e))?;
         Ok(())
