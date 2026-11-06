@@ -782,15 +782,24 @@ characters, not of words:
 | 不是 | `4 + 4` | `2 + 4` |
 | 一起 | `1 + 3` | `4 + 3` |
 | 一天 | `1 + 1` | `4 + 1` |
+| 第一次 | `4 + 1 + 4` | `4 + 1 + 4` |
+| 一月 | `1 + 4` | `1 + 4` |
+| 看一看 | `4 + 1 + 4` | `4 + neutral + 4` |
 
 Scoring a learner against the dictionary column would mark correct speech wrong,
 which is the failure the research warns about. So the three rules that matter are
 applied — a third tone before a third tone becomes second, 不 becomes second
 before a fourth tone, and 一 becomes second before a fourth tone and fourth
-otherwise — and **both readings are reported**, so a learner who sees "tone 2"
+otherwise, when it counts something — and **both readings are reported**, so a learner who sees "tone 2"
 for 你 is told that it is not what their dictionary prints. That is also why tone
 practice takes the whole text rather than one character: sandhi happens *between*
 the syllables of a word and cannot be seen one character at a time.
+
+一 keeps its first tone where it names a number rather than counting: at the end
+of a word (统一), as an ordinal after 第, beside another digit (十一, 一二三) and in
+a date (一月, 一号, 五月一日). Between a verb and its repetition (看一看) it is
+said light, the neutral tone. Before 百, 千 and 万 it counts, and changes (一百
+`4 + 3`). `pinyin::spoken_tones` has the rules and the sources.
 
 ### Why the comparison is about shape, not height
 

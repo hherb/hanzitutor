@@ -170,14 +170,38 @@ fn is_separator(ch: char) -> bool {
     matches!(ch, '\'' | ' ' | '-' | '·' | '/' | ',')
 }
 
+/// The tone a digit written after a syllable stands for: `ni3` is `nǐ`.
+///
+/// `1`–`4` are the four tones and `5` the neutral one, which is how CC-CEDICT
+/// numbers them and how a keyboard with no pinyin input method writes them.
+fn tone_number(ch: char) -> Option<u8> {
+    match ch {
+        '1'..='5' => Some(ch as u8 - b'0'),
+        _ => None,
+    }
+}
+
+/// One syllable of a run as the splitter found it, before its tone is read.
+struct RunSyllable {
+    /// The letters as written, with `u:` already read as `ü`.
+    text: String,
+    /// Where it sits, in letters from the start of the run.
+    from: usize,
+    to: usize,
+    /// The tone number written after it, if one was.
+    number: Option<u8>,
+}
+
 /// Split one run of letters into syllables, keeping where each one sits.
 ///
-/// The span is in characters from the start of `run`, and it exists for the
+/// The span is in letters from the start of `chars`, and it exists for the
 /// pinyin tone key: "which syllable is the cursor in" cannot be answered from
 /// the syllables alone. Nothing else here wants it, which is why the plain
 /// [`syllables`] is still the function everything reads.
-fn split_run_spans(run: &str) -> Vec<(String, usize, usize)> {
-    let chars: Vec<char> = run.chars().collect();
+///
+/// A tone number straight after a syllable (`ni3`) ends it and belongs to it,
+/// so it is a boundary the way an apostrophe is: `xi1an1` is `xī` + `ān`.
+fn split_run_spans(chars: &[char]) -> Vec<RunSyllable> {
     let mut out = Vec::new();
     let mut current = String::new();
     let mut start = 0;
@@ -247,15 +271,38 @@ fn split_run_spans(run: &str) -> Vec<(String, usize, usize)> {
                 j += 1;
             }
         }
+        let number = chars.get(j).copied().and_then(tone_number);
+        if number.is_some() {
+            j += 1;
+        }
 
-        out.push((std::mem::take(&mut current), start, j));
+        out.push(RunSyllable {
+            text: std::mem::take(&mut current),
+            from: start,
+            to: j,
+            number,
+        });
         i = j;
     }
 
     if !current.is_empty() {
-        out.push((current, start, chars.len()));
+        out.push(RunSyllable {
+            text: current,
+            from: start,
+            to: chars.len(),
+            number: None,
+        });
     }
     out
+}
+
+/// Does this syllable begin with `a`, `o` or `e`, the letters pinyin writes an
+/// apostrophe before when another syllable comes first?
+fn opens_with_a_vowel(syllable: &str) -> bool {
+    syllable
+        .chars()
+        .next()
+        .is_some_and(|first| matches!(lowercase(plain_vowel(first)), 'a' | 'o' | 'e' | 'ê'))
 }
 
 /// Write syllables as one word's reading, the way pinyin writes a word.
@@ -278,13 +325,7 @@ pub fn join_syllables<S: AsRef<str>>(parts: &[S]) -> String {
         if part.is_empty() {
             continue;
         }
-        if !out.is_empty()
-            && !part.eq_ignore_ascii_case("r")
-            && part
-                .chars()
-                .next()
-                .is_some_and(|first| matches!(plain_vowel(lowercase(first)), 'a' | 'o' | 'e' | 'ê'))
-        {
+        if !out.is_empty() && !part.eq_ignore_ascii_case("r") && opens_with_a_vowel(part) {
             out.push('\'');
         }
         out.push_str(part);
@@ -312,6 +353,13 @@ fn syllable_tone(text: &str) -> Option<u8> {
 /// `None` when the reading is empty or any part of it cannot be read as a
 /// syllable. Apostrophes, spaces and hyphens are hard boundaries, which is what
 /// makes `xi'an` two syllables and `xian` one.
+///
+/// A reading typed with tone numbers is read as the marks they stand for:
+/// `ni3hao3` is `nǐ` + `hǎo`, and each syllable's text is the marked form, which
+/// is the form the dataset writes and the interface shows. `v` and `u:` are the
+/// keyboard's ways of writing `ü` (`nv3` is `nǚ`, `lu:4` is `lǜ`). A number that
+/// disagrees with a mark already on its syllable (`hǎo4`) is two tones on one
+/// syllable and refused, as is a digit anywhere but straight after a syllable.
 pub fn syllables(reading: &str) -> Option<Vec<Syllable>> {
     Some(
         syllables_with_spans(reading)?
@@ -330,51 +378,110 @@ pub fn syllables(reading: &str) -> Option<Vec<Syllable>> {
 ///
 /// Offsets are in **characters** from the start of `reading`, matching
 /// [`str::chars`] rather than the UTF-16 index a browser reports; the caller
-/// converts, because only it knows which of the two it is holding.
+/// converts, because only it knows which of the two it is holding. A span covers
+/// what was typed, so `ni3`'s is three characters long though its text, `nǐ`, is
+/// two, and `lu:4`'s is four.
 pub fn syllables_with_spans(reading: &str) -> Option<Vec<(Syllable, Range<usize>)>> {
     if reading.trim().is_empty() {
         return None;
     }
 
+    let chars: Vec<char> = reading.chars().collect();
     let mut out = Vec::new();
-    let mut run = String::new();
-    let mut run_start = 0;
+    // The run's letters, and where each one starts in `reading`. The two differ
+    // only where `u:` has been read as the one letter `ü`.
+    let mut run: Vec<char> = Vec::new();
+    let mut origin: Vec<usize> = Vec::new();
 
-    for (index, ch) in reading.chars().enumerate() {
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
         if is_separator(ch) {
-            if !run.is_empty() {
-                push_run(&mut out, &run, run_start)?;
-                run.clear();
-            }
-            run_start = index + 1;
+            push_run(&mut out, &run, &origin, index)?;
+            run.clear();
+            origin.clear();
+            index += 1;
+            continue;
+        }
+        origin.push(index);
+        if matches!(ch, 'u' | 'U') && chars.get(index + 1) == Some(&':') {
+            run.push(if ch == 'u' { 'ü' } else { 'Ü' });
+            index += 2;
         } else {
-            if run.is_empty() {
-                run_start = index;
-            }
             run.push(ch);
+            index += 1;
         }
     }
-    if !run.is_empty() {
-        push_run(&mut out, &run, run_start)?;
-    }
+    push_run(&mut out, &run, &origin, chars.len())?;
 
     (!out.is_empty()).then_some(out)
 }
 
 /// Read one run's syllables into `out`, with their spans in the whole reading.
 ///
-/// `None` when any of them cannot be read as a syllable, which is [`syllables`]'s
-/// rule and has to stay one rule.
+/// `origin` holds where each letter of `run` starts in the reading and `end`
+/// where the run stops. `None` when any of the syllables cannot be read as one,
+/// which is [`syllables`]'s rule and has to stay one rule.
 fn push_run(
     out: &mut Vec<(Syllable, Range<usize>)>,
-    run: &str,
-    run_start: usize,
+    run: &[char],
+    origin: &[usize],
+    end: usize,
 ) -> Option<()> {
-    for (text, from, to) in split_run_spans(run) {
+    for syllable in split_run_spans(run) {
+        // A digit the splitter did not take as a tone number is not pinyin.
+        if syllable.text.chars().any(|ch| ch.is_ascii_digit()) {
+            return None;
+        }
+        let text = match syllable.number {
+            None => syllable.text,
+            Some(number) => match syllable_tone(&syllable.text)? {
+                // No mark yet: the number is written as one.
+                5 => mark_syllable(&syllable.text, number)?,
+                marked if marked == number => syllable.text,
+                _ => return None,
+            },
+        };
         let tone = syllable_tone(&text)?;
-        out.push((Syllable { text, tone }, run_start + from..run_start + to));
+        let start = origin[syllable.from];
+        let stop = origin.get(syllable.to).copied().unwrap_or(end);
+        out.push((Syllable { text, tone }, start..stop));
     }
     Some(())
+}
+
+/// A reading with its tone numbers written as marks: `ni3hao3` → `nǐhǎo`.
+///
+/// This is what a learner's typed reading is saved as, so a list shows the
+/// reading the way the dataset writes one. `u:` becomes `ü` on the way, and an
+/// apostrophe is written where the number was the only thing separating a
+/// syllable that starts with `a`, `o` or `e` (`xi1an1` → `xī'ān`), because without
+/// it the marked reading would split differently from the numbered one.
+///
+/// Anything [`syllables`] cannot read is returned exactly as given, and so is a
+/// reading with no number or `u:` in it: there is nothing to rewrite, and a
+/// pinyin box that accepts anything should not change what it was given.
+pub fn marked_reading(reading: &str) -> String {
+    if !reading.chars().any(|ch| ch.is_ascii_digit() || ch == ':') {
+        return reading.to_string();
+    }
+    let Some(list) = syllables_with_spans(reading) else {
+        return reading.to_string();
+    };
+
+    let chars: Vec<char> = reading.chars().collect();
+    let mut out = String::with_capacity(reading.len());
+    let mut at = 0;
+    for (syllable, span) in &list {
+        out.extend(&chars[at..span.start]);
+        if at == span.start && !out.is_empty() && opens_with_a_vowel(&syllable.text) {
+            out.push('\'');
+        }
+        out.push_str(&syllable.text);
+        at = span.end;
+    }
+    out.extend(&chars[at..]);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -438,30 +545,54 @@ pub fn mark_syllable(syllable: &str, tone: u8) -> Option<String> {
 /// can still mark it.
 ///
 /// Returns the rewritten reading and where the cursor should land. A mark
-/// replaces one letter with one letter, so that is where it already was. `None`
+/// replaces one letter with one letter, so that is usually where it already was.
+/// A syllable typed with a tone number (`ni3`) is rewritten without it, and the
+/// cursor moves back with the text; when the number was the only boundary
+/// before a syllable starting with `a`, `o` or `e` (`ping2an1`), the apostrophe
+/// it stood for is written so the reading still splits where it did. `None`
 /// when no syllable holds the cursor, or when [`mark_syllable`] refuses the one
 /// that does.
 pub fn mark_tone_at(reading: &str, caret: usize, tone: u8) -> Option<(String, usize)> {
     let syllables = syllables_with_spans(reading)?;
-    let (syllable, span) = syllables
+    let at = syllables
         .iter()
-        .find(|(_, span)| caret > span.start && caret <= span.end)
-        .or_else(|| syllables.iter().find(|(_, span)| caret == span.start))?;
+        .position(|(_, span)| caret > span.start && caret <= span.end)
+        .or_else(|| syllables.iter().position(|(_, span)| caret == span.start))?;
+    let (syllable, span) = &syllables[at];
 
     let marked = mark_syllable(&syllable.text, tone)?;
     let characters: Vec<char> = reading.chars().collect();
+    // The neighbours that touch this syllable with nothing between them. One
+    // before it that ends in its own tone number is already kept apart by it.
+    let joined_before = at > 0
+        && syllables[at - 1].1.end == span.start
+        && !characters[span.start - 1].is_ascii_digit();
+    let joined_after = syllables
+        .get(at + 1)
+        .filter(|(_, next)| next.start == span.end);
+
     let mut out: String = characters[..span.start].iter().collect();
+    let mut start = span.start;
+    if joined_before && opens_with_a_vowel(&marked) {
+        out.push('\'');
+        start += 1;
+    }
     out.push_str(&marked);
+    if joined_after.is_some_and(|(next, _)| opens_with_a_vowel(&next.text)) {
+        out.push('\'');
+    }
     out.extend(characters[span.end..].iter());
-    Some((out, caret))
+    let into = (caret - span.start).min(marked.chars().count());
+    Some((out, start + into))
 }
 
 /// The plain letter under a tone mark, so a mark can be moved or taken off.
 ///
 /// The nasal forms are here too: 嗯 is `ń`, and a tone key that could not touch
-/// it would be a key that quietly did nothing on one of the commonest words.
+/// it would be a key that quietly did nothing on one of the commonest words. A
+/// capital keeps its case: `À` is `A`, so a proper noun stays one.
 fn plain_vowel(ch: char) -> char {
-    match ch {
+    let plain = match lowercase(ch) {
         'ā' | 'á' | 'ǎ' | 'à' => 'a',
         'ē' | 'é' | 'ě' | 'è' => 'e',
         'ī' | 'í' | 'ǐ' | 'ì' => 'i',
@@ -470,7 +601,21 @@ fn plain_vowel(ch: char) -> char {
         'ǖ' | 'ǘ' | 'ǚ' | 'ǜ' => 'ü',
         'ń' | 'ň' | 'ǹ' => 'n',
         'ḿ' => 'm',
-        other => other,
+        _ => return ch,
+    };
+    if ch.is_uppercase() {
+        uppercase(plain)
+    } else {
+        plain
+    }
+}
+
+/// The upper-case form of a letter, when it is a single letter.
+fn uppercase(ch: char) -> char {
+    let mut upper = ch.to_uppercase();
+    match (upper.next(), upper.next()) {
+        (Some(only), None) => only,
+        _ => ch,
     }
 }
 
@@ -480,6 +625,7 @@ fn plain_vowel(ch: char) -> char {
 /// with: `ń` is the shape it reads as tone 1, and it has no tone-2 nasal at all,
 /// so one is refused here rather than invented. `v` is marked as `ü` — the
 /// dataset and CC-CEDICT write the umlaut, and a learner typing `nv` means 女.
+/// A capital is marked as a capital (`A` → `Ǎ`), so `Aomen` marks as `Àomen`.
 fn with_tone(ch: char, tone: u8) -> Option<char> {
     // Marking a neutral tone is a different job — the syllable with no mark —
     // and is handled before this is reached. The guard is here so the index
@@ -488,7 +634,7 @@ fn with_tone(ch: char, tone: u8) -> Option<char> {
         return None;
     }
     let index = (tone - 1) as usize;
-    match ch.to_ascii_lowercase() {
+    let marked = match lowercase(ch) {
         'a' => Some(['ā', 'á', 'ǎ', 'à'][index]),
         'e' => Some(['ē', 'é', 'ě', 'è'][index]),
         'i' => Some(['ī', 'í', 'ǐ', 'ì'][index]),
@@ -503,7 +649,12 @@ fn with_tone(ch: char, tone: u8) -> Option<char> {
         },
         'm' => (tone == 1).then_some('ḿ'),
         _ => None,
-    }
+    }?;
+    Some(if ch.is_uppercase() {
+        uppercase(marked)
+    } else {
+        marked
+    })
 }
 
 /// The tone a single-syllable reading carries, or `None` when it cannot be read.
@@ -552,8 +703,29 @@ pub fn aligned_reading(text: &str, reading: &str) -> Option<Vec<Syllable>> {
 /// 2. **不** (`bù`, tone 4) becomes second before a fourth tone: 不是 `4+4` →
 ///    `2+4`. It stays fourth otherwise.
 /// 3. **一** (`yī`, tone 1) becomes second before a fourth tone (一个 → `2+4`) and
-///    fourth before anything else (一天 → `4+1`, 一起 → `4+3`). Alone, or as an
-///    ordinal, it stays first — which is why a final 一 is left alone here.
+///    fourth before anything else (一天 → `4+1`, 一起 → `4+3`) — when it counts
+///    something. When it is a number's name rather than a count it stays first:
+///    - at the end of a word (统一, 星期一, 万一), with nothing to change before;
+///    - as an ordinal after 第 (第一次 `4+1+4`, 第一天 `4+1+1`);
+///    - read as a digit, next to another digit (十一, 二十一, 一二三, 一九九八).
+///      百, 千, 万 and 亿 are not digits here: 一百 counts a hundred and is
+///      `yìbǎi`, so before them 一 changes as it does before any word;
+///    - in a date, before 月 or 号 (一月 is January, `yīyuè`; 十一月 is
+///      November; 一号 is the first of the month), and before 日 only after a
+///      month (五月一日). 一日 on its own is "one day", and is counted: 日复一日
+///      and 有朝一日 are both `yírì`.
+///
+///    Between a verb and its own repetition (看一看, 想一想, 试一试) it is
+///    neither: the verb is said twice with a light 一 between, so it is the
+///    neutral tone (`4+5+4`).
+///
+/// These are the rules the standard descriptions give — the usage note under 一
+/// in the 现代汉语词典 (first tone alone, at the end of a word and as an ordinal;
+/// second before a fourth tone, fourth before the others; light between a
+/// repeated verb), and Chao's *A Grammar of Spoken Chinese* (1968) — narrowed to
+/// what can be seen from the characters alone. What cannot is left as the counted
+/// reading: 一楼 is "the first floor" or "a whole building" depending on the
+/// sentence, and the counted reading is the commoner.
 ///
 /// The characters are needed as well as the tones because rules 2 and 3 are about
 /// *which* character it is, not which tone.
@@ -569,11 +741,26 @@ pub fn spoken_tones(characters: &[char], citation: &[u8]) -> Vec<u8> {
         let next = tones.get(i + 1).copied();
         match characters[i] {
             '不' if tones[i] == 4 && next == Some(4) => tones[i] = 2,
-            '一' if tones[i] == 1 => match next {
-                Some(4) => tones[i] = 2,
-                Some(_) => tones[i] = 4,
-                None => {}
-            },
+            '一' if tones[i] == 1 => {
+                let before = i.checked_sub(1).map(|k| characters[k]);
+                let after = characters[..count].get(i + 1).copied();
+                if before.is_some() && before == after && before != Some('一') {
+                    // A一A: a verb, a light 一, the verb again.
+                    tones[i] = 5;
+                } else if before == Some('第')
+                    || before.is_some_and(is_digit)
+                    || after.is_some_and(|ch| is_digit(ch) || matches!(ch, '月' | '号'))
+                    || (before == Some('月') && after == Some('日'))
+                {
+                    // An ordinal, a digit or a date: the number's own name.
+                } else {
+                    match next {
+                        Some(4) => tones[i] = 2,
+                        Some(_) => tones[i] = 4,
+                        None => {}
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -598,6 +785,19 @@ pub fn spoken_tones(characters: &[char], citation: &[u8]) -> Vec<u8> {
     }
 
     tones
+}
+
+/// A character that names a digit, as 一 is read beside one: 十一, 一二三.
+///
+/// 十 is here because 十一 is "ten-one", 一 read as the digit it is. 百, 千, 万
+/// and 亿 are not: 一百 counts a hundred, and that 一 changes (`yìbǎi`). 两 is
+/// not either, because it is the counting form of two and never sits beside a
+/// digit-reading 一.
+fn is_digit(ch: char) -> bool {
+    matches!(
+        ch,
+        '〇' | '零' | '一' | '二' | '三' | '四' | '五' | '六' | '七' | '八' | '九' | '十'
+    )
 }
 
 /// Build the tone target for `text`, read as `reading`.
@@ -700,9 +900,11 @@ fn join_tones(tones: &[u8]) -> String {
 /// `ü` is kept as its own letter rather than folded into `u`: 女 (`nǚ`) and 努
 /// (`nǔ`) are different syllables, and treating them as the same sound would
 /// call a wrong syllable right — the one outcome worse than saying nothing.
+/// Case is folded, marks included, so a capitalised `Àomén` is `aomen`.
 pub fn base(reading: &str) -> String {
     reading
         .chars()
+        .map(lowercase)
         .filter_map(|ch| match ch {
             'a' | 'ā' | 'á' | 'ǎ' | 'à' => Some('a'),
             'e' | 'ē' | 'é' | 'ě' | 'è' | 'ê' => Some('e'),
@@ -1597,5 +1799,187 @@ mod tests {
             let marked = mark_tone_at("ma", 2, tone).expect("ma can take a tone");
             assert_eq!(tone_from_pinyin(&marked.0), Some(tone), "{}", marked.0);
         }
+    }
+
+    fn spoken(text: &str, citation: &[u8]) -> Vec<u8> {
+        let chars: Vec<char> = text.chars().collect();
+        spoken_tones(&chars, citation)
+    }
+
+    #[test]
+    fn yi_as_an_ordinal_keeps_its_first_tone() {
+        // 第 makes 一 an ordinal, and an ordinal is not changed (issue #20).
+        assert_eq!(spoken("第一次", &[4, 1, 4]), [4, 1, 4]);
+        assert_eq!(spoken("第一天", &[4, 1, 1]), [4, 1, 1]);
+        assert_eq!(spoken("第一线", &[4, 1, 4]), [4, 1, 4]);
+        assert_eq!(spoken("第一手", &[4, 1, 3]), [4, 1, 3]);
+    }
+
+    #[test]
+    fn yi_in_a_date_keeps_its_first_tone() {
+        // 一月 is January and 一号 the first of the month, not "one month".
+        assert_eq!(spoken("一月", &[1, 4]), [1, 4]);
+        assert_eq!(spoken("一号", &[1, 4]), [1, 4]);
+        assert_eq!(spoken("十一月", &[2, 1, 4]), [2, 1, 4]);
+        // 日 is a date only after a month; on its own 一日 is "one day".
+        assert_eq!(spoken("五月一日", &[3, 4, 1, 4]), [3, 4, 1, 4]);
+        assert_eq!(spoken("日复一日", &[4, 4, 1, 4]), [4, 4, 2, 4]);
+        assert_eq!(spoken("有朝一日", &[3, 1, 1, 4]), [3, 1, 2, 4]);
+    }
+
+    #[test]
+    fn yi_among_digits_keeps_its_first_tone() {
+        // Read as a digit: after another digit (十一, 二十一), or counting
+        // before one (一二三, a year read digit by digit).
+        assert_eq!(spoken("十一", &[2, 1]), [2, 1]);
+        assert_eq!(spoken("二十一", &[4, 2, 1]), [4, 2, 1]);
+        assert_eq!(spoken("一二三", &[1, 4, 1]), [1, 4, 1]);
+        assert_eq!(spoken("一九", &[1, 3]), [1, 3]);
+        // 一 counting a hundred, a thousand or ten thousand is a quantity, and
+        // changes as it does before any other word.
+        assert_eq!(spoken("一百", &[1, 3]), [4, 3]);
+        assert_eq!(spoken("一千", &[1, 1]), [4, 1]);
+        assert_eq!(spoken("一万", &[1, 4]), [2, 4]);
+    }
+
+    #[test]
+    fn yi_between_a_reduplicated_verb_is_neutral() {
+        // A一A: 看一看 is kàn yi kàn, the middle syllable light.
+        assert_eq!(spoken("看一看", &[4, 1, 4]), [4, 5, 4]);
+        assert_eq!(spoken("试一试", &[4, 1, 4]), [4, 5, 4]);
+        // The neutral 一 breaks the run of thirds, so neither 想 changes.
+        assert_eq!(spoken("想一想", &[3, 1, 3]), [3, 5, 3]);
+        // 一一 is not a reduplication around 一; both are digits.
+        assert_eq!(spoken("一一", &[1, 1]), [1, 1]);
+    }
+
+    #[test]
+    fn the_sentence_says_no_change_where_yi_keeps_its_tone() {
+        let ordinal = tone_target("第一次", "dìyīcì").expect("three and three");
+        assert_eq!(ordinal.spoken(), [4, 1, 4]);
+        assert!(!ordinal.sandhi_applied, "{}", ordinal.detail);
+        assert_eq!(ordinal.detail, "Scored against 4 + 1 + 4.");
+
+        let month = tone_target("一月", "yīyuè").expect("two and two");
+        assert!(!month.sandhi_applied, "{}", month.detail);
+
+        let look = tone_target("看一看", "kànyīkàn").expect("three and three");
+        assert_eq!(look.spoken(), [4, 5, 4]);
+        assert!(look.sandhi_applied);
+        assert!(
+            look.detail.contains("4 + neutral + 4") && look.detail.contains("4 + 1 + 4"),
+            "{}",
+            look.detail
+        );
+    }
+
+    #[test]
+    fn a_capitalised_tone_mark_carries_its_tone() {
+        // A learner-typed proper noun is read the way a lower-case one is.
+        assert_eq!(split("Àomén"), ["Ào", "mén"]);
+        assert_eq!(tones("Àomén"), [4, 2]);
+        assert_eq!(tones("Ōuzhōu"), [1, 1]);
+        assert_eq!(tones("Éyǔ"), [2, 3]);
+        assert_eq!(split("Ālābóyǔ"), ["Ā", "lā", "bó", "yǔ"]);
+        assert_eq!(tones("Ālābóyǔ"), [1, 1, 2, 3]);
+        assert_eq!(tones("ÀOMÉN"), [4, 2]);
+        assert_eq!(tone_from_pinyin("Ǎ"), Some(3));
+        // And folded the same way when the tone is set aside.
+        assert_eq!(base("Àomén"), "aomen");
+        assert_eq!(base("NǙ"), "nv");
+    }
+
+    #[test]
+    fn a_capital_keeps_its_case_when_its_mark_is_written() {
+        assert_eq!(mark_syllable("Ao", 4).as_deref(), Some("Ào"));
+        assert_eq!(mark_syllable("Ào", 1).as_deref(), Some("Āo"));
+        assert_eq!(mark_syllable("Ào", 5).as_deref(), Some("Ao"));
+        assert_eq!(mark_syllable("NV", 3).as_deref(), Some("NǙ"));
+        assert_eq!(mark_syllable("LIU", 2).as_deref(), Some("LIÚ"));
+        assert_eq!(mark_tone_at("Aomen", 2, 4), Some(("Àomen".to_string(), 2)));
+    }
+
+    #[test]
+    fn a_tone_number_is_read_as_the_mark_it_stands_for() {
+        assert_eq!(split("ni3hao3"), ["nǐ", "hǎo"]);
+        assert_eq!(tones("ni3hao3"), [3, 3]);
+        assert_eq!(split("xue2xi2"), ["xué", "xí"]);
+        assert_eq!(split("ma1ma5"), ["mā", "ma"]);
+        assert_eq!(tones("ma1ma5"), [1, 5]);
+        assert_eq!(split("zhong1 guo2"), ["zhōng", "guó"]);
+        assert_eq!(split("ming2"), ["míng"]);
+        // A mark-less syllable between numbered ones is still neutral.
+        assert_eq!(tones("peng2you"), [2, 5]);
+        // The number is a boundary, as an apostrophe is: `xi1an1` is 西安, and
+        // `ping2an1` is 平安 rather than pín + gān.
+        assert_eq!(split("xi1an1"), ["xī", "ān"]);
+        assert_eq!(split("ping2an1"), ["píng", "ān"]);
+        // `v` and `u:` are the keyboard's ways of writing `ü`.
+        assert_eq!(split("nv3"), ["nǚ"]);
+        assert_eq!(split("lu:4"), ["lǜ"]);
+        assert_eq!(split("nü3er2"), ["nǚ", "ér"]);
+        assert_eq!(split("NI3HAO3"), ["NǏ", "HǍO"]);
+        assert_eq!(split("Lu:4"), ["Lǜ"]);
+        assert_eq!(tone_from_pinyin("hao3"), Some(3));
+        // A number that agrees with a mark is the same tone; one that does not
+        // is two tones on one syllable, and refused.
+        assert_eq!(split("hǎo3"), ["hǎo"]);
+        assert!(syllables("hǎo4").is_none());
+        // A number with no syllable before it is not a tone.
+        assert!(syllables("3").is_none());
+        assert!(syllables("ni33").is_none());
+        assert!(syllables("ni6").is_none());
+        // Sandhi is worked out from the numbered reading as from the marked one.
+        let target = tone_target("你好", "ni3hao3").expect("two and two");
+        assert_eq!(target.spoken(), [2, 3]);
+        assert_eq!(target.syllables[0].reading, "nǐ");
+    }
+
+    #[test]
+    fn a_numbered_reading_is_rewritten_with_marks() {
+        assert_eq!(marked_reading("ni3hao3"), "nǐhǎo");
+        assert_eq!(marked_reading("ni3 hao3"), "nǐ hǎo");
+        assert_eq!(marked_reading("lu:4se4"), "lǜsè");
+        assert_eq!(marked_reading("NV3"), "NǙ");
+        // The apostrophe the number stood in for is written, so the marked
+        // reading splits back the way the numbered one did.
+        assert_eq!(marked_reading("xi1an1"), "xī'ān");
+        assert_eq!(marked_reading("ping2an1"), "píng'ān");
+        for reading in ["xi1an1", "ping2an1", "ni3hao3", "nü3er2", "Tian1an1men2"] {
+            assert_eq!(
+                split(&marked_reading(reading)),
+                split(reading),
+                "{reading} → {}",
+                marked_reading(reading)
+            );
+        }
+        // A marked or toneless reading is left exactly as typed, and so is
+        // anything that cannot be read as pinyin at all.
+        assert_eq!(marked_reading("xuéxí"), "xuéxí");
+        assert_eq!(marked_reading("xue xi"), "xue xi");
+        assert_eq!(marked_reading("hsk3"), "hsk3");
+        assert_eq!(marked_reading("ni3hao3?"), "ni3hao3?");
+        assert_eq!(marked_reading(""), "");
+    }
+
+    #[test]
+    fn a_tone_key_rewrites_a_numbered_syllable() {
+        // The number goes and the mark replaces it; the caret stays at the end
+        // of the syllable it was at the end of.
+        assert_eq!(mark_tone_at("ni3", 3, 2), Some(("ní".to_string(), 2)));
+        assert_eq!(
+            mark_tone_at("ni3hao3", 3, 2),
+            Some(("níhao3".to_string(), 2))
+        );
+        // Marking `ping2` of `ping2an1` would leave `píngan1`, which reads as
+        // pín + gān; the apostrophe keeps the boundary the number made.
+        assert_eq!(
+            mark_tone_at("ping2an1", 5, 3),
+            Some(("pǐng'an1".to_string(), 4))
+        );
+        let marked = mark_tone_at("ping2an1", 5, 3).unwrap().0;
+        assert_eq!(split(&marked), ["pǐng", "ān"]);
+        // A number before the syllable still separates it, so none is added.
+        assert_eq!(mark_tone_at("xi1an", 5, 1), Some(("xi1ān".to_string(), 5)));
     }
 }
