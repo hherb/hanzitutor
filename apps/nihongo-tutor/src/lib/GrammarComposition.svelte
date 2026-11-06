@@ -410,6 +410,9 @@
     -->
     <details class="model-check" open={showingSettings}>
       <summary>Ask a model about this sentence</summary>
+      {#if model?.warning}
+        <p class="warn" role="status">{model.warning}</p>
+      {/if}
       {#if !model}
         <p class="hint">Loading the model settings…</p>
       {:else if showingSettings || !model.configured}

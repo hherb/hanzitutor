@@ -51,6 +51,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::{
     CompositionStore, ConfusionStore, GrammarStore, ModelStore, Prefs, PrefsStore, ReviewStore,
+    Saved,
 };
 use tauri::{Manager, State};
 
@@ -205,8 +206,6 @@ impl AppState {
             .lock()
             .expect("the preference store is not poisoned")
             .set_section(section)
-            .err()
-            .map(|err| format!("the section could not be remembered: {err}"))
     }
 
     /// The speaker, shared rather than borrowed.
@@ -629,18 +628,24 @@ impl AppState {
             ));
         }
         let key = found.key();
-        let tally = self
+        // A failed save is a warning on the tally and not an error instead of it:
+        // the answer has been counted in memory either way, and an error is what
+        // made a screen offer the same answer again — counting it twice.
+        let Saved {
+            value: tally,
+            warning,
+        } = self
             .drill
             .lock()
             .expect("the drill's store is not poisoned")
-            .record(&key, picked == target)
-            .map_err(|err| format!("the answer was counted but could not be saved: {err}"))?;
+            .record(&key, picked == target);
         Ok(DrillTally {
             pair: key,
             asked: tally.asked,
             correct: tally.correct,
             wrong: tally.wrong,
             weight: tally.weight(),
+            warning,
         })
     }
 
@@ -716,18 +721,23 @@ impl AppState {
         if self.grammar.get(picked).is_none() {
             return Err(format!("{picked:?} is not a pattern of this course"));
         }
-        let tally = self
+        // A failed save travels beside the tally, for the reason the kana drill's
+        // does.
+        let Saved {
+            value: tally,
+            warning,
+        } = self
             .grammar_drill
             .lock()
             .expect("the grammar drill's store is not poisoned")
-            .record(point, picked == point)
-            .map_err(|err| format!("the answer was counted but could not be saved: {err}"))?;
+            .record(point, picked == point);
         Ok(GrammarTally {
             point: point.to_string(),
             asked: tally.asked,
             correct: tally.correct,
             wrong: tally.wrong,
             weight: tally.weight(),
+            warning,
         })
     }
 
@@ -783,18 +793,26 @@ impl AppState {
         let verdict = grammar_practice::verdict_for(pattern, example, typed).ok_or_else(|| {
             format!("sentence {example} of {point:?} is not one this exercise asks about")
         })?;
-        let tally = self
+        // The verdict is the lesson, and the learner is owed it once the answer has
+        // been counted — which it has, in memory, whether or not the file took it. A
+        // failed save used to replace the whole outcome with an error: the lesson
+        // never reached the screen, and the learner who answered again was counted
+        // again. It is a warning on the record now, which is the part that was lost.
+        let Saved {
+            value: tally,
+            warning,
+        } = self
             .grammar_drill
             .lock()
             .expect("the grammar drill's store is not poisoned")
-            .record(&verdict.point, verdict.correct)
-            .map_err(|err| format!("the answer was counted but could not be saved: {err}"))?;
+            .record(&verdict.point, verdict.correct);
         let record = GrammarTally {
             point: verdict.point.clone(),
             asked: tally.asked,
             correct: tally.correct,
             wrong: tally.wrong,
             weight: tally.weight(),
+            warning,
         };
         Ok(GrammarProductionOutcome { verdict, record })
     }
@@ -856,16 +874,20 @@ impl AppState {
             .get(point)
             .ok_or_else(|| format!("{point:?} is not a pattern of this course"))?;
         let verdict = composition::verdict_for(pattern, &self.kanji, typed);
-        let mut warning = None;
         let mut store = self
             .compositions
             .lock()
             .expect("the composition store is not poisoned");
-        if verdict.kept {
-            if let Err(err) = store.add(&verdict.point, &verdict.text, &now_iso8601()) {
-                warning = Some(format!("the sentence was kept but could not be saved: {err}"));
-            }
-        }
+        // A sentence that was not kept wrote nothing, but what the store has to say
+        // about its file is still news — a learner whose sentences are not being
+        // remembered should hear it before they write the one that would have been.
+        let warning = if verdict.kept {
+            store
+                .add(&verdict.point, &verdict.text, &now_iso8601())
+                .warning
+        } else {
+            store.notice()
+        };
         let written = store
             .log()
             .sentences(&verdict.point)
@@ -904,17 +926,14 @@ impl AppState {
     /// is: nothing on a screen needs it, and a value that never crosses the boundary
     /// cannot be read out of a webview's memory by anything that gets in.
     pub fn model_status(&self) -> ModelStatus {
-        let settings = self
-            .model
-            .lock()
-            .expect("the model store is not poisoned")
-            .settings()
-            .clone();
+        let mut store = self.model.lock().expect("the model store is not poisoned");
+        let settings = store.settings().clone();
         ModelStatus {
             endpoint: settings.endpoint.clone(),
             model: settings.model.clone(),
             key_set: settings.key.as_deref().is_some_and(|key| !key.trim().is_empty()),
             configured: settings.configured(),
+            warning: store.notice(),
         }
     }
 
@@ -955,15 +974,17 @@ impl AppState {
         // `model_status`, which would take this same lock again — `std::sync::Mutex` is
         // not reentrant, and the first version of this deadlocked the moment anything
         // saved an endpoint.
-        let status = ModelStatus {
+        let mut status = ModelStatus {
             endpoint: settings.endpoint.clone(),
             model: settings.model.clone(),
             key_set: settings.key.is_some(),
             configured: settings.configured(),
+            warning: None,
         };
         store
             .save(settings)
             .map_err(|err| format!("the settings were kept but could not be saved: {err}"))?;
+        status.warning = store.notice();
         Ok(status)
     }
 
@@ -1714,6 +1735,10 @@ pub struct DrillTally {
     pub wrong: u32,
     /// The pair's share of the drill, per the rule in `nihongo_core::drill`.
     pub weight: f64,
+    /// Set when the answer was counted but could not be written to the learner's
+    /// file, or when the file had to be kept aside or cannot be written at all. The
+    /// tally is real either way; this is how the learner is told (`store.rs`).
+    pub warning: Option<String>,
 }
 
 /// What the learner's record for one grammar pattern now is, after an answer.
@@ -1731,6 +1756,10 @@ pub struct GrammarTally {
     pub wrong: u32,
     /// The pattern's share of the drill, per the rule in `nihongo_core::drill`.
     pub weight: f64,
+    /// What [`DrillTally::warning`] is, for `grammar.json`. On a written answer it
+    /// rides on the record rather than beside the verdict, because the record is
+    /// the part that may not have been saved — the lesson always arrives.
+    pub warning: Option<String>,
 }
 
 /// What a written answer came to: the lesson, and the pattern's record now.
@@ -1791,6 +1820,9 @@ pub struct ModelStatus {
     pub key_set: bool,
     /// Whether there is enough here to ask a model anything.
     pub configured: bool,
+    /// Set when `model.json` could not be read and was kept aside, or cannot be
+    /// written this session. Never the key, and never a reason to hide the fields.
+    pub warning: Option<String>,
 }
 
 /// A yōon digraph.

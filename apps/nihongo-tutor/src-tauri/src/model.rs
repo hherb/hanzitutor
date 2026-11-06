@@ -242,7 +242,7 @@ pub fn parse_review(content: &str) -> ModelReview {
     let raw = content.trim().to_string();
     let object = raw
         .find('{')
-        .and_then(|start| raw.rfind('}').map(|end| (start, end)))
+        .zip(raw.rfind('}'))
         .filter(|(start, end)| end > start)
         .and_then(|(start, end)| serde_json::from_str::<Value>(&raw[start..=end]).ok());
     let Some(object) = object else {

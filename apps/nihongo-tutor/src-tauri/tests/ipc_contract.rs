@@ -482,7 +482,11 @@ fn the_drill_answer_the_interface_posts_is_read_the_way_the_command_reads_it() {
     let value = serde_json::to_value(&tally).expect("serialises");
     assert_eq!(
         keys(&value),
-        vec!["asked", "correct", "pair", "weight", "wrong"]
+        vec!["asked", "correct", "pair", "warning", "weight", "wrong"]
+    );
+    assert!(
+        value["warning"].is_null(),
+        "the answer was saved, so there is nothing to say"
     );
 
     // The same payload, answered correctly, is a hit on the same pair.
@@ -1852,7 +1856,14 @@ fn the_grammar_answer_the_interface_posts_is_read_the_way_the_command_reads_it()
         .record_grammar_answer(&args.point, &args.picked)
         .expect("records");
     let value = serde_json::to_value(&tally).expect("serialises");
-    assert_eq!(keys(&value), vec!["asked", "correct", "point", "weight", "wrong"]);
+    assert_eq!(
+        keys(&value),
+        vec!["asked", "correct", "point", "warning", "weight", "wrong"]
+    );
+    assert!(
+        value["warning"].is_null(),
+        "the answer was saved, so there is nothing to say"
+    );
     assert_eq!(value["point"], question.point);
     assert_eq!(value["asked"], 1);
     assert_eq!(value["wrong"], 1);
@@ -1988,7 +1999,11 @@ fn the_grammar_production_answer_the_interface_posts_is_read_the_way_the_command
             "produced", "reading", "written",
         ]
     );
-    assert_eq!(keys(&value["record"]), vec!["asked", "correct", "point", "weight", "wrong"]);
+    assert_eq!(
+        keys(&value["record"]),
+        vec!["asked", "correct", "point", "warning", "weight", "wrong"]
+    );
+    assert!(value["record"]["warning"].is_null(), "the answer was saved");
     assert_eq!(value["verdict"]["correct"], false, "chigau is not the answer to this one");
     assert_eq!(value["verdict"]["produced"], "ちがう");
     assert_eq!(value["verdict"]["point"], question.point);
@@ -2209,8 +2224,18 @@ fn the_model_settings_cross_without_the_key_and_with_the_shape_the_screen_reads(
     // `src/lib/api.ts` reads `{ endpoint, model, keySet, configured }` and the screen
     // never sees the secret in either direction.
     let status = serde_json::to_value(state.model_status()).expect("serialises");
-    assert_eq!(keys(&status), vec!["configured", "endpoint", "keySet", "model"]);
-    assert_eq!(status["configured"], false, "a fresh app has no address to reach");
+    assert_eq!(
+        keys(&status),
+        vec!["configured", "endpoint", "keySet", "model", "warning"]
+    );
+    assert!(
+        status["warning"].is_null(),
+        "nothing went wrong with the settings file"
+    );
+    assert_eq!(
+        status["configured"], false,
+        "a fresh app has no address to reach"
+    );
 
     // The payload `save_model_settings` takes, as `api.saveModelSettings` posts it.
     // `key: null` is "leave the stored key alone" — the screen shows a placeholder
@@ -2344,4 +2369,190 @@ fn the_sentence_the_voice_is_handed_is_the_one_rust_read_back() {
     let args: SpeakSentence =
         serde_json::from_value(json!({ "typed": "私はstudentです。" })).expect("deserialises");
     assert!(state.speak_sentence(&args.typed).is_err());
+}
+
+// ---- the learner's files, when something has gone wrong with them ---------------
+//
+// Issue #13. Every one of these drives `AppState` the way the commands do and reads
+// the answer as the JSON the webview reads, so a warning that never reaches a screen
+// fails here rather than in a learner's lost history.
+
+/// How many files in `dir` hold exactly `bytes`, whatever they are now called — the
+/// aside name carries a timestamp, and the promise is that the bytes survive.
+fn files_holding(dir: &Path, bytes: &[u8]) -> usize {
+    fs::read_dir(dir)
+        .expect("the directory")
+        .filter_map(|entry| fs::read(entry.expect("an entry").path()).ok())
+        .filter(|held| held == bytes)
+        .count()
+}
+
+/// Valid JSON up to the cut and then two of the three bytes of シ: what a crash in
+/// the middle of writing a Japanese character leaves behind.
+fn cut_mid_character(prefix: &str) -> Vec<u8> {
+    let mut bytes = prefix.as_bytes().to_vec();
+    bytes.extend_from_slice(&"シ".as_bytes()[..2]);
+    bytes
+}
+
+#[test]
+fn a_drill_answer_that_cannot_be_saved_still_comes_back_with_a_warning() {
+    // A directory where the atomic write's temporary goes makes every save fail.
+    // The answer still happened: the tally must reach the screen with the reason
+    // beside it, rather than an error that leaves the learner to answer again.
+    let dir = TempDir::new("drill-unsaved");
+    fs::create_dir_all(dir.path().join("confusions.json.tmp")).expect("a directory in the way");
+    let state = AppState::load_at(dir.path());
+    let question = state
+        .next_drill_question_with_rolls(DrillKind::Confusion, 0.0, 0.0)
+        .expect("a question");
+
+    let tally = state
+        .record_drill_answer(&question.pair, &question.ch, &question.ch)
+        .expect("the answer is answered even when it cannot be saved");
+    let value = serde_json::to_value(&tally).expect("serialises");
+    assert_eq!(value["asked"], 1);
+    assert_eq!(value["correct"], 1);
+    let warning = value["warning"]
+        .as_str()
+        .expect("the failed save is reported");
+    assert!(warning.contains("could not be saved"), "{warning}");
+    assert_eq!(
+        state.log().tally(&tally.pair).asked,
+        1,
+        "counted once — the screen has its verdict, so there is nothing to retry"
+    );
+}
+
+#[test]
+fn a_grammar_answer_that_cannot_be_saved_still_comes_back_with_a_warning() {
+    let dir = TempDir::new("grammar-unsaved");
+    fs::create_dir_all(dir.path().join("grammar.json.tmp")).expect("a directory in the way");
+    let state = AppState::load_at(dir.path());
+
+    // The recognition drill.
+    let question = state
+        .next_grammar_question_with_rolls(0.0, 0.0, 0.0)
+        .expect("a question");
+    let tally = state
+        .record_grammar_answer(&question.point, &question.point)
+        .expect("the answer is answered even when it cannot be saved");
+    let value = serde_json::to_value(&tally).expect("serialises");
+    assert_eq!(value["asked"], 1);
+    let warning = value["warning"]
+        .as_str()
+        .expect("the failed save is reported");
+    assert!(warning.contains("could not be saved"), "{warning}");
+
+    // The written cloze, which used to lose its verdict this way: the lesson is
+    // what the learner is owed for answering, whether or not the file took it.
+    let production = state
+        .next_grammar_production_with_rolls(0.5, 0.0)
+        .expect("a question");
+    let outcome = state
+        .record_grammar_production(&production.point, production.example, "chigau")
+        .expect("the verdict arrives even when it cannot be saved");
+    let value = serde_json::to_value(&outcome).expect("serialises");
+    assert_eq!(
+        value["verdict"]["point"], production.point,
+        "the lesson is there"
+    );
+    let warning = value["record"]["warning"]
+        .as_str()
+        .expect("the failed save is reported beside the record");
+    assert!(warning.contains("could not be saved"), "{warning}");
+    let asked = value["record"]["asked"].as_u64().expect("a count");
+    assert!(
+        asked == 1 || (production.point == question.point && asked == 2),
+        "one answer, counted once: {asked}"
+    );
+}
+
+#[test]
+fn a_grammar_file_cut_off_mid_character_is_kept_and_the_learner_is_told_once() {
+    let dir = TempDir::new("grammar-cut");
+    let cut =
+        cut_mid_character(r#"{"points":{"te-kudasai":{"asked":9,"correct":3,"wrong":6}},"x":""#);
+    fs::write(dir.path().join("grammar.json"), &cut).expect("writes");
+
+    let state = AppState::load_at(dir.path());
+    let question = state
+        .next_grammar_question_with_rolls(0.0, 0.0, 0.0)
+        .expect("a question");
+    let first = serde_json::to_value(
+        state
+            .record_grammar_answer(&question.point, &question.point)
+            .expect("records"),
+    )
+    .expect("serialises");
+    let warning = first["warning"].as_str().expect("the learner is told");
+    assert!(warning.contains("kept as"), "{warning}");
+    assert_eq!(
+        files_holding(dir.path(), &cut),
+        1,
+        "and the history survives, byte for byte"
+    );
+
+    // Said once: the fresh file is being written now, so the next answer is an
+    // ordinary answer.
+    let second = serde_json::to_value(
+        state
+            .record_grammar_answer(&question.point, &question.point)
+            .expect("records"),
+    )
+    .expect("serialises");
+    assert!(second["warning"].is_null(), "{second}");
+    assert_eq!(
+        files_holding(dir.path(), &cut),
+        1,
+        "still there after the next write"
+    );
+}
+
+#[test]
+fn a_composition_file_from_a_newer_build_is_left_alone_and_the_learner_is_told() {
+    let dir = TempDir::new("composition-future");
+    let path = dir.path().join("compositions.json");
+    let future = r#"{"version":99,"written":{},"drafts":{"wa":["未来"]}}"#;
+    fs::write(&path, future).expect("writes");
+
+    let state = AppState::load_at(dir.path());
+    for _ in 0..2 {
+        let outcome = state
+            .record_grammar_composition("ni-hanshite", "kare no yosou ni hanshite")
+            .expect("records");
+        let warning = outcome.warning.expect("the learner is told, every time");
+        assert!(warning.contains("not be remembered"), "{warning}");
+    }
+    assert_eq!(
+        fs::read_to_string(&path).expect("still there"),
+        future,
+        "and it was not touched"
+    );
+}
+
+#[test]
+fn a_preference_file_cut_off_mid_character_is_kept_and_the_learner_is_told() {
+    let dir = TempDir::new("prefs-cut");
+    let cut = cut_mid_character(r#"{"section":"kanji","x":""#);
+    fs::write(dir.path().join("prefs.json"), &cut).expect("writes");
+
+    let state = AppState::load_at(dir.path());
+    let warning = state
+        .set_section(Section::Kana)
+        .expect("the learner is told");
+    assert!(warning.contains("kept as"), "{warning}");
+    assert_eq!(files_holding(dir.path(), &cut), 1);
+    assert_eq!(state.set_section(Section::Kanji), None, "and only once");
+}
+
+#[test]
+fn a_model_file_that_will_not_parse_is_reported_on_the_status_the_screen_reads() {
+    let dir = TempDir::new("model-corrupt");
+    fs::write(dir.path().join("model.json"), "{ not json").expect("writes");
+    let state = AppState::load_at(dir.path());
+    let status = serde_json::to_value(state.model_status()).expect("serialises");
+    let warning = status["warning"].as_str().expect("the learner is told");
+    assert!(warning.contains("kept as"), "{warning}");
+    assert_eq!(files_holding(dir.path(), b"{ not json"), 1);
 }

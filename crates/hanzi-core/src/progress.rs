@@ -24,7 +24,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -1137,6 +1137,12 @@ fn read_document(path: &Path) -> Result<Document, ProgressError> {
 }
 
 /// Write a document atomically: temporary file first, then rename.
+///
+/// And durably: the temporary is synced before the rename and the directory after
+/// it. Without the first, a power cut on APFS — or on ext4 and XFS without
+/// `auto_da_alloc` — can leave the new name pointing at bytes that never reached the
+/// disk, which is a zero-length schedule; without the second, the rename itself may
+/// not survive.
 fn save_document<T: Serialize>(path: &Path, document: &T) -> Result<(), ProgressError> {
     if path.as_os_str().is_empty() {
         return Ok(()); // in-memory store
@@ -1151,10 +1157,36 @@ fn save_document<T: Serialize>(path: &Path, document: &T) -> Result<(), Progress
         .map_err(|e| ProgressError::Io(e.to_string()))?;
 
     let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, json)
+    fs::File::create(&temporary)
+        .and_then(|mut file| {
+            file.write_all(json.as_bytes())?;
+            file.sync_all()
+        })
         .map_err(|e| ProgressError::Io(format!("{}: {e}", temporary.display())))?;
     fs::rename(&temporary, path).map_err(|e| ProgressError::Io(format!("{}: {e}", path.display())))?;
+    sync_parent(path);
     Ok(())
+}
+
+/// Flush the directory entry a rename just changed, on the platforms that can.
+///
+/// Best effort, deliberately: the document's own bytes are already on the disk and
+/// the rename has happened, so a file system that refuses to sync a directory (some
+/// network and FUSE mounts do) has not lost the attempt, and reporting a failed save
+/// would be untrue. Windows has no directory handle to sync.
+fn sync_parent(path: &Path) {
+    #[cfg(unix)]
+    {
+        let dir = match path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
+        if let Err(e) = fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+            eprintln!("{}: the directory could not be synced ({e})", dir.display());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 #[cfg(test)]

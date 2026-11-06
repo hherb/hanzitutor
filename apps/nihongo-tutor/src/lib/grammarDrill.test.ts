@@ -109,6 +109,7 @@ describe("recordLine", () => {
     correct,
     wrong,
     weight: 1 + 2 * wrong - correct,
+    warning: null,
   });
 
   it("says a missed pattern comes up more often", () => {

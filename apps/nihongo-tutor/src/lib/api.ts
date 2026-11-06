@@ -191,6 +191,9 @@ export function recordDrillAnswer(
   target: string,
   picked: string,
 ): Promise<DrillTally> {
+  // A save that failed is `warning` on the tally, not a rejection: the answer was
+  // counted, and a rejection would invite the learner to answer — and be counted —
+  // again.
   return invoke<DrillTally>("record_drill_answer", { pair, target, picked });
 }
 
@@ -387,7 +390,8 @@ export function grammarDrillSize(): Promise<GrammarDrillSize> {
  *
  * `point` is the pattern the question asked for and `picked` is the one that was
  * chosen. There is deliberately no way to say whether it was right: correctness is
- * decided in Rust from those two, against the pattern the question named.
+ * decided in Rust from those two, against the pattern the question named. A save that
+ * failed comes back as the tally's `warning`, never as a rejection.
  */
 export function recordGrammarAnswer(point: string, picked: string): Promise<GrammarTally> {
   return invoke<GrammarTally>("record_grammar_answer", { point, picked });
@@ -426,7 +430,9 @@ export function grammarProductionSize(): Promise<GrammarDrillSize> {
  * **position**, because the sentence contains the answer and the question never
  * carried it. There is deliberately no way to say whether the answer was right:
  * `record_grammar_production` decides in Rust from the corpus's own reading of the
- * hole, exactly as `record_grammar_answer` decides the drill's.
+ * hole, exactly as `record_grammar_answer` decides the drill's. A save that failed
+ * comes back as `record.warning` beside the verdict, never as a rejection that would
+ * hide the lesson.
  */
 export function recordGrammarProduction(
   point: string,

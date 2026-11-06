@@ -1310,8 +1310,11 @@ than `0644` and the one whose contents never cross back over the IPC boundary (t
 interface is told that a key is set, never what it is). The five plain files
 share one generic read/write pair in `store.rs` and the sixth a private writer beside
 it, because the ritual — a missing file
-is a first run, an unreadable one is moved aside rather than overwritten, a write is
-a temporary plus a rename — is the same for a preference as for a schedule.
+is a first run, one that will not parse is moved aside under a timestamped name rather
+than overwritten, one that cannot be read at all (or comes from a newer build) is left
+alone while that store runs in memory, the learner is told on that store's next
+response, and a write is a synced temporary plus a rename — is the same for a
+preference as for a schedule (issue #13).
 
 Two practical consequences:
 
@@ -1621,7 +1624,7 @@ Three things follow, and each is pinned:
   grade and the grade happened. Under the harness's file sandbox this is the
   *normal* result (trap 5), and it is what the live check shows.
 * **A schedule this build cannot read is never overwritten.** A file that will not
-  parse is moved aside as `review.json.corrupt` and a fresh one started; a file
+  parse is moved aside as `review.json.corrupt-<time>` and a fresh one started; a file
   from a newer build is left untouched and the session runs in memory with a
   warning. This is `hanzi_core::progress`'s own rule, applied in the app for the
   one file where guessing would lose real work — and it is the same refusal

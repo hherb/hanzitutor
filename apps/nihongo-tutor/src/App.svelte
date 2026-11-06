@@ -89,8 +89,9 @@
 
   /**
    * A warning about the app rather than about an attempt: at present, that the
-   * section could not be remembered. Kept beside `error` rather than in it, because
-   * losing a preference is not the same as failing to grade.
+   * section could not be remembered, or that the file it is kept in could not be read
+   * and was set aside. Kept beside `error` rather than in it, because losing a
+   * preference is not the same as failing to grade.
    */
   let warning = $state<string | null>(null);
 

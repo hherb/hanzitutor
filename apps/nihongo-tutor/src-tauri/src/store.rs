@@ -14,9 +14,20 @@
 //! read one, copy it as a backup, or delete it to start over. All five are written by
 //! Rust rather than by the webview, which is why the app still holds no filesystem
 //! permission in `capabilities/default.json`.
+//!
+//! ## When a file is not what it should be
+//!
+//! One rule for every file here, because every one of them is someone's history:
+//! **this app is never the thing that destroys it.** A file that will not parse — a
+//! hand edit gone wrong, or a crash that cut it off in the middle of a Japanese
+//! character — is moved aside under a name of its own and a fresh one started. A
+//! file that cannot be read at all, a file from a newer build, or one that could not
+//! be moved aside is left exactly where it is, and that store runs in memory for the
+//! session. Either way the learner is told, on the next response that store gives,
+//! rather than finding out from an empty record a week later.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use nihongo_core::{
@@ -50,6 +61,166 @@ pub const REVIEW_FILE_NAME: &str = "review.json";
 /// What the app remembers about the shape of the interface itself.
 pub const PREFS_FILE_NAME: &str = "prefs.json";
 
+/// What a store did with one answer, and what the learner should be told about it.
+///
+/// The answer is recorded in memory whatever happens to the file, so `value` is
+/// always the record as it now stands. `warning` is set when the file could not be
+/// written, or when the store has something to say about how it was opened: a
+/// verdict travels with its warning rather than being replaced by an error, because
+/// an error is what made a screen offer the same answer again, and every retry was
+/// counted a second time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Saved<T> {
+    pub value: T,
+    pub warning: Option<String>,
+}
+
+/// Where a store's file is, and what the learner has not yet been told about it.
+///
+/// Shared by the five stores below that keep their own JSON, so the rule in the
+/// module's header is written once and cannot drift between a preference and a
+/// tally.
+struct StoreFile {
+    /// `None` means nowhere to write: the record still works for this session. That
+    /// is the state the unit tests run in, what the app falls back to when the
+    /// platform will not name a data directory, and what a store is put in when its
+    /// file must not be written over.
+    path: Option<PathBuf>,
+    /// Something the learner should hear about this file. Said **once** when the
+    /// file was moved aside and a fresh one is being written — from then on the
+    /// store is working normally — and said on **every** response while the store
+    /// runs in memory, because the learner is losing work for as long as that lasts.
+    warning: Option<String>,
+}
+
+impl StoreFile {
+    fn in_memory() -> Self {
+        Self {
+            path: None,
+            warning: None,
+        }
+    }
+
+    /// Read `path`, by the rule in the module's header.
+    ///
+    /// `what` names the file for the learner ("the kana drill's record"). `accept`
+    /// is the last word on a file that parsed: it says why a file must not be
+    /// written over even though it reads, which is how a newer build's file is
+    /// refused.
+    fn open<T: DeserializeOwned + Default>(
+        path: PathBuf,
+        what: &str,
+        accept: impl FnOnce(&T) -> Result<(), String>,
+    ) -> (T, Self) {
+        // Bytes rather than a string, so that a file cut off in the middle of a
+        // multi-byte character is a *parse* error — moved aside like any other —
+        // rather than an I/O error. Only a file that truly cannot be read is left
+        // for the I/O branch below.
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return (T::default(), Self::at(path))
+            }
+            // Permission denied, a disk error, a directory in the file's place: the
+            // file may be perfectly good, so it is not moved and not written over.
+            Err(err) => return Self::unwritable(format!("{what} could not be opened ({err})")),
+        };
+        match serde_json::from_slice::<T>(&bytes) {
+            Ok(value) => match accept(&value) {
+                Ok(()) => (value, Self::at(path)),
+                Err(why) => {
+                    Self::unwritable(format!("{what} {why}, so the file was left as it is"))
+                }
+            },
+            Err(why) => match set_aside(&path) {
+                Ok(aside) => {
+                    let warning = format!(
+                        "{what} could not be read ({why}); it was kept as {} and a fresh one \
+                         started",
+                        aside.display()
+                    );
+                    eprintln!("{}: {warning}", path.display());
+                    (
+                        T::default(),
+                        Self {
+                            path: Some(path),
+                            warning: Some(warning),
+                        },
+                    )
+                }
+                // If the bad file cannot be moved out of the way, writing a fresh
+                // one would replace it — which is the one thing this must not do.
+                Err(err) => Self::unwritable(format!(
+                    "{what} could not be read ({why}) and could not be kept aside ({err})"
+                )),
+            },
+        }
+    }
+
+    fn at(path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            warning: None,
+        }
+    }
+
+    /// A store that will not write, with the reason.
+    fn unwritable<T: Default>(why: String) -> (T, Self) {
+        let warning = format!("{why}; this session will not be remembered");
+        eprintln!("{warning}");
+        (
+            T::default(),
+            Self {
+                path: None,
+                warning: Some(warning),
+            },
+        )
+    }
+
+    fn is_persistent(&self) -> bool {
+        self.path.is_some()
+    }
+
+    fn write<T: Serialize>(&self, value: &T) -> io::Result<()> {
+        match &self.path {
+            Some(path) => write_json(path, value),
+            None => Ok(()),
+        }
+    }
+
+    fn write_secret<T: Serialize>(&self, value: &T) -> io::Result<()> {
+        match &self.path {
+            Some(path) => write_secret_json(path, value),
+            None => Ok(()),
+        }
+    }
+
+    /// What this response should tell the learner about the file, if anything.
+    ///
+    /// Taken when the store is writing normally — the learner has now been told the
+    /// old file was kept aside — and repeated while it runs in memory.
+    fn notice(&mut self) -> Option<String> {
+        if self.path.is_some() {
+            self.warning.take()
+        } else {
+            self.warning.clone()
+        }
+    }
+
+    /// The warning for a response that has just tried to write: the notice, and the
+    /// write's own failure after it. `done` says what still happened
+    /// ("the answer was counted").
+    fn report(&mut self, saved: io::Result<()>, done: &str) -> Option<String> {
+        let failed = saved
+            .err()
+            .map(|err| format!("{done} but could not be saved: {err}"));
+        match (self.notice(), failed) {
+            (Some(notice), Some(failed)) => Some(format!("{notice}; {failed}")),
+            (notice, failed) => notice.or(failed),
+        }
+    }
+}
+
 /// The half of the app that is open, remembered so the next start returns there.
 ///
 /// It is small enough to be a field rather than a file of its own, and it is
@@ -73,15 +244,12 @@ impl Prefs {
 
 /// What the app remembers about how the learner left the interface.
 ///
-/// The same file ritual as the other two stores: a missing file is the first run,
-/// a file that will not parse is moved aside rather than overwritten, and a write
+/// The same file ritual as the other stores (see the module's header), and a write
 /// failure is returned rather than swallowed. Losing a preference is cheap, which
 /// is exactly why it must not be allowed to take the schedule with it — it lives
 /// in its own file for that reason and not for tidiness.
 pub struct PrefsStore {
-    /// `None` means nowhere to write: the preference still works for this
-    /// session, which is the state the unit tests run in.
-    path: Option<PathBuf>,
+    file: StoreFile,
     prefs: Prefs,
 }
 
@@ -89,18 +257,19 @@ impl PrefsStore {
     /// A store that keeps its answer in memory and writes nothing.
     pub fn in_memory() -> Self {
         Self {
-            path: None,
+            file: StoreFile::in_memory(),
             prefs: Prefs::default(),
         }
     }
 
     /// Load `prefs.json` from `dir`, or start on the default.
     pub fn at_dir(dir: impl AsRef<Path>) -> Self {
-        let path = dir.as_ref().join(PREFS_FILE_NAME);
-        Self {
-            prefs: read_json(&path),
-            path: Some(path),
-        }
+        let (prefs, file) = StoreFile::open(
+            dir.as_ref().join(PREFS_FILE_NAME),
+            "the remembered section",
+            |_| Ok(()),
+        );
+        Self { file, prefs }
     }
 
     /// What is remembered.
@@ -110,32 +279,29 @@ impl PrefsStore {
 
     /// Whether anything is written to disk at all.
     pub fn is_persistent(&self) -> bool {
-        self.path.is_some()
+        self.file.is_persistent()
     }
 
-    /// Remember the section, writing the file, and say when the write failed.
+    /// Remember the section, writing the file, and say what the learner should be
+    /// told.
     ///
     /// The answer is kept **even if the write fails** — the learner did move — and
     /// the failure comes back rather than being swallowed, for the same reason the
     /// drill's and the schedule's do: a preference that is not being saved should
     /// not look like one that is.
-    pub fn set_section(&mut self, section: Section) -> Result<(), io::Error> {
+    pub fn set_section(&mut self, section: Section) -> Option<String> {
         self.prefs.section = Some(section);
-        match &self.path {
-            Some(path) => write_json(path, &self.prefs),
-            None => Ok(()),
-        }
+        let saved = self.file.write(&self.prefs);
+        self.file.report(saved, "the section was changed")
     }
 }
 
-
 /// What the app knows about this learner's confusion pairs, and where it is kept.
 pub struct ConfusionStore {
-    /// `None` means nowhere to write — the tallies still work, for this session
-    /// only. That is the state the unit tests run in, and what the app falls back
-    /// to when the platform will not name a data directory, because an app that
-    /// cannot remember is still better than an app that will not start.
-    path: Option<PathBuf>,
+    /// In memory when there is nowhere to write — the tallies still work, for this
+    /// session only. An app that cannot remember is still better than an app that
+    /// will not start.
+    file: StoreFile,
     log: ConfusionLog,
 }
 
@@ -143,7 +309,7 @@ impl ConfusionStore {
     /// A store that keeps its record in memory and writes nothing.
     pub fn in_memory() -> Self {
         Self {
-            path: None,
+            file: StoreFile::in_memory(),
             log: ConfusionLog::new(),
         }
     }
@@ -153,11 +319,12 @@ impl ConfusionStore {
     /// A missing file is not an error: that is the first run, and the first
     /// answer creates it.
     pub fn at_dir(dir: impl AsRef<Path>) -> Self {
-        let path = dir.as_ref().join(FILE_NAME);
-        Self {
-            log: read_json(&path),
-            path: Some(path),
-        }
+        let (log, file) = StoreFile::open(
+            dir.as_ref().join(FILE_NAME),
+            "the kana drill's record",
+            |_| Ok(()),
+        );
+        Self { file, log }
     }
 
     /// The record itself.
@@ -167,27 +334,28 @@ impl ConfusionStore {
 
     /// Whether anything is written to disk at all.
     pub fn is_persistent(&self) -> bool {
-        self.path.is_some()
+        self.file.is_persistent()
     }
 
     /// Record one answer against a pair, write the file, and say what the record
     /// now is.
     ///
-    /// The record is kept **even if the write fails** — the answer happened — but
-    /// the failure is returned rather than swallowed, because a learner whose
-    /// progress is not being saved should be told rather than discover it later.
-    pub fn record(&mut self, key: &str, correct: bool) -> io::Result<PairTally> {
-        let tally = self.log.record(key, correct);
-        self.save()?;
-        Ok(tally)
+    /// The record is kept **even if the write fails** — the answer happened — and
+    /// the failure travels as the warning beside it rather than instead of it,
+    /// because a learner whose progress is not being saved should be told rather
+    /// than discover it later, and should not be asked the same question twice.
+    pub fn record(&mut self, key: &str, correct: bool) -> Saved<PairTally> {
+        let value = self.log.record(key, correct);
+        let saved = self.save();
+        Saved {
+            value,
+            warning: self.file.report(saved, "the answer was counted"),
+        }
     }
 
     /// Write the file, if there is one to write.
     pub fn save(&self) -> io::Result<()> {
-        match &self.path {
-            Some(path) => write_json(path, &self.log),
-            None => Ok(()),
-        }
+        self.file.write(&self.log)
     }
 }
 
@@ -202,10 +370,9 @@ impl ConfusionStore {
 /// The tally itself is [`nihongo_core::GrammarLog`], which holds the same
 /// [`PairTally`] and the same weight rule as the kana drill.
 pub struct GrammarStore {
-    /// `None` means nowhere to write, as in the other stores: the tallies still work
-    /// for this session, and the app falls back to that when the platform will not
-    /// name a data directory.
-    path: Option<PathBuf>,
+    /// In memory when there is nowhere to write, as in the other stores: the
+    /// tallies still work for this session.
+    file: StoreFile,
     log: GrammarLog,
 }
 
@@ -213,7 +380,7 @@ impl GrammarStore {
     /// A store that keeps its record in memory and writes nothing.
     pub fn in_memory() -> Self {
         Self {
-            path: None,
+            file: StoreFile::in_memory(),
             log: GrammarLog::new(),
         }
     }
@@ -223,11 +390,12 @@ impl GrammarStore {
     /// A missing file is not an error: that is the first run, and the first answer
     /// creates it.
     pub fn at_dir(dir: impl AsRef<Path>) -> Self {
-        let path = dir.as_ref().join(GRAMMAR_FILE_NAME);
-        Self {
-            log: read_json(&path),
-            path: Some(path),
-        }
+        let (log, file) = StoreFile::open(
+            dir.as_ref().join(GRAMMAR_FILE_NAME),
+            "the grammar drill's record",
+            |_| Ok(()),
+        );
+        Self { file, log }
     }
 
     /// The record itself.
@@ -237,28 +405,27 @@ impl GrammarStore {
 
     /// Whether anything is written to disk at all.
     pub fn is_persistent(&self) -> bool {
-        self.path.is_some()
+        self.file.is_persistent()
     }
 
     /// Record one answer against a pattern, write the file, and say what the record
     /// now is.
     ///
     /// The same rule the kana drill's store follows: the record is kept **even if
-    /// the write fails** — the answer happened — but the failure is returned rather
-    /// than swallowed, because a learner whose progress is not being saved should be
-    /// told rather than discover it later.
-    pub fn record(&mut self, id: &str, correct: bool) -> io::Result<PairTally> {
-        let tally = self.log.record(id, correct);
-        self.save()?;
-        Ok(tally)
+    /// the write fails** — the answer happened — and the failure travels beside the
+    /// record rather than instead of it.
+    pub fn record(&mut self, id: &str, correct: bool) -> Saved<PairTally> {
+        let value = self.log.record(id, correct);
+        let saved = self.save();
+        Saved {
+            value,
+            warning: self.file.report(saved, "the answer was counted"),
+        }
     }
 
     /// Write the file, if there is one to write.
     pub fn save(&self) -> io::Result<()> {
-        match &self.path {
-            Some(path) => write_json(path, &self.log),
-            None => Ok(()),
-        }
+        self.file.write(&self.log)
     }
 }
 
@@ -272,9 +439,9 @@ impl GrammarStore {
 /// sentences with the date each was written, not counters), and a mistake in writing
 /// one must not be able to reach the other.
 pub struct CompositionStore {
-    /// `None` means nowhere to write, as in the other stores: this session keeps the
-    /// sentences and the next one will not.
-    path: Option<PathBuf>,
+    /// In memory when there is nowhere to write, as in the other stores: this
+    /// session keeps the sentences and the next one will not.
+    file: StoreFile,
     log: CompositionLog,
 }
 
@@ -282,7 +449,7 @@ impl CompositionStore {
     /// A store that keeps the learner's sentences in memory and writes nothing.
     pub fn in_memory() -> Self {
         Self {
-            path: None,
+            file: StoreFile::in_memory(),
             log: CompositionLog::new(),
         }
     }
@@ -290,13 +457,27 @@ impl CompositionStore {
     /// Load `compositions.json` from `dir`, or start empty.
     ///
     /// A missing file is not an error: that is the first run, and the first sentence
-    /// written creates it.
+    /// written creates it. A file written by a **newer** build is refused and left
+    /// untouched, as the review schedule's is: this build would read it with the
+    /// fields it does not know dropped, and writing it back would lose them for good.
     pub fn at_dir(dir: impl AsRef<Path>) -> Self {
-        let path = dir.as_ref().join(COMPOSITIONS_FILE_NAME);
-        Self {
-            log: read_json(&path),
-            path: Some(path),
-        }
+        let (log, file) = StoreFile::open(
+            dir.as_ref().join(COMPOSITIONS_FILE_NAME),
+            "the file of your written sentences",
+            |log: &CompositionLog| {
+                let understood = CompositionLog::new().version;
+                if log.version > understood {
+                    Err(format!(
+                        "was saved by a newer version of the app (format {}, this one reads up \
+                         to {understood})",
+                        log.version
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        Self { file, log }
     }
 
     /// What has been written.
@@ -306,27 +487,32 @@ impl CompositionStore {
 
     /// Whether anything is written to disk at all.
     pub fn is_persistent(&self) -> bool {
-        self.path.is_some()
+        self.file.is_persistent()
     }
 
     /// Keep one sentence, write the file, and answer how many this pattern holds.
     ///
     /// The same rule the other stores follow: the sentence is kept **even if the
-    /// write fails** — the learner wrote it — but the failure is returned rather than
-    /// swallowed, because a learner whose own writing is not being saved should be
-    /// told rather than discover it later.
-    pub fn add(&mut self, id: &str, text: &str, at: &str) -> io::Result<usize> {
-        let count = self.log.add(id, text, at);
-        self.save()?;
-        Ok(count)
+    /// write fails** — the learner wrote it — and the failure travels beside the
+    /// count rather than being swallowed, because a learner whose own writing is not
+    /// being saved should be told rather than discover it later.
+    pub fn add(&mut self, id: &str, text: &str, at: &str) -> Saved<usize> {
+        let value = self.log.add(id, text, at);
+        let saved = self.save();
+        Saved {
+            value,
+            warning: self.file.report(saved, "the sentence was kept"),
+        }
+    }
+
+    /// What the learner should be told about this file, when nothing was written.
+    pub fn notice(&mut self) -> Option<String> {
+        self.file.notice()
     }
 
     /// Write the file, if there is one to write.
     pub fn save(&self) -> io::Result<()> {
-        match &self.path {
-            Some(path) => write_json(path, &self.log),
-            None => Ok(()),
-        }
+        self.file.write(&self.log)
     }
 }
 
@@ -352,8 +538,9 @@ impl CompositionStore {
 /// and a file that will not parse at all is moved aside by the same ritual as the
 /// other five.
 pub struct ModelStore {
-    /// `None` means nowhere to write: the settings still work for this session.
-    path: Option<PathBuf>,
+    /// In memory when there is nowhere to write: the settings still work for this
+    /// session.
+    file: StoreFile,
     settings: ModelSettings,
 }
 
@@ -361,18 +548,19 @@ impl ModelStore {
     /// A store that keeps the settings in memory and writes nothing.
     pub fn in_memory() -> Self {
         Self {
-            path: None,
+            file: StoreFile::in_memory(),
             settings: ModelSettings::default(),
         }
     }
 
     /// Load `model.json` from `dir`, or start unconfigured.
     pub fn at_dir(dir: impl AsRef<Path>) -> Self {
-        let path = dir.as_ref().join(MODEL_FILE_NAME);
-        Self {
-            settings: read_json(&path),
-            path: Some(path),
-        }
+        let (settings, file) = StoreFile::open(
+            dir.as_ref().join(MODEL_FILE_NAME),
+            "the model settings",
+            |_| Ok(()),
+        );
+        Self { file, settings }
     }
 
     /// What the learner configured.
@@ -382,7 +570,13 @@ impl ModelStore {
 
     /// Whether anything is written to disk at all.
     pub fn is_persistent(&self) -> bool {
-        self.path.is_some()
+        self.file.is_persistent()
+    }
+
+    /// What the learner should be told about this file, if anything — see
+    /// [`StoreFile::notice`] for when it is said once and when on every response.
+    pub fn notice(&mut self) -> Option<String> {
+        self.file.notice()
     }
 
     /// Replace the settings, writing the file, and say when the write failed.
@@ -392,10 +586,7 @@ impl ModelStore {
     /// swallowed, for the reason the other stores give.
     pub fn save(&mut self, settings: ModelSettings) -> io::Result<()> {
         self.settings = settings;
-        match &self.path {
-            Some(path) => write_secret_json(path, &self.settings),
-            None => Ok(()),
-        }
+        self.file.write_secret(&self.settings)
     }
 }
 
@@ -462,15 +653,14 @@ impl ReviewStore {
                 warning: None,
             },
             Err(ProgressError::Malformed(why)) => {
-                let aside = corrupt_path(&path);
                 eprintln!(
                     "{}: {why}; moving it aside and starting a fresh schedule",
                     path.display()
                 );
-                match fs::rename(&path, &aside) {
+                match set_aside(&path) {
                     // The unreadable file is out of the way, so a fresh schedule
                     // can take its place and be written to from here on.
-                    Ok(()) => match ProgressStore::open(&path) {
+                    Ok(aside) => match ProgressStore::open(&path) {
                         Ok(store) => Self {
                             store,
                             warning: Some(format!(
@@ -549,40 +739,30 @@ impl ReviewStore {
     }
 }
 
-/// Read a JSON file, treating anything unreadable as "nothing recorded yet".
+/// Move a file that will not parse out of the way, and say where it went.
 ///
-/// A file that will not parse is **moved aside** as `<name>.json.corrupt` rather
-/// than overwritten. It is the learner's history; this app should not be the thing
-/// that deletes it, and leaving it where it is would mean failing to write on every
-/// subsequent answer. The next write creates a fresh file.
-///
-/// Generic because all three of the app's files are read this way, and the ritual
-/// — keep the unreadable one, carry on with the default, never crash on a file a
-/// person edited by hand — is the same ritual for a preference as for a schedule.
-fn read_json<T: DeserializeOwned + Default>(path: &Path) -> T {
-    match fs::read_to_string(path) {
-        Ok(text) => match serde_json::from_str::<T>(&text) {
-            Ok(value) => value,
-            Err(err) => {
-                eprintln!(
-                    "{}: {err}; moving it aside and starting with no record",
-                    path.display()
-                );
-                let _ = fs::rename(path, corrupt_path(path));
-                T::default()
-            }
-        },
-        Err(err) if err.kind() == io::ErrorKind::NotFound => T::default(),
-        Err(err) => {
-            eprintln!("{}: {err}; starting with no record", path.display());
-            T::default()
-        }
-    }
-}
-
-/// Where a file that would not parse is kept.
-fn corrupt_path(path: &Path) -> PathBuf {
-    path.with_extension("json.corrupt")
+/// The new name is the old one with `.corrupt-` and the time appended —
+/// `confusions.json.corrupt-20261106T150625Z` — and a counter after that if the name
+/// is somehow taken, so a second bad file can never land on the copy kept from the
+/// first. The time is written without its colons, which some platforms do not allow
+/// in a file name.
+fn set_aside(path: &Path) -> io::Result<PathBuf> {
+    let stamp: String = now_iso8601()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect();
+    let base = format!("{}.corrupt-{stamp}", path.display());
+    let aside = (0..)
+        .map(|n| match n {
+            0 => PathBuf::from(&base),
+            n => PathBuf::from(format!("{base}-{n}")),
+        })
+        // `symlink_metadata` rather than `exists`, so that even a dangling link is a
+        // name that is taken.
+        .find(|candidate| fs::symlink_metadata(candidate).is_err())
+        .expect("an unbounded range always has another name to try");
+    fs::rename(path, &aside)?;
+    Ok(aside)
 }
 
 /// Write a JSON file whole, via a neighbouring temporary and a rename.
@@ -592,34 +772,73 @@ fn corrupt_path(path: &Path) -> PathBuf {
 /// files are rewritten after *every* answer, and the machine can lose power between
 /// two of them.
 fn write_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let text = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, text.as_bytes())?;
-    fs::rename(&tmp, path)
+    write_atomically(path, value, false)
 }
 
 /// Write a JSON file whole, readable and writable only by its owner.
 ///
 /// The same temporary-plus-rename as [`write_json`], with the mode set on the
-/// temporary before it is renamed, so the secret is never briefly world-readable. On
-/// Unix the mode is `0600`; on the platforms where that means nothing the file is
-/// simply written, which is what the platform's own directory permissions are for.
+/// temporary before anything is written into it, so the secret is never briefly
+/// world-readable. On Unix the mode is `0600`; on the platforms where that means
+/// nothing the file is simply written, which is what the platform's own directory
+/// permissions are for.
 fn write_secret_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    write_atomically(path, value, true)
+}
+
+/// The one writer behind [`write_json`] and [`write_secret_json`].
+///
+/// Atomic is not the same as durable. A rename is ordered against nothing the file
+/// system has not yet flushed, so after a power cut on APFS, or on ext4 and XFS
+/// without `auto_da_alloc`, the new name can point at a file whose bytes never
+/// reached the disk — a zero-length history. So the temporary is synced before it is
+/// renamed, and the directory after, which is what makes the rename itself survive.
+fn write_atomically<T: Serialize>(path: &Path, value: &T, owner_only: bool) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
     let text = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, text.as_bytes())?;
+    {
+        let mut file = fs::File::create(&tmp)?;
+        #[cfg(unix)]
+        if owner_only {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        #[cfg(not(unix))]
+        let _ = owner_only;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+    }
+    fs::rename(&tmp, path)?;
+    sync_parent(path);
+    Ok(())
+}
+
+/// Flush the directory entry a rename just changed, on the platforms that can.
+///
+/// Best effort, deliberately: by now the file's own bytes are on the disk and the
+/// rename has happened, so a file system that refuses to sync a directory (some
+/// network and FUSE mounts do) has not lost the answer, and reporting "could not be
+/// saved" would be untrue. Windows has no directory handle to sync; its rename is
+/// already durable once the file is.
+fn sync_parent(path: &Path) {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+        let dir = match path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
+        if let Err(err) = fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+            eprintln!(
+                "{}: the directory could not be synced ({err})",
+                dir.display()
+            );
+        }
     }
-    fs::rename(&tmp, path)
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 #[cfg(test)]
@@ -660,6 +879,25 @@ mod tests {
         }
     }
 
+    /// Unwrap what a store answered when nothing went wrong: the value, and the
+    /// assertion that there was nothing to tell the learner.
+    trait Clean<T> {
+        fn expect_clean(self, why: &str) -> T;
+    }
+
+    impl<T> Clean<T> for Saved<T> {
+        fn expect_clean(self, why: &str) -> T {
+            assert_eq!(self.warning, None, "{why}");
+            self.value
+        }
+    }
+
+    impl Clean<()> for Option<String> {
+        fn expect_clean(self, why: &str) {
+            assert_eq!(self, None, "{why}");
+        }
+    }
+
     fn shi_tsu() -> String {
         pair_key(find_pair("シ|ツ").expect("the pair exists"))
     }
@@ -672,7 +910,7 @@ mod tests {
         assert!(store.log().is_empty());
         assert!(!dir.path().join(FILE_NAME).exists(), "nothing written yet");
 
-        let tally = store.record(&shi_tsu(), false).expect("saves");
+        let tally = store.record(&shi_tsu(), false).expect_clean("saves");
         assert_eq!(tally.asked, 1);
         assert_eq!(tally.wrong, 1);
         assert!(dir.path().join(FILE_NAME).exists(), "the answer was written");
@@ -683,8 +921,8 @@ mod tests {
         let dir = TempDir::new("restart");
         {
             let mut store = ConfusionStore::at_dir(dir.path());
-            store.record(&shi_tsu(), false).expect("saves");
-            store.record(&shi_tsu(), true).expect("saves");
+            store.record(&shi_tsu(), false).expect_clean("saves");
+            store.record(&shi_tsu(), true).expect_clean("saves");
         }
         let reopened = ConfusionStore::at_dir(dir.path());
         let tally = reopened.log().tally(&shi_tsu());
@@ -702,7 +940,7 @@ mod tests {
     fn the_file_is_readable_json_of_the_shape_the_docs_promise() {
         let dir = TempDir::new("shape");
         let mut store = ConfusionStore::at_dir(dir.path());
-        store.record(&shi_tsu(), false).expect("saves");
+        store.record(&shi_tsu(), false).expect_clean("saves");
 
         let text = fs::read_to_string(dir.path().join(FILE_NAME)).expect("the file");
         let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -722,7 +960,7 @@ mod tests {
         fs::write(dir.path().join(FILE_NAME), "{}").expect("writes");
         let store = ConfusionStore::at_dir(dir.path());
         assert!(store.log().is_empty());
-        assert!(!dir.path().join("confusions.json.corrupt").exists());
+        assert!(asides(dir.path(), FILE_NAME).is_empty());
     }
 
     // ---- the learner's own sentences ---------------------------------------
@@ -735,8 +973,13 @@ mod tests {
         assert!(store.log().is_empty());
         assert!(!dir.path().join(COMPOSITIONS_FILE_NAME).exists(), "nothing written yet");
 
-        let count = store.add("ni-hanshite", "彼の予想に反して、試合は延期された。", "2026-10-07T00:00:00Z")
-            .expect("saves");
+        let count = store
+            .add(
+                "ni-hanshite",
+                "彼の予想に反して、試合は延期された。",
+                "2026-10-07T00:00:00Z",
+            )
+            .expect_clean("saves");
         assert_eq!(count, 1);
         assert!(dir.path().join(COMPOSITIONS_FILE_NAME).exists(), "the sentence was written");
     }
@@ -746,9 +989,15 @@ mod tests {
         let dir = TempDir::new("composition-restart");
         {
             let mut store = CompositionStore::at_dir(dir.path());
-            store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z").expect("saves");
-            store.add("wa", "今日は天気がいいです。", "2026-10-07T00:01:00Z").expect("saves");
-            store.add("ga", "雨が降っています。", "2026-10-07T00:02:00Z").expect("saves");
+            store
+                .add("wa", "私は学生です。", "2026-10-07T00:00:00Z")
+                .expect_clean("saves");
+            store
+                .add("wa", "今日は天気がいいです。", "2026-10-07T00:01:00Z")
+                .expect_clean("saves");
+            store
+                .add("ga", "雨が降っています。", "2026-10-07T00:02:00Z")
+                .expect_clean("saves");
         }
         let reopened = CompositionStore::at_dir(dir.path());
         assert_eq!(reopened.log().total(), 3);
@@ -765,7 +1014,9 @@ mod tests {
     fn the_composition_file_is_readable_json_of_the_shape_the_docs_promise() {
         let dir = TempDir::new("composition-shape");
         let mut store = CompositionStore::at_dir(dir.path());
-        store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z").expect("saves");
+        store
+            .add("wa", "私は学生です。", "2026-10-07T00:00:00Z")
+            .expect_clean("saves");
 
         let text = fs::read_to_string(dir.path().join(COMPOSITIONS_FILE_NAME)).expect("the file");
         let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
@@ -785,13 +1036,15 @@ mod tests {
         let mut store = CompositionStore::at_dir(dir.path());
         assert!(store.log().is_empty(), "a corrupt file is not a crash");
         assert_eq!(
-            fs::read_to_string(dir.path().join("compositions.json.corrupt")).expect("still there"),
+            fs::read_to_string(aside_of(dir.path(), "compositions.json")).expect("still there"),
             "{ this is not json",
             "kept as it was, not as an empty file"
         );
 
-        // And the app carries on: the next sentence writes a valid file.
-        store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z").expect("saves");
+        // And the app carries on: the next sentence writes a valid file, and says
+        // where the old one went.
+        let saved = store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z");
+        assert!(saved.warning.is_some_and(|why| why.contains("kept as")));
         let reread = CompositionStore::at_dir(dir.path());
         assert_eq!(reread.log().sentences("wa"), vec!["私は学生です。"]);
     }
@@ -799,12 +1052,15 @@ mod tests {
     #[test]
     fn a_write_failure_is_reported_and_the_sentence_is_still_kept_in_memory() {
         let dir = TempDir::new("composition-unwritable");
-        fs::create_dir_all(dir.path().join(COMPOSITIONS_FILE_NAME))
-            .expect("a directory in the file's place");
+        fs::create_dir_all(dir.path().join("compositions.json.tmp"))
+            .expect("a directory in the way");
         let mut store = CompositionStore::at_dir(dir.path());
+        let saved = store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z");
+        assert_eq!(saved.value, 1, "the sentence is counted");
+        let warning = saved.warning.expect("the failure surfaces");
         assert!(
-            store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z").is_err(),
-            "the failure surfaces"
+            warning.contains("the sentence was kept but could not be saved"),
+            "{warning}"
         );
         assert_eq!(
             store.log().sentences("wa"),
@@ -821,7 +1077,7 @@ mod tests {
 
         let mut store = ConfusionStore::at_dir(dir.path());
         assert!(store.log().is_empty(), "a corrupt file is not a crash");
-        let aside = dir.path().join("confusions.json.corrupt");
+        let aside = aside_of(dir.path(), "confusions.json");
         assert!(aside.exists(), "the unreadable file was kept");
         assert_eq!(
             fs::read_to_string(&aside).expect("still there"),
@@ -829,33 +1085,257 @@ mod tests {
             "and kept as it was, not as an empty file"
         );
 
-        // And the app carries on: the next answer writes a valid file.
-        store.record(&shi_tsu(), false).expect("saves");
+        // And the app carries on: the next answer writes a valid file, and says
+        // where the old one went.
+        let saved = store.record(&shi_tsu(), false);
+        assert!(saved.warning.is_some_and(|why| why.contains("kept as")));
         let reread = ConfusionStore::at_dir(dir.path());
         assert_eq!(reread.log().tally(&shi_tsu()).wrong, 1);
+    }
+
+    /// The files `name` has been moved aside as, in `dir`.
+    fn asides(dir: &Path, name: &str) -> Vec<PathBuf> {
+        let prefix = format!("{name}.corrupt-");
+        fs::read_dir(dir)
+            .expect("the directory")
+            .map(|entry| entry.expect("an entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|file| file.to_str())
+                    .is_some_and(|file| file.starts_with(&prefix))
+            })
+            .collect()
+    }
+
+    /// The one file `name` has been moved aside as, in `dir`.
+    fn aside_of(dir: &Path, name: &str) -> PathBuf {
+        let mut found = asides(dir, name);
+        assert_eq!(found.len(), 1, "one copy kept aside: {found:?}");
+        found.remove(0)
+    }
+
+    /// How many files in `dir` hold exactly `bytes`, whatever they are called.
+    ///
+    /// The tests below assert that a learner's file *survives*, not what it was
+    /// renamed to: the aside name carries a timestamp, and pinning it would test the
+    /// clock rather than the promise.
+    fn files_holding(dir: &Path, bytes: &[u8]) -> usize {
+        fs::read_dir(dir)
+            .expect("the directory")
+            .filter_map(|entry| fs::read(entry.expect("an entry").path()).ok())
+            .filter(|held| held == bytes)
+            .count()
+    }
+
+    /// A tally file a crash cut off in the middle of a Japanese character: valid JSON
+    /// up to the cut, and then two of the three bytes of シ. `read_to_string` refuses
+    /// it as invalid UTF-8 before serde ever sees it, which is the path that used to
+    /// fall through to "nothing recorded" with the file left where the next answer
+    /// would overwrite it.
+    fn cut_mid_character() -> Vec<u8> {
+        let mut bytes = br#"{"pairs":{"a|b":{"asked":40,"correct":10,"wrong":30}},"x":""#.to_vec();
+        bytes.extend_from_slice(&"シ".as_bytes()[..2]);
+        bytes
+    }
+
+    #[test]
+    fn a_file_cut_off_mid_character_is_kept_and_not_overwritten_by_the_next_answer() {
+        let dir = TempDir::new("cut-mid-character");
+        let path = dir.path().join(FILE_NAME);
+        let cut = cut_mid_character();
+        assert!(
+            String::from_utf8(cut.clone()).is_err(),
+            "the test file is invalid UTF-8"
+        );
+        fs::write(&path, &cut).expect("writes");
+
+        let mut store = ConfusionStore::at_dir(dir.path());
+        assert!(store.log().is_empty(), "an unreadable file is not a crash");
+        assert!(
+            store.is_persistent(),
+            "the bad file is out of the way, so a fresh one is written"
+        );
+        let first = store.record(&shi_tsu(), false);
+        let warning = first.warning.expect("the learner is told");
+        assert!(warning.contains("kept as"), "{warning}");
+        assert_eq!(
+            files_holding(dir.path(), &cut),
+            1,
+            "the learner's history survives the next answer, byte for byte"
+        );
+        assert_eq!(
+            fs::read(aside_of(dir.path(), FILE_NAME)).expect("the copy"),
+            cut,
+            "under the name the warning gives"
+        );
+        assert!(warning.contains(&aside_of(dir.path(), FILE_NAME).display().to_string()));
+
+        // Said once: from here on the store is writing normally.
+        store
+            .record(&shi_tsu(), true)
+            .expect_clean("an ordinary answer");
+        assert_eq!(
+            ConfusionStore::at_dir(dir.path())
+                .log()
+                .tally(&shi_tsu())
+                .asked,
+            2
+        );
+    }
+
+    #[test]
+    fn a_composition_file_cut_off_mid_character_is_kept_too() {
+        let dir = TempDir::new("composition-cut-mid-character");
+        let path = dir.path().join(COMPOSITIONS_FILE_NAME);
+        let mut cut = br#"{"version":1,"written":{"wa":[{"text":""#.to_vec();
+        cut.extend_from_slice(&"私".as_bytes()[..1]);
+        fs::write(&path, &cut).expect("writes");
+
+        let mut store = CompositionStore::at_dir(dir.path());
+        let saved = store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z");
+        assert!(
+            saved.warning.is_some_and(|why| why.contains("kept as")),
+            "the learner is told"
+        );
+        assert_eq!(
+            files_holding(dir.path(), &cut),
+            1,
+            "the learner's sentences survive"
+        );
+    }
+
+    #[test]
+    fn a_second_corruption_does_not_destroy_the_copy_kept_after_the_first() {
+        let dir = TempDir::new("corrupt-twice");
+        let path = dir.path().join(GRAMMAR_FILE_NAME);
+
+        fs::write(&path, "{ the first bad file").expect("writes");
+        let mut store = GrammarStore::at_dir(dir.path());
+        assert!(store.record("te-kudasai", true).warning.is_some());
+
+        fs::write(&path, "{ the second bad file").expect("writes");
+        let mut store = GrammarStore::at_dir(dir.path());
+        assert!(store.record("te-kudasai", true).warning.is_some());
+
+        assert_eq!(
+            asides(dir.path(), GRAMMAR_FILE_NAME).len(),
+            2,
+            "two copies, two names"
+        );
+
+        assert_eq!(
+            files_holding(dir.path(), b"{ the first bad file"),
+            1,
+            "the first copy"
+        );
+        assert_eq!(
+            files_holding(dir.path(), b"{ the second bad file"),
+            1,
+            "the second copy"
+        );
+    }
+
+    #[test]
+    fn a_composition_file_from_a_newer_build_is_not_rewritten() {
+        // A later build may add fields this one does not know. Reading the file would
+        // drop them, and writing it back would lose them for good — the review
+        // schedule already refuses such a file, and the learner's own writing deserves
+        // the same.
+        let dir = TempDir::new("composition-future");
+        let path = dir.path().join(COMPOSITIONS_FILE_NAME);
+        let future = r#"{"version":99,"written":{"wa":[{"text":"未来","at":"2030-01-01T00:00:00Z"}]},"drafts":{}}"#;
+        fs::write(&path, future).expect("writes");
+
+        let mut store = CompositionStore::at_dir(dir.path());
+        assert!(!store.is_persistent(), "nothing may be written over it");
+        assert!(
+            store.log().is_empty(),
+            "and nothing of it is half-read either"
+        );
+        for _ in 0..2 {
+            let saved = store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z");
+            let warning = saved.warning.expect("the learner is told, every time");
+            assert!(warning.contains("newer version"), "{warning}");
+            assert!(warning.contains("will not be remembered"), "{warning}");
+        }
+        assert_eq!(
+            store.log().sentences("wa").len(),
+            2,
+            "this session still keeps them"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("still there"),
+            future,
+            "the file this build does not understand was not touched"
+        );
+        assert!(
+            asides(dir.path(), COMPOSITIONS_FILE_NAME).is_empty(),
+            "nor moved"
+        );
     }
 
     #[test]
     fn an_in_memory_store_records_without_writing_anything() {
         let mut store = ConfusionStore::in_memory();
         assert!(!store.is_persistent());
-        store.record(&shi_tsu(), false).expect("nothing to write");
+        store
+            .record(&shi_tsu(), false)
+            .expect_clean("nothing to write");
         assert_eq!(store.log().tally(&shi_tsu()).wrong, 1);
     }
 
     #[test]
     fn a_write_failure_is_reported_rather_than_hidden() {
-        // A directory where the file should be is the cheapest way to make the
-        // write fail on every platform, and it must come back as an error rather
-        // than a panic — or worse, as nothing at all.
+        // A directory where the atomic write's temporary goes is the cheapest way to
+        // make the write fail on every platform, and it must come back as a warning
+        // beside the tally rather than a panic — or worse, as nothing at all.
         let dir = TempDir::new("unwritable");
-        fs::create_dir_all(dir.path().join(FILE_NAME)).expect("a directory in the file's place");
+        fs::create_dir_all(dir.path().join("confusions.json.tmp")).expect("a directory in the way");
         let mut store = ConfusionStore::at_dir(dir.path());
-        assert!(store.record(&shi_tsu(), false).is_err(), "the failure surfaces");
+        let saved = store.record(&shi_tsu(), false);
+        assert_eq!(saved.value.wrong, 1, "the tally comes back");
+        let warning = saved.warning.expect("the failure surfaces");
+        assert!(
+            warning.contains("the answer was counted but could not be saved"),
+            "{warning}"
+        );
         assert_eq!(
             store.log().tally(&shi_tsu()).wrong,
             1,
             "and the answer is still counted in memory"
+        );
+        // Each failed write is its own news, so the next answer says so again.
+        assert!(store.record(&shi_tsu(), true).warning.is_some());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_at_all_is_left_alone_and_the_store_runs_in_memory() {
+        // A directory in the file's place cannot be read, and neither can a file the
+        // learner no longer has permission for or one on a failing disk. None of those
+        // is evidence the file is bad, so it is not moved and not written over: this
+        // session runs in memory and says so on every answer.
+        let dir = TempDir::new("unreadable");
+        fs::create_dir_all(dir.path().join(FILE_NAME)).expect("a directory in the file's place");
+        let mut store = ConfusionStore::at_dir(dir.path());
+        assert!(!store.is_persistent(), "nothing may be written over it");
+        for _ in 0..2 {
+            let saved = store.record(&shi_tsu(), false);
+            let warning = saved.warning.expect("the learner is told, every time");
+            assert!(warning.contains("could not be opened"), "{warning}");
+            assert!(warning.contains("will not be remembered"), "{warning}");
+        }
+        assert_eq!(
+            store.log().tally(&shi_tsu()).wrong,
+            2,
+            "and the answers still count"
+        );
+        assert!(
+            dir.path().join(FILE_NAME).is_dir(),
+            "what was there is still there"
+        );
+        assert!(
+            asides(dir.path(), FILE_NAME).is_empty(),
+            "and it was not moved"
         );
     }
 
@@ -938,9 +1418,14 @@ mod tests {
         let mut store = ModelStore::at_dir(dir.path());
         assert!(!store.settings().configured(), "a corrupt file is not a crash");
         assert_eq!(
-            fs::read_to_string(dir.path().join("model.json.corrupt")).expect("still there"),
+            fs::read_to_string(aside_of(dir.path(), "model.json")).expect("still there"),
             "{ this is not json"
         );
+        assert!(
+            store.notice().is_some_and(|why| why.contains("kept as")),
+            "the learner is told"
+        );
+        assert_eq!(store.notice(), None, "once");
 
         // And the app carries on: saving writes a valid file.
         store
@@ -1052,7 +1537,7 @@ mod tests {
             "and the learner is told what happened: {:?}",
             store.warning()
         );
-        let aside = dir.path().join("review.json.corrupt");
+        let aside = aside_of(dir.path(), "review.json");
         assert_eq!(
             fs::read_to_string(&aside).expect("still there"),
             "{ this is not json",
@@ -1142,8 +1627,8 @@ mod tests {
         {
             let mut store = GrammarStore::at_dir(dir.path());
             assert!(store.is_persistent());
-            store.record("te-kudasai", false).expect("writes");
-            store.record("te-kudasai", true).expect("writes");
+            store.record("te-kudasai", false).expect_clean("writes");
+            store.record("te-kudasai", true).expect_clean("writes");
         }
         let reopened = GrammarStore::at_dir(dir.path());
         assert_eq!(
@@ -1172,13 +1657,15 @@ mod tests {
         let mut store = GrammarStore::at_dir(dir.path());
         assert!(store.log().is_empty(), "a corrupt file is not a crash");
         assert_eq!(
-            fs::read_to_string(dir.path().join("grammar.json.corrupt")).expect("still there"),
+            fs::read_to_string(aside_of(dir.path(), "grammar.json")).expect("still there"),
             "{ this is not json",
             "kept as it was, not as an empty file"
         );
 
-        // And the app carries on: the next answer writes a valid file.
-        store.record("te-kudasai", true).expect("writes");
+        // And the app carries on: the next answer writes a valid file, and says
+        // where the old one went.
+        let saved = store.record("te-kudasai", true);
+        assert!(saved.warning.is_some_and(|why| why.contains("kept as")));
         assert_eq!(GrammarStore::at_dir(dir.path()).log().patterns_seen(), 1);
     }
 
@@ -1188,7 +1675,21 @@ mod tests {
         fs::create_dir_all(dir.path().join("grammar.json.tmp")).expect("a directory in the way");
         let mut store = GrammarStore::at_dir(dir.path());
 
-        assert!(store.record("te-kudasai", false).is_err(), "the failure surfaces");
+        let saved = store.record("te-kudasai", false);
+        assert_eq!(
+            saved.value,
+            PairTally {
+                asked: 1,
+                correct: 0,
+                wrong: 1
+            }
+        );
+        assert!(
+            saved
+                .warning
+                .is_some_and(|why| why.contains("could not be saved")),
+            "the failure surfaces"
+        );
         assert_eq!(
             store.log().tally("te-kudasai"),
             PairTally { asked: 1, correct: 0, wrong: 1 },
@@ -1200,7 +1701,9 @@ mod tests {
     fn an_in_memory_grammar_store_records_without_writing_anything() {
         let mut store = GrammarStore::in_memory();
         assert!(!store.is_persistent());
-        store.record("te-kudasai", true).expect("nothing to write");
+        store
+            .record("te-kudasai", true)
+            .expect_clean("nothing to write");
         assert_eq!(store.log().tally("te-kudasai").correct, 1);
     }
 
@@ -1209,7 +1712,7 @@ mod tests {
         let dir = TempDir::new("prefs-restart");
         {
             let mut store = PrefsStore::at_dir(dir.path());
-            store.set_section(Section::Kanji).expect("writes");
+            store.set_section(Section::Kanji).expect_clean("writes");
         }
         let reopened = PrefsStore::at_dir(dir.path());
         assert_eq!(reopened.prefs().section, Some(Section::Kanji));
@@ -1232,13 +1735,17 @@ mod tests {
         assert_eq!(store.prefs().section, None, "a corrupt file is not a crash");
         assert_eq!(store.prefs().section_or_default(), Section::Kana);
         assert_eq!(
-            fs::read_to_string(dir.path().join("prefs.json.corrupt")).expect("still there"),
+            fs::read_to_string(aside_of(dir.path(), "prefs.json")).expect("still there"),
             "{ this is not json",
             "kept as it was, not as an empty file"
         );
 
-        // And the app carries on: the next move writes a valid file.
-        store.set_section(Section::Kanji).expect("writes");
+        // And the app carries on: the next move writes a valid file, and says where
+        // the old one went.
+        let warning = store
+            .set_section(Section::Kanji)
+            .expect("the learner is told");
+        assert!(warning.contains("kept as"), "{warning}");
         assert_eq!(
             PrefsStore::at_dir(dir.path()).prefs().section,
             Some(Section::Kanji)
@@ -1251,7 +1758,10 @@ mod tests {
         fs::create_dir_all(dir.path().join("prefs.json.tmp")).expect("a directory in the way");
         let mut store = PrefsStore::at_dir(dir.path());
 
-        assert!(store.set_section(Section::Kanji).is_err(), "the failure surfaces");
+        let warning = store
+            .set_section(Section::Kanji)
+            .expect("the failure surfaces");
+        assert!(warning.contains("could not be saved"), "{warning}");
         assert_eq!(
             store.prefs().section,
             Some(Section::Kanji),
@@ -1263,7 +1773,9 @@ mod tests {
     fn an_in_memory_preference_store_remembers_without_writing_anything() {
         let mut store = PrefsStore::in_memory();
         assert!(!store.is_persistent());
-        store.set_section(Section::Kanji).expect("nothing to write");
+        store
+            .set_section(Section::Kanji)
+            .expect_clean("nothing to write");
         assert_eq!(store.prefs().section, Some(Section::Kanji));
     }
 }

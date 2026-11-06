@@ -304,6 +304,12 @@ export interface DrillTally {
   wrong: number;
   /** The pair's share of the drill — see `nihongo_core::drill` for the rule. */
   weight: number;
+  /**
+   * Set when the answer was counted but could not be written to the learner's own
+   * file, or when that file had to be kept aside or cannot be written this session.
+   * The tally is real either way; the screen shows this beside it.
+   */
+  warning: string | null;
 }
 
 /**
@@ -389,6 +395,12 @@ export interface GrammarTally {
   wrong: number;
   /** The pattern's share of the drill — the same rule the kana drill uses. */
   weight: number;
+  /**
+   * What `DrillTally.warning` is, for `grammar.json`. On a written answer it rides on
+   * the record, because the record is the part that may not have been saved — the
+   * verdict always arrives.
+   */
+  warning: string | null;
 }
 
 /**
@@ -589,6 +601,11 @@ export interface ModelStatus {
   keySet: boolean;
   /** Whether there is enough here to ask a model anything. */
   configured: boolean;
+  /**
+   * Set when the settings file could not be read and was kept aside, or cannot be
+   * written this session. Never the key.
+   */
+  warning: string | null;
 }
 
 /**

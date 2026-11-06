@@ -17,6 +17,7 @@ const status = (over: Partial<ModelStatus> = {}): ModelStatus => ({
   model: "gpt-4o-mini",
   keySet: true,
   configured: true,
+  warning: null,
   ...over,
 });
 
