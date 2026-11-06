@@ -408,11 +408,13 @@
       off until the learner names an endpoint. The corpus's model sentences above carry a
       `Hear it`; this asks a model about the learner's own.
     -->
+    <!-- Outside the fold, so that a closed fold cannot hide it: the settings were
+         kept for this session either way, and this says what was not remembered. -->
+    {#if model?.warning}
+      <p class="warn" role="status">{model.warning}</p>
+    {/if}
     <details class="model-check" open={showingSettings}>
       <summary>Ask a model about this sentence</summary>
-      {#if model?.warning}
-        <p class="warn" role="status">{model.warning}</p>
-      {/if}
       {#if !model}
         <p class="hint">Loading the model settings…</p>
       {:else if showingSettings || !model.configured}

@@ -456,20 +456,15 @@ impl AppState {
             .review
             .lock()
             .expect("the review store is not poisoned");
-        // A schedule that will not be written is a standing condition, not a
-        // per-attempt one; it is said once and repeated on every grade rather than
-        // hidden, because the learner is losing work either way.
-        let session = store.warning().map(str::to_string);
+        // What the schedule's file has to say — "kept aside" once, "not remembered"
+        // on every grade — is already joined to the attempt's own outcome by the
+        // store, so a failed write cannot hide it and it cannot hide a failed write.
         let (scheduled, next_due, warning) = match store.record_attempt(ch, report.overall) {
-            Ok(outcome) => (
-                outcome.counted,
-                Some(outcome.due),
-                outcome.warning.or(session),
-            ),
+            Ok(outcome) => (outcome.counted, Some(outcome.due), outcome.warning),
             // The attempt could not be counted at all. The grade still stands: a
             // verdict the learner can read is worth more than an error that hides
             // it, and the score they just earned did happen.
-            Err(err) => (false, None, Some(err).or(session)),
+            Err(err) => (false, None, Some(err)),
         };
         Ok(GradedAttempt {
             report,
@@ -493,7 +488,7 @@ impl AppState {
     /// character screen carries the head forms with it. `None` is the whole
     /// schedule, for a caller that is not one of the two screens.
     pub fn review_queue(&self, limit: usize, section: Option<Section>) -> ReviewQueueView {
-        let store = self
+        let mut store = self
             .review
             .lock()
             .expect("the review store is not poisoned");
@@ -504,7 +499,7 @@ impl AppState {
             cards: queue.cards,
             due: queue.due,
             next_due: queue.next_due,
-            warning: store.warning().map(str::to_string),
+            warning: store.notice(),
         }
     }
 
@@ -946,7 +941,9 @@ impl AppState {
     ///
     /// The address is validated here rather than at the first sentence: a scheme this
     /// client cannot speak is a typo worth hearing about while the learner is looking
-    /// at the field they typed it into.
+    /// at the field they typed it into. That is the only error: settings that were
+    /// accepted but could not be written come back as the status, with `warning`
+    /// saying so, because this session is using them either way.
     pub fn save_model_settings(
         &self,
         endpoint: &str,
@@ -981,10 +978,10 @@ impl AppState {
             configured: settings.configured(),
             warning: None,
         };
-        store
-            .save(settings)
-            .map_err(|err| format!("the settings were kept but could not be saved: {err}"))?;
-        status.warning = store.notice();
+        // A failed write is a warning on the status rather than an error instead of
+        // it: the settings are this session's from here on, and an error would leave
+        // the screen drawing the ones they replaced.
+        status.warning = store.save(settings);
         Ok(status)
     }
 
@@ -1820,8 +1817,9 @@ pub struct ModelStatus {
     pub key_set: bool,
     /// Whether there is enough here to ask a model anything.
     pub configured: bool,
-    /// Set when `model.json` could not be read and was kept aside, or cannot be
-    /// written this session. Never the key, and never a reason to hide the fields.
+    /// Set when `model.json` could not be read and was kept aside, cannot be written
+    /// this session, or did not take the settings just saved. Never the key, and
+    /// never a reason to hide the fields.
     pub warning: Option<String>,
 }
 

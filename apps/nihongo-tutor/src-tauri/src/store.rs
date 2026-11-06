@@ -103,14 +103,16 @@ impl StoreFile {
 
     /// Read `path`, by the rule in the module's header.
     ///
-    /// `what` names the file for the learner ("the kana drill's record"). `accept`
-    /// is the last word on a file that parsed: it says why a file must not be
-    /// written over even though it reads, which is how a newer build's file is
-    /// refused.
+    /// `what` names the file for the learner ("the kana drill's record").
+    /// `understood` is the newest `version` this build reads, for a file that has
+    /// one: a file claiming a later one is refused and left alone, and that is
+    /// decided **before** the file is parsed as this build's shape — a newer build
+    /// that restructured the file has not written a damaged one, and moving it aside
+    /// would put it out of reach of the build that can read it.
     fn open<T: DeserializeOwned + Default>(
         path: PathBuf,
         what: &str,
-        accept: impl FnOnce(&T) -> Result<(), String>,
+        understood: Option<u32>,
     ) -> (T, Self) {
         // Bytes rather than a string, so that a file cut off in the middle of a
         // multi-byte character is a *parse* error — moved aside like any other —
@@ -125,13 +127,23 @@ impl StoreFile {
             // file may be perfectly good, so it is not moved and not written over.
             Err(err) => return Self::unwritable(format!("{what} could not be opened ({err})")),
         };
-        match serde_json::from_slice::<T>(&bytes) {
-            Ok(value) => match accept(&value) {
-                Ok(()) => (value, Self::at(path)),
-                Err(why) => {
-                    Self::unwritable(format!("{what} {why}, so the file was left as it is"))
+        if let Some(understood) = understood {
+            // A probe that does not parse says nothing either way; the full parse
+            // below decides whether the file is damaged.
+            if let Ok(VersionProbe {
+                version: Some(version),
+            }) = serde_json::from_slice::<VersionProbe>(&bytes)
+            {
+                if version > understood {
+                    return Self::unwritable(format!(
+                        "{what} was saved by a newer version of the app (format {version}, this \
+                         one reads up to {understood}), so the file was left as it is"
+                    ));
                 }
-            },
+            }
+        }
+        match serde_json::from_slice::<T>(&bytes) {
+            Ok(value) => (value, Self::at(path)),
             Err(why) => match set_aside(&path) {
                 Ok(aside) => {
                     let warning = format!(
@@ -214,10 +226,22 @@ impl StoreFile {
         let failed = saved
             .err()
             .map(|err| format!("{done} but could not be saved: {err}"));
-        match (self.notice(), failed) {
-            (Some(notice), Some(failed)) => Some(format!("{notice}; {failed}")),
-            (notice, failed) => notice.or(failed),
-        }
+        join(self.notice(), failed)
+    }
+}
+
+/// Just the `version` of a file, whatever shape the rest of it has.
+#[derive(Deserialize)]
+struct VersionProbe {
+    #[serde(default)]
+    version: Option<u32>,
+}
+
+/// Two things to tell the learner, as one line, in the order they happened.
+fn join(first: Option<String>, then: Option<String>) -> Option<String> {
+    match (first, then) {
+        (Some(first), Some(then)) => Some(format!("{first}; {then}")),
+        (first, then) => first.or(then),
     }
 }
 
@@ -267,7 +291,7 @@ impl PrefsStore {
         let (prefs, file) = StoreFile::open(
             dir.as_ref().join(PREFS_FILE_NAME),
             "the remembered section",
-            |_| Ok(()),
+            None,
         );
         Self { file, prefs }
     }
@@ -322,7 +346,7 @@ impl ConfusionStore {
         let (log, file) = StoreFile::open(
             dir.as_ref().join(FILE_NAME),
             "the kana drill's record",
-            |_| Ok(()),
+            None,
         );
         Self { file, log }
     }
@@ -393,7 +417,7 @@ impl GrammarStore {
         let (log, file) = StoreFile::open(
             dir.as_ref().join(GRAMMAR_FILE_NAME),
             "the grammar drill's record",
-            |_| Ok(()),
+            None,
         );
         Self { file, log }
     }
@@ -464,18 +488,7 @@ impl CompositionStore {
         let (log, file) = StoreFile::open(
             dir.as_ref().join(COMPOSITIONS_FILE_NAME),
             "the file of your written sentences",
-            |log: &CompositionLog| {
-                let understood = CompositionLog::new().version;
-                if log.version > understood {
-                    Err(format!(
-                        "was saved by a newer version of the app (format {}, this one reads up \
-                         to {understood})",
-                        log.version
-                    ))
-                } else {
-                    Ok(())
-                }
-            },
+            Some(CompositionLog::new().version),
         );
         Self { file, log }
     }
@@ -558,7 +571,7 @@ impl ModelStore {
         let (settings, file) = StoreFile::open(
             dir.as_ref().join(MODEL_FILE_NAME),
             "the model settings",
-            |_| Ok(()),
+            None,
         );
         Self { file, settings }
     }
@@ -579,14 +592,17 @@ impl ModelStore {
         self.file.notice()
     }
 
-    /// Replace the settings, writing the file, and say when the write failed.
+    /// Replace the settings, writing the file, and say what the learner should be
+    /// told.
     ///
     /// The settings are kept **even if the write fails** — the learner typed them and
-    /// this session can use them — and the failure comes back rather than being
-    /// swallowed, for the reason the other stores give.
-    pub fn save(&mut self, settings: ModelSettings) -> io::Result<()> {
+    /// this session uses them from now on — so the failure is a warning beside them,
+    /// for the reason the other stores give, and not an error that would leave a
+    /// screen drawing the settings this session has already replaced.
+    pub fn save(&mut self, settings: ModelSettings) -> Option<String> {
         self.settings = settings;
-        self.file.write_secret(&self.settings)
+        let saved = self.file.write_secret(&self.settings);
+        self.file.report(saved, "the settings were kept")
     }
 }
 
@@ -705,9 +721,22 @@ impl ReviewStore {
         &self.store
     }
 
-    /// Why this session may not be remembered, when there is a reason.
+    /// Why this session may not be remembered, when there is a reason, without
+    /// counting as having told the learner.
     pub fn warning(&self) -> Option<&str> {
         self.warning.as_deref()
+    }
+
+    /// What this response should tell the learner about the schedule's file, by
+    /// the rule the other stores follow: "kept aside" once, since the fresh
+    /// schedule is then working; "not remembered" on every response, for as long
+    /// as it is true.
+    pub fn notice(&mut self) -> Option<String> {
+        if self.is_persistent() {
+            self.warning.take()
+        } else {
+            self.warning.clone()
+        }
     }
 
     /// Offer a graded attempt to the schedule and say what it did.
@@ -716,21 +745,35 @@ impl ReviewStore {
     /// the failure comes back on the outcome rather than being swallowed, because
     /// a learner whose progress is not being saved should be told rather than
     /// discover it later.
+    ///
+    /// Every outcome — practice, a counted review, or an attempt that could not be
+    /// counted — carries [`Self::notice`] as well, joined to any failure of its own,
+    /// so that neither hides the other.
     pub fn record_attempt(&mut self, ch: char, score: f32) -> Result<AttemptOutcome, String> {
         let now = now_iso8601();
         if let Some(card) = self.store.card(ch) {
             if !card.is_due(&now) {
+                let due = card.due.clone();
                 return Ok(AttemptOutcome {
                     counted: false,
-                    due: card.due.clone(),
-                    warning: None,
+                    due,
+                    warning: self.notice(),
                 });
             }
         }
-        let card = self.store.record(ch, score).map_err(|err| err.to_string())?;
-        let warning = self.store.save().err().map(|err| {
-            format!("the attempt was counted but could not be saved: {err}")
-        });
+        let card = match self.store.record(ch, score) {
+            Ok(card) => card,
+            Err(err) => {
+                let why = join(self.notice(), Some(err.to_string()));
+                return Err(why.unwrap_or_default());
+            }
+        };
+        let failed = self
+            .store
+            .save()
+            .err()
+            .map(|err| format!("the attempt was counted but could not be saved: {err}"));
+        let warning = join(self.notice(), failed);
         Ok(AttemptOutcome {
             counted: true,
             due: card.due,
@@ -743,26 +786,55 @@ impl ReviewStore {
 ///
 /// The new name is the old one with `.corrupt-` and the time appended —
 /// `confusions.json.corrupt-20261106T150625Z` — and a counter after that if the name
-/// is somehow taken, so a second bad file can never land on the copy kept from the
-/// first. The time is written without its colons, which some platforms do not allow
-/// in a file name.
+/// is taken, so a second bad file can never land on the copy kept from the first.
+/// The time is written without its colons, which some platforms do not allow in a
+/// file name. The name is built on the path's own bytes rather than on its
+/// `display()`, which would replace whatever in a data directory's name is not
+/// UTF-8 and so name a directory that does not exist.
 fn set_aside(path: &Path) -> io::Result<PathBuf> {
     let stamp: String = now_iso8601()
         .chars()
         .filter(char::is_ascii_alphanumeric)
         .collect();
-    let base = format!("{}.corrupt-{stamp}", path.display());
-    let aside = (0..)
-        .map(|n| match n {
-            0 => PathBuf::from(&base),
-            n => PathBuf::from(format!("{base}-{n}")),
-        })
-        // `symlink_metadata` rather than `exists`, so that even a dangling link is a
-        // name that is taken.
-        .find(|candidate| fs::symlink_metadata(candidate).is_err())
-        .expect("an unbounded range always has another name to try");
-    fs::rename(path, &aside)?;
-    Ok(aside)
+    for n in 0u32.. {
+        let mut name = path.as_os_str().to_owned();
+        name.push(format!(".corrupt-{stamp}"));
+        if n > 0 {
+            name.push(format!("-{n}"));
+        }
+        let aside = PathBuf::from(name);
+        // Only a name that is certainly absent is free. Anything else — a file, a
+        // dangling link, or a name that cannot be looked at — is passed over or is
+        // a reason to stop, never a reason to rename onto it.
+        match fs::symlink_metadata(&aside) {
+            Ok(_) => continue,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+        if move_without_replacing(path, &aside)? {
+            return Ok(aside);
+        }
+    }
+    Err(io::Error::other(
+        "no free name to keep the file aside under",
+    ))
+}
+
+/// Move `from` to `to` unless `to` exists, answering whether it moved.
+///
+/// A rename replaces whatever is at its target, so on Unix the move is a hard link —
+/// which refuses an existing target, atomically — followed by removing the old
+/// name. A file system that cannot link (FAT, some network mounts) falls back to the
+/// rename, which is safe there because the name was just seen to be free and this
+/// is the only process writing this directory.
+fn move_without_replacing(from: &Path, to: &Path) -> io::Result<bool> {
+    #[cfg(unix)]
+    match fs::hard_link(from, to) {
+        Ok(()) => return fs::remove_file(from).map(|()| true),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(_) => {}
+    }
+    fs::rename(from, to).map(|()| true)
 }
 
 /// Write a JSON file whole, via a neighbouring temporary and a rename.
@@ -800,7 +872,17 @@ fn write_atomically<T: Serialize>(path: &Path, value: &T, owner_only: bool) -> i
     let text = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
     {
-        let mut file = fs::File::create(&tmp)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        // The secret's temporary is created `0600`, so there is no moment at which it
+        // exists with the default mode; the explicit `set_permissions` after it is for
+        // a stale temporary left by an earlier crash, which `mode` does not touch.
+        #[cfg(unix)]
+        if owner_only {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
         #[cfg(unix)]
         if owner_only {
             use std::os::unix::fs::PermissionsExt;
@@ -1357,7 +1439,7 @@ mod tests {
                 model: "llama3.1".to_string(),
                 key: None,
             })
-            .expect("saves");
+            .expect_clean("saves");
         assert!(dir.path().join(MODEL_FILE_NAME).exists());
         assert!(store.settings().configured());
     }
@@ -1373,7 +1455,7 @@ mod tests {
                     model: "gpt-4o-mini".to_string(),
                     key: Some("sk-secret".to_string()),
                 })
-                .expect("saves");
+                .expect_clean("saves");
         }
         let reopened = ModelStore::at_dir(dir.path());
         assert_eq!(reopened.settings().endpoint, "https://api.openai.com/v1");
@@ -1392,7 +1474,7 @@ mod tests {
                 model: "local-model".to_string(),
                 key: Some("sk-secret".to_string()),
             })
-            .expect("saves");
+            .expect_clean("saves");
 
         let path = dir.path().join(MODEL_FILE_NAME);
         let value: serde_json::Value =
@@ -1434,7 +1516,7 @@ mod tests {
                 model: "local-model".to_string(),
                 key: None,
             })
-            .expect("saves");
+            .expect_clean("saves");
         assert!(ModelStore::at_dir(dir.path()).settings().configured());
     }
 
@@ -1548,6 +1630,108 @@ mod tests {
         store.record_attempt('あ', 20.0).expect("saves");
         let reread = ReviewStore::at_dir(dir.path());
         assert_eq!(reread.store().card('あ').expect("a card").attempts, 1);
+    }
+
+    #[test]
+    fn a_schedule_cut_off_mid_character_is_kept_aside_and_a_fresh_one_started() {
+        // The schedule used to be read as a string, so a file cut off inside あ was an
+        // I/O error rather than a damaged file: never moved aside, and the app ran in
+        // memory on every launch from then on.
+        let dir = TempDir::new("review-cut");
+        let mut cut = br#"{"version":1,"cards":{""#.to_vec();
+        cut.extend_from_slice(&"あ".as_bytes()[..2]);
+        fs::write(dir.path().join(REVIEW_FILE_NAME), &cut).expect("writes");
+
+        let mut store = ReviewStore::at_dir(dir.path());
+        assert!(store.is_persistent(), "the bad file is out of the way");
+        assert!(
+            store.warning().is_some_and(|why| why.contains("kept as")),
+            "{:?}",
+            store.warning()
+        );
+        assert_eq!(
+            files_holding(dir.path(), &cut),
+            1,
+            "the history survives, byte for byte"
+        );
+        store.record_attempt('あ', 20.0).expect("records");
+        assert!(
+            dir.path().join(REVIEW_FILE_NAME).exists(),
+            "and a fresh schedule is written"
+        );
+        assert_eq!(files_holding(dir.path(), &cut), 1);
+    }
+
+    #[test]
+    fn the_schedules_notice_is_said_once_and_is_not_hidden_by_a_failed_write() {
+        // The rule the other stores follow: "kept aside" is news once, and a failed
+        // write is news every time — and when both happen on the same attempt, the
+        // learner hears both rather than whichever was looked at first.
+        let dir = TempDir::new("review-notice");
+        fs::write(dir.path().join(REVIEW_FILE_NAME), "{ this is not json").expect("writes");
+        let mut store = ReviewStore::at_dir(dir.path());
+        fs::create_dir_all(dir.path().join("review.json.tmp")).expect("a directory in the way");
+
+        let first = store.record_attempt('あ', 20.0).expect("records");
+        let warning = first.warning.expect("the learner is told");
+        assert!(warning.contains("kept as"), "{warning}");
+        assert!(warning.contains("could not be saved"), "{warning}");
+
+        let second = store.record_attempt('い', 20.0).expect("records");
+        let warning = second.warning.expect("the failed write is still news");
+        assert!(!warning.contains("kept as"), "said once: {warning}");
+        assert!(warning.contains("could not be saved"), "{warning}");
+    }
+
+    #[test]
+    fn a_composition_file_from_a_newer_build_with_a_new_shape_is_refused_not_moved() {
+        // The version is read before the shape: a newer build that restructured the
+        // file has written a file this build must not touch, not a damaged one.
+        let dir = TempDir::new("composition-future-shape");
+        let path = dir.path().join(COMPOSITIONS_FILE_NAME);
+        let future = r#"{"version":2,"written":["a shape this build has never seen"]}"#;
+        fs::write(&path, future).expect("writes");
+
+        let mut store = CompositionStore::at_dir(dir.path());
+        assert!(!store.is_persistent(), "nothing may be written over it");
+        let saved = store.add("wa", "私は学生です。", "2026-10-07T00:00:00Z");
+        let warning = saved.warning.expect("the learner is told");
+        assert!(warning.contains("newer version"), "{warning}");
+        assert_eq!(fs::read_to_string(&path).expect("still there"), future);
+        assert!(
+            asides(dir.path(), COMPOSITIONS_FILE_NAME).is_empty(),
+            "and not moved aside"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bad_file_in_a_directory_whose_name_is_not_utf8_is_still_moved_aside() {
+        // A data directory's name is the platform's, not necessarily UTF-8. Building
+        // the aside name through `display()` would replace the odd byte, name a
+        // directory that does not exist, fail the rename, and leave the store in
+        // memory on every launch.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let root = TempDir::new("non-utf8");
+        let dir = root.path().join(OsStr::from_bytes(b"data-\xff"));
+        fs::create_dir_all(&dir).expect("a directory with a non-UTF-8 name");
+        fs::write(dir.join(FILE_NAME), "{ this is not json").expect("writes");
+
+        let mut store = ConfusionStore::at_dir(&dir);
+        assert!(
+            store.is_persistent(),
+            "the bad file was moved, so a fresh one is written"
+        );
+        assert_eq!(files_holding(&dir, b"{ this is not json"), 1);
+        assert_eq!(
+            asides(&dir, FILE_NAME).len(),
+            1,
+            "beside the original, in the same directory"
+        );
+        let saved = store.record(&shi_tsu(), false);
+        assert!(saved.warning.is_some_and(|why| why.contains("kept as")));
+        assert!(dir.join(FILE_NAME).exists());
     }
 
     #[test]

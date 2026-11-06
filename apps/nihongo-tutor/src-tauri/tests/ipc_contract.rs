@@ -2556,3 +2556,44 @@ fn a_model_file_that_will_not_parse_is_reported_on_the_status_the_screen_reads()
     assert!(warning.contains("kept as"), "{warning}");
     assert_eq!(files_holding(dir.path(), b"{ not json"), 1);
 }
+
+#[test]
+fn model_settings_that_cannot_be_saved_still_come_back_as_the_status_with_a_warning() {
+    // The settings are in memory once the learner has saved them, so the screen must
+    // be shown them — with the reason they will not survive a restart — rather than
+    // an error that leaves it drawing the old ones.
+    let dir = TempDir::new("model-unsaved");
+    fs::create_dir_all(dir.path().join("model.json.tmp")).expect("a directory in the way");
+    let state = AppState::load_at(dir.path());
+    let saved = state
+        .save_model_settings("http://127.0.0.1:11434/v1", "llama3.1", None)
+        .expect("the status comes back even when it cannot be saved");
+    let value = serde_json::to_value(&saved).expect("serialises");
+    assert_eq!(value["endpoint"], "http://127.0.0.1:11434/v1");
+    assert_eq!(value["configured"], true);
+    let warning = value["warning"]
+        .as_str()
+        .expect("the failed save is reported");
+    assert!(warning.contains("could not be saved"), "{warning}");
+    assert_eq!(
+        state.model_status().endpoint,
+        "http://127.0.0.1:11434/v1",
+        "and what the screen is shown is what this session will use"
+    );
+}
+
+#[test]
+fn a_schedule_kept_aside_is_reported_once_on_the_review_queue() {
+    let dir = TempDir::new("review-kept-aside");
+    fs::write(dir.path().join("review.json"), "{ not json").expect("writes");
+    let state = AppState::load_at(dir.path());
+
+    let first = serde_json::to_value(state.review_queue(40, None)).expect("serialises");
+    let warning = first["warning"].as_str().expect("the learner is told");
+    assert!(warning.contains("kept as"), "{warning}");
+
+    // Said once, as every other store says it: the fresh schedule is working.
+    let second = serde_json::to_value(state.review_queue(40, None)).expect("serialises");
+    assert!(second["warning"].is_null(), "{second}");
+    assert_eq!(files_holding(dir.path(), b"{ not json"), 1);
+}

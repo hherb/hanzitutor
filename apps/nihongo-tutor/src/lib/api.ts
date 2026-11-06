@@ -534,7 +534,9 @@ export function modelStatus(): Promise<ModelStatus> {
  *
  * `key` of `null` means **leave the stored key alone**: the field shows a placeholder
  * rather than the secret, so an untouched field must not clear it. An empty string is
- * the request to forget it.
+ * the request to forget it. It rejects only an address it cannot use: settings that
+ * were accepted but could not be written resolve as the status with `warning` set,
+ * because this session uses them either way.
  */
 export function saveModelSettings(
   endpoint: string,

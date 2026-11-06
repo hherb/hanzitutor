@@ -602,8 +602,8 @@ export interface ModelStatus {
   /** Whether there is enough here to ask a model anything. */
   configured: boolean;
   /**
-   * Set when the settings file could not be read and was kept aside, or cannot be
-   * written this session. Never the key.
+   * Set when the settings file could not be read and was kept aside, cannot be
+   * written this session, or did not take the settings just saved. Never the key.
    */
   warning: string | null;
 }
