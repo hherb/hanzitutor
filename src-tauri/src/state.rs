@@ -180,12 +180,13 @@ impl Persisted<VocabStore> {
 
     /// Re-read the list from the study database, returning whether it worked.
     ///
-    /// Needed after a sync, and here the consequence of skipping it is worse than a
-    /// stale screen. `save` treats an entry that is missing from the document as one
-    /// the learner removed and *tombstones* it — so a save made from a document that
-    /// predates a sync would delete every entry the sync had just brought in, and
-    /// those tombstones would then travel to the other devices and delete them there
-    /// too. Reloading is what keeps the document and the database the same thing.
+    /// Needed after a sync so the screen shows what the sync brought. It is no
+    /// longer what keeps that data safe: a save from a document that predates a
+    /// sync used to tombstone every entry the sync had just brought in, and spread
+    /// the deletion to every device (#11). The database handle now remembers the
+    /// document it last read, writes only what the learner changed since, and hands
+    /// back the list as it stands — see `hanzi_store`'s `VocabSeen`. Reloading is
+    /// still what makes the list on screen right straight away.
     ///
     /// Nothing is lost by reloading: every change saves as it is made.
     pub fn reload(&mut self, db: &Db) -> bool {

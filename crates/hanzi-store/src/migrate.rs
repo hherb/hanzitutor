@@ -118,8 +118,13 @@ pub(crate) fn vocabulary(
     for entry in &document.entries {
         write_entry(&tx, entry, &stamp, device_id).map_err(|e| vocab_error(&db, e))?;
     }
-    set_meta(&tx, "vocab_next_id", &document.next_id.to_string())
-        .map_err(|e| vocab_error(&db, e))?;
+    // Never lowered: a sync can have filled the table before this first load, and
+    // handing out an id it already used would overwrite the entry it pulled.
+    let next_id = crate::meta_i64(&tx, "vocab_next_id")
+        .map_err(|e| vocab_error(&db, e))?
+        .unwrap_or(1)
+        .max(document.next_id as i64);
+    set_meta(&tx, "vocab_next_id", &next_id.to_string()).map_err(|e| vocab_error(&db, e))?;
     set_meta(&tx, VOCABULARY_KEY, &marker(&file)).map_err(|e| vocab_error(&db, e))?;
     tx.commit().map_err(|e| vocab_error(&db, e))
 }
