@@ -145,7 +145,9 @@
 
   async function submit() {
     const askedPattern = prompt;
-    if (!askedPattern || outcome !== null || !canSubmit(typed)) return;
+    // `busy` too, so a second press inside the round trip cannot keep the sentence
+    // twice — the same guard the written-cloze screen needs for its Enter.
+    if (busy || !askedPattern || outcome !== null || !canSubmit(typed)) return;
     try {
       busy = true;
       error = null;

@@ -8,6 +8,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { normaliseTyped } from "./ime";
 import type {
   AppInfo,
   BandView,
@@ -160,14 +161,23 @@ export function setSection(section: Section): Promise<string | null> {
   return invoke<string | null>("set_section", { section });
 }
 
-/** Check a typed reading, accepting either romanisation. */
+/**
+ * Check a typed reading, accepting either romanisation.
+ *
+ * What was typed is folded first (`normaliseTyped` in `ime.ts`), so romaji an IME
+ * typed in full width — `ｓｈｉ` — is read as the `shi` it is; Rust lower-cases ASCII
+ * and nothing else. The same is done for every answer graded as a reading below.
+ */
 export function checkReading(ch: string, typed: string): Promise<ReadingCheck> {
-  return invoke<ReadingCheck>("check_reading", { ch, typed });
+  return invoke<ReadingCheck>("check_reading", { ch, typed: normaliseTyped(typed) });
 }
 
-/** Turn typed romaji into kana. */
+/** Turn typed romaji into kana, full-width romaji included. */
 export function romajiToKana(input: string, script?: ScriptName): Promise<string> {
-  return invoke<string>("romaji_to_kana", { input, script: script ?? null });
+  return invoke<string>("romaji_to_kana", {
+    input: normaliseTyped(input),
+    script: script ?? null,
+  });
 }
 
 /**
@@ -321,7 +331,7 @@ export function wordOfText(text: string, reading?: string | null): Promise<Word>
  * learner who can read kana should not have to transliterate to answer.
  */
 export function checkWord(text: string, reading: string, typed: string): Promise<ReadingCheck> {
-  return invoke<ReadingCheck>("check_word", { text, reading, typed });
+  return invoke<ReadingCheck>("check_word", { text, reading, typed: normaliseTyped(typed) });
 }
 
 /** The passages a learner can read. */
@@ -443,7 +453,11 @@ export function recordGrammarProduction(
   example: number,
   typed: string,
 ): Promise<GrammarProductionOutcome> {
-  return invoke<GrammarProductionOutcome>("record_grammar_production", { point, example, typed });
+  return invoke<GrammarProductionOutcome>("record_grammar_production", {
+    point,
+    example,
+    typed: normaliseTyped(typed),
+  });
 }
 
 /**
@@ -478,6 +492,10 @@ export function grammarCompositionSize(): Promise<CompositionSize> {
  * `record_grammar_composition` reports only what the machine can see — whether the
  * pattern's own text is in the sentence, whether some of it is not Japanese script,
  * which characters the course does not teach, and whether it is a sentence at all.
+ *
+ * The sentence is sent as it was typed, **not** through `normaliseTyped`: it is the
+ * learner's own writing and is kept, and NFKC would turn its full-width `？` and `！`
+ * into ASCII.
  */
 export function recordGrammarComposition(
   point: string,

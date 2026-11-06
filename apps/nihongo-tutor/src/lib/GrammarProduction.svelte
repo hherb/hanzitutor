@@ -46,6 +46,7 @@
   import { needsRuby } from "./words";
   import { recordLine, sessionLine } from "./grammarDrill";
   import { canSubmit, outcomeLine, poolNote } from "./grammarProduction";
+  import { isSubmitEnter, trackComposition } from "./ime";
 
   interface Props {
     /** What the `voice` command answered, asked once by `App.svelte`. */
@@ -93,7 +94,10 @@
 
   async function submit() {
     const askedQuestion = question;
-    if (!askedQuestion || outcome !== null || !canSubmit(typed)) return;
+    // `busy` as well as the rest: the button is disabled while an answer is in
+    // flight, but Enter reaches here without it, and two Enters inside one round
+    // trip would otherwise record two answers to one question.
+    if (busy || !askedQuestion || outcome !== null || !canSubmit(typed)) return;
     try {
       busy = true;
       error = null;
@@ -178,7 +182,9 @@
            the label beside them pushed `Check` onto a line of its own, which put the
            one control the question has below the box the learner had just typed in. -->
       <!-- The placeholder says what may be typed and never what to type: an example
-           answer here would be the answer to every question on the same pattern. -->
+           answer here would be the answer to every question on the same pattern.
+           Enter submits, but not the Enter that commits an IME candidate (`ime.ts`):
+           ないと committed on the way to ないといけない is not an answer. -->
       <div class="row">
         <input
           id="written"
@@ -189,7 +195,8 @@
           placeholder="in romaji or kana"
           bind:value={typed}
           disabled={outcome !== null}
-          onkeydown={(event) => event.key === "Enter" && void submit()}
+          use:trackComposition
+          onkeydown={(event) => isSubmitEnter(event) && void submit()}
         />
         <button
           class="submit"

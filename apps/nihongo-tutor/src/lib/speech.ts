@@ -20,6 +20,8 @@
  * `kanji.ts` and `review.ts`.
  */
 
+import { isComposingKey } from "./ime";
+
 /**
  * What the `voice` command answers: a description of the voice in use, `null`
  * when the machine has none, or `undefined` while the answer is still on its way.
@@ -66,6 +68,10 @@ export interface KeyLike {
   metaKey?: boolean;
   ctrlKey?: boolean;
   altKey?: boolean;
+  /** Whether an IME composition is open, which makes the press the IME's. */
+  isComposing?: boolean;
+  /** 229 when the IME has consumed the press — see `ime.ts`. */
+  keyCode?: number;
   /**
    * Where the press landed. `KeyboardEvent.target` is an `EventTarget`, which has
    * neither a tag name nor `isContentEditable`, so the DOM's own type and the
@@ -99,9 +105,12 @@ function elementOf(target: KeyLike["target"]): {
  * would look broken in the commonest way to reach it. `h` has no default action
  * anywhere and no other meaning in this app, so it can be claimed outright.
  *
- * Four things make a keypress not this key:
+ * Five things make a keypress not this key:
  *
  * * a **repeat**, which is a key held down rather than a request;
+ * * a keypress the **input method** owns (`isComposingKey` in `ime.ts`): with the
+ *   Japanese IME on, the `h` of `ha` is the IME's, and on a screen with no field
+ *   focused it would otherwise be heard as the shortcut;
  * * a keypress with **Command, Control or Option** held — `⌘H` hides the window,
  *   and a shortcut that ate it would be worse than one that did not exist;
  * * the wrong letter, in either case, so `Shift+H` works and `h` in the middle of
@@ -113,6 +122,7 @@ function elementOf(target: KeyLike["target"]): {
  */
 export function isHearItKey(event: KeyLike): boolean {
   if (event.repeat) return false;
+  if (isComposingKey(event)) return false;
   if (event.metaKey || event.ctrlKey || event.altKey) return false;
   if (event.key.toLowerCase() !== "h") return false;
 

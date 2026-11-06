@@ -30,6 +30,7 @@
   import SpeakButton from "./SpeakButton.svelte";
   import type { ReadingCheck, Word } from "./types";
   import type { VoiceStatus } from "./speech";
+  import { isSubmitEnter, trackComposition } from "./ime";
   import {
     furiganaCoversWord,
     furiganaSpellsReading,
@@ -71,13 +72,23 @@
 
   const shown = $derived(readingShown({ asking: askReading, checked: check !== null, revealed }));
 
+  /** Whether a check is in flight, so a second Enter does not send a second one. */
+  let checking = false;
+
   async function checkTyped() {
-    if (!typed.trim()) return;
+    if (checking || !typed.trim()) return;
+    const asked = word;
     try {
+      checking = true;
       error = null;
-      check = await api.checkWord(word.text, word.reading, typed);
+      const answered = await api.checkWord(asked.text, asked.reading, typed);
+      // A verdict for the word that was up when it was asked, and no other: the card
+      // can be handed a new word while the check is on its way.
+      if (word === asked) check = answered;
     } catch (e) {
-      error = String(e);
+      if (word === asked) error = String(e);
+    } finally {
+      checking = false;
     }
   }
 
@@ -143,8 +154,11 @@
         <input
           id="word-reading"
           bind:value={typed}
+          use:trackComposition
           onkeydown={(e) => {
-            if (e.key === "Enter") void checkTyped();
+            // Not the Enter that commits an IME candidate (`ime.ts`): a learner
+            // writing おとな in kana commits it before checking it.
+            if (isSubmitEnter(e)) void checkTyped();
           }}
           placeholder="in romaji or kana"
           autocomplete="off"
