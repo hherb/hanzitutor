@@ -642,6 +642,10 @@ pub fn check_kana_text(expected: &str, typed: &str) -> KanaTextCheck {
 /// * `ji` and `zu` for ぢ and づ, and every other spelling the readings give a kana
 ///   even where a commoner kana owns it in [`to_kana`].
 ///
+/// Both readings of `nn` are tried against the answer, so the IME's `kinnyoubi` is
+/// right for きんようび — and, the price of that, Hepburn's `kinnen` (近年) is also
+/// accepted for 禁煙's きんえん and `konnya` for 今夜's こんや.
+///
 /// A bare `n` before a vowel or `y` is never ん here, as it is not in [`to_kana`]:
 /// `kinen` is きねん and not 禁煙's きんえん, which is `kin'en`. Anything [`to_kana`]
 /// reads as the answer is accepted: this widens what the plain conversion accepts
@@ -668,7 +672,10 @@ pub fn check_kana_text_with(expected: &str, typed: &str, particles: &[usize]) ->
     let particle: Vec<bool> = (0..expected.len())
         .map(|at| particles.contains(&at))
         .collect();
-    match read_against(&expected, &particle, typed) {
+    // Every spelling the reader knows is lower case, and a desktop keyboard's Shift
+    // or Caps Lock is not a different answer: `Watashi` is わたし.
+    let lowered = typed.to_ascii_lowercase();
+    match read_against(&expected, &particle, &lowered) {
         Some(produced) => KanaTextCheck {
             produced: produced.into_iter().collect(),
             correct: true,
@@ -701,8 +708,15 @@ pub fn particles_in(kana: &str, romaji: &str) -> Vec<usize> {
         .iter()
         .map(|ch| matches!(ch, 'は' | 'へ'))
         .collect();
-    let Some(produced) = read_against(&expected, &particle, &romaji.trim().to_ascii_lowercase())
-    else {
+    // Sentence punctuation in the corpus's romaji (`Wake de wa nai.`) is not part
+    // of the reading; the apostrophe and the hyphen are, so they stay.
+    let romaji: String = romaji
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_ascii_punctuation() || matches!(ch, '\'' | '-'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let Some(produced) = read_against(&expected, &particle, &romaji) else {
         return Vec::new();
     };
     expected
@@ -1371,6 +1385,22 @@ mod tests {
         assert!(particles_in("わけではない", "nonsense").is_empty());
         // Kana typed directly is writing, not sound, and is compared as written.
         assert!(!check_kana_text_with("わけではない", "わけでわない", &[3]).correct);
+    }
+
+    #[test]
+    fn capitals_typed_with_shift_or_caps_lock_are_the_same_answer() {
+        assert!(check_kana_text("わたし", "Watashi").correct);
+        assert!(check_kana_text("わたし", "WATASHI").correct);
+        assert!(check_kana_text("おんな", "Onna").correct);
+        assert!(check_kana_text_with("こんにちは", "Konnichiwa", &[4]).correct);
+        assert!(!check_kana_text("わたし", "Watasi x").correct);
+    }
+
+    #[test]
+    fn sentence_punctuation_in_the_romaji_does_not_hide_a_particle() {
+        assert_eq!(particles_in("わけではない", "Wake de wa nai."), vec![3]);
+        assert_eq!(particles_in("わけではない", "wake de wa nai!"), vec![3]);
+        assert_eq!(particles_in("はずだ", "hazu da."), Vec::<usize>::new());
     }
 
     #[test]
