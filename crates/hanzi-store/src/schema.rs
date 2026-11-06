@@ -182,8 +182,20 @@ CREATE TABLE IF NOT EXISTS trace_attempt (
 /// write lock at `BEGIN` makes that ordinary waiting instead.
 pub(crate) fn apply(conn: &mut Connection) -> rusqlite::Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Read inside the transaction, so the marker below is written by the same
+    // commit that moves the version past 7 — never one without the other.
+    let before = version(&tx)?;
     tx.execute_batch(SCHEMA)?;
     upgrade(&tx)?;
+    if matches!(before, Some(found) if found < 7) {
+        // A database an older build scheduled: rebuild it once under the rules
+        // schema 7 arrived with. See `Db::schedule_refold_pending`.
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, 'pending')
+             ON CONFLICT(key) DO NOTHING",
+            [REFOLD_KEY],
+        )?;
+    }
     tx.execute(
         "INSERT INTO meta (key, value) VALUES ('schema', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -192,6 +204,10 @@ pub(crate) fn apply(conn: &mut Connection) -> rusqlite::Result<()> {
     tx.commit()?;
     Ok(())
 }
+
+/// The `meta` key that asks for the schedule to be rebuilt once after the upgrade
+/// to schema 7. Present means pending; the app removes it when it is done.
+pub(crate) const REFOLD_KEY: &str = "refold:schema7";
 
 /// The key this device's identity is stored under in `meta`.
 pub(crate) const DEVICE_ID_KEY: &str = "device_id";

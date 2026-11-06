@@ -1539,7 +1539,7 @@ fn progress_serialises_with_camel_case_fields() {
         .expect("recording should work");
     let json = serde_json::to_value(store.view_at("2026-09-19T09:30:00Z")).unwrap();
 
-    expect_keys(&json, &["cards", "warning"]);
+    expect_keys(&json, &["cards", "traced", "warning"]);
     assert_eq!(json["warning"], serde_json::Value::Null);
     expect_keys(
         &json["cards"][0],
@@ -3409,18 +3409,169 @@ fn a_traced_attempt_reaches_the_database_but_not_the_schedule() {
         state.lock_progress().view().cards.is_empty(),
         "a trace is not a review, so there is still nothing scheduled"
     );
+    // It is not a review, but it is the learner's handwriting, so the practice
+    // log carries it — saying it was a trace, with no device or sequence number.
     let message = state
         .export_practice_log(&dir.join("log.jsonl"), "jsonl")
         .unwrap();
     assert!(
-        message.contains("0 attempts"),
-        "nor is it in the review log: {message}"
+        message.contains("0 attempts and 1 traces"),
+        "a trace is exported, and not as a review: {message}"
     );
+    let line: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(dir.join("log.jsonl"))
+            .unwrap()
+            .trim(),
+    )
+    .unwrap();
+    assert_eq!(line["mode"], "trace");
+    assert_eq!(line["ch"], "好");
+    assert!(line.get("seq").is_none());
+    let csv_message = state
+        .export_practice_log(&dir.join("log.csv"), "csv")
+        .unwrap();
+    assert!(csv_message.contains("1 traces"), "{csv_message}");
+    let csv = std::fs::read_to_string(dir.join("log.csv")).unwrap();
+    assert!(csv.lines().nth(1).unwrap().contains(",trace,"), "{csv}");
 
-    // Reopened from disk, so this is what was stored and not what was in memory.
+    // Reopened from disk, so this is what was stored and not what was in memory:
+    // still no card, but the view knows it was traced.
     drop(state);
     let state = AppState::load(Some(dir.clone())).unwrap();
-    assert!(state.lock_progress().view().cards.is_empty());
+    let view = state.lock_progress().view();
+    assert!(view.cards.is_empty());
+    assert_eq!(view.traced.get("好"), Some(&1));
+    let json = serde_json::to_value(&view).unwrap();
+    assert_eq!(
+        json["traced"]["好"], 1,
+        "keyed by character, as the client reads it"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_backup_carries_traces_and_restores_them_once() {
+    // A backup promises every attempt with its measures. The board starts in
+    // trace mode, so for a beginner most of those are traces.
+    let measures = AttemptMeasures {
+        shape: 0.82,
+        position: 0.71,
+        ink: 0.33,
+        ink_coverage: 0.95,
+        order: 1.0,
+        legible: false,
+        order_correct: true,
+    };
+    let source_dir = data_dir("backup-traces-source");
+    let source = AppState::load(Some(source_dir.clone())).unwrap();
+    {
+        let mut progress = source.lock_progress();
+        progress
+            .store
+            .record_practice('好', 97.0, hanzi_core::PracticeMode::Trace, Some(measures))
+            .unwrap();
+        progress
+            .store
+            .record_at('学', 88.0, "2026-09-22T10:00:00Z")
+            .unwrap();
+        assert!(progress.save().is_none());
+    }
+    let file = source_dir.join("backup.json");
+    let message = source.export_backup(&file).unwrap();
+    assert!(message.contains("1 attempts"), "{message}");
+    assert!(message.contains("1 traces"), "{message}");
+
+    let target_dir = data_dir("backup-traces-target");
+    let target = AppState::load(Some(target_dir.clone())).unwrap();
+    let outcome = target.import_backup(&file, true).unwrap();
+    assert!(
+        outcome.message.contains("recovered 1 traces"),
+        "{}",
+        outcome.message
+    );
+    let db = target.db.as_ref().unwrap();
+    let traces = db.traced_attempts().unwrap();
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0].measures, Some(measures));
+    assert_eq!(
+        db.attempts(None).unwrap().len(),
+        1,
+        "the trace is not a review"
+    );
+    assert!(
+        target.lock_progress().store.is_new('好'),
+        "and schedules nothing"
+    );
+
+    let again = target.import_backup(&file, true).unwrap();
+    assert!(!again.message.contains("traces"), "{}", again.message);
+    assert_eq!(
+        db.traced_attempts().unwrap().len(),
+        1,
+        "restoring twice adds nothing"
+    );
+
+    std::fs::remove_dir_all(&source_dir).ok();
+    std::fs::remove_dir_all(&target_dir).ok();
+}
+
+#[test]
+fn a_schedule_an_older_build_inflated_is_rebuilt_once_on_upgrade() {
+    // Builds before schema 7 advanced a card on every Check. A device that syncs
+    // gets its cards refolded by the next sync; one that never syncs has to get
+    // the same correction at the upgrade, or the same history would mean two
+    // schedules depending on whether sync is on.
+    let dir = data_dir("refold-upgrade");
+    {
+        let state = AppState::load(Some(dir.clone())).unwrap();
+        let mut progress = state.lock_progress();
+        for minute in 0..4 {
+            let at = format!("2026-09-19T09:0{minute}:00Z");
+            progress.store.record_at('好', 80.0, &at).unwrap();
+        }
+        assert!(progress.save().is_none());
+    }
+    // What the old build left behind: the same four attempts, a card climbed to
+    // 37.5 days, and schema 6.
+    let inflate = |dir: &Path| {
+        use hanzi_core::ProgressSink;
+        let mut db = hanzi_store::Db::open(dir).unwrap();
+        let mut document = db.load().unwrap();
+        let card = document.cards.get_mut("好").unwrap();
+        card.repetitions = 4;
+        card.interval_days = 37.5;
+        card.due = "2026-10-26T21:03:00Z".to_string();
+        db.save(&document, &BTreeSet::from(["好".to_string()]), &[])
+            .unwrap();
+        db
+    };
+    let db = inflate(&dir);
+    db.set_meta_value("schema", "6").unwrap();
+    drop(db);
+
+    let state = AppState::load(Some(dir.clone())).unwrap();
+    let card = state.lock_progress().store.card('好').cloned().unwrap();
+    assert_eq!(card.repetitions, 1, "only the first check was a review");
+    assert_eq!(card.interval_days, 1.0);
+    assert_eq!(card.due, "2026-09-20T09:00:00Z");
+    assert_eq!(card.attempts, 4, "and no attempt was lost");
+    drop(state);
+
+    // Once only: a card changed after the upgrade is not rebuilt on every launch.
+    drop(inflate(&dir));
+    let state = AppState::load(Some(dir.clone())).unwrap();
+    assert_eq!(
+        state
+            .lock_progress()
+            .store
+            .card('好')
+            .unwrap()
+            .interval_days,
+        37.5,
+        "the rebuild ran once, at the upgrade"
+    );
+    drop(state);
 
     std::fs::remove_dir_all(&dir).ok();
 }

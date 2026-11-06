@@ -9,12 +9,21 @@
 //! record back, CSV for a spreadsheet or a statistics package. Both are pure
 //! functions over rows, so the shape of the output is testable without a
 //! database, and neither invents a value for a measure that was never taken.
+//!
+//! Both carry the attempts written over the faint guide as well as the reviews,
+//! each row saying which it was in a `mode` field (`recall` or `trace`). A trace
+//! is not in the review log and has no device or sequence number — it never
+//! leaves the device that made it — so those two fields are absent on its rows.
+//! It is worth exporting all the same: the board starts in trace mode, so for a
+//! beginner most measured attempts are traces. They are graded where the guide
+//! is rather than with the global fit, so a reader tuning the grader should look
+//! at the two modes separately.
 
 use hanzi_core::vocab::csv_field;
-use hanzi_core::AttemptMeasures;
+use hanzi_core::{AttemptMeasures, PracticeMode};
 use serde::{Deserialize, Serialize};
 
-use crate::LoggedAttempt;
+use crate::{LoggedAttempt, TracedAttempt};
 
 /// One attempt as the export writes it.
 ///
@@ -60,43 +69,148 @@ impl From<&LoggedAttempt> for ExportedAttempt {
     }
 }
 
-/// The attempts as JSON Lines: one object per line, in the order given.
+/// One traced attempt as the backup carries it.
+///
+/// The same facts as an [`ExportedAttempt`] without the device and sequence
+/// number, which a trace does not have: it is never published, so nothing has to
+/// name it anywhere else.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportedTrace {
+    pub ch: String,
+    pub at: String,
+    pub score: f32,
+    /// `again`, `hard`, `good` or `easy`: what the score would have meant as a
+    /// review.
+    pub rating: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measures: Option<AttemptMeasures>,
+}
+
+impl From<&TracedAttempt> for ExportedTrace {
+    fn from(trace: &TracedAttempt) -> Self {
+        Self {
+            ch: trace.ch.clone(),
+            at: trace.at.clone(),
+            score: trace.score,
+            rating: trace.rating.clone(),
+            measures: trace.measures,
+        }
+    }
+}
+
+/// One line of the practice-log export: a review or a trace, saying which.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogLine<'a> {
+    ch: &'a str,
+    at: &'a str,
+    score: f32,
+    rating: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seq: Option<i64>,
+    mode: PracticeMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    measures: Option<AttemptMeasures>,
+}
+
+impl<'a> From<&'a LoggedAttempt> for LogLine<'a> {
+    fn from(attempt: &'a LoggedAttempt) -> Self {
+        Self {
+            ch: &attempt.ch,
+            at: &attempt.at,
+            score: attempt.score,
+            rating: &attempt.rating,
+            device_id: Some(&attempt.device_id),
+            seq: Some(attempt.seq),
+            mode: PracticeMode::Recall,
+            measures: attempt.measures,
+        }
+    }
+}
+
+impl<'a> From<&'a TracedAttempt> for LogLine<'a> {
+    fn from(trace: &'a TracedAttempt) -> Self {
+        Self {
+            ch: &trace.ch,
+            at: &trace.at,
+            score: trace.score,
+            rating: &trace.rating,
+            device_id: None,
+            seq: None,
+            mode: PracticeMode::Trace,
+            measures: trace.measures,
+        }
+    }
+}
+
+/// The reviews and the traces as one timeline, oldest first.
+///
+/// Each list is already in its own order, so this is a merge by time rather than
+/// a sort; on a tie the review comes first, which keeps the output stable.
+fn timeline<'a>(attempts: &'a [LoggedAttempt], traces: &'a [TracedAttempt]) -> Vec<LogLine<'a>> {
+    let mut out = Vec::with_capacity(attempts.len() + traces.len());
+    let (mut a, mut t) = (attempts.iter().peekable(), traces.iter().peekable());
+    loop {
+        let take_trace = match (a.peek(), t.peek()) {
+            (Some(review), Some(trace)) => trace.at < review.at,
+            (Some(_), None) => false,
+            (None, Some(_)) => true,
+            (None, None) => break,
+        };
+        if take_trace {
+            out.extend(t.next().map(LogLine::from));
+        } else {
+            out.extend(a.next().map(LogLine::from));
+        }
+    }
+    out
+}
+
+/// The attempts and traces as JSON Lines: one object per line, oldest first.
 ///
 /// JSON Lines rather than one array, because the log's virtue is that it is
 /// append-only and unbounded — a stream of independent objects is what that
 /// looks like on disk, and it can be read a line at a time.
-pub fn attempts_to_jsonl(attempts: &[LoggedAttempt]) -> Result<String, serde_json::Error> {
+pub fn attempts_to_jsonl(
+    attempts: &[LoggedAttempt],
+    traces: &[TracedAttempt],
+) -> Result<String, serde_json::Error> {
     let mut out = String::new();
-    for attempt in attempts {
-        out.push_str(&serde_json::to_string(&ExportedAttempt::from(attempt))?);
+    for line in timeline(attempts, traces) {
+        out.push_str(&serde_json::to_string(&line)?);
         out.push('\n');
     }
     Ok(out)
 }
 
 /// The columns of the CSV export, in order.
-const CSV_HEADER: &str = "ch,at,score,rating,device_id,seq,shape,position,ink,\
+const CSV_HEADER: &str = "ch,at,score,rating,device_id,seq,mode,shape,position,ink,\
                           ink_coverage,order_score,legible,order_correct";
 
-/// The attempts as CSV: a header row, then one row per attempt.
+/// The attempts and traces as CSV: a header row, then one row each, oldest first.
 ///
 /// Lossy on purpose, and by the same rule as the vocabulary list's CSV export:
 /// there is no matching import. The format that round-trips is the combined
 /// backup ([`crate::backup`]), not either of these single-purpose exports. A
 /// missing measure is an empty field, which is how a spreadsheet spells "not
-/// measured".
-pub fn attempts_to_csv(attempts: &[LoggedAttempt]) -> String {
+/// measured" — and so is a trace's device and sequence number, which it does not
+/// have.
+pub fn attempts_to_csv(attempts: &[LoggedAttempt], traces: &[TracedAttempt]) -> String {
     let mut out = String::from(CSV_HEADER);
     out.push('\n');
-    for attempt in attempts {
-        let m = attempt.measures;
+    for line in timeline(attempts, traces) {
+        let m = line.measures;
         let fields = [
-            attempt.ch.clone(),
-            attempt.at.clone(),
-            format!("{}", attempt.score),
-            attempt.rating.clone(),
-            attempt.device_id.clone(),
-            attempt.seq.to_string(),
+            line.ch.to_string(),
+            line.at.to_string(),
+            format!("{}", line.score),
+            line.rating.to_string(),
+            line.device_id.unwrap_or_default().to_string(),
+            line.seq.map(|seq| seq.to_string()).unwrap_or_default(),
+            line.mode.name().to_string(),
             opt(m.map(|m| m.shape)),
             opt(m.map(|m| m.position)),
             opt(m.map(|m| m.ink)),
@@ -149,7 +263,7 @@ mod tests {
     #[test]
     fn jsonl_is_one_object_per_attempt_with_the_measures_nested() {
         let rows = vec![attempt("好", Some(measured())), attempt("学", None)];
-        let jsonl = attempts_to_jsonl(&rows).unwrap();
+        let jsonl = attempts_to_jsonl(&rows, &[]).unwrap();
         assert_eq!(jsonl.lines().count(), 2, "one line per attempt");
 
         let first: serde_json::Value = serde_json::from_str(jsonl.lines().next().unwrap()).unwrap();
@@ -168,7 +282,7 @@ mod tests {
     #[test]
     fn csv_has_a_header_and_leaves_a_missing_measure_empty() {
         let rows = vec![attempt("好", Some(measured())), attempt("学", None)];
-        let csv = attempts_to_csv(&rows);
+        let csv = attempts_to_csv(&rows, &[]);
         let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 3, "a header and one row per attempt");
         assert_eq!(
@@ -192,7 +306,7 @@ mod tests {
         // The log's `ch` is one character, but it can be a comma or a quote —
         // the vocabulary list can hold a sentence, and a character can be
         // punctuation. The same quoting rule as the list's export.
-        let csv = attempts_to_csv(&[attempt(",", Some(measured()))]);
+        let csv = attempts_to_csv(&[attempt(",", Some(measured()))], &[]);
         let row = csv.lines().nth(1).unwrap();
         assert!(row.starts_with("\",\""), "the comma is quoted: {row}");
     }
@@ -205,13 +319,67 @@ mod tests {
         // would not help — CSV quoting is stripped on load.
         let mut row = attempt("=", Some(measured()));
         row.device_id = "@SUM(1+1)".into();
-        let csv = attempts_to_csv(&[row]);
+        let csv = attempts_to_csv(&[row], &[]);
         let line = csv.lines().nth(1).unwrap();
         assert!(line.contains("'="), "the character is defused: {line}");
         assert!(line.contains("'@SUM(1+1)"), "the device is defused: {line}");
 
         // An ordinary attempt is untouched, marker and all.
-        let plain = attempts_to_csv(&[attempt("好", Some(measured()))]);
+        let plain = attempts_to_csv(&[attempt("好", Some(measured()))], &[]);
         assert!(plain.lines().nth(1).unwrap().starts_with("好,"));
+    }
+
+    fn trace(ch: &str, at: &str, measures: Option<AttemptMeasures>) -> TracedAttempt {
+        TracedAttempt {
+            id: 1,
+            ch: ch.into(),
+            at: at.into(),
+            score: 97.0,
+            rating: "easy".into(),
+            measures,
+        }
+    }
+
+    #[test]
+    fn traces_are_exported_in_time_order_and_say_they_are_traces() {
+        // The board starts in trace mode, so for a beginner most measured attempts
+        // are traces; an export that left them out lost most of the evidence.
+        let rows = vec![attempt("好", Some(measured()))]; // 09:00
+        let traces = vec![
+            trace("学", "2026-09-22T08:59:00Z", Some(measured())),
+            trace("习", "2026-09-22T09:01:00Z", None),
+        ];
+
+        let jsonl = attempts_to_jsonl(&rows, &traces).unwrap();
+        let lines: Vec<serde_json::Value> = jsonl
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let order: Vec<(&str, &str)> = lines
+            .iter()
+            .map(|l| (l["ch"].as_str().unwrap(), l["mode"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![("学", "trace"), ("好", "recall"), ("习", "trace")]
+        );
+        assert!(lines[0].get("deviceId").is_none(), "a trace has no device");
+        assert!(lines[0].get("seq").is_none());
+        assert_eq!(lines[0]["measures"]["inkCoverage"], 0.95);
+        assert_eq!(lines[1]["deviceId"], "device-a");
+
+        let csv = attempts_to_csv(&rows, &traces);
+        let csv: Vec<&str> = csv.lines().collect();
+        assert!(csv[0].starts_with("ch,at,score,rating,device_id,seq,mode,"));
+        assert!(
+            csv[1].starts_with("学,2026-09-22T08:59:00Z,97,easy,,,trace,0.82"),
+            "{}",
+            csv[1]
+        );
+        assert!(csv[2].contains(",device-a,7,recall,"), "{}", csv[2]);
+        assert!(csv[3].ends_with(",,,trace,,,,,,,"), "{}", csv[3]);
+        for line in &csv {
+            assert_eq!(line.split(',').count(), csv[0].split(',').count());
+        }
     }
 }

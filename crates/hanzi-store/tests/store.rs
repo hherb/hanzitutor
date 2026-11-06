@@ -1628,6 +1628,11 @@ fn a_schema_six_database_gains_the_trace_table_and_keeps_its_attempts() {
         1,
         "the review log is untouched"
     );
+    // A database an older build scheduled asks, once, for its schedule to be
+    // rebuilt under the new rules — and only until the app says it has been.
+    assert!(db.schedule_refold_pending().unwrap());
+    db.finish_schedule_refold().unwrap();
+    assert!(!Db::open(&dir).unwrap().schedule_refold_pending().unwrap());
     assert!(db.traced_attempts().unwrap().is_empty());
     let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
     store
@@ -1641,6 +1646,59 @@ fn a_schema_six_database_gains_the_trace_table_and_keeps_its_attempts() {
         .unwrap();
     store.save().unwrap();
     assert_eq!(db.traced_attempts().unwrap().len(), 1, "and usable at once");
+
+    finish(&dir);
+}
+
+#[test]
+fn a_new_database_has_no_schedule_to_rebuild() {
+    let dir = dir("refold-fresh");
+    let db = Db::open(&dir).unwrap();
+    assert!(!db.schedule_refold_pending().unwrap());
+    assert!(!Db::open(&dir).unwrap().schedule_refold_pending().unwrap());
+    finish(&dir);
+}
+
+#[test]
+fn restored_traces_are_kept_once_and_counted_for_the_view() {
+    use hanzi_store::IncomingTrace;
+
+    let dir = dir("traces-restore");
+    let db = Db::open(&dir).unwrap();
+    let incoming = vec![
+        IncomingTrace {
+            ch: "好".into(),
+            at: "2026-09-19T09:00:00Z".into(),
+            score: 97.0,
+            rating: Rating::Easy,
+            measures: Some(some_measures()),
+        },
+        IncomingTrace {
+            ch: "好".into(),
+            at: "2026-09-19T09:01:00Z".into(),
+            score: 40.0,
+            rating: Rating::Again,
+            measures: None,
+        },
+    ];
+    assert_eq!(db.merge_traces(&incoming).unwrap(), 2);
+    assert_eq!(
+        db.merge_traces(&incoming).unwrap(),
+        0,
+        "restoring twice adds nothing"
+    );
+    let traces = db.traced_attempts().unwrap();
+    assert_eq!(traces.len(), 2);
+    assert_eq!(traces[0].measures, Some(some_measures()));
+    assert!(
+        db.attempts(None).unwrap().is_empty(),
+        "and none of it is a review"
+    );
+
+    // The schedule store sees how often each character was traced, for the view.
+    let store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(store.is_new('好'));
+    assert_eq!(store.view().traced.get("好"), Some(&2));
 
     finish(&dir);
 }

@@ -28,7 +28,7 @@
   import { setCharacterTones } from "./lib/tones.svelte";
   import { INTRO_PAGES, notesFor } from "./lib/startupPages";
   import type { Page } from "./lib/startupPages";
-  import { dueLabel } from "./lib/due";
+  import { dueLabel, unwrittenLabel } from "./lib/due";
   import { shortcutFor } from "./lib/shortcuts";
   import type { ShortcutId } from "./lib/shortcuts";
   import { INK_WIDTH, polylineLength } from "./lib/render";
@@ -96,6 +96,11 @@
   interface SlotState {
     strokes: Point[][];
     report: GradeReport | null;
+    /**
+     * How the board was set when `report` was graded. Switching mode clears the
+     * board's report, so a slot's report and its mode always belong together.
+     */
+    mode?: PracticeMode;
   }
 
   /** A character of the entry that has not been touched. One shared object, so
@@ -564,7 +569,7 @@
 
   // ---- progress and review -------------------------------------------------
   /** Per-character history and due dates, as the backend has them. */
-  let progress = $state<ProgressView>({ cards: [], warning: null });
+  let progress = $state<ProgressView>({ cards: [], traced: {}, warning: null });
   /** What is due for review now. `items` is one session; `dueCount` is all. */
   let review = $state<ReviewView>({ items: [], dueCount: 0, warning: null });
   /** Set when the saved course cursor could not be read. */
@@ -1633,7 +1638,11 @@
     while (slots.length < entryCharacters.length) {
       slots.push(EMPTY_SLOT);
     }
-    slots[charCursor] = { strokes: [...strokes], report };
+    // A report put back from the slot keeps the mode it was graded in; only a
+    // report graded on this board now takes the board's current mode.
+    const kept = slots[charCursor];
+    const graded = report !== null && kept?.report === report ? kept.mode : mode;
+    slots[charCursor] = { strokes: [...strokes], report, mode: graded };
     wordSlots = slots;
   }
 
@@ -2602,15 +2611,21 @@
     }
 
     const characters = `${scores.length} ${scores.length === 1 ? "character" : "characters"}`;
+    // A word with any character traced over the guide was not written from
+    // memory, so the entry's own attempt count and best score — which say how
+    // well it is written — are left alone, as the schedule leaves its cards.
+    const traced = entryCharacters.some((_, i) => wordSlots[i]?.mode === "trace");
     const note =
-      `${finished.text}: ${Math.round(mean)}/100 recorded (${characters})` +
+      `${finished.text}: ${Math.round(mean)}/100 ` +
+      (traced ? "traced, not counted as an attempt" : "recorded") +
+      ` (${characters})` +
       (isLast
         ? source === "review"
           ? " — that was everything due"
           : " — that was the last entry in this list"
         : "");
 
-    if (entryId !== null) {
+    if (entryId !== null && !traced) {
       await withVocab(() => api.vocabRecordAttempt(entryId, mean), note);
     } else {
       statusMessage = note;
@@ -2767,6 +2782,7 @@
       onSelectLesson={navigating(goToLesson)}
       onSelectCharacter={navigating(goToCharacter)}
       progressCards={progress.cards}
+      traced={progress.traced}
       {review}
       reviewing={source === "review"}
       onStartReview={navigating(startReview)}
@@ -2890,6 +2906,7 @@
         message={characterMessage}
         busy={vocabBusy}
         cards={progress.cards}
+        traced={progress.traced}
         onPractise={(character) => practiseCharacters([character])}
         onPractiseWords={practiseWords}
         onAddToList={addCharacterToList}
@@ -3005,7 +3022,7 @@
                     {activeCard.dueNow ? "due for review" : `next review ${dueLabel(activeCard.due)}`}
                   </li>
                 {:else}
-                  <li>new character</li>
+                  <li>{unwrittenLabel(progress.traced[targetChar ?? ""])}</li>
                 {/if}
               </ul>
               {#if answerVisible}
@@ -3045,7 +3062,7 @@
                     {activeCard.dueNow ? "due for review" : `next review ${dueLabel(activeCard.due)}`}
                   </li>
                 {:else}
-                  <li>not practised yet</li>
+                  <li>{unwrittenLabel(progress.traced[character.ch])}</li>
                 {/if}
               </ul>
               {#if answerVisible}

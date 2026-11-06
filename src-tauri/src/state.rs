@@ -423,6 +423,7 @@ fn describe_restore(
     backup: &Backup,
     summary: &hanzi_core::vocab::ImportSummary,
     attempts_added: usize,
+    traces_added: usize,
     recomputed: usize,
     left_alone: usize,
 ) -> String {
@@ -445,6 +446,9 @@ fn describe_restore(
     } else if backup.attempt_count() > 0 {
         parts.push("every attempt in it was already in your log".to_string());
     }
+    if traces_added > 0 {
+        parts.push(format!("recovered {traces_added} traces"));
+    }
     if recomputed > 0 {
         parts.push(format!("rebuilt {recomputed} schedules"));
     }
@@ -460,6 +464,44 @@ fn describe_restore(
         backup.exported_at(),
         parts.join(", ")
     )
+}
+
+/// Rebuild the schedule from the log once, if the database asks for it, and say
+/// whether anything was rebuilt.
+///
+/// The database asks after an upgrade from a build that scheduled every Check —
+/// see `Db::schedule_refold_pending`. The fold is the one sync and a restore use,
+/// from this device's own baseline, so a card migrated from the old JSON files
+/// whose log is short of its count is left alone exactly as a sync would leave it.
+fn refold_once(db: &Db) -> bool {
+    match db.schedule_refold_pending() {
+        Ok(true) => {}
+        Ok(false) => return false,
+        Err(error) => {
+            eprintln!("could not tell whether the schedule needs rebuilding: {error}");
+            return false;
+        }
+    }
+    let rebuilt =
+        hanzi_sync::local_baselines(db).and_then(|baselines| hanzi_sync::recompute(db, &baselines));
+    match rebuilt {
+        Ok((recomputed, left_alone)) => {
+            eprintln!(
+                "rebuilt {recomputed} schedules under the new review rules \
+                 ({left_alone} left alone, as their history predates the log)"
+            );
+            if let Err(error) = db.finish_schedule_refold() {
+                // Harmless if it happens: the next launch folds the same log to the
+                // same cards and writes nothing.
+                eprintln!("could not record that the schedule was rebuilt: {error}");
+            }
+            true
+        }
+        Err(error) => {
+            eprintln!("could not rebuild the schedule; trying again next launch: {error}");
+            false
+        }
+    }
 }
 
 /// State held for the lifetime of the app and shared by all commands.
@@ -571,6 +613,20 @@ impl AppState {
                 None,
             ),
         };
+
+        // A database an older build scheduled is rebuilt once under this build's
+        // rules (issue #15), so a device that never syncs ends up with the
+        // schedule a syncing one gets from its next sync. After the stores are
+        // open, because opening the schedule is what imports a pre-database
+        // install's documents, and the open store is reloaded afterwards for the
+        // reason `reload_after_sync` gives. A failure leaves the marker in place,
+        // so the next launch tries again; nothing about it blocks this one.
+        let mut progress = progress;
+        if let Some(db) = &db {
+            if refold_once(db) {
+                progress.reload(db);
+            }
+        }
 
         // The voice the learner chose is applied on the warm-up thread rather
         // than here, which is a change of *where*, not of *what*: it still
@@ -1258,20 +1314,29 @@ impl AppState {
             .as_ref()
             .ok_or("there is nowhere to keep study data, so there is nothing to export")?;
         let attempts = db.attempts(None)?;
+        // Traces too, marked as traces: the board starts in trace mode, so for a
+        // beginner most measured attempts are these.
+        let traces = db.traced_attempts()?;
         let (contents, label) = match format {
             "jsonl" => (
-                hanzi_store::export::attempts_to_jsonl(&attempts).map_err(|e| e.to_string())?,
+                hanzi_store::export::attempts_to_jsonl(&attempts, &traces)
+                    .map_err(|e| e.to_string())?,
                 "JSON Lines",
             ),
-            "csv" => (hanzi_store::export::attempts_to_csv(&attempts), "CSV"),
+            "csv" => (
+                hanzi_store::export::attempts_to_csv(&attempts, &traces),
+                "CSV",
+            ),
             other => return Err(format!("unknown export format {other:?}")),
         };
         std::fs::write(path, contents)
             .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-        let measured = attempts.iter().filter(|a| a.measures.is_some()).count();
+        let measured = attempts.iter().filter(|a| a.measures.is_some()).count()
+            + traces.iter().filter(|t| t.measures.is_some()).count();
         Ok(format!(
-            "Exported {} attempts ({measured} with grading measures) as {label} to {}",
+            "Exported {} attempts and {} traces ({measured} with grading measures) as {label} to {}",
             attempts.len(),
+            traces.len(),
             path.display()
         ))
     }
@@ -1292,6 +1357,7 @@ impl AppState {
             .as_ref()
             .ok_or("there is nowhere to keep study data, so there is nothing to back up")?;
         let attempts = db.attempts(None)?;
+        let traces = db.traced_attempts()?;
         let (vocabulary_json, entries) = {
             let vocab = self.lock_vocab();
             (
@@ -1300,7 +1366,7 @@ impl AppState {
             )
         };
 
-        let backup = Backup::build(&now_iso8601(), &vocabulary_json, &attempts)
+        let backup = Backup::build(&now_iso8601(), &vocabulary_json, &attempts, &traces)
             .map_err(|e| e.to_string())?;
         let measured = backup.measured_count();
         let text = backup.to_json().map_err(|e| e.to_string())?;
@@ -1308,10 +1374,11 @@ impl AppState {
             .map_err(|e| format!("could not write {}: {e}", path.display()))?;
 
         Ok(format!(
-            "Backed up {entries} vocabulary {} and {} attempts ({measured} with \
-             grading measures) to {}",
+            "Backed up {entries} vocabulary {}, {} attempts ({measured} with \
+             grading measures) and {} traces to {}",
             if entries == 1 { "entry" } else { "entries" },
             attempts.len(),
+            traces.len(),
             path.display()
         ))
     }
@@ -1346,6 +1413,9 @@ impl AppState {
         // stops an attempt being counted twice is the same rule here.
         let incoming = backup.incoming_attempts();
         let attempts_added = db.merge_attempts(&incoming)?;
+        // Traces are not in the log the schedule is folded from, so they change no
+        // schedule; they are restored for their measures.
+        let traces_added = db.merge_traces(&backup.incoming_traces())?;
 
         // The schedule is derived, so it is rebuilt rather than restored. A card
         // this device migrated from the old JSON files is folded from its own
@@ -1382,7 +1452,14 @@ impl AppState {
 
         Ok(BackupOutcome {
             view,
-            message: describe_restore(&backup, &summary, attempts_added, recomputed, left_alone),
+            message: describe_restore(
+                &backup,
+                &summary,
+                attempts_added,
+                traces_added,
+                recomputed,
+                left_alone,
+            ),
         })
     }
 

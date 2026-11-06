@@ -307,6 +307,75 @@ impl Db {
         Ok(out)
     }
 
+    /// Bring traced attempts in from a backup, returning how many were new.
+    ///
+    /// A trace has no device or sequence number to name it, so "already here" is
+    /// the same character, time, score and rating — which is what restoring the
+    /// same backup twice produces, and what two real traces almost never share,
+    /// since `at` is to the second. Restoring twice therefore adds nothing.
+    pub fn merge_traces(&self, incoming: &[IncomingTrace]) -> Result<usize, String> {
+        if incoming.is_empty() {
+            return Ok(0);
+        }
+        let path = self.path();
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(|e| at(&path, e))?;
+        let mut added = 0usize;
+        for trace in incoming {
+            let m = trace.measures;
+            added += tx
+                .execute(
+                    "INSERT INTO trace_attempt (ch, at, score, rating,
+                                                shape, position, ink, ink_coverage,
+                                                order_score, legible, order_correct)
+                     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+                     WHERE NOT EXISTS (
+                         SELECT 1 FROM trace_attempt
+                         WHERE ch = ?1 AND at = ?2 AND score = ?3 AND rating = ?4
+                     )",
+                    params![
+                        trace.ch,
+                        trace.at,
+                        trace.score,
+                        trace.rating.name(),
+                        m.map(|m| m.shape),
+                        m.map(|m| m.position),
+                        m.map(|m| m.ink),
+                        m.map(|m| m.ink_coverage),
+                        m.map(|m| m.order),
+                        m.map(|m| m.legible),
+                        m.map(|m| m.order_correct),
+                    ],
+                )
+                .map_err(|e| at(&path, e))?;
+        }
+        tx.commit().map_err(|e| at(&path, e))?;
+        Ok(added)
+    }
+
+    /// Whether the schedule still has to be rebuilt once under this build's rules.
+    ///
+    /// Set by the upgrade to schema 7, in the same transaction, for a database an
+    /// older build wrote. Those builds advanced a card on every Check, early or
+    /// repeated, and scheduled traces as reviews (issue #15), so their cards can
+    /// be weeks too far out. A syncing device gets them refolded by its next sync;
+    /// this is what makes a device that never syncs get the same correction, so
+    /// one history means one schedule whether or not sync is on. The fold itself
+    /// is `hanzi_sync::recompute`, which this crate cannot call — the app does,
+    /// and then calls [`Db::finish_schedule_refold`].
+    pub fn schedule_refold_pending(&self) -> Result<bool, String> {
+        Ok(self.meta_value(schema::REFOLD_KEY)?.is_some())
+    }
+
+    /// Record that the one-time rebuild [`Db::schedule_refold_pending`] asked for
+    /// has been done, so it is not done again.
+    pub fn finish_schedule_refold(&self) -> Result<(), String> {
+        let conn = self.lock();
+        conn.execute("DELETE FROM meta WHERE key = ?1", [schema::REFOLD_KEY])
+            .map_err(|e| at(&self.path(), e))?;
+        Ok(())
+    }
+
     /// Merge attempts made elsewhere into the log, returning how many were new.
     ///
     /// An attempt already held — same `(device_id, seq)` — is left exactly as it
@@ -524,6 +593,19 @@ pub struct TracedAttempt {
     pub measures: Option<AttemptMeasures>,
 }
 
+/// A traced attempt on its way into this database, from a backup.
+///
+/// [`TracedAttempt`] without the rowid, for the reason [`IncomingAttempt`] has
+/// none.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IncomingTrace {
+    pub ch: String,
+    pub at: String,
+    pub score: f32,
+    pub rating: Rating,
+    pub measures: Option<AttemptMeasures>,
+}
+
 /// An attempt made on another device, on its way into this log.
 ///
 /// The same facts as a [`LoggedAttempt`] without this file's rowid, which means
@@ -573,9 +655,11 @@ impl ProgressSink for Db {
         let path = self.path();
         let mut cards = read_cards(&conn, &path)?;
         read_histories(&conn, &path, &mut cards)?;
+        let traced = read_trace_counts(&conn, &path)?;
         Ok(ProgressDocument {
             version: hanzi_core::progress::FORMAT_VERSION,
             cards,
+            traced,
         })
     }
 
@@ -759,6 +843,28 @@ fn read_cards(
         cards.insert(ch, card);
     }
     Ok(cards)
+}
+
+/// How many times each character has been traced, for the view. See
+/// `hanzi_core::progress::Document::traced`.
+fn read_trace_counts(
+    conn: &Connection,
+    path: &Path,
+) -> Result<BTreeMap<String, u32>, ProgressError> {
+    let mut stmt = conn
+        .prepare("SELECT ch, COUNT(*) FROM trace_attempt GROUP BY ch")
+        .map_err(|e| progress_error(path, e))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+        })
+        .map_err(|e| progress_error(path, e))?;
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let (ch, count) = row.map_err(|e| progress_error(path, e))?;
+        counts.insert(ch, count);
+    }
+    Ok(counts)
 }
 
 /// Fill each card's recent history from the attempt log.

@@ -24,6 +24,7 @@
     VocabEntry,
   } from "./types";
   import TonedText from "./TonedText.svelte";
+  import { unwrittenLabel } from "./due";
 
   interface Props {
     view:
@@ -54,6 +55,8 @@
     onSelectCharacter: (ch: string) => void;
     /** Every practised character, so a lesson can show how far it got. */
     progressCards: ProgressCard[];
+    /** How often each character was traced; a traced character may have no card. */
+    traced?: Record<string, number>;
     review: ReviewView;
     /** True while a review session is on the board. */
     reviewing: boolean;
@@ -101,6 +104,7 @@
     onSelectLesson,
     onSelectCharacter,
     progressCards,
+    traced = {},
     review,
     reviewing,
     onStartReview,
@@ -275,11 +279,12 @@
                   class="char"
                   class:current={ch === activeCharacter}
                   class:practised={cardFor.has(ch)}
+                  class:traced={!cardFor.has(ch) && (traced[ch] ?? 0) > 0}
                   class:due={cardFor.get(ch)?.dueNow ?? false}
                   onclick={() => onSelectCharacter(ch)}
                   title={cardFor.has(ch)
                     ? `practised ${cardFor.get(ch)?.attempts}×`
-                    : "not practised yet"}
+                    : unwrittenLabel(traced[ch])}
                   lang="zh-Hans"><TonedText text={ch} /></button
                 >
               {/each}
@@ -591,6 +596,12 @@
   .char.practised {
     border-color: #86efac;
     background: #f0fdf4;
+  }
+  /* Traced over the guide but never written from memory: a quieter mark still,
+     dashed because the schedule has not started on it. */
+  .char.traced {
+    border-style: dashed;
+    border-color: #86efac;
   }
   .char.current.practised {
     border-color: var(--accent);

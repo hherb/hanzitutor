@@ -201,6 +201,17 @@ pub enum PracticeMode {
     Trace,
 }
 
+impl PracticeMode {
+    /// The written name of this mode: the same string serde writes, so an export
+    /// and the interface cannot disagree about what a row was.
+    pub fn name(self) -> &'static str {
+        match self {
+            PracticeMode::Recall => "recall",
+            PracticeMode::Trace => "trace",
+        }
+    }
+}
+
 /// One recorded attempt.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -339,18 +350,22 @@ pub trait Scheduler {
 /// attempt alone, so a device folding a merged log reaches the same verdict on
 /// every attempt as the device that recorded it.
 ///
-/// ## Ease and lapses belong to a learned card
+/// ## Ease and lapses belong to a learned card that was due
 ///
 /// A failure costs ease, and counts as a lapse, only when the card had been
-/// learned — `repetitions > 0`. A character met for the first time, or one still
-/// being relearned after a lapse, has nothing to lapse from, and charging it the
-/// textbook −0.54 each time pinned ease at the floor after two or three failures
-/// while first learning a character; every interval after that paid for it. The
+/// learned — `repetitions > 0` — **and** was due. A character met for the first
+/// time, or one still being relearned after a lapse, has nothing to lapse from,
+/// and charging it the textbook −0.54 each time pinned ease at the floor after two
+/// or three failures while first learning a character; every interval after that
+/// paid for it. A failure before the date resets the card but is not charged
+/// either, for the mirror of the reason early passes are ignored: if early passes
+/// earned nothing and early failures still cost, a sitting of fail, pass at the
+/// minute, fail again could only grind ease down. The
 /// passing grades keep SM-2's textbook update — Good is neutral, Hard costs a
 /// little and Easy earns a little back — because a Good review that raised ease
-/// would let a run of ordinary passes outgrow the evidence; with the two gates
-/// above, a card no longer reaches the floor by being practised, only by being
-/// forgotten after it was known.
+/// would let a run of ordinary passes outgrow the evidence; with these gates, a
+/// card no longer reaches the floor by being practised, only by being forgotten
+/// when it was asked for.
 ///
 /// ## A due date is an instant, not a day
 ///
@@ -372,12 +387,16 @@ impl Scheduler for Sm2 {
         if !failed && !card.is_due(at) {
             return;
         }
-        let learned = card.repetitions > 0;
+        // A lapse is a learned card forgotten *when it was asked for*. A failure
+        // before the date still resets the card below, but is not charged: early
+        // passes move nothing, so charging early failures would let a sitting of
+        // drilling only ever lower ease.
+        let lapsed = failed && card.repetitions > 0 && card.is_due(at);
 
         // The textbook SM-2 ease update, on the 0..=5 quality scale: an easy
-        // answer raises ease slightly, a failure lowers it a lot — but only the
-        // failure of a card that had been learned.
-        if learned || !failed {
+        // answer raises ease slightly, a failure lowers it a lot — but only a
+        // failure that is a lapse.
+        if lapsed || !failed {
             let q = rating.quality() as f32;
             card.ease = (card.ease + (0.1 - (5.0 - q) * (0.08 + (5.0 - q) * 0.02)))
                 .clamp(MIN_EASE, MAX_EASE);
@@ -385,7 +404,7 @@ impl Scheduler for Sm2 {
 
         match rating {
             Rating::Again => {
-                if learned {
+                if lapsed {
                     card.lapses += 1;
                 }
                 card.repetitions = 0;
@@ -457,6 +476,11 @@ pub struct ProgressView {
     /// Every practised character, most overdue first. A character with no card
     /// here is one that has never been attempted.
     pub cards: Vec<CardView>,
+    /// How many times each character has been traced on this device, keyed by
+    /// the character. A character here with no card has been traced but never
+    /// written from memory. See [`Document::traced`].
+    #[serde(default)]
+    pub traced: BTreeMap<String, u32>,
     /// Set when the change was applied in memory but could not be saved, so the
     /// interface can say so instead of silently losing data.
     #[serde(default)]
@@ -476,6 +500,17 @@ pub struct Document {
     /// order, so it diffs cleanly and two runs write identical bytes.
     #[serde(default)]
     pub cards: BTreeMap<String, CardState>,
+    /// How many times each character has been traced over the faint guide.
+    ///
+    /// Not part of the schedule and never folded: a trace moves no card (see
+    /// [`ProgressStore::record_practice_at`]). It is here so that a character
+    /// only ever traced can be shown as traced rather than as untouched. It
+    /// describes **this device** — traces never leave it — and is left out of the
+    /// file when empty, so a document with no traces is the same bytes an older
+    /// build wrote, and one with traces is still readable by an older build,
+    /// which ignores the field.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub traced: BTreeMap<String, u32>,
 }
 
 impl Default for Document {
@@ -483,6 +518,7 @@ impl Default for Document {
         Self {
             version: FORMAT_VERSION,
             cards: BTreeMap::new(),
+            traced: BTreeMap::new(),
         }
     }
 }
@@ -739,6 +775,7 @@ impl ProgressStore {
         cards.sort_by(|a, b| a.due.cmp(&b.due).then_with(|| a.ch.cmp(&b.ch)));
         ProgressView {
             cards,
+            traced: self.document.traced.clone(),
             warning: None,
         }
     }
@@ -822,8 +859,8 @@ impl ProgressStore {
     /// question that matters. It also keeps a trace out of the attempt log
     /// entirely: anything that moved a card would have to travel to every device
     /// and be folded there, and a trace that moves nothing needs neither. Behind
-    /// the JSON file, which holds cards and nothing else, a trace is not kept at
-    /// all; a sink with an attempt log keeps it beside that log.
+    /// the JSON file a trace is kept only as a count in [`Document::traced`]; a
+    /// sink with an attempt log keeps the attempt itself beside that log.
     pub fn record_practice_at(
         &mut self,
         ch: char,
@@ -849,6 +886,7 @@ impl ProgressStore {
                     measures,
                     mode: PracticeMode::Trace,
                 });
+                *self.document.traced.entry(ch.to_string()).or_insert(0) += 1;
                 Ok(self.card(ch).map(|card| card.view(ch, at)))
             }
         }
@@ -1394,7 +1432,8 @@ mod tests {
     fn a_worse_attempt_does_not_lower_the_best() {
         let mut store = ProgressStore::in_memory();
         store.record_at('好', 90.0, "2026-09-19T09:00:00Z").unwrap();
-        let card = store.record_at('好', 40.0, "2026-09-19T10:00:00Z").unwrap();
+        // On its due date, so the failure is a lapse rather than an early one.
+        let card = store.record_at('好', 40.0, "2026-09-20T09:00:00Z").unwrap();
 
         assert_eq!(card.attempts, 2);
         assert_eq!(card.best_score, Some(90.0));
@@ -1618,6 +1657,8 @@ mod tests {
         // Forgetting is news whenever it happens: a learned character written
         // wrong before its date is not known, and waiting for the date to say so
         // would schedule a character the learner has just shown they cannot write.
+        // But a failure before the date is not charged as a lapse — see
+        // `drilling_a_character_in_one_sitting_cannot_grind_its_ease_down`.
         let start = "2026-09-19T09:00:00Z";
         let mut store = ProgressStore::in_memory();
         let learned = store.record_at('好', 80.0, start).unwrap();
@@ -1626,12 +1667,41 @@ mod tests {
         let failed = store.record_at('好', 20.0, &later(start, 30)).unwrap();
         assert_eq!(failed.repetitions, 0);
         assert_eq!(failed.interval_days, 0.0);
-        assert_eq!(failed.lapses, 1, "it had been learned, so this is a lapse");
-        assert!(failed.ease < START_EASE, "and a lapse costs ease");
+        assert_eq!(failed.lapses, 0, "not due, so not a lapse");
+        assert_eq!(failed.ease, START_EASE, "and not charged");
         assert_eq!(
             failed.due,
             add_seconds(&later(start, 30), AGAIN_SECONDS).unwrap()
         );
+    }
+
+    #[test]
+    fn drilling_a_character_in_one_sitting_cannot_grind_its_ease_down() {
+        // Fail, pass at the relearn minute, fail again early, and so on. Each pass
+        // at the minute is a review (the card was due), so the card counts as
+        // learned — and if every early failure after it were charged, a sitting of
+        // drilling could only ever lower ease: early passes move nothing, early
+        // failures cost 0.54. Only the failure of a learned card that was *due* is
+        // a lapse.
+        let start = "2026-09-19T09:00:00Z";
+        let mut store = ProgressStore::in_memory();
+        for (score, seconds) in [
+            (20.0, 0),
+            (80.0, 61),
+            (20.0, 91),
+            (80.0, 152),
+            (20.0, 182),
+            (20.0, 273),
+        ] {
+            store
+                .record_at('难', score, &add_seconds(start, seconds).unwrap())
+                .unwrap();
+        }
+        let card = store.card('难').unwrap();
+        assert_eq!(card.ease, START_EASE, "drilling cost no ease");
+        assert_eq!(card.lapses, 0, "and nothing lapsed");
+        assert_eq!(card.repetitions, 0, "but the last failure still reset it");
+        assert_eq!(card.due, add_seconds(start, 273 + AGAIN_SECONDS).unwrap());
     }
 
     #[test]
@@ -1667,13 +1737,60 @@ mod tests {
     fn a_correct_rewrite_inside_the_relearning_minute_does_not_count() {
         // A failed character is due again in a minute. Rewriting it correctly
         // straight away is practice, not the review the minute is for — the card
-        // stays due so the review queue still offers it.
+        // stays due so the review queue still offers it. At the minute, it counts.
         let start = "2026-09-19T09:00:00Z";
         let mut store = ProgressStore::in_memory();
         store.record_at('好', 20.0, start).unwrap();
-        let rewrite = store.record_at('好', 90.0, &later(start, 0)).unwrap();
+        let rewrite = store
+            .record_at('好', 90.0, &add_seconds(start, 30).unwrap())
+            .unwrap();
         assert_eq!(rewrite.repetitions, 0);
+        assert_eq!(rewrite.due, add_seconds(start, AGAIN_SECONDS).unwrap());
         assert!(store.card('好').unwrap().is_due(&later(start, 1)));
+
+        let on_time = store.record_at('好', 90.0, &later(start, 1)).unwrap();
+        assert_eq!(
+            on_time.repetitions, 1,
+            "the rewrite at the minute is a review"
+        );
+        assert_eq!(on_time.interval_days, 1.0);
+    }
+
+    #[test]
+    fn traces_are_counted_for_the_view_and_kept_by_the_document() {
+        // A traced-only character has no card, and the board used to call it "not
+        // practised yet" after ten traces. The view carries how often each was
+        // traced so it can say so, without the schedule pretending it was learned.
+        let path = temp_path("traced-count");
+        let mut store = ProgressStore::open(&path).unwrap();
+        for minute in 0..3 {
+            store
+                .record_practice_at(
+                    '好',
+                    90.0,
+                    &later("2026-09-19T09:00:00Z", minute),
+                    PracticeMode::Trace,
+                    None,
+                )
+                .unwrap();
+        }
+        let view = store.view_at("2026-09-19T10:00:00Z");
+        assert!(view.cards.is_empty(), "still nothing scheduled");
+        assert_eq!(view.traced.get("好"), Some(&3));
+        store.save().unwrap();
+
+        let reopened = ProgressStore::open(&path).unwrap();
+        assert_eq!(reopened.view().traced.get("好"), Some(&3));
+        assert!(reopened.is_new('好'));
+
+        // A document with no traces writes no `traced` field at all, so it is the
+        // same bytes an older build wrote and an older build reads.
+        let json = serde_json::to_value(Document::default()).unwrap();
+        assert!(json.get("traced").is_none());
+        let old: Document = serde_json::from_str(r#"{"version":1,"cards":{}}"#).unwrap();
+        assert!(old.traced.is_empty());
+
+        fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1767,6 +1884,10 @@ mod tests {
             "\"trace\""
         );
         assert_eq!(PracticeMode::default(), PracticeMode::Recall);
+        for mode in [PracticeMode::Recall, PracticeMode::Trace] {
+            let serialised = serde_json::to_string(&mode).unwrap();
+            assert_eq!(serialised, format!("\"{}\"", mode.name()));
+        }
     }
 
     #[test]
