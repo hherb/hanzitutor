@@ -719,7 +719,7 @@ pub fn production_for(example: usize, answer: &Askable<'_>) -> Option<Production
 /// **Correctness is decided here**, on the data the question was drawn from, and by
 /// the same rule whether a screen or a test asks: the learner's typing is read by
 /// the input engine, the blank's reading is the corpus's, and
-/// [`matches_kana_text`](crate::input::matches_kana_text) compares them by sound.
+/// [`check_kana_text`](crate::input::check_kana_text) compares them by sound.
 /// `None` means the sentence is not one this exercise asks — a caller that asked
 /// about something else gets no verdict rather than a wrong one.
 pub fn verdict_for(
@@ -728,6 +728,7 @@ pub fn verdict_for(
     typed: &str,
 ) -> Option<ProductionVerdict> {
     let answer = producible_of(point).into_iter().find(|(at, _)| *at == example)?.1;
+    let check = crate::input::check_kana_text(&answer.blank_kana(), typed);
     Some(ProductionVerdict {
         point: point.id.clone(),
         pattern: point.pattern.clone(),
@@ -737,8 +738,8 @@ pub fn verdict_for(
         notes: point.notes.clone(),
         written: answer.blank.text.clone(),
         answer: answer.blank_kana(),
-        produced: crate::input::produce_kana(typed),
-        correct: crate::input::matches_kana_text(&answer.blank_kana(), typed),
+        produced: check.produced,
+        correct: check.correct,
         kana: answer.example.kana(),
     })
 }
