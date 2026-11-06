@@ -14,12 +14,15 @@
  *   that submits on `key === "Enter"` alone would grade ないと while the learner was
  *   still writing ないといけない, record the miss, and lock the field.
  *   [`isComposingKey`] checks both signs, and [`trackComposition`] adds a third that
- *   depends on neither: it watches the element's own composition events and keeps
- *   the field marked as composing until the task that ended the composition is over,
- *   which is when WebKit's late keydown arrives.
- * * **full-width letters.** An IME in full-width alphanumeric mode types `ｓｈｉ`,
- *   which Rust's ASCII-only lower-casing does not read as `shi`. [`normaliseTyped`]
- *   folds it with NFKC before it is sent.
+ *   depends on neither, for a keyboard that sends the commit as an ordinary 13: it
+ *   watches the field's own composition events, and an Enter that arrives within a
+ *   few milliseconds of the composition ending is taken as the one that ended it.
+ * * **full-width letters and typographic apostrophes.** An IME in full-width
+ *   alphanumeric mode types `ｓｈｉ`, which Rust's ASCII-only lower-casing does not
+ *   read as `shi`, and iOS's Smart Punctuation turns the `'` of `kin'you` into `’`,
+ *   which the input table does not know. [`normaliseTyped`] folds both before a
+ *   reading is sent, and [`foldForSentence`] folds the same letters — and nothing
+ *   else — in a sentence of the learner's own.
  * * **kana in a box that wants romaji.** With the IME on, `shi` becomes し before
  *   the learner sees it, and the kana reading box asks for the *sound* of a kana —
  *   typing the kana itself back answers nothing. [`romajiOnlyNote`] says so, rather
@@ -38,33 +41,57 @@ export interface ImeKeyLike {
    * commits a candidate: 229 means "the input method has this key".
    */
   keyCode?: number;
-  /** Where the press landed, looked up in the set [`trackComposition`] keeps. */
+  /** Where the press landed, looked up in what [`trackComposition`] keeps. */
   target?: EventTarget | object | null;
+  /** When the press happened, compared with when the field's composition ended. */
+  timeStamp?: number;
 }
 
 /** The `keyCode` every engine reports for a keypress the IME has consumed. */
 export const IME_KEY_CODE = 229;
 
 /**
- * The elements a composition is open in, or has only just closed in.
+ * How close to the end of a composition, in milliseconds, an Enter is still the one
+ * that ended it.
+ *
+ * Measured either way: WebKit may stamp the keydown with the time of the native key
+ * press, which comes *before* the `compositionend` it caused is created. A learner's
+ * own second Enter is a deliberate press, and comes far later than this.
+ */
+export const COMPOSITION_END_WINDOW_MS = 50;
+
+/**
+ * The fields a composition is open in.
  *
  * A `WeakSet` rather than a flag per screen, so that one action serves every field
  * and a field that leaves the page takes its entry with it.
  */
 const composing = new WeakSet<object>();
 
+/** When each field's last composition ended, by the event's own `timeStamp`. */
+const endedAt = new WeakMap<object, number>();
+
 /**
  * Whether a keypress belongs to the input method rather than to the page.
  *
  * True while a composition is open (`isComposing`, the standard sign), for the key
- * WebKit hands over after the composition has closed (`keyCode` 229), and for any key
- * that lands on a field [`trackComposition`] still marks as composing.
+ * WebKit hands over after the composition has closed (`keyCode` 229), for any key
+ * that lands on a field [`trackComposition`] marks as composing, and for a key whose
+ * `timeStamp` is within [`COMPOSITION_END_WINDOW_MS`] of that field's last
+ * `compositionend`.
  */
 export function isComposingKey(event: ImeKeyLike): boolean {
   if (event.isComposing) return true;
   if (event.keyCode === IME_KEY_CODE) return true;
   const target = event.target;
-  return typeof target === "object" && target !== null && composing.has(target);
+  if (typeof target !== "object" || target === null) return false;
+  if (composing.has(target)) return true;
+  const ended = endedAt.get(target);
+  return (
+    ended !== undefined &&
+    typeof event.timeStamp === "number" &&
+    Math.abs(event.timeStamp - ended) <= COMPOSITION_END_WINDOW_MS
+  );
 }
 
 /**
@@ -76,40 +103,60 @@ export function isSubmitEnter(event: ImeKeyLike): boolean {
 }
 
 /**
- * Mark a field as composing from `compositionstart` until just after
- * `compositionend`, for [`isComposingKey`] to read.
+ * Watch a field's composition for [`isComposingKey`]: marked as composing from
+ * `compositionstart` to `compositionend`, and the time of the end kept.
  *
- * The "just after" is the point. WebKit fires `compositionend` and only then the
- * keydown for the Enter that ended it, so clearing the mark on `compositionend`
- * itself would clear it one event too early. It is cleared on a zero-delay timer
- * instead: a later task than the one the composition ended in, and still long before
- * a learner can press Enter a second time on purpose. A composition that starts again
- * before the timer runs cancels it.
+ * The time is what catches the Enter that ended the composition when that Enter
+ * carries neither `isComposing` nor 229. WebKit fires `compositionend` first and the
+ * keydown after it, and does not promise that the two arrive in one task, so the
+ * rule is a comparison of the two events' own timestamps rather than an assumption
+ * about task order. It is a fallback: the two DOM signs are checked first, and they
+ * are what the macOS webview is known to send.
+ *
+ * Leaving the field forgets both, so a composition whose end never arrived cannot
+ * leave Enter dead in it.
  *
  * A Svelte action (`use:trackComposition`), typed against `EventTarget` so that a
  * test can hand it the bare one Node provides.
  */
 export function trackComposition(node: EventTarget): { destroy(): void } {
-  let timer: ReturnType<typeof setTimeout> | undefined;
   const start = () => {
-    clearTimeout(timer);
     composing.add(node);
+    endedAt.delete(node);
   };
-  const end = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => composing.delete(node), 0);
+  const end = (event: Event) => {
+    composing.delete(node);
+    endedAt.set(node, event.timeStamp);
+  };
+  const forget = () => {
+    composing.delete(node);
+    endedAt.delete(node);
   };
   node.addEventListener("compositionstart", start);
   node.addEventListener("compositionend", end);
+  node.addEventListener("focusout", forget);
   return {
     destroy() {
-      clearTimeout(timer);
       node.removeEventListener("compositionstart", start);
       node.removeEventListener("compositionend", end);
-      composing.delete(node);
+      node.removeEventListener("focusout", forget);
+      forget();
     },
   };
 }
+
+/**
+ * The typographic apostrophes and the prime, which iOS's Smart Punctuation (and a
+ * pasted word) put where a learner typed `'`. NFKC leaves all three alone, and the
+ * input table's `n'` is spelled with the ASCII one.
+ */
+const APOSTROPHES = /[\u2018\u2019\u2032]/g;
+
+/** Full-width ASCII letters and digits, which sit exactly 0xFEE0 above their own. */
+const FULL_WIDTH_ALPHANUMERIC = /[\uFF10-\uFF19\uFF21-\uFF3A\uFF41-\uFF5A]/g;
+
+/** A run of half-width katakana, with its half-width marks and punctuation. */
+const HALF_WIDTH_KANA_RUN = /[\uFF61-\uFF9F]+/g;
 
 /**
  * A typed answer as the grader should see it: full-width letters, digits and spaces
@@ -124,15 +171,40 @@ export function trackComposition(node: EventTarget): { destroy(): void } {
  * mark. Written after a kana, each is turned into its combining twin before NFKC
  * runs, and NFKC then composes it into the voiced kana it was meant to be.
  *
+ * The typographic apostrophes `’ ‘ ′` become `'` first: NFKC leaves them alone, and
+ * `kin’you` is how iOS writes `kin'you`.
+ *
  * Only for answers that are graded as a reading. A free sentence of the learner's own
- * is not passed through this, because NFKC would also turn its full-width `？` and
- * `！` into ASCII, and the sentence is kept as it was written.
+ * goes through [`foldForSentence`] instead, because NFKC would also turn its
+ * full-width `？` and `！` into ASCII, and the sentence is kept as it was written.
  */
 export function normaliseTyped(typed: string): string {
   return typed
-    .replace(/([ぁ-ゖァ-ヺ])゛/g, "$1゙")
-    .replace(/([ぁ-ゖァ-ヺ])゜/g, "$1゚")
+    .replace(APOSTROPHES, "'")
+    .replace(/([\u3041-\u3096\u30A1-\u30FA])\u309B/g, "$1\u3099")
+    .replace(/([\u3041-\u3096\u30A1-\u30FA])\u309C/g, "$1\u309A")
     .normalize("NFKC");
+}
+
+/**
+ * A sentence of the learner's own as the reader in Rust should see it: full-width
+ * letters and digits folded to ASCII, typographic apostrophes to `'`, half-width
+ * katakana to full-width — and **nothing else** changed.
+ *
+ * Narrower than [`normaliseTyped`] on purpose. The sentence is kept as it was
+ * written, so its `？`, `！`, `～` and ideographic spaces stay as typed; what is
+ * folded is only what would otherwise stop the sentence being read at all, which is
+ * romaji typed in full width (`ｉｎｕ ｎｏ ほうが`) and katakana typed in half width.
+ * The half-width runs are put through NFKC on their own, which is what joins ｶ and
+ * its separate ﾞ into ガ.
+ */
+export function foldForSentence(typed: string): string {
+  return typed
+    .replace(APOSTROPHES, "'")
+    .replace(FULL_WIDTH_ALPHANUMERIC, (ch) =>
+      String.fromCharCode(ch.charCodeAt(0) - 0xfee0),
+    )
+    .replace(HALF_WIDTH_KANA_RUN, (run) => run.normalize("NFKC"));
 }
 
 /**

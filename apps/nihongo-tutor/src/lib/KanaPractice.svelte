@@ -253,7 +253,7 @@
       // verdict would be about a kana no longer on the board.
       if (ch === asked) check = answered;
     } catch (e) {
-      error = String(e);
+      if (ch === asked) error = String(e);
     } finally {
       checking = false;
     }
@@ -433,6 +433,7 @@
                   onkeydown={(e) => isSubmitEnter(e) && checkTyped()}
                   placeholder="in romaji"
                   autocomplete="off"
+                  autocorrect="off"
                   autocapitalize="off"
                   spellcheck="false"
                 />

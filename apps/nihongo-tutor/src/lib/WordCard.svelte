@@ -162,6 +162,7 @@
           }}
           placeholder="in romaji or kana"
           autocomplete="off"
+          autocorrect="off"
           autocapitalize="off"
           spellcheck="false"
         />

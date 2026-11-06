@@ -8,7 +8,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { normaliseTyped } from "./ime";
+import { foldForSentence, normaliseTyped } from "./ime";
 import type {
   AppInfo,
   BandView,
@@ -493,15 +493,21 @@ export function grammarCompositionSize(): Promise<CompositionSize> {
  * pattern's own text is in the sentence, whether some of it is not Japanese script,
  * which characters the course does not teach, and whether it is a sentence at all.
  *
- * The sentence is sent as it was typed, **not** through `normaliseTyped`: it is the
- * learner's own writing and is kept, and NFKC would turn its full-width `？` and `！`
- * into ASCII.
+ * The sentence goes through `foldForSentence` (`ime.ts`), **not** `normaliseTyped`:
+ * it is the learner's own writing and is kept, and NFKC would turn its full-width `？`
+ * and `！` into ASCII. Only full-width letters and digits, typographic apostrophes and
+ * half-width katakana are folded, because the reader in Rust cannot read them. The
+ * same fold is applied to the two other commands that read the sentence, so speaking
+ * it and asking the model about it see what was kept.
  */
 export function recordGrammarComposition(
   point: string,
   typed: string,
 ): Promise<CompositionOutcome> {
-  return invoke<CompositionOutcome>("record_grammar_composition", { point, typed });
+  return invoke<CompositionOutcome>("record_grammar_composition", {
+    point,
+    typed: foldForSentence(typed),
+  });
 }
 
 /**
@@ -538,7 +544,7 @@ export function grammarLinks(id: string): Promise<GrammarLinks> {
  * widened it).
  */
 export function speakSentence(typed: string): Promise<void> {
-  return invoke<void>("speak_sentence", { typed });
+  return invoke<void>("speak_sentence", { typed: foldForSentence(typed) });
 }
 
 /**
@@ -575,7 +581,7 @@ export function saveModelSettings(
  * nothing about it is written to any of the app's files.
  */
 export function checkSentence(point: string, typed: string): Promise<ModelVerdict> {
-  return invoke<ModelVerdict>("check_sentence", { point, typed });
+  return invoke<ModelVerdict>("check_sentence", { point, typed: foldForSentence(typed) });
 }
 
 /**

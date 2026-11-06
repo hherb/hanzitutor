@@ -190,6 +190,7 @@
           id="written"
           type="text"
           autocomplete="off"
+          autocorrect="off"
           autocapitalize="off"
           spellcheck="false"
           placeholder="in romaji or kana"
