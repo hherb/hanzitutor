@@ -940,29 +940,7 @@ fn write_vocab_changes(
                 // Deleted by a peer while this list was open, and not touched here.
                 continue;
             }
-            // The stamp moves only when something the learner chose moves; a save
-            // that rewrote it every time would make each device's newest write the
-            // winner for no reason.
-            tx.execute(
-                "INSERT INTO vocab_group (name, position, updated_at, deleted, device_id)
-                 VALUES (?1, ?2, ?3, 0, ?4)
-                 ON CONFLICT(name) DO UPDATE SET
-                     updated_at = CASE
-                         WHEN vocab_group.position <> excluded.position
-                           OR vocab_group.deleted <> 0
-                         THEN excluded.updated_at ELSE vocab_group.updated_at END,
-                     device_id = CASE
-                         WHEN vocab_group.position <> excluded.position
-                           OR vocab_group.deleted <> 0
-                         THEN excluded.device_id ELSE vocab_group.device_id END,
-                     revision = CASE
-                         WHEN vocab_group.position <> excluded.position
-                           OR vocab_group.deleted <> 0
-                         THEN vocab_group.revision + 1 ELSE vocab_group.revision END,
-                     position = excluded.position,
-                     deleted = 0",
-                params![name, position as i64, now, device],
-            )?;
+            upsert_group(tx, name, position as i64, now, device)?;
         }
     }
 
@@ -981,23 +959,29 @@ fn write_vocab_changes(
     let mut next_id =
         (meta_i64(tx, "vocab_next_id")?.unwrap_or(1).max(1) as u64).max(document.next_id);
     let mut renumbered = false;
+    let mut touched_groups: BTreeSet<String> = BTreeSet::new();
     for entry in &document.entries {
         match base_entries.get(&entry.id) {
             Some(old) if *old == entry => {}
             Some(old) => {
                 let row = entry_state(tx, entry.id as i64)?;
                 let live = row.as_ref().is_some_and(|state| !state.8);
-                if !live && stale {
-                    // A peer deleted it after this list was read. A practice
-                    // attempt is not a reason to bring it back, and an edit made
-                    // against a copy that predates the deletion loses to it.
+                if !live {
+                    if stale && !typed_change(old, entry) {
+                        // A peer deleted it after this list was read, and a
+                        // practice attempt is not a reason to bring it back.
+                        continue;
+                    }
+                    // Either the learner edited it, and an edit made now beats the
+                    // older deletion exactly as the merge would settle it; or the
+                    // database is what this handle last wrote and the row was never
+                    // written. Both mean: write it whole.
+                    write_entry(tx, entry, now, device)?;
+                    touched_groups.extend(entry.group.clone());
                     continue;
                 }
-                if !live {
-                    // Not stale, so the database is what this handle last wrote;
-                    // a missing or tombstoned row means it was never written.
-                    write_entry(tx, entry, now, device)?;
-                    continue;
+                if typed_change(old, entry) {
+                    touched_groups.extend(entry.group.clone());
                 }
                 update_changed_fields(tx, old, entry, now, device)?;
             }
@@ -1016,7 +1000,24 @@ fn write_vocab_changes(
                 } else {
                     write_entry(tx, entry, now, device)?;
                 }
+                touched_groups.extend(entry.group.clone());
             }
+        }
+    }
+    // A group an entry was just filed under has to exist. A stale list can still
+    // name a group a peer has since deleted — its document says the group is there,
+    // so adding an entry to it changes nothing about the group set — and without
+    // this the entry would sit in a group no device shows. Filing something under it
+    // now is a newer act than the deletion, so the group comes back.
+    for name in &touched_groups {
+        let live = group_state(tx, name)?.is_some_and(|state| !state.4);
+        if !live {
+            let position = document
+                .groups
+                .iter()
+                .position(|g| g == name)
+                .unwrap_or(document.groups.len());
+            upsert_group(tx, name, position as i64, now, device)?;
         }
     }
     if renumbered {
@@ -1065,11 +1066,7 @@ fn update_changed_fields(
             params![entry.group, id],
         )?;
     }
-    let typed = old.text != entry.text
-        || old.pinyin != entry.pinyin
-        || old.meaning != entry.meaning
-        || old.group != entry.group;
-    if typed {
+    if typed_change(old, entry) {
         tx.execute(
             "UPDATE vocab_entry SET updated_at = ?1, device_id = ?2, revision = revision + 1
              WHERE id = ?3",
@@ -1086,6 +1083,50 @@ fn update_changed_fields(
             params![entry.attempts, entry.best_score, entry.last_practised, id],
         )?;
     }
+    Ok(())
+}
+
+/// Whether the learner changed what they typed — the fields that move the
+/// last-writer-wins stamp — as opposed to only practising.
+fn typed_change(old: &Entry, entry: &Entry) -> bool {
+    old.text != entry.text
+        || old.pinyin != entry.pinyin
+        || old.meaning != entry.meaning
+        || old.group != entry.group
+}
+
+/// Insert or revive a group at `position`.
+///
+/// The stamp moves only when something the learner chose moves; a save that
+/// rewrote it every time would make each device's newest write the winner for no
+/// reason.
+fn upsert_group(
+    tx: &Connection,
+    name: &str,
+    position: i64,
+    now: &str,
+    device: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO vocab_group (name, position, updated_at, deleted, device_id)
+         VALUES (?1, ?2, ?3, 0, ?4)
+         ON CONFLICT(name) DO UPDATE SET
+             updated_at = CASE
+                 WHEN vocab_group.position <> excluded.position
+                   OR vocab_group.deleted <> 0
+                 THEN excluded.updated_at ELSE vocab_group.updated_at END,
+             device_id = CASE
+                 WHEN vocab_group.position <> excluded.position
+                   OR vocab_group.deleted <> 0
+                 THEN excluded.device_id ELSE vocab_group.device_id END,
+             revision = CASE
+                 WHEN vocab_group.position <> excluded.position
+                   OR vocab_group.deleted <> 0
+                 THEN vocab_group.revision + 1 ELSE vocab_group.revision END,
+             position = excluded.position,
+             deleted = 0",
+        params![name, position, now, device],
+    )?;
     Ok(())
 }
 
@@ -1143,7 +1184,7 @@ fn vocab_generation(conn: &Connection) -> rusqlite::Result<i64> {
 }
 
 /// The highest entry id in use, live or tombstoned, or 0.
-fn max_entry_id(conn: &Connection) -> rusqlite::Result<u64> {
+pub(crate) fn max_entry_id(conn: &Connection) -> rusqlite::Result<u64> {
     let max: Option<i64> =
         conn.query_row("SELECT MAX(id) FROM vocab_entry", [], |row| row.get(0))?;
     Ok(max.unwrap_or(0).max(0) as u64)
@@ -1648,6 +1689,21 @@ impl Db {
             // merged record said another one wrote it, and the next merge would
             // compare two stamps that disagree about who was last.
             let before = group_state(&tx, &group.name).map_err(|e| at(&path, e))?;
+            // The merge was computed from a view read before the network round
+            // trip, and the learner may have changed this row since. A row whose
+            // stamp is now newer than the merged one is that change: it beats what
+            // the merge chose by the merge's own rule, so it is kept, and the next
+            // sync carries it out.
+            if before.as_ref().is_some_and(|state| {
+                (state.1.as_str(), state.2.as_str(), state.3)
+                    > (
+                        group.updated_at.as_str(),
+                        group.device_id.as_str(),
+                        group.revision,
+                    )
+            }) {
+                continue;
+            }
             let after = (
                 group.position,
                 group.updated_at.clone(),
@@ -1689,6 +1745,18 @@ impl Db {
             match id_for_uuid(&tx, &entry.uuid).map_err(|e| at(&path, e))? {
                 Some(id) => {
                     let before = entry_state(&tx, id).map_err(|e| at(&path, e))?;
+                    // Changed locally since the view the merge started from — see
+                    // the groups above.
+                    if before.as_ref().is_some_and(|state| {
+                        (state.5.as_str(), state.6.as_str(), state.7)
+                            > (
+                                entry.updated_at.as_str(),
+                                entry.device_id.as_str(),
+                                entry.revision,
+                            )
+                    }) {
+                        continue;
+                    }
                     let after = (
                         entry.text.clone(),
                         entry.pinyin.clone(),

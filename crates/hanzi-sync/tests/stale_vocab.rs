@@ -350,3 +350,199 @@ fn a_stale_list_does_not_overwrite_a_peers_edit() {
 
     finish(&[&dir_a, &dir_b, &shared]);
 }
+
+#[test]
+fn an_edit_saved_while_a_sync_is_in_flight_is_not_reverted_by_it() {
+    // The sync reads this device's view, goes to the network, and writes the merge
+    // back. Anything the learner saves in between must survive that write.
+    let dir = scratch("inflight");
+    let db = Db::open(&dir).unwrap();
+    {
+        let mut vocab = open(&db);
+        vocab.add_entry("学习", "xuéxí", "to study", None).unwrap();
+        vocab
+            .add_entry("汉字", "hànzì", "characters", None)
+            .unwrap();
+        vocab.save().unwrap();
+    }
+    backdate_all(&db, "2000-01-01T00:00:00Z");
+
+    let (entries, groups) = db.vocab_view().unwrap();
+    {
+        let mut vocab = open(&db);
+        let id = id_of_text(&vocab, "学习");
+        vocab.update_entry(id, "xuéxí", "to learn", None).unwrap();
+        let gone = id_of_text(&vocab, "汉字");
+        vocab.remove_entry(gone).unwrap();
+        vocab.save().unwrap();
+    }
+    // The merge found nothing newer anywhere, so it hands back the view as read.
+    db.apply_vocab_view(&entries, &groups).unwrap();
+
+    // And the next ordinary save does not undo it either.
+    let mut vocab = open(&db);
+    let id = id_of_text(&vocab, "学习");
+    vocab.record_attempt(id, 60.0).unwrap();
+    vocab.save().unwrap();
+
+    let after = open(&db);
+    assert_eq!(after.entries().len(), 1, "the removal stands");
+    assert_eq!(
+        after.entries()[0].meaning,
+        "to learn",
+        "and so does the edit"
+    );
+
+    finish(&[&dir]);
+}
+
+#[test]
+fn a_word_filed_under_a_group_a_peer_deleted_brings_the_group_back() {
+    let (dir_a, dir_b, shared) = (scratch("grp-a"), scratch("grp-b"), scratch("grp-store"));
+    let (db_a, db_b) = (Db::open(&dir_a).unwrap(), Db::open(&dir_b).unwrap());
+    let remote = FolderStore::open(&shared).unwrap();
+
+    {
+        let mut vocab = open(&db_a);
+        vocab.add_group("L1").unwrap();
+        vocab.save().unwrap();
+    }
+    rusqlite::Connection::open(db_a.path())
+        .unwrap()
+        .execute(
+            "UPDATE vocab_group SET updated_at = '2000-01-01T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+    settle(&[&db_a, &db_b], &remote);
+
+    let mut open_on_b = open(&db_b);
+    assert_eq!(open_on_b.groups(), ["L1"]);
+
+    {
+        let mut vocab = open(&db_a);
+        vocab.remove_group("L1", false).unwrap();
+        vocab.save().unwrap();
+    }
+    rusqlite::Connection::open(db_a.path())
+        .unwrap()
+        .execute(
+            "UPDATE vocab_group SET updated_at = '2001-01-01T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+    sync(&db_a, &remote).unwrap();
+    sync(&db_b, &remote).unwrap();
+
+    open_on_b
+        .add_entry("学习", "xuéxí", "to study", Some("L1"))
+        .unwrap();
+    open_on_b.save().unwrap();
+
+    settle(&[&db_a, &db_b], &remote);
+    for db in [&db_a, &db_b] {
+        let vocab = open(db);
+        assert_eq!(
+            vocab.groups(),
+            ["L1"],
+            "the group the word was filed under exists"
+        );
+        assert_eq!(
+            vocab.entries_in(Some("L1")).len(),
+            1,
+            "and the word is in it"
+        );
+    }
+
+    finish(&[&dir_a, &dir_b, &shared]);
+}
+
+#[test]
+fn an_edit_from_a_stale_list_beats_an_older_deletion() {
+    // Practising a deleted word does not bring it back, but changing what it says
+    // does: an edit made now is newer than the deletion, which is how the merge
+    // settles the same pair everywhere else.
+    let (dir_a, dir_b, shared) = (scratch("rev-a"), scratch("rev-b"), scratch("rev-store"));
+    let (db_a, db_b) = (Db::open(&dir_a).unwrap(), Db::open(&dir_b).unwrap());
+    let remote = FolderStore::open(&shared).unwrap();
+
+    {
+        let mut vocab = open(&db_a);
+        vocab.add_entry("学习", "xuéxí", "to study", None).unwrap();
+        vocab.save().unwrap();
+    }
+    backdate_all(&db_a, "2000-01-01T00:00:00Z");
+    settle(&[&db_a, &db_b], &remote);
+
+    let mut open_on_b = open(&db_b);
+    {
+        let mut vocab = open(&db_a);
+        let id = id_of_text(&vocab, "学习");
+        vocab.remove_entry(id).unwrap();
+        vocab.save().unwrap();
+    }
+    backdate_all(&db_a, "2001-01-01T00:00:00Z");
+    sync(&db_a, &remote).unwrap();
+    sync(&db_b, &remote).unwrap();
+
+    let id = id_of_text(&open_on_b, "学习");
+    open_on_b
+        .update_entry(id, "xuéxí", "to learn", None)
+        .unwrap();
+    open_on_b.save().unwrap();
+
+    settle(&[&db_a, &db_b], &remote);
+    for db in [&db_a, &db_b] {
+        let vocab = open(db);
+        assert_eq!(vocab.entries().len(), 1, "the edited word is back");
+        assert_eq!(vocab.entries()[0].meaning, "to learn");
+    }
+
+    finish(&[&dir_a, &dir_b, &shared]);
+}
+
+#[test]
+fn the_legacy_import_does_not_overwrite_an_entry_a_sync_pulled() {
+    let (dir_a, dir_b, shared) = (
+        scratch("legacy-a"),
+        scratch("legacy-b"),
+        scratch("legacy-store"),
+    );
+    let (db_a, db_b) = (Db::open(&dir_a).unwrap(), Db::open(&dir_b).unwrap());
+    let remote = FolderStore::open(&shared).unwrap();
+
+    {
+        let mut vocab = open(&db_a);
+        vocab.add_entry("学习", "xuéxí", "to study", None).unwrap();
+        vocab.save().unwrap();
+    }
+    sync(&db_a, &remote).unwrap();
+
+    // The phone's old list cannot be read at first, so the import is not marked done
+    // — and the sync still runs, giving the pulled word the first id.
+    fs::write(dir_b.join("vocabulary.json"), "{ not json").unwrap();
+    assert!(VocabStore::open_with(Box::new(db_b.clone())).is_err());
+    sync(&db_b, &remote).unwrap();
+
+    // Then the file is put right, and the import runs with ids of its own.
+    fs::write(
+        dir_b.join("vocabulary.json"),
+        r#"{"version":1,"nextId":2,"groups":[],"entries":[
+            {"id":1,"text":"你好","pinyin":"nǐhǎo","meaning":"hello","group":null,
+             "addedAt":"2026-01-01T00:00:00Z","attempts":0,"bestScore":null,"lastPractised":null}
+        ]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        texts(&db_b),
+        ["你好", "学习"],
+        "the import landed beside the pulled word"
+    );
+
+    settle(&[&db_a, &db_b], &remote);
+    for db in [&db_a, &db_b] {
+        assert_eq!(texts(db), ["你好", "学习"]);
+    }
+
+    finish(&[&dir_a, &dir_b, &shared]);
+}

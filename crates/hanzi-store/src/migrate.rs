@@ -114,16 +114,36 @@ pub(crate) fn vocabulary(
     }
     // The imported entries have no stamp of their own, so they take one from this
     // device and this moment: they are new here, and there was no other writer.
+    //
+    // A sync can have filled the table before this first load (the import is only
+    // marked done once it succeeds), so an id the file uses may already belong to
+    // an entry the sync pulled. Upserting would overwrite that entry in place, so an
+    // imported entry whose id is taken moves to a free one — and the counter is
+    // never lowered, for the same reason.
     let stamp = now_iso8601();
-    for entry in &document.entries {
-        write_entry(&tx, entry, &stamp, device_id).map_err(|e| vocab_error(&db, e))?;
-    }
-    // Never lowered: a sync can have filled the table before this first load, and
-    // handing out an id it already used would overwrite the entry it pulled.
-    let next_id = crate::meta_i64(&tx, "vocab_next_id")
+    let mut next_id = (crate::meta_i64(&tx, "vocab_next_id")
         .map_err(|e| vocab_error(&db, e))?
         .unwrap_or(1)
-        .max(document.next_id as i64);
+        .max(1) as u64)
+        .max(document.next_id);
+    for entry in &document.entries {
+        let taken: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM vocab_entry WHERE id = ?1)",
+                [entry.id as i64],
+                |row| row.get(0),
+            )
+            .map_err(|e| vocab_error(&db, e))?;
+        if taken {
+            let mut moved = entry.clone();
+            moved.id = next_id.max(crate::max_entry_id(&tx).map_err(|e| vocab_error(&db, e))? + 1);
+            next_id = moved.id + 1;
+            write_entry(&tx, &moved, &stamp, device_id).map_err(|e| vocab_error(&db, e))?;
+        } else {
+            write_entry(&tx, entry, &stamp, device_id).map_err(|e| vocab_error(&db, e))?;
+        }
+    }
+    let next_id = next_id.max(crate::max_entry_id(&tx).map_err(|e| vocab_error(&db, e))? + 1);
     set_meta(&tx, "vocab_next_id", &next_id.to_string()).map_err(|e| vocab_error(&db, e))?;
     set_meta(&tx, VOCABULARY_KEY, &marker(&file)).map_err(|e| vocab_error(&db, e))?;
     tx.commit().map_err(|e| vocab_error(&db, e))
