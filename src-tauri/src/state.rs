@@ -24,6 +24,7 @@ use hanzi_hearing::Asr;
 use crate::commands::{
     SpeechTarget, ToneResult, ToneSyllableResult, VoiceOption, VoicesView, LESSON_SIZE,
 };
+use crate::chosen_file::ChosenFile;
 use crate::say::Say;
 // Capture and synthesis are shared with the standalone tone trainer, so they
 // live in `hanzi-voice` now rather than in this binary.
@@ -180,12 +181,13 @@ impl Persisted<VocabStore> {
 
     /// Re-read the list from the study database, returning whether it worked.
     ///
-    /// Needed after a sync, and here the consequence of skipping it is worse than a
-    /// stale screen. `save` treats an entry that is missing from the document as one
-    /// the learner removed and *tombstones* it — so a save made from a document that
-    /// predates a sync would delete every entry the sync had just brought in, and
-    /// those tombstones would then travel to the other devices and delete them there
-    /// too. Reloading is what keeps the document and the database the same thing.
+    /// Needed after a sync so the screen shows what the sync brought. It is no
+    /// longer what keeps that data safe: a save from a document that predates a
+    /// sync used to tombstone every entry the sync had just brought in, and spread
+    /// the deletion to every device (#11). The database handle now remembers the
+    /// document it last read, writes only what the learner changed since, and hands
+    /// back the list as it stands — see `hanzi_store`'s `VocabSeen`. Reloading is
+    /// still what makes the list on screen right straight away.
     ///
     /// Nothing is lost by reloading: every change saves as it is made.
     pub fn reload(&mut self, db: &Db) -> bool {
@@ -413,6 +415,82 @@ pub struct BackupOutcome {
     pub message: String,
 }
 
+/// `n` and the noun that fits it: "1 entry", "2 entries".
+pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// What an import of a vocabulary list left out or moved, as clauses for the
+/// sentence the interface shows, in the words the rules it was held to call for.
+///
+/// `source` names what was read — "file" or "backup" — because a skipped
+/// duplicate is a repeat inside it when the list was replaced, and either that or
+/// a word already in the list when it was added to.
+pub(crate) fn import_notes(
+    summary: &hanzi_core::vocab::ImportSummary,
+    rules: hanzi_core::vocab::ImportRules,
+    source: &str,
+) -> Vec<String> {
+    let typed = rules == hanzi_core::vocab::ImportRules::Typed;
+    let were = |n: usize| if n == 1 { "was" } else { "were" };
+    let whose = |n: usize| {
+        if n == 1 {
+            "its group name"
+        } else {
+            "their group names"
+        }
+    };
+    let mut notes = Vec::new();
+    if summary.skipped_duplicates > 0 {
+        let n = summary.skipped_duplicates;
+        notes.push(if summary.replaced {
+            format!(
+                "skipped {} repeated in the {source}",
+                plural(n, "entry", "entries")
+            )
+        } else {
+            format!(
+                "skipped {} already in your list or repeated in the {source}",
+                plural(n, "entry", "entries")
+            )
+        });
+    }
+    if summary.skipped_invalid > 0 {
+        notes.push(format!(
+            "left out {} that {} empty{} or held a control character",
+            plural(summary.skipped_invalid, "entry", "entries"),
+            were(summary.skipped_invalid),
+            if typed { ", too long" } else { "" },
+        ));
+    }
+    if summary.unfiled_invalid_group > 0 {
+        let n = summary.unfiled_invalid_group;
+        notes.push(format!(
+            "filed {} under no group because {} {}{}held a control character",
+            plural(n, "entry", "entries"),
+            whose(n),
+            if typed { were(n) } else { "" },
+            if typed { " too long or " } else { "" },
+        ));
+    }
+    if summary.merged_unfiled > 0 {
+        let n = summary.merged_unfiled;
+        notes.push(format!(
+            "merged {} into another copy of the same word once filed under no group",
+            plural(n, "entry", "entries"),
+        ));
+    }
+    if summary.skipped_invalid_groups > 0 {
+        notes.push(format!(
+            "left out {} that {} blank{} or held a control character",
+            plural(summary.skipped_invalid_groups, "group name", "group names"),
+            were(summary.skipped_invalid_groups),
+            if typed { ", too long" } else { "" },
+        ));
+    }
+    notes
+}
+
 /// A sentence for the learner out of what a restore did.
 ///
 /// Every number here is one they can check against the file, and the two that
@@ -429,29 +507,44 @@ fn describe_restore(
     let mut parts = Vec::new();
 
     if summary.replaced {
-        parts.push(format!("replaced your list with {} entries", summary.added));
+        parts.push(format!(
+            "replaced your list with {}",
+            plural(summary.added, "entry", "entries")
+        ));
     } else {
-        parts.push(format!("added {} entries to your list", summary.added));
-    }
-    if summary.skipped_duplicates > 0 {
-        parts.push(format!("left {} already there", summary.skipped_duplicates));
+        parts.push(format!(
+            "added {} to your list",
+            plural(summary.added, "entry", "entries")
+        ));
     }
     if summary.groups_added > 0 {
-        parts.push(format!("{} new groups", summary.groups_added));
+        parts.push(plural(summary.groups_added, "new group", "new groups"));
     }
+    parts.extend(import_notes(
+        summary,
+        hanzi_core::vocab::ImportRules::Restore,
+        "backup",
+    ));
 
     if attempts_added > 0 {
-        parts.push(format!("recovered {attempts_added} attempts"));
+        parts.push(format!(
+            "recovered {}",
+            plural(attempts_added, "attempt", "attempts")
+        ));
     } else if backup.attempt_count() > 0 {
         parts.push("every attempt in it was already in your log".to_string());
     }
     if recomputed > 0 {
-        parts.push(format!("rebuilt {recomputed} schedules"));
+        parts.push(format!(
+            "rebuilt {}",
+            plural(recomputed, "schedule", "schedules")
+        ));
     }
     if left_alone > 0 {
         parts.push(format!(
-            "left {left_alone} schedule{} alone, as their history predates the log",
-            if left_alone == 1 { "" } else { "s" }
+            "left {} alone, as {} history predates the log",
+            plural(left_alone, "schedule", "schedules"),
+            if left_alone == 1 { "its" } else { "their" }
         ));
     }
 
@@ -1100,12 +1193,22 @@ impl AppState {
                 .learner_voices()
                 .into_iter()
                 .map(|voice| VoiceOption {
+                    id: voice.id().to_string(),
                     name: voice.name,
                     locale: voice.locale,
                     network: voice.network,
+                    quality: voice.quality,
                 })
                 .collect(),
             active: self.speech.voice().map(|voice| voice.name),
+            chosen: self
+                .speech
+                .chosen_voice()
+                .map(|voice| voice.id().to_string()),
+            elsewhere: self
+                .speech
+                .chosen_elsewhere()
+                .map(|voice| format!("{} ({})", voice.name, voice.locale)),
         }
     }
 
@@ -1240,19 +1343,20 @@ impl AppState {
             .collect()
     }
 
-    /// Write the whole practice log to `path`, as JSON Lines or CSV.
+    /// Write the whole practice log to `to`, as JSON Lines or CSV.
     ///
     /// Here rather than in the command so it can be tested without a window —
     /// this is the one path by which a learner's own handwriting leaves the
-    /// database, so what it writes is worth a test of its own. `path` is the file
-    /// the learner chose in a native dialog; the command that shows that dialog
-    /// is what keeps a free-form path off the IPC boundary.
+    /// database, so what it writes is worth a test of its own. `to` is the file
+    /// the learner chose in a native dialog — a path on desktop, a `content://`
+    /// URI on Android; see [`crate::chosen_file`] — and the command that shows
+    /// that dialog is what keeps a free-form path off the IPC boundary.
     ///
     /// Every attempt is written, measured or not: a row without measures is one
     /// recorded before schema 5 or merged in from another device, and silently
     /// dropping it would shorten the history to the part that happens to be
     /// measurable.
-    pub fn export_practice_log(&self, path: &std::path::Path, format: &str) -> Result<String, String> {
+    pub fn export_practice_log(&self, to: &dyn ChosenFile, format: &str) -> Result<String, String> {
         let db = self
             .db
             .as_ref()
@@ -1266,13 +1370,12 @@ impl AppState {
             "csv" => (hanzi_store::export::attempts_to_csv(&attempts), "CSV"),
             other => return Err(format!("unknown export format {other:?}")),
         };
-        std::fs::write(path, contents)
-            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        to.write(contents.as_bytes())?;
         let measured = attempts.iter().filter(|a| a.measures.is_some()).count();
         Ok(format!(
             "Exported {} attempts ({measured} with grading measures) as {label} to {}",
             attempts.len(),
-            path.display()
+            to.describe()
         ))
     }
 
@@ -1286,7 +1389,7 @@ impl AppState {
     /// Here rather than in the command for the same reason as
     /// [`Self::export_practice_log`]: what leaves the app is worth a test that
     /// needs no window.
-    pub fn export_backup(&self, path: &std::path::Path) -> Result<String, String> {
+    pub fn export_backup(&self, to: &dyn ChosenFile) -> Result<String, String> {
         let db = self
             .db
             .as_ref()
@@ -1304,15 +1407,14 @@ impl AppState {
             .map_err(|e| e.to_string())?;
         let measured = backup.measured_count();
         let text = backup.to_json().map_err(|e| e.to_string())?;
-        std::fs::write(path, text)
-            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        to.write(text.as_bytes())?;
 
         Ok(format!(
             "Backed up {entries} vocabulary {} and {} attempts ({measured} with \
              grading measures) to {}",
             if entries == 1 { "entry" } else { "entries" },
             attempts.len(),
-            path.display()
+            to.describe()
         ))
     }
 
@@ -1331,16 +1433,29 @@ impl AppState {
     /// would be tagged against the pre-restore schedule.
     pub fn import_backup(
         &self,
-        path: &std::path::Path,
+        from: &dyn ChosenFile,
         merge: bool,
     ) -> Result<BackupOutcome, String> {
         let db = self
             .db
             .as_ref()
             .ok_or("there is nowhere to keep study data, so there is nothing to restore into")?;
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        let text = from.read_to_string()?;
         let backup = Backup::parse(&text).map_err(|e| e.to_string())?;
+
+        // The list is checked before anything is written, because the log merge
+        // below cannot be taken back: a restore whose list would be refused must
+        // change nothing at all, not leave the attempts merged and the list as it
+        // was. Checking reads only the file, so it is not stale by the time it is
+        // applied. Lenient on length, as the app's own data coming back — the
+        // sync and the migration that wrote it never checked it.
+        let vocabulary_json = backup.vocabulary_json().map_err(|e| e.to_string())?;
+        let prepared = hanzi_core::vocab::PreparedImport::prepare(
+            &vocabulary_json,
+            merge,
+            hanzi_core::vocab::ImportRules::Restore,
+        )
+        .map_err(|e| e.to_string())?;
 
         // The log, through the same door a sync uses, so the identity rule that
         // stops an attempt being counted twice is the same rule here.
@@ -1362,13 +1477,9 @@ impl AppState {
         self.lock_progress().reload(db);
         self.lock_cursor().reload(db);
 
-        let vocabulary_json = backup.vocabulary_json().map_err(|e| e.to_string())?;
         let (summary, save_warning) = {
             let mut vocab = self.lock_vocab();
-            let summary = vocab
-                .store
-                .import_json(&vocabulary_json, merge)
-                .map_err(|e| e.to_string())?;
+            let summary = vocab.store.apply_import(prepared);
             let warning = vocab.save();
             (summary, warning)
         };
@@ -1571,6 +1682,63 @@ fn warm_voice(speaker: Arc<Speaker>, preferred: Option<String>) {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    /// The import's clauses say what happened in the words that fit it (issue
+    /// #40): a duplicate in a replace is a repeat in the file, and a restore,
+    /// which keeps over-long rows, never blames length.
+    #[test]
+    fn import_notes_say_what_was_left_out_and_why() {
+        use hanzi_core::vocab::{ImportRules, ImportSummary};
+        let summary = ImportSummary {
+            skipped_duplicates: 2,
+            skipped_invalid: 1,
+            unfiled_invalid_group: 3,
+            skipped_invalid_groups: 1,
+            merged_unfiled: 1,
+            replaced: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            import_notes(&summary, ImportRules::Typed, "file"),
+            [
+                "skipped 2 entries repeated in the file",
+                "left out 1 entry that was empty, too long or held a control character",
+                "filed 3 entries under no group because their group names were too long or \
+                 held a control character",
+                "merged 1 entry into another copy of the same word once filed under no group",
+                "left out 1 group name that was blank, too long or held a control character",
+            ]
+        );
+        let merged = ImportSummary {
+            replaced: false,
+            ..summary
+        };
+        assert_eq!(
+            import_notes(&merged, ImportRules::Restore, "backup"),
+            [
+                "skipped 2 entries already in your list or repeated in the backup",
+                "left out 1 entry that was empty or held a control character",
+                "filed 3 entries under no group because their group names held a control \
+                 character",
+                "merged 1 entry into another copy of the same word once filed under no group",
+                "left out 1 group name that was blank or held a control character",
+            ]
+        );
+        assert!(import_notes(&ImportSummary::default(), ImportRules::Typed, "file").is_empty());
+        let one = ImportSummary {
+            unfiled_invalid_group: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            import_notes(&one, ImportRules::Typed, "file"),
+            [
+                "filed 1 entry under no group because its group name was too long or held a \
+                 control character"
+            ]
+        );
+        assert_eq!(plural(1, "new group", "new groups"), "1 new group");
+        assert_eq!(plural(2, "attempt", "attempts"), "2 attempts");
+    }
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()

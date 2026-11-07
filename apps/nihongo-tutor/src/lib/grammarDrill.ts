@@ -106,3 +106,28 @@ export function poolNote(size: GrammarDrillSize): string {
   }
   return `${size.points} of the ${size.total} patterns can be asked, over ${size.examples} sentences — the rest have no sentence their own text can be found in, once, whole.`;
 }
+
+/**
+ * What there is to say when a grammar stage's draw comes back empty, instead of the
+ * "Loading…" a `null` used to leave on screen for good (issue #34).
+ *
+ * Both draws are `null` only when no pattern of the course has a sentence they can
+ * ask about — `next_grammar_question` needs the pattern's own text in the sentence
+ * once, whole, with two other patterns safe to offer beside it, and
+ * `next_grammar_production` needs that hole to be a typeable answer — so a second
+ * draw would find nothing either, and the way forward is another exercise. The two
+ * stages share the rule here as they share `recordLine` and `sessionLine`; `write`
+ * is the production stage. The count is the course's, when the size has arrived.
+ */
+export function emptyNote(size: GrammarDrillSize | null, exercise: "choose" | "write"): string {
+  const nothing = exercise === "choose" ? "Nothing to ask here" : "Nothing to write here";
+  if (size && size.total <= 0) {
+    return `${nothing}: the grammar course holds no patterns.`;
+  }
+  const which = size ? `none of the course's ${size.total} patterns` : "no pattern of the course";
+  const can =
+    exercise === "choose"
+      ? "this drill can make a question of"
+      : "this exercise can take a typeable answer out of";
+  return `${nothing}: ${which} has a sentence ${can}. Try another exercise from the grammar course.`;
+}

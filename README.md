@@ -850,7 +850,11 @@ rather than only how much.
   Scoring that it was level is enough to tell 的 from 得 said as a full tone, and
   refusing it would have left the most common character in the language as the one the
   panel would not look at. The limit is stated to the learner every time
-  (`tone::NEUTRAL_LIMIT`).
+  (`tone::NEUTRAL_LIMIT`). A neutral syllable that was level counts towards the word's
+  score; one that moved is marked on its own chart but **not counted against the
+  word**, because a real neutral tone usually is a short fall (or a rise after tone
+  3), and "level" alone would fail correct speech. Counting it both ways needs a rule
+  that knows the tone before it.
 - **Segmentation is a heuristic and it is the weakest part.** It is tested against
   synthesised words whose boundary is known by construction, not yet against real
   multi-syllable speech. The panel reports where the app decided to split, so a

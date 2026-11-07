@@ -2,13 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   COMPOSITION_MIN,
+  answerBelongs,
   canSubmit,
+  checkButton,
   checks,
+  emptyNote,
   instructionLine,
   keptLine,
   limitationNote,
   ownNote,
   poolNote,
+  verdictContext,
 } from "./composition";
 import type { CompositionVerdict } from "./types";
 
@@ -152,5 +156,88 @@ describe("ownNote", () => {
     expect(ownNote(["私は学生です。", "今日は天気がいいです。"])).toBe(
       "The 2 sentences you have written with this pattern, oldest first:",
     );
+  });
+});
+
+/**
+ * Issue #34: `check_sentence` takes seconds, and the screen only checked that the
+ * prompt had not changed — so fixing a typo while the model thought put the old
+ * sentence's answer under the new text.
+ */
+describe("answerBelongs", () => {
+  const prompt = { point: "no-hou-ga-yori" };
+  const asked = { ask: 3, prompt, text: "いぬのほうがねこよりすきです" };
+
+  it("keeps an answer about the sentence still on screen", () => {
+    expect(answerBelongs(asked, { ...asked })).toBe(true);
+  });
+
+  it("drops an answer about text the learner has since edited", () => {
+    expect(answerBelongs(asked, { ...asked, text: "いぬのほうがねこよりすきです。" })).toBe(false);
+  });
+
+  it("drops an answer about a prompt that is no longer on screen", () => {
+    // The same pattern drawn twice is still a new prompt: identity, not the id.
+    expect(answerBelongs(asked, { ...asked, prompt: { point: "no-hou-ga-yori" } })).toBe(false);
+    expect(answerBelongs(asked, { ...asked, prompt: null })).toBe(false);
+  });
+
+  it("drops an answer a later ask has superseded", () => {
+    // Two overlapping requests about the same text: only the latest owns the screen,
+    // and an abandoned one (navigation, unmount) has had its number moved on.
+    expect(answerBelongs(asked, { ...asked, ask: 4 })).toBe(false);
+  });
+});
+
+describe("emptyNote", () => {
+  it("says there is nothing to write about rather than that it is loading", () => {
+    const line = emptyNote();
+    expect(line).toContain("Nothing to write about here");
+    expect(line).toContain("no patterns");
+    expect(line).not.toContain("Loading");
+  });
+});
+
+/**
+ * The review after #34: a delivered answer is kept while the learner edits, labelled
+ * as being about the sentence it was asked about, and the button waits for a request
+ * the screen has abandoned so that a paid endpoint is not asked twice.
+ */
+describe("verdictContext", () => {
+  it("says nothing while the answer is about the sentence in the box", () => {
+    expect(verdictContext("いぬがすきです", "いぬがすきです")).toBeNull();
+    // A space at either end is not a different sentence.
+    expect(verdictContext("いぬがすきです", " いぬがすきです ")).toBeNull();
+  });
+
+  it("names the earlier sentence once the box has moved on", () => {
+    expect(verdictContext("いぬがすきです", "いぬがすきでした")).toBe(
+      "About your earlier sentence 「いぬがすきです」",
+    );
+  });
+});
+
+describe("checkButton", () => {
+  const idle = { checking: false, inFlight: 0, canSubmit: true };
+
+  it("asks when nothing is in flight", () => {
+    expect(checkButton(idle)).toEqual({ label: "Check with the model", disabled: false });
+    expect(checkButton({ ...idle, canSubmit: false }).disabled).toBe(true);
+  });
+
+  it("says it is asking while the screen waits for its answer", () => {
+    expect(checkButton({ ...idle, checking: true, inFlight: 1 })).toEqual({
+      label: "Asking…",
+      disabled: true,
+    });
+  });
+
+  it("waits for an abandoned request instead of sending a second one", () => {
+    // The sentence was edited (or the pattern changed) mid-ask: the screen no longer
+    // wants that answer, but the endpoint is still working on it.
+    expect(checkButton({ ...idle, inFlight: 1 })).toEqual({
+      label: "Finishing the earlier question…",
+      disabled: true,
+    });
   });
 });

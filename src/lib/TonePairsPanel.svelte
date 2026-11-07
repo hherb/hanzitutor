@@ -127,6 +127,24 @@
    */
   let sayToken = 0;
 
+  /**
+   * Leaving the screen ends whatever it was saying.
+   *
+   * A "hear the set" run is a loop with waits in it, and nothing else ever bumps
+   * the token once the panel is gone, so it would carry on through the set over
+   * whatever screen the learner went to (issue #33). The token stops the loop,
+   * and the voice is stopped too, for the character it is in the middle of —
+   * but only if this screen said anything, so that a screen merely passed
+   * through cannot cut off speech another one started.
+   */
+  onMount(() => () => {
+    if (sayToken === 0) return;
+    sayToken++;
+    void api.stopSpeaking().catch(() => {
+      // Cleanup: the usual answer is that nothing was being said.
+    });
+  });
+
   /** Say one character, stopping whatever was being said first. */
   async function say(ch: string) {
     const token = ++sayToken;

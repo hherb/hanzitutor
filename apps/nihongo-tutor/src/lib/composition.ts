@@ -128,6 +128,83 @@ export function limitationNote(): string {
   return "This checks what a machine can see: the pattern's own letters, the script and the length. It cannot tell whether a sentence is grammatical or natural, or whether the pattern is used in the right sense — that needs a reader.";
 }
 
+/**
+ * What there is to say when the draw comes back empty.
+ *
+ * `next_grammar_composition` draws from **every** pattern of the course — the prompt
+ * is the pattern itself and needs no sentence of it — so it can only come back
+ * `null` when the course holds no patterns at all. Drawn instead of "Loading…",
+ * which is what a `null` used to leave on screen for good (issue #34).
+ */
+export function emptyNote(): string {
+  return "Nothing to write about here: the grammar course holds no patterns, so there is none to ask for a sentence with.";
+}
+
+/**
+ * What a model check was asked about, kept beside the request.
+ *
+ * `ask` is the request's number: every new ask, every edit of the sentence, a new
+ * prompt and the screen going away all move the screen's number on, so a request
+ * that has been superseded or abandoned can tell. `prompt` is compared by identity,
+ * because the same pattern drawn twice is still a new question.
+ */
+export interface ModelAsk<P> {
+  ask: number;
+  prompt: P | null;
+  text: string;
+}
+
+/**
+ * Whether a model's answer may be drawn: only when it is the latest ask, about the
+ * prompt still on screen, about the text still in the box.
+ *
+ * `check_sentence` takes seconds. Before issue #34 the screen checked only the
+ * prompt, so a typo fixed while the model thought put the old sentence's answer —
+ * "The model would write: …" — under the new text.
+ */
+export function answerBelongs<P>(asked: ModelAsk<P>, now: ModelAsk<P>): boolean {
+  return asked.ask === now.ask && asked.prompt === now.prompt && asked.text === now.text;
+}
+
+/**
+ * The line over a delivered answer once the sentence in the box is no longer the one
+ * it was asked about, or `null` while it still is.
+ *
+ * An answer that has arrived is kept while the learner edits — it is what they are
+ * editing *from*, and wiping it on the first keystroke took "The model would write: …"
+ * away from the learner reading it — but it must not read as being about the new
+ * text. Ends are trimmed for the comparison: a stray space is not another sentence.
+ */
+export function verdictContext(askedText: string, typed: string): string | null {
+  if (askedText.trim() === typed.trim()) return null;
+  return `About your earlier sentence 「${askedText.trim()}」`;
+}
+
+/** What the model check's button says, and whether it can be pressed. */
+export interface CheckButton {
+  label: string;
+  disabled: boolean;
+}
+
+/**
+ * The model check's button.
+ *
+ * `checking` is the screen waiting for the answer to its current ask; `inFlight` is
+ * how many requests the endpoint is still working on, **including abandoned ones**
+ * (the sentence was edited, or the pattern changed, mid-ask). An abandoned answer is
+ * never drawn, but the request is not cancelled either — so the button waits for it
+ * rather than send a second request to an endpoint that may charge for each.
+ */
+export function checkButton(state: {
+  checking: boolean;
+  inFlight: number;
+  canSubmit: boolean;
+}): CheckButton {
+  if (state.checking) return { label: "Asking…", disabled: true };
+  if (state.inFlight > 0) return { label: "Finishing the earlier question…", disabled: true };
+  return { label: "Check with the model", disabled: !state.canSubmit };
+}
+
 /** How much of the course can be written about, in one sentence. */
 export function poolNote(size: CompositionSize): string {
   if (size.total <= 0 || size.points <= 0) {
