@@ -1417,10 +1417,12 @@ back.
   bare names, and the novelty voices (Eddy, Flo, Reed, Sandy, Shelley, Grandma,
   Grandpa, Rocko) exist under the same name in every language. A voice is carried
   as `Voice::identifier` (`AVSpeechSynthesisVoice.identifier`) and a choice is
-  stored as `Voice::id()`; a bare name an older build stored is matched only among
-  the app's own language's voices, home locale first (`find_voice`), and the
-  utterance is given the voice by identifier (`installed_index`), never the first
-  one with that name.
+  stored as `Voice::id()`; a name an older build stored is matched only among
+  the app's own language's voices (`find_voice`). A `say`-era name such as
+  `Eddy (Chinese (Taiwan))` is matched on its base name, and its qualifier picks
+  the locale; otherwise home locale first, then Taiwan for Chinese. The utterance
+  is given the voice by identifier (`voiceWithIdentifier:`, else
+  `installed_index`), never the first one with that name.
 - **`say -v '?'` takes ~1 s** and lists every voice twice. Resolve it lazily and
   warm it on a background thread; never on the startup path.
 - **Never kill a `say` process to stop speech on macOS.** This was the cause of

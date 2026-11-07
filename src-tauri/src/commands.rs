@@ -496,6 +496,11 @@ pub struct VoiceOption {
     /// one that does not, which is worth saying before the learner picks it
     /// rather than after.
     pub network: bool,
+    /// How good the voice's data is — `standard`, `enhanced` or `premium` — or
+    /// `None` where the platform does not say. macOS and iOS list a downloaded
+    /// enhanced voice beside the compact one under the same name and locale,
+    /// and this is what tells the two rows apart.
+    pub quality: Option<String>,
 }
 
 /// The Chinese voices this machine offers, and the one actually in use.
@@ -523,6 +528,10 @@ pub struct VoicesView {
     /// them it means — so the screen selects the right one, and can tell a
     /// choice that is missing here (this is `None`) from one in use.
     pub chosen: Option<String>,
+    /// When the stored choice names no Chinese voice but does name one of
+    /// another language here, that voice as `name (locale)` — so the screen can
+    /// say it "isn't available as a Chinese voice" rather than "not installed".
+    pub elsewhere: Option<String>,
 }
 
 /// The voices a Chinese character can be spoken with, and the one in use.

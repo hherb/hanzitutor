@@ -1975,13 +1975,14 @@ fn the_voice_list_says_which_voice_a_choice_resolved_to() {
 
     let voices = state.voices();
     let json = serde_json::to_value(&voices).unwrap();
-    expect_keys(&json, &["available", "active", "chosen"]);
+    expect_keys(&json, &["available", "active", "chosen", "elsewhere"]);
     for option in json["available"].as_array().unwrap() {
         // `network` travels with each voice so the settings screen can say which
         // ones would need a connection — the app is meant to work offline, and
         // Android offers both kinds for the same locale. `id` is what a choice
         // is stored as: AVFoundation's bare names are not unique (issue #39).
-        expect_keys(option, &["id", "name", "locale", "network"]);
+        // `quality` tells a compact voice from an enhanced one of one name.
+        expect_keys(option, &["id", "name", "locale", "network", "quality"]);
     }
     // The ids are what the screen keys its options on, so they are distinct.
     let ids: BTreeSet<&str> = voices.available.iter().map(|v| v.id.as_str()).collect();
@@ -1989,6 +1990,8 @@ fn the_voice_list_says_which_voice_a_choice_resolved_to() {
     // A choice this machine does not have resolves to no entry at all, which
     // is how the screen knows to say it fell back.
     assert_eq!(voices.chosen, None);
+    // Nor is it any other language's voice, so there is nothing to name.
+    assert_eq!(voices.elsewhere, None);
 
     // Whatever this machine has, the stored preference is not a voice it can
     // speak with, so the two must not be reported as the same thing.

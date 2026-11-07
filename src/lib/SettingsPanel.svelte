@@ -37,7 +37,12 @@
   import { onMount } from "svelte";
   import { TONE_NAME } from "./transcript";
   import type { Tone } from "./tones.svelte";
-  import { selectedVoice, voiceFellBack as fellBack } from "./voiceChoice";
+  import {
+    selectedVoice,
+    storedVoiceLabel,
+    voiceFellBack as fellBack,
+    voiceLabel,
+  } from "./voiceChoice";
 
   /**
    * The legend beside the switch: one character for each tone.
@@ -705,9 +710,7 @@
             >
               <option value="">Automatic</option>
               {#each voices.available as voice (voice.id)}
-                <option value={voice.id}>
-                  {voice.name} — {voice.locale}{voice.network ? " · needs internet" : ""}
-                </option>
+                <option value={voice.id}>{voiceLabel(voice, voices.available)}</option>
               {/each}
             </select>
             <button
@@ -722,11 +725,16 @@
             </button>
           </div>
           <span class="status">
-            {#if voiceFellBack}
-              <strong>{settings.voice}</strong> is not installed on this machine,
-              so <strong>{voices.active}</strong> is being used instead rather
-              than leaving pronunciation silent. Turning the app off and on does
-              not change that — it is what the name resolves to here.
+            {#if voiceFellBack && voices.elsewhere !== null}
+              <strong>{voices.elsewhere}</strong> isn't available as a Chinese
+              voice, so <strong>{voices.active}</strong> is being used instead
+              rather than reading Chinese in another language.
+            {:else if voiceFellBack}
+              <strong>{storedVoiceLabel(settings.voice ?? "")}</strong> is not
+              installed on this machine, so <strong>{voices.active}</strong> is
+              being used instead rather than leaving pronunciation silent.
+              Turning the app off and on does not change that — it is what the
+              name resolves to here.
             {:else if settings.voice === null && voices.active !== null}
               Automatic: <strong>{voices.active}</strong> is the best mainland
               Mandarin voice installed here.

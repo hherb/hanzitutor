@@ -165,16 +165,19 @@ pub struct Settings {
     ///
     /// Identifiers rather than names since issue #39: AVFoundation's novelty
     /// voices carry the same bare name in every language, so `Eddy` alone did
-    /// not say *which* Eddy. A bare name is still accepted — it is what every
+    /// not say *which* Eddy. A name is still accepted — it is what every
     /// earlier build stored — and means a voice of that name in the app's own
-    /// language, the home locale's first, ignoring the locale qualifier macOS's
-    /// older listing appended (`Tingting (Chinese (China mainland))` is
-    /// `Tingting`). A stored value is never rewritten on load, so a document
-    /// carried back to an older build keeps working there too; an identifier
-    /// is a name that build does not know, which falls back to its automatic
-    /// choice rather than failing. That is also why the format version did not
-    /// change: the field is still a string, and a bump would make an older build
-    /// refuse every setting rather than one voice.
+    /// language. The locale qualifier the `say -v '?'` era (v0.3.0–v0.5.11)
+    /// put in names is ignored on both sides when matching, but it picks the
+    /// locale: a stored `Eddy (Chinese (Taiwan))` is the Taiwanese `Eddy`
+    /// AVFoundation now reports bare. With no qualifier the home locale comes
+    /// first (mainland China, Japan), then Taiwan for Chinese, then the rest.
+    /// A stored value is never rewritten on load, so a document carried back
+    /// to an older build keeps working there too; an identifier is a name that
+    /// build does not know, which falls back to its automatic choice rather
+    /// than failing. That is also why the format version did not change: the
+    /// field is still a string, and a bump would make an older build refuse
+    /// every setting rather than one voice.
     ///
     /// A value this machine does not have falls back to the automatic choice
     /// rather than failing, because a preference set on one machine must not

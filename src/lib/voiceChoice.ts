@@ -9,7 +9,7 @@
  * document an older build wrote still holds a bare name, which the backend
  * resolves to one entry (`chosen`).
  */
-import type { VoicesView } from "./types";
+import type { VoiceOption, VoicesView } from "./types";
 
 /**
  * The option value the dropdown shows: `""` for the automatic choice, the
@@ -24,7 +24,7 @@ import type { VoicesView } from "./types";
  * is heard — showing `active` instead would silently rewrite the choice.
  */
 export function selectedVoice(stored: string | null, voices: VoicesView): string {
-  if (stored === null) return "";
+  if (!stored) return "";
   if (voices.available.some((voice) => voice.id === stored)) return stored;
   return voices.chosen ?? stored;
 }
@@ -37,7 +37,38 @@ export function selectedVoice(stored: string | null, voices: VoicesView): string
  * value — is `null` exactly when nothing here matches it.
  */
 export function voiceFellBack(stored: string | null, voices: VoicesView): boolean {
-  if (stored === null || voices.active === null) return false;
+  if (!stored || voices.active === null) return false;
   if (voices.available.some((voice) => voice.id === stored)) return false;
   return voices.chosen === null;
+}
+
+/**
+ * How an entry reads in the list: `name — locale`, with the quality when
+ * another entry has the same name and locale (a downloaded enhanced voice
+ * beside the compact one), and a note when it needs a network.
+ */
+export function voiceLabel(voice: VoiceOption, available: VoiceOption[]): string {
+  const twin = available.some(
+    (other) =>
+      other.id !== voice.id && other.name === voice.name && other.locale === voice.locale,
+  );
+  const quality = twin && voice.quality ? ` (${voice.quality})` : "";
+  const network = voice.network ? " · needs internet" : "";
+  return `${voice.name} — ${voice.locale}${quality}${network}`;
+}
+
+/**
+ * A stored choice as a person reads it.
+ *
+ * An Apple identifier (`com.apple.voice.compact.zh-CN.Tingting`) reads as its
+ * name and locale, `Tingting (zh-CN)`; anything else — a bare or suffixed name
+ * an older build stored, an Android voice name — is shown as it is.
+ */
+export function storedVoiceLabel(stored: string): string {
+  if (/\s/.test(stored) || !stored.includes(".")) return stored;
+  const segments = stored.split(".");
+  const name = segments[segments.length - 1];
+  const locale = segments[segments.length - 2] ?? "";
+  if (!name) return stored;
+  return /^[a-z]{2,3}[-_][A-Za-z0-9]{2,}$/.test(locale) ? `${name} (${locale})` : name;
 }

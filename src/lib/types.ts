@@ -737,6 +737,13 @@ export interface VoiceOption {
    * here, because the app is meant to work with no network at all.
    */
   network: boolean;
+  /**
+   * How good the voice's data is — `standard`, `enhanced` or `premium` — or
+   * `null` where the platform does not say. Shown only when two entries share
+   * a name and locale, which is what a downloaded enhanced voice beside the
+   * compact one looks like.
+   */
+  quality: string | null;
 }
 
 /**
@@ -757,6 +764,11 @@ export interface VoicesView {
    * one it means.
    */
   chosen: string | null;
+  /**
+   * When the stored choice names no Chinese voice but does name another
+   * language's voice here, that voice as `name (locale)`; otherwise `null`.
+   */
+  elsewhere: string | null;
 }
 
 /**
