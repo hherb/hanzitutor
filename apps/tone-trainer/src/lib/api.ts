@@ -107,6 +107,14 @@ export const asrStatus = () => invoke<AsrStatus>("asr_status");
  */
 export const asrInstall = () => invoke<void>("asr_install");
 
+/**
+ * Ask a running download of the recognition model to stop, returning the state.
+ *
+ * Resolves at once; the download stops at its next chunk and removes what it had
+ * fetched. Keep following `asrStatus` until the state leaves `downloading`.
+ */
+export const asrCancel = () => invoke<AsrStatus>("asr_cancel");
+
 /** Delete the recognition model, returning the state that leaves behind. */
 export const asrRemove = () => invoke<AsrStatus>("asr_remove");
 

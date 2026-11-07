@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   chartColumns,
+  emptyDrillNote,
   isSingleKana,
   joinedLabel,
   lessonLabel,
@@ -178,5 +179,17 @@ describe("joinedLabel", () => {
 
   it("names every join when a hand joined in more than one place", () => {
     expect(joinedLabel([[1, 2], [4, 5]])).toBe("1+2, 4+5");
+  });
+});
+
+/** Issue #34: a `null` draw drew "Loading the pairs…" for good. */
+describe("emptyDrillNote", () => {
+  it("names the exercise, says why there is nothing, and points at the others", () => {
+    const line = emptyDrillNote("Yōon きゃ");
+    expect(line).toContain("Nothing to ask here");
+    expect(line).toContain("Yōon きゃ");
+    expect(line).toContain("kana this app holds");
+    expect(line).toContain("another exercise");
+    expect(line).not.toContain("Loading");
   });
 });

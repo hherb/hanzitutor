@@ -7,11 +7,12 @@
    * actually taking. An entry's text may be a single character or a word.
    */
   import type { CharacterHint, EntryProgress, TextLookup, VocabEntry, VocabView } from "./types";
+  import type { DrillOptions } from "./practiceCursor";
   import Icon from "./Icon.svelte";
   import TonedPinyin from "./TonedPinyin.svelte";
   import TonedText from "./TonedText.svelte";
   import * as api from "./api";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
 
   /**
    * What each of the schedule's four states is called on a card, and what it means.
@@ -56,8 +57,23 @@
     busy: boolean;
     /** Resolve a character or word into a draft reading and meaning. */
     lookup: (text: string) => Promise<TextLookup>;
-    onAdd: (text: string, pinyin: string, meaning: string, group: string | null) => void;
-    onUpdate: (id: number, pinyin: string, meaning: string, group: string | null) => void;
+    /**
+     * Add or save the draft. Each resolves `true` once the list has it, and
+     * `false` when it was refused or could not run — the reason is the app's to
+     * show — so the form is cleared only when nothing typed would be lost.
+     */
+    onAdd: (
+      text: string,
+      pinyin: string,
+      meaning: string,
+      group: string | null,
+    ) => Promise<boolean>;
+    onUpdate: (
+      id: number,
+      pinyin: string,
+      meaning: string,
+      group: string | null,
+    ) => Promise<boolean>;
     onRemove: (id: number) => void;
     onAddGroup: (name: string) => void;
     onRenameGroup: (from: string, to: string) => void;
@@ -66,11 +82,12 @@
      * Drill these entries on the board.
      *
      * `group` is the group being drilled, or `null` when the selection is not one
-     * group — everything, or the unfiled remainder — and for a row's own Practise
-     * button, which is a one-off and must not overwrite the place the learner had
-     * reached in the group that entry belongs to.
+     * group — everything, or the unfiled remainder. A row's own Practise button
+     * passes `keepPlace: false` as well: it is a one-off and must not overwrite
+     * the place the learner had reached in the group that entry belongs to, and
+     * `null` alone would let that group be read back from the entry itself.
      */
-    onPractise: (entries: VocabEntry[], group: string | null) => void;
+    onPractise: (entries: VocabEntry[], group: string | null, options?: DrillOptions) => void;
     onExport: (format: "json" | "csv") => void;
     onImport: (merge: boolean) => void;
   }
@@ -112,6 +129,13 @@
    * state: it is a guard, not something the interface renders.
    */
   let lastText = "";
+  /**
+   * Bumped when the draft is sent, so that a lookup still pending for it —
+   * Add pressed within the 200 ms delay — cannot fill the fields in while the
+   * save is in flight, which made a draft that was added look edited and kept
+   * it on the form (issue #33). A plain `let` for the same reason as `lastText`.
+   */
+  let lookupGeneration = 0;
 
   // ---- the fields themselves ----------------------------------------------
   /**
@@ -221,11 +245,13 @@
     lookupNote = null;
 
     let cancelled = false;
+    const generation = lookupGeneration;
     const timer = setTimeout(() => {
       void (async () => {
         const found = await lookup(candidate);
-        // A newer keystroke has already scheduled its own derivation.
-        if (cancelled || text.trim() !== candidate) return;
+        // A newer keystroke has already scheduled its own derivation, or the
+        // draft has been sent as it was.
+        if (cancelled || generation !== lookupGeneration || text.trim() !== candidate) return;
         hints = found.characters;
         if (!pinyinEdited) pinyin = found.pinyin;
         if (!meaningEdited) meaning = found.meaning;
@@ -256,19 +282,36 @@
     formError = null;
   }
 
-  function submit() {
+  /**
+   * Add the draft, or save the entry being edited.
+   *
+   * The form is cleared only once the list has taken it: a refusal — "already in
+   * that group" — or a command that could not run must leave the reading and the
+   * meaning that were typed where they are, to be corrected and sent again
+   * (issue #33). The draft is compared with what was sent before it is cleared,
+   * so that one started while the save was in flight is not thrown away with it.
+   */
+  async function submit() {
     formError = null;
     const trimmed = text.trim();
     if (!trimmed) {
       formError = "Enter a character or word.";
       return;
     }
-    if (editingId !== null) {
-      onUpdate(editingId, pinyin, meaning, group.trim() || null);
-    } else {
-      onAdd(trimmed, pinyin, meaning, group.trim() || null);
-    }
-    resetDraft();
+    lookupGeneration++;
+    const sent = { editingId, text, pinyin, meaning, group };
+    const saved =
+      editingId !== null
+        ? await onUpdate(editingId, pinyin, meaning, group.trim() || null)
+        : await onAdd(trimmed, pinyin, meaning, group.trim() || null);
+    if (!saved) return;
+    const untouched =
+      editingId === sent.editingId &&
+      text === sent.text &&
+      pinyin === sent.pinyin &&
+      meaning === sent.meaning &&
+      group === sent.group;
+    if (untouched) resetDraft();
   }
 
   function startEdit(entry: VocabEntry) {
@@ -287,6 +330,17 @@
     lookupNote = null;
     formError = null;
   }
+
+  /**
+   * The entry being edited has gone — removed from its own row, by a sync or by
+   * a group's entries being deleted — so the form is put back to an empty draft
+   * rather than left editing nothing with its text locked (issue #33).
+   */
+  $effect(() => {
+    if (editingId === null) return;
+    const id = editingId;
+    if (!view.entries.some((entry) => entry.id === id)) untrack(resetDraft);
+  });
 
   function practise() {
     if (entriesShown.length === 0) return;
@@ -343,9 +397,15 @@
              system keyboard's own language key is what changes the layout, so
              the fields are arranged to need it as little as possible: the
              character here, Latin pinyin beside it, English meaning after. -->
+        <!-- Read-only while an entry is being edited: an entry's text is what its
+             practice history and its place in a group are filed under, and saving
+             changes only the reading, meaning and group. A different text is a
+             different entry, so the hint below says to add it as one. -->
         <input
           bind:this={textInput}
           bind:value={text}
+          readonly={editingId !== null}
+          aria-describedby={editingId !== null ? "vocab-text-locked" : undefined}
           placeholder="学习"
           lang="zh-Hans"
           autocomplete="off"
@@ -464,10 +524,17 @@
       {#if editingId !== null}
         <button type="button" onclick={resetDraft} disabled={busy}>Cancel</button>
       {/if}
-      <span class="hint">
-        A character fills both fields automatically. A word gets its reading
-        composed from its characters, and you write the meaning.
-      </span>
+      {#if editingId !== null}
+        <span class="hint" id="vocab-text-locked">
+          Editing changes the reading, meaning and group. To change the character
+          or word itself, add it as a new entry and remove this one.
+        </span>
+      {:else}
+        <span class="hint">
+          A character fills both fields automatically. A word gets its reading
+          composed from its characters, and you write the meaning.
+        </span>
+      {/if}
     </div>
     {#if lookupNote}
       <p class="warning">{lookupNote}</p>
@@ -593,7 +660,7 @@
           <span class="row-actions">
             <button
               class="icon"
-              onclick={() => onPractise([entry], null)}
+              onclick={() => onPractise([entry], null, { keepPlace: false })}
               disabled={busy}
               aria-label={`Practise ${entry.text}`}
               title="Practise this entry on the board"
@@ -752,6 +819,12 @@
   input:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+  }
+  /* The entry's text while it is being edited: shown, but not a field to type in. */
+  input[readonly] {
+    border-style: dashed;
+    color: var(--muted);
+    cursor: default;
   }
 
   /* The tone keys: small, close together, and under the fields they write into. */

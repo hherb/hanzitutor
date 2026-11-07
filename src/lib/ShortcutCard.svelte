@@ -51,8 +51,8 @@
 <style>
   .card {
     position: fixed;
-    right: 18px;
-    bottom: 18px;
+    right: calc(18px + var(--safe-right));
+    bottom: calc(18px + var(--safe-bottom));
     /* Above the panels, below the phone's navigation sheet (40) and the startup
        reading (50): both of those are meant to cover things. */
     z-index: 20;
@@ -66,8 +66,8 @@
   }
   @media (max-width: 640px) {
     .card {
-      right: 12px;
-      bottom: 12px;
+      right: calc(12px + var(--safe-right));
+      bottom: calc(12px + var(--safe-bottom));
     }
   }
 

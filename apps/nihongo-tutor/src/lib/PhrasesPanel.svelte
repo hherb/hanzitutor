@@ -251,7 +251,8 @@
 
           {#if opened?.id === phrase.id}
             <div class="card-slot">
-              <WordCard word={opened.word} {voice} />
+              <!-- A lookup: the phrase above prints the word with its furigana. -->
+              <WordCard word={opened.word} {voice} askReading={false} />
             </div>
           {/if}
         </li>
