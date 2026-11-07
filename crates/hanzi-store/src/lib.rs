@@ -1065,35 +1065,19 @@ impl SettingsSink for Db {
             let name = text.trim();
             settings.voice = (!name.is_empty()).then(|| name.to_string());
         }
+        // A name this build does not know reads as the default rather than
+        // failing the table (issue #41): a newer build that adds a pace or a size
+        // writes one without a schema bump, and refusing every preference over it
+        // would be the worse loss. `save` leaves such a row alone.
         if let Some(text) =
             setting_get(&conn, ANIMATION_PACE).map_err(|e| settings_error(&path, e))?
         {
-            settings.animation_pace = match text.as_str() {
-                "slow" => Pace::Slow,
-                "normal" => Pace::Normal,
-                "fast" => Pace::Fast,
-                other => {
-                    return Err(SettingsError::Malformed(format!(
-                        "{}: the stored setting {ANIMATION_PACE:?} is {other:?}, which is                              not one of slow, normal or fast",
-                        path.display()
-                    )))
-                }
-            };
+            settings.animation_pace = parse_pace(&text).unwrap_or_default();
         }
         if let Some(text) =
             setting_get(&conn, BOARD_SIZE).map_err(|e| settings_error(&path, e))?
         {
-            settings.board_size = match text.as_str() {
-                "compact" => BoardSize::Compact,
-                "normal" => BoardSize::Normal,
-                "large" => BoardSize::Large,
-                other => {
-                    return Err(SettingsError::Malformed(format!(
-                        "{}: the stored setting {BOARD_SIZE:?} is {other:?}, which is                              not one of compact, normal or large",
-                        path.display()
-                    )))
-                }
-            };
+            settings.board_size = parse_board_size(&text).unwrap_or_default();
         }
         if let Some(value) = setting_get_bool(&conn, TONE_COLOURS, &path)? {
             settings.tone_colours = value;
@@ -1154,6 +1138,11 @@ impl SettingsSink for Db {
             (WHATS_NEW_SEEN, settings.whats_new_seen.clone()),
         ];
         for (key, value) in rows {
+            let keep = value.is_none()
+                && holds_a_newer_name(&tx, key).map_err(|e| settings_error(&path, e))?;
+            if keep {
+                continue;
+            }
             setting_put(&tx, key, value.as_deref()).map_err(|e| settings_error(&path, e))?;
         }
         tx.commit().map_err(|e| settings_error(&path, e))
@@ -1178,6 +1167,35 @@ fn board_size_key(size: BoardSize) -> &'static str {
         BoardSize::Normal => "normal",
         BoardSize::Large => "large",
     }
+}
+
+/// The pace a stored name means, or `None` for a name this build does not know.
+fn parse_pace(text: &str) -> Option<Pace> {
+    Pace::ALL.into_iter().find(|&pace| pace_key(pace) == text)
+}
+
+/// The board size a stored name means, or `None` for a name this build does not
+/// know.
+fn parse_board_size(text: &str) -> Option<BoardSize> {
+    BoardSize::ALL
+        .into_iter()
+        .find(|&size| board_size_key(size) == text)
+}
+
+/// True when `key` is a pace or a board size whose row holds a name this build
+/// does not know — one a newer build wrote.
+///
+/// `load` read such a row as the default, and the default is saved as no row, so
+/// without this a save of any *other* preference would delete the newer build's
+/// choice on the way past. A value this build can name still replaces it: that
+/// is a choice the learner made here.
+fn holds_a_newer_name(conn: &Connection, key: &str) -> rusqlite::Result<bool> {
+    let known: fn(&str) -> bool = match key {
+        ANIMATION_PACE => |text: &str| parse_pace(text).is_some(),
+        BOARD_SIZE => |text: &str| parse_board_size(text).is_some(),
+        _ => return Ok(false),
+    };
+    Ok(setting_get(conn, key)?.is_some_and(|text| !known(&text)))
 }
 
 /// Whether any of the pre-database study documents sits beside the database file.

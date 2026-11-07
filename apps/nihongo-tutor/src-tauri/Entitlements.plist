@@ -4,13 +4,15 @@
   Entitlements for the macOS bundle, applied when Tauri signs it. Referenced by
   `bundle.macOS.entitlements` in `tauri.conf.json`.
 
-  The same one key the full app carries, for the same reason and with the same
-  caveat. Under the hardened runtime — which notarisation requires, and which a
-  Developer ID build gets — a process cannot open the microphone unless it says
-  so here, whatever `NSMicrophoneUsageDescription` in `Info.plist` says. The
-  plist key is what the *user* is asked; this entitlement is what the *kernel*
-  permits. With only the plist, everything works under `tauri dev` and in an
-  unsigned build, and capture returns silence in the signed bundle.
+  Deliberately empty. The full app carries
+  `com.apple.security.device.audio-input`, because it records; this one never
+  does — `hanzi-voice` is built with `default-features = false`, so its capture
+  half and `cpal` are not linked, and `Info.ios.plist` has no microphone string
+  for the same reason. The key was copied across all the same and is gone since
+  issue #41: an entitlement the binary has no use for is one a reviewer asks
+  about. `tests/ipc_contract.rs` checks the two stay in step; if this app ever
+  records, the key comes back with `NSMicrophoneUsageDescription`, or capture
+  returns silence in the signed bundle.
 
   `com.apple.security.app-sandbox` is deliberately absent, exactly as it is in
   the full app: the sandbox is a decision that has not been taken, and taking it
@@ -19,7 +21,5 @@
 -->
 <plist version="1.0">
 <dict>
-	<key>com.apple.security.device.audio-input</key>
-	<true/>
 </dict>
 </plist>

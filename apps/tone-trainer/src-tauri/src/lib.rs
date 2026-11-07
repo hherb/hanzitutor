@@ -233,11 +233,12 @@ impl Trainer {
     /// session used to pay it, which on macOS also meant a cold audio device and a
     /// rough-sounding first word or two.
     ///
-    /// `data_dir` is where the optional recognition model goes. `None` when the
-    /// platform would not give one, in which case the settings say there is
-    /// nowhere to keep a 163 MB download rather than failing at the moment the
-    /// learner asks for it.
-    pub fn assemble(prepared: Prepared, data_dir: Option<&std::path::Path>) -> Self {
+    /// `model_dir` is where the optional recognition model goes — the platform's
+    /// cache directory, as `run` resolves it through `hanzi_hearing::model_home`.
+    /// `None` when the platform would not give one, in which case the settings say
+    /// there is nowhere to keep a 163 MB download rather than failing at the
+    /// moment the learner asks for it.
+    pub fn assemble(prepared: Prepared, model_dir: Option<&std::path::Path>) -> Self {
         let Prepared { dataset } = prepared;
         let speaker = Arc::new(Speaker::default());
         warm(Arc::clone(&speaker));
@@ -245,7 +246,7 @@ impl Trainer {
             dataset,
             recorder: Recorder::default(),
             speaker,
-            asr: Asr::new(data_dir),
+            asr: Asr::new(model_dir),
         }
     }
 
@@ -636,9 +637,9 @@ fn webview_log(message: String) {
 // ---- Speech recognition: the optional model ---------------------------------
 //
 // The same three calls the full app exposes, over the same shared crate, so the
-// two screens describe one download identically. What differs is only where the
-// model is kept: this app has no study database, so its data directory holds the
-// model and nothing else.
+// two screens describe one download identically — plus a fourth, `asr_cancel`, for
+// the Cancel button this screen has. The model is kept in this app's own cache
+// directory, as the full app keeps its own (see `run`).
 
 /// Whether a recognition model is installed, and how to describe one that is not.
 ///
@@ -671,6 +672,17 @@ fn asr_install(trainer: State<'_, Trainer>) -> Result<(), String> {
 fn asr_remove(trainer: State<'_, Trainer>) -> Result<AsrStatus, String> {
     trainer.asr.remove()?;
     Ok(trainer.asr.status())
+}
+
+/// Ask a running download of the recognition model to stop, and report the
+/// resulting state.
+///
+/// Returns at once: the download thread stops at its next chunk and removes what
+/// it had fetched, and [`asr_status`] — which the screen keeps polling — reads
+/// "not installed" once it has. Quick, so it stays a plain command.
+#[tauri::command]
+fn asr_cancel(trainer: State<'_, Trainer>) -> AsrStatus {
+    trainer.asr.cancel()
 }
 
 /// The app's name and version, for the footer.
@@ -722,30 +734,32 @@ pub fn run() {
                 .take()
                 .expect("the dataset is prepared before the builder runs");
 
-            // Where the optional recognition model goes. This app has no study
-            // database, so this directory holds the model and nothing else — and
-            // it is the platform's own per-app location, so the trainer's model
-            // and the full app's are two downloads that cannot be mistaken for
-            // one another.
+            // Where the optional recognition model goes: the platform's own
+            // per-app *cache* directory, so the trainer's model and the full app's
+            // are two downloads that cannot be mistaken for one another.
             //
-            // A platform that will not give one is not fatal: the settings then
+            // The cache rather than the data directory (issue #41), for the reason
+            // the full app gives in `relocate_model_cache`: the weights are 240 MB
+            // of something fetched on request and re-verified by digest, and on
+            // iOS the data directory is backed up to iCloud while `Library/Caches`
+            // is not. A model an earlier build put in the data directory is moved
+            // across by `model_home` rather than fetched again.
+            //
+            // A platform that will give neither is not fatal: the settings then
             // say there is nowhere to keep a 163 MB download, rather than failing
             // at the moment the learner asks for it.
-            let data_dir = match app.path().resolve("", BaseDirectory::AppData) {
-                Ok(dir) => {
-                    eprintln!("[data] model directory {}", dir.display());
-                    Some(dir)
-                }
-                Err(problem) => {
-                    eprintln!(
-                        "[data] no application data directory ({problem}); the recognition \
-                         model cannot be installed this session"
-                    );
-                    None
-                }
-            };
+            let data_dir = app.path().resolve("", BaseDirectory::AppData).ok();
+            let cache_dir = app.path().app_cache_dir().ok();
+            let model_dir = hanzi_hearing::model_home(data_dir.as_deref(), cache_dir.as_deref());
+            match &model_dir {
+                Some(dir) => eprintln!("[data] model directory {}", dir.display()),
+                None => eprintln!(
+                    "[data] no application cache or data directory; the recognition model \
+                     cannot be installed this session"
+                ),
+            }
 
-            app.manage(Trainer::assemble(prepared, data_dir.as_deref()));
+            app.manage(Trainer::assemble(prepared, model_dir.as_deref()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -762,6 +776,7 @@ pub fn run() {
             asr_status,
             asr_install,
             asr_remove,
+            asr_cancel,
             app_info,
             webview_log,
         ])

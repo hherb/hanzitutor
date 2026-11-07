@@ -559,26 +559,60 @@ fn every_preference_round_trips_through_the_database() {
 }
 
 #[test]
-fn a_stored_name_the_build_does_not_know_is_reported_rather_than_guessed() {
-    // A pace is a closed set of names. A row holding anything else means either
-    // a hand-edited database or a build whose names changed, and silently
-    // calling it "normal" would hide a real mismatch behind a plausible default.
+fn a_pace_or_board_size_a_newer_build_wrote_falls_back_and_is_kept() {
+    // Issue #41. A pace or a board size is a closed set of names *in this build*,
+    // and a newer build that adds one writes a name this one has no variant for —
+    // without a schema bump, because the row is still a name. Refusing the whole
+    // settings table for that would cost the learner every other preference, so
+    // the one value reads as its default and the rest are read as written.
     let dir = dir("settings-bad-pace");
     let db = Db::open(&dir).unwrap();
-    rusqlite::Connection::open(db.path())
-        .unwrap()
-        .execute(
-            "INSERT INTO settings (key, value) VALUES ('animation_pace', 'leisurely')",
-            [],
-        )
-        .unwrap();
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        for (key, value) in [
+            ("animation_pace", "leisurely"),
+            ("board_size", "enormous"),
+            ("click_to_draw", "true"),
+        ] {
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                [key, value],
+            )
+            .unwrap();
+        }
+    }
 
-    let error = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap_err();
-    assert!(
-        matches!(&error, hanzi_core::SettingsError::Malformed(_)),
-        "{error}"
+    let mut store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert_eq!(store.view().pace(), Pace::Normal);
+    assert_eq!(store.view().board_size(), BoardSize::Normal);
+    assert_eq!(
+        store.click_to_draw(),
+        Some(true),
+        "the rest of the table is kept"
     );
-    assert!(error.to_string().contains("animation_pace"), "{error}");
+
+    // Saving something else must not erase what the newer build chose: the
+    // default this build fell back to is what a missing row means, and writing
+    // it would delete the row the newer build will read again.
+    assert!(store.set_tone_colours(true));
+    store.save().unwrap();
+    let stored = |key: &str| -> Option<String> {
+        rusqlite::Connection::open(db.path())
+            .unwrap()
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .ok()
+    };
+    assert_eq!(stored("animation_pace").as_deref(), Some("leisurely"));
+    assert_eq!(stored("board_size").as_deref(), Some("enormous"));
+    assert_eq!(stored("tone_colours").as_deref(), Some("true"));
+
+    // A choice this build *can* make still replaces it.
+    assert!(store.set_animation_pace(Pace::Slow));
+    store.save().unwrap();
+    assert_eq!(stored("animation_pace").as_deref(), Some("slow"));
+    assert_eq!(stored("board_size").as_deref(), Some("enormous"));
 
     finish(&dir);
 }
