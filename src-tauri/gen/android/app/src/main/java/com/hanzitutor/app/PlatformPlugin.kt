@@ -724,21 +724,21 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
     /**
      * Encrypt [secret] under the key that asks for nothing, and keep it.
      *
-     * A blob in the locked mode is forgotten first, with both keys: its own key
-     * cannot be used without a prompt, and nothing here asks. A key under this
-     * alias that keystore will not encrypt with — one an earlier build made in
-     * the locked mode before it filed that mode under an alias of its own — is
-     * replaced once rather than reported, because the blob it guarded is being
-     * replaced anyway. Only keystore's refusals count as that: an
-     * `InvalidKeyException` from `init` (which covers an invalidated key and one
-     * waiting for authentication), or the `IllegalBlockSizeException` that
-     * `doFinal` wraps a refused operation in — GCM without padding has no block
-     * size to get wrong. Anything else is reported, and nothing is forgotten.
+     * A blob in the locked mode is left where it is until [keep] has written this
+     * one over it and then lets the locked key go: its key is under an alias of
+     * its own, so nothing here needs it gone first, and forgetting it first (as
+     * this once did) meant an encryption that then failed lost the sign-in while
+     * Rust's record still said connected. A key under this alias that keystore
+     * will not encrypt with — one an earlier build made in the locked mode before
+     * it filed that mode under an alias of its own — is replaced once rather than
+     * reported, because the blob it guarded is being replaced anyway. Only
+     * keystore's refusals count as that: an `InvalidKeyException` from `init`
+     * (which covers an invalidated key and one waiting for authentication), or
+     * the `IllegalBlockSizeException` that `doFinal` wraps a refused operation in
+     * — GCM without padding has no block size to get wrong. Anything else is
+     * reported, and nothing is forgotten.
      */
     private fun storeUnlocked(secret: String) {
-        if (preferences().getBoolean(SECRET_AUTH_ENTRY, false)) {
-            forgetSecret()
-        }
         val plain = secret.toByteArray(Charsets.UTF_8)
         val cipher = Cipher.getInstance(SECRET_TRANSFORMATION)
         val encrypted = try {
@@ -752,9 +752,15 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
         keep(cipher, encrypted, false)
     }
 
-    /** Forget everything, then encrypt [plain] under a freshly made unlocked key. */
+    /**
+     * Replace the unlocked key, then encrypt [plain] under the new one.
+     *
+     * Only that key: a blob in the locked mode is under the other alias and still
+     * readable, and stays so until [keep] has replaced it. A blob in this mode was
+     * written under the key keystore has just refused, so it is unreadable already.
+     */
     private fun replaceUnlockedKey(cipher: Cipher, plain: ByteArray): ByteArray {
-        forgetSecret()
+        deleteKey(SECRET_KEY_ALIAS)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey(false))
         return cipher.doFinal(plain)
     }

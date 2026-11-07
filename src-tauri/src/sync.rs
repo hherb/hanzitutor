@@ -417,18 +417,37 @@ impl SyncService {
     }
 
     /// Finish an authorization with the code the learner pasted.
+    ///
+    /// The verifier is copied out rather than taken, and given up only once Dropbox
+    /// has accepted a code for it. A code it refuses — a typo, or one from an earlier
+    /// Connect tab, which `begin` has since replaced — spends nothing, and the code
+    /// from the tab the learner is looking at must still work after it; taking the
+    /// verifier first answered every later paste with "no sign-in in progress".
     pub fn finish(&self, code: &str) -> Result<SyncView, String> {
         let pkce = self
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .take()
+            .clone()
             .ok_or_else(|| {
                 "There is no sign-in in progress. Press Connect to start one.".to_string()
             })?;
 
         let tokens = exchange_code(self.http.as_ref(), APP_KEY, code.trim(), &pkce.verifier)
             .map_err(|e| describe(&e))?;
+        // Accepted, so the code is spent and this authorization with it: whatever
+        // happens next, a retry needs a new one. Only if it is still the one this
+        // used — a Connect pressed during the exchange started another, and that one
+        // is the learner's now.
+        {
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            if pending
+                .as_ref()
+                .is_some_and(|p| p.verifier == pkce.verifier)
+            {
+                *pending = None;
+            }
+        }
         let account = Account {
             refresh_token: tokens.refresh_token().map_err(|e| describe(&e))?.to_string(),
             account_id: tokens.account_id.clone(),
@@ -1361,10 +1380,132 @@ impl TokenStore for AndroidKeystore {
     }
 }
 
+/// Where a copy of the sign-in can be, in Apple's keychain.
+///
+/// Two places in the data-protection keychain, told apart by their account name,
+/// and the login keychain an ad-hoc signed build falls back to.
+///
+/// Two, because an access control is fixed when an item is created. Changing it —
+/// the fingerprint switch — means a new item, and the old one has to go. Deleting
+/// it first, as this once did, meant an add the keychain then refused lost the
+/// refresh token while the screen and the database still said connected. Adding
+/// first cannot be done in the same place: an item with the same service and
+/// account is a duplicate, and `set_generic_password_options` answers that by
+/// *updating* the old item's password and keeping its access control — the switch
+/// saying one thing and the item doing the other. So a save writes into whichever
+/// slot is free, and only then removes the other. See [`replace_sign_in`].
+#[cfg(any(target_vendor = "apple", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Slot {
+    /// The data-protection item every earlier build wrote.
+    Primary,
+    /// The other data-protection item.
+    Secondary,
+    /// The login-keychain item: an ad-hoc signed build, or a sign-in made before
+    /// the data-protection keychain was used. macOS only.
+    Login,
+}
+
+#[cfg(any(target_vendor = "apple", test))]
+impl Slot {
+    /// Where a read looks, in order; the first copy found is the sign-in.
+    const READ_ORDER: [Slot; 3] = [Slot::Primary, Slot::Secondary, Slot::Login];
+}
+
+/// Why a new item was not added.
+#[cfg(any(target_vendor = "apple", test))]
+#[derive(Debug)]
+enum AddRefused {
+    /// This build may not use the data-protection keychain at all
+    /// (`errSecMissingEntitlement`), so the login keychain is the one to use.
+    Unreachable,
+    /// Anything else, in words.
+    Failed(String),
+}
+
+/// The steps a save on Apple's keychain is made of, so that their order can be
+/// tested without one: a test that wrote to the developer's keychain would be one
+/// that could delete their account.
+#[cfg(any(target_vendor = "apple", test))]
+trait Slots {
+    /// Whether a data-protection slot holds an item, found without reading it —
+    /// a read is what asks for a fingerprint. Always `false` for the login slot.
+    fn occupied(&self, slot: Slot) -> Result<bool, String>;
+    /// Create the new item in a data-protection slot that is free, or create or
+    /// update the login-keychain one in place.
+    fn add(&self, slot: Slot) -> Result<(), AddRefused>;
+    /// Remove whatever a slot holds; nothing there is success.
+    fn remove(&self, slot: Slot) -> Result<(), String>;
+}
+
+/// Replace the stored sign-in, the new item **before** the old one goes, and say
+/// which slot it ended up in.
+///
+/// An error leaves the sign-in a read would find exactly as it was — which is
+/// what [`TokenStore::save`] promises, and what lets the service go on saying
+/// "connected" honestly after one:
+///
+/// - The new item goes into a free slot, so a refused add has touched nothing.
+/// - The old copies go afterwards: the login one first, because a read reaches it
+///   last, and then the other data-protection one if there is one — which, when
+///   there is, is the copy a read would have found, so it is the last to go. One that cannot be removed would outlive the new item with the
+///   protection the learner asked to replace, so the new item is taken back out and
+///   the save reported as failed; any copy removed before it was one a read would
+///   not have reached.
+/// - With both data-protection slots held — a save cut short between writing and
+///   removing — the second is the stale one, because a read stops at the first.
+/// - A build that cannot use the data-protection keychain falls back to the login
+///   keychain, whose one item is updated in place: that is all-or-nothing, and
+///   there is no data-protection copy this build could have left to remove.
+#[cfg(any(target_vendor = "apple", test))]
+fn replace_sign_in(slots: &dyn Slots) -> Result<Slot, String> {
+    let primary = slots.occupied(Slot::Primary)?;
+    let secondary = slots.occupied(Slot::Secondary)?;
+    let (target, other_held) = match (primary, secondary) {
+        (false, secondary) => (Slot::Primary, secondary),
+        (true, false) => (Slot::Secondary, true),
+        (true, true) => {
+            slots.remove(Slot::Secondary)?;
+            (Slot::Secondary, true)
+        }
+    };
+    match slots.add(target) {
+        Ok(()) => {}
+        Err(AddRefused::Unreachable) => {
+            return match slots.add(Slot::Login) {
+                Ok(()) => Ok(Slot::Login),
+                Err(AddRefused::Failed(why)) => Err(why),
+                Err(AddRefused::Unreachable) => {
+                    Err("the system keychain could not be opened".to_string())
+                }
+            };
+        }
+        Err(AddRefused::Failed(why)) => return Err(why),
+    }
+    let other = if target == Slot::Primary {
+        Slot::Secondary
+    } else {
+        Slot::Primary
+    };
+    let stale = std::iter::once(Slot::Login).chain(other_held.then_some(other));
+    for old in stale {
+        if let Err(why) = slots.remove(old) {
+            let _ = slots.remove(target);
+            return Err(format!(
+                "the sign-in stored before could not be removed, so it is kept and the new \
+                 one is not: {why}"
+            ));
+        }
+    }
+    Ok(target)
+}
+
 /// Apple's Keychain, which is the same API on macOS and iOS.
 ///
 /// One generic password, named by a service and an account. The service string is
-/// what a person sees in Keychain Access, so it says what it is.
+/// what a person sees in Keychain Access, so it says what it is. The account is one
+/// of two, because a save writes the new item before it removes the old one — see
+/// [`Slot`] — and a read takes the first it finds.
 ///
 /// ## The two items this can leave behind
 ///
@@ -1400,6 +1541,16 @@ struct Keychain;
 const KEYCHAIN_SERVICE: &str = "HanziTutor cross-device sync";
 #[cfg(target_vendor = "apple")]
 const KEYCHAIN_ACCOUNT: &str = "dropbox";
+/// The account name of the second data-protection slot. See [`Slot`].
+#[cfg(target_vendor = "apple")]
+const KEYCHAIN_ACCOUNT_NEXT: &str = "dropbox.next";
+/// Whether there is a login keychain apart from the data-protection one.
+///
+/// Only macOS has one. On iOS every item is a data-protection item, so a query
+/// without the data-protection flag names the *same* item as one with it — and
+/// removing "the login copy" after writing the new item would remove the new item.
+#[cfg(target_vendor = "apple")]
+const HAS_LOGIN_KEYCHAIN: bool = cfg!(target_os = "macos");
 /// `errSecItemNotFound`, from `Security/SecBase.h`: "no keychain item was found".
 #[cfg(target_vendor = "apple")]
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
@@ -1413,11 +1564,14 @@ const ERR_SEC_AUTH_FAILED: i32 = -25293;
 /// keychain, which is what an ad-hoc signature means.
 #[cfg(target_vendor = "apple")]
 const ERR_SEC_MISSING_ENTITLEMENT: i32 = -34018;
-
-/// A query for this app's one item, in the data-protection keychain.
+/// `errSecInteractionNotAllowed`: answering would mean asking the learner.
 #[cfg(target_vendor = "apple")]
-fn protected() -> PasswordOptions {
-    let mut options = PasswordOptions::new_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
+
+/// A query for one of this app's items in the data-protection keychain.
+#[cfg(target_vendor = "apple")]
+fn protected(account: &str) -> PasswordOptions {
+    let mut options = PasswordOptions::new_generic_password(KEYCHAIN_SERVICE, account);
     // Without this the item goes to the login keychain, where an access control
     // cannot be attached and the password prompt lives.
     options.use_protected_keychain();
@@ -1480,8 +1634,12 @@ impl TokenStore for Keychain {
     }
 
     fn load(&self) -> Result<Option<(Account, Protection)>, String> {
-        // The protected item first, then whatever an earlier build left in the login
-        // keychain, so a connection made before any of this existed is not lost.
+        // The protected items first — the slot every earlier build wrote, then the
+        // other one a save can leave the sign-in in (see [`Slot`]) — and then
+        // whatever an earlier build left in the login keychain, so a connection made
+        // before any of this existed is not lost. A save leaves one of them; a save
+        // cut short between writing and removing can leave two, and the first in
+        // this order is the one it had not yet replaced.
         //
         // `errSecMissingEntitlement` falls back for the same reason it does in
         // `save`: a build the system cannot identify may not reach the
@@ -1497,25 +1655,30 @@ impl TokenStore for Keychain {
         // as though its sign-in were behind a fingerprint. The login-keychain
         // fallback is different and *is* provable: an item there cannot carry an
         // access control at all.
-        let (found, protection) = match security_framework::passwords::generic_password(protected()) {
-            Ok(bytes) => (Some(bytes), Protection::Unknown),
-            Err(error)
-                if error.code() == ERR_SEC_ITEM_NOT_FOUND
-                    || error.code() == ERR_SEC_MISSING_ENTITLEMENT =>
-            {
-                match security_framework::passwords::get_generic_password(
-                    KEYCHAIN_SERVICE,
-                    KEYCHAIN_ACCOUNT,
-                ) {
-                    Ok(bytes) => (Some(bytes), Protection::KeychainOnly),
-                    Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => (None, Protection::Unknown),
-                    Err(error) => return Err(describe_keychain(&error)),
+        let mut found = None;
+        for account in [KEYCHAIN_ACCOUNT, KEYCHAIN_ACCOUNT_NEXT] {
+            match security_framework::passwords::generic_password(protected(account)) {
+                Ok(bytes) => {
+                    found = Some((bytes, Protection::Unknown));
+                    break;
                 }
+                Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => {}
+                Err(error) if error.code() == ERR_SEC_MISSING_ENTITLEMENT => break,
+                Err(error) => return Err(describe_keychain(&error)),
             }
-            Err(error) => return Err(describe_keychain(&error)),
-        };
+        }
+        if found.is_none() && HAS_LOGIN_KEYCHAIN {
+            match security_framework::passwords::get_generic_password(
+                KEYCHAIN_SERVICE,
+                KEYCHAIN_ACCOUNT,
+            ) {
+                Ok(bytes) => found = Some((bytes, Protection::KeychainOnly)),
+                Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => {}
+                Err(error) => return Err(describe_keychain(&error)),
+            }
+        }
 
-        let Some(bytes) = found else {
+        let Some((bytes, protection)) = found else {
             return Ok(None);
         };
         let text = String::from_utf8(bytes)
@@ -1528,66 +1691,143 @@ impl TokenStore for Keychain {
     fn save(&self, account: &Account, locked: bool) -> Result<Protection, String> {
         let text = serde_json::to_string(account)
             .map_err(|e| format!("the Dropbox sign-in could not be encoded: {e}"))?;
-
-        // An access control cannot be changed on an item that already exists, so the
-        // old one has to go — in both keychains, or a copy of the token would survive
-        // with protection other than the one replacing it. That matters in both
-        // directions: a copy left behind with no constraint would keep the sign-in
-        // readable after the learner asked for a fingerprint.
-        let _ = security_framework::passwords::delete_generic_password_options(protected());
-        let _ = security_framework::passwords::delete_generic_password(
-            KEYCHAIN_SERVICE,
-            KEYCHAIN_ACCOUNT,
-        );
-
-        let mut with_control = protected();
-        with_control.set_access_control(access_control(locked)?);
-        let protected_item = if locked {
-            Protection::UserPresence
-        } else {
-            Protection::DeviceOnly
+        // The order — the new item before the old one goes — is [`replace_sign_in`]'s,
+        // and is tested there; this only says what each step is on a real keychain.
+        let slots = AppleSlots {
+            text: text.as_bytes(),
+            locked,
         };
-        match security_framework::passwords::set_generic_password_options(
-            text.as_bytes(),
-            with_control,
-        ) {
-            Ok(()) => Ok(protected_item),
-            // Only the missing-entitlement case falls back. Any other refusal is a
-            // real problem and is reported rather than worked around, because a
-            // second attempt would only fail more quietly.
-            Err(error) if error.code() == ERR_SEC_MISSING_ENTITLEMENT => {
-                security_framework::passwords::set_generic_password(
-                    KEYCHAIN_SERVICE,
-                    KEYCHAIN_ACCOUNT,
-                    text.as_bytes(),
-                )
-                .map_err(|e| describe_keychain(&e))?;
-                Ok(Protection::KeychainOnly)
+        Ok(match replace_sign_in(&slots)? {
+            Slot::Login => Protection::KeychainOnly,
+            Slot::Primary | Slot::Secondary if locked => Protection::UserPresence,
+            Slot::Primary | Slot::Secondary => Protection::DeviceOnly,
+        })
+    }
+
+    fn clear(&self) -> Result<(), String> {
+        // Every copy, and a failure to find any is success: "forget the sign-in" has
+        // to work on a device that never had one, and on one that has a copy in each.
+        let slots = AppleSlots {
+            text: &[],
+            locked: false,
+        };
+        for slot in Slot::READ_ORDER {
+            slots.remove(slot)?;
+        }
+        Ok(())
+    }
+}
+
+/// [`Slots`] on Apple's keychain: what each step of a save is there.
+#[cfg(target_vendor = "apple")]
+struct AppleSlots<'a> {
+    /// The sign-in being written, as the item's password.
+    text: &'a [u8],
+    /// Whether the new item asks for a fingerprint.
+    locked: bool,
+}
+
+#[cfg(target_vendor = "apple")]
+impl Slot {
+    /// The account name of a data-protection slot; `None` for the login keychain.
+    fn protected_account(self) -> Option<&'static str> {
+        match self {
+            Slot::Primary => Some(KEYCHAIN_ACCOUNT),
+            Slot::Secondary => Some(KEYCHAIN_ACCOUNT_NEXT),
+            Slot::Login => None,
+        }
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+impl Slots for AppleSlots<'_> {
+    fn occupied(&self, slot: Slot) -> Result<bool, String> {
+        let Some(account) = slot.protected_account() else {
+            return Ok(false);
+        };
+        // The attributes and not the password: an item behind a fingerprint asks
+        // for one when its *data* is read, and this must never be a prompt.
+        let mut search = security_framework::item::ItemSearchOptions::new();
+        search
+            .class(security_framework::item::ItemClass::generic_password())
+            .service(KEYCHAIN_SERVICE)
+            .account(account)
+            .load_attributes(true);
+        // On macOS the same service and account also name the login-keychain item,
+        // which is not this slot.
+        #[cfg(target_os = "macos")]
+        search.ignore_legacy_keychains();
+        match search.search() {
+            Ok(found) => Ok(!found.is_empty()),
+            Err(error)
+                if error.code() == ERR_SEC_ITEM_NOT_FOUND
+                    || error.code() == ERR_SEC_MISSING_ENTITLEMENT =>
+            {
+                Ok(false)
+            }
+            // A keychain that would have to ask before answering has an item to ask
+            // about. Writing into this slot as though it were free would *update*
+            // that item, keeping its old access control, so it counts as taken.
+            Err(error)
+                if error.code() == ERR_SEC_INTERACTION_NOT_ALLOWED
+                    || error.code() == ERR_SEC_USER_CANCELED
+                    || error.code() == ERR_SEC_AUTH_FAILED =>
+            {
+                Ok(true)
             }
             Err(error) => Err(describe_keychain(&error)),
         }
     }
 
-    fn clear(&self) -> Result<(), String> {
-        // Both, and a failure to find either is success: "forget the sign-in" has to
-        // work on a device that never had one, and on one that has a copy in each.
-        for removed in [
-            security_framework::passwords::delete_generic_password_options(protected()),
-            security_framework::passwords::delete_generic_password(
+    fn add(&self, slot: Slot) -> Result<(), AddRefused> {
+        let Some(account) = slot.protected_account() else {
+            // The login keychain holds no access control, so its one item can be
+            // updated in place, which is all-or-nothing: no copy has to go first.
+            return security_framework::passwords::set_generic_password(
+                KEYCHAIN_SERVICE,
+                KEYCHAIN_ACCOUNT,
+                self.text,
+            )
+            .map_err(|e| AddRefused::Failed(describe_keychain(&e)));
+        };
+        let mut with_control = protected(account);
+        with_control.set_access_control(access_control(self.locked).map_err(AddRefused::Failed)?);
+        // An add, because the slot is free — which is why there are two. Given an
+        // item that exists, this call updates its password and keeps the access
+        // control it was made with.
+        match security_framework::passwords::set_generic_password_options(self.text, with_control) {
+            Ok(()) => Ok(()),
+            // Only the missing-entitlement case falls back. Any other refusal is a
+            // real problem and is reported rather than worked around, because a
+            // second attempt would only fail more quietly.
+            Err(error) if error.code() == ERR_SEC_MISSING_ENTITLEMENT => {
+                Err(AddRefused::Unreachable)
+            }
+            Err(error) => Err(AddRefused::Failed(describe_keychain(&error))),
+        }
+    }
+
+    fn remove(&self, slot: Slot) -> Result<(), String> {
+        let removed = match slot.protected_account() {
+            Some(account) => {
+                security_framework::passwords::delete_generic_password_options(protected(account))
+            }
+            // See [`HAS_LOGIN_KEYCHAIN`]: on iOS this query would name a
+            // data-protection item, quite possibly the one just written.
+            None if !HAS_LOGIN_KEYCHAIN => return Ok(()),
+            None => security_framework::passwords::delete_generic_password(
                 KEYCHAIN_SERVICE,
                 KEYCHAIN_ACCOUNT,
             ),
-        ] {
-            match removed {
-                Ok(()) => {}
-                Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => {}
-                // The keychain could not be opened at all: there is no item in it that
-                // this build could have written, so there is nothing to remove.
-                Err(error) if error.code() == ERR_SEC_MISSING_ENTITLEMENT => {}
-                Err(error) => return Err(describe_keychain(&error)),
-            }
+        };
+        match removed {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
+            // The keychain could not be opened at all: there is no item in it that
+            // this build could have written, so there is nothing to remove.
+            Err(error) if error.code() == ERR_SEC_MISSING_ENTITLEMENT => Ok(()),
+            Err(error) => Err(describe_keychain(&error)),
         }
-        Ok(())
     }
 }
 
@@ -2058,6 +2298,169 @@ mod tests {
         for locked in [false, true] {
             let control = access_control(locked);
             assert!(control.is_ok(), "locked = {locked}: {:?}", control.err());
+        }
+    }
+
+    /// Apple's keychain in memory, for the order a save takes its steps in.
+    ///
+    /// Each item is named by what wrote it, so a test can say which copy a read
+    /// would find. `fail_at` makes the n-th step fail, which is how every way a
+    /// save can be cut short is reached.
+    struct FakeSlots {
+        items: Mutex<BTreeMap<Slot, &'static str>>,
+        /// A build that may not use the data-protection keychain at all.
+        unreachable: bool,
+        fail_at: Option<usize>,
+        steps: Mutex<usize>,
+    }
+
+    impl FakeSlots {
+        fn over(items: &[(Slot, &'static str)], unreachable: bool, fail_at: Option<usize>) -> Self {
+            Self {
+                items: Mutex::new(items.iter().copied().collect()),
+                unreachable,
+                fail_at,
+                steps: Mutex::new(0),
+            }
+        }
+
+        fn failing(&self) -> bool {
+            let mut step = self.steps.lock().unwrap();
+            let failing = self.fail_at == Some(*step);
+            *step += 1;
+            failing
+        }
+
+        /// What a load would find: the first copy in the order it looks.
+        fn read(&self) -> Option<&'static str> {
+            let items = self.items.lock().unwrap();
+            Slot::READ_ORDER
+                .iter()
+                .find_map(|slot| items.get(slot).copied())
+        }
+
+        fn items(&self) -> BTreeMap<Slot, &'static str> {
+            self.items.lock().unwrap().clone()
+        }
+    }
+
+    impl Slots for FakeSlots {
+        fn occupied(&self, slot: Slot) -> Result<bool, String> {
+            if self.failing() {
+                return Err("the keychain could not be searched".to_string());
+            }
+            Ok(slot != Slot::Login
+                && !self.unreachable
+                && self.items.lock().unwrap().contains_key(&slot))
+        }
+        fn add(&self, slot: Slot) -> Result<(), AddRefused> {
+            if self.failing() {
+                return Err(AddRefused::Failed(
+                    "the keychain refused the new item".to_string(),
+                ));
+            }
+            if slot != Slot::Login && self.unreachable {
+                return Err(AddRefused::Unreachable);
+            }
+            let mut items = self.items.lock().unwrap();
+            assert!(
+                slot == Slot::Login || !items.contains_key(&slot),
+                "an add into a held slot updates the old item and keeps its access control"
+            );
+            items.insert(slot, "new");
+            Ok(())
+        }
+        fn remove(&self, slot: Slot) -> Result<(), String> {
+            if self.failing() {
+                return Err("the keychain would not remove an item".to_string());
+            }
+            if slot == Slot::Login || !self.unreachable {
+                self.items.lock().unwrap().remove(&slot);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_fingerprint_switch_writes_the_new_item_beside_the_old_one_before_removing_it() {
+        // The access control is fixed when an item is made, so each press is a new
+        // item — in the slot the old one is not in.
+        let keychain = FakeSlots::over(&[(Slot::Primary, "old")], false, None);
+        assert_eq!(replace_sign_in(&keychain).unwrap(), Slot::Secondary);
+        assert_eq!(keychain.items(), BTreeMap::from([(Slot::Secondary, "new")]));
+
+        // And back again on the next one.
+        *keychain.items.lock().unwrap() = BTreeMap::from([(Slot::Secondary, "old")]);
+        assert_eq!(replace_sign_in(&keychain).unwrap(), Slot::Primary);
+        assert_eq!(keychain.items(), BTreeMap::from([(Slot::Primary, "new")]));
+
+        // A copy an earlier build left in the login keychain goes too.
+        let upgraded = FakeSlots::over(&[(Slot::Login, "old")], false, None);
+        assert_eq!(replace_sign_in(&upgraded).unwrap(), Slot::Primary);
+        assert_eq!(upgraded.items(), BTreeMap::from([(Slot::Primary, "new")]));
+
+        // An unsigned build updates the login item in place.
+        let unsigned = FakeSlots::over(&[(Slot::Login, "old")], true, None);
+        assert_eq!(replace_sign_in(&unsigned).unwrap(), Slot::Login);
+        assert_eq!(unsigned.items(), BTreeMap::from([(Slot::Login, "new")]));
+    }
+
+    #[test]
+    fn a_refused_add_keeps_the_sign_in_the_keychain_had() {
+        // The bug: both items were deleted before the new one was added, so a
+        // refused add lost the refresh token while the screen said connected.
+        let keychain = FakeSlots::over(&[(Slot::Primary, "old")], false, Some(2));
+        let refusal = replace_sign_in(&keychain).unwrap_err();
+        assert!(refusal.contains("refused the new item"), "{refusal}");
+        assert_eq!(keychain.items(), BTreeMap::from([(Slot::Primary, "old")]));
+    }
+
+    #[test]
+    fn a_save_on_the_keychain_cut_short_anywhere_leaves_the_sign_in_a_read_finds() {
+        // Every set of copies a keychain can hold, with every step of the save
+        // failing in turn. Whatever fails, a read finds either the new sign-in and
+        // nothing else, or exactly the sign-in it found before — never nothing, and
+        // never a copy with the protection the learner asked to replace.
+        let named = [
+            (Slot::Primary, "primary"),
+            (Slot::Secondary, "secondary"),
+            (Slot::Login, "login"),
+        ];
+        for unreachable in [false, true] {
+            for held in 0..8u8 {
+                let items: Vec<_> = named
+                    .iter()
+                    .enumerate()
+                    .filter(|(bit, _)| held & (1 << bit) != 0)
+                    .map(|(_, item)| *item)
+                    .collect();
+                // A build that cannot open the data-protection keychain sees only
+                // the login one.
+                if unreachable && items.iter().any(|(slot, _)| *slot != Slot::Login) {
+                    continue;
+                }
+                for fail_at in (0..8).map(Some).chain([None]) {
+                    let keychain = FakeSlots::over(&items, unreachable, fail_at);
+                    let before = keychain.read();
+                    let case = format!(
+                        "held {items:?}, unreachable {unreachable}, step {fail_at:?} fails"
+                    );
+                    match replace_sign_in(&keychain) {
+                        Ok(slot) => {
+                            assert_eq!(keychain.items(), BTreeMap::from([(slot, "new")]), "{case}");
+                            assert_eq!(slot == Slot::Login, unreachable, "{case}");
+                        }
+                        Err(why) => {
+                            assert!(fail_at.is_some(), "{case}: {why}");
+                            assert_eq!(keychain.read(), before, "{case}: {why}");
+                            assert!(
+                                !keychain.items().values().any(|v| *v == "new"),
+                                "{case}: a save reported as failed left its item behind"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2587,6 +2990,114 @@ mod tests {
             http.inner.calls.lock().unwrap().iter().any(|url| url.contains("revoke")),
             "through the revoke endpoint"
         );
+    }
+
+    #[test]
+    fn a_sign_in_that_cannot_be_read_leaves_the_switch_as_it_was() {
+        // Turning the prompt off reads the item it is about to rewrite, and on Apple
+        // that read is the fingerprint prompt — which a learner may cancel. Nothing
+        // has changed then, so nothing may say it has: not the switch, which would
+        // read "off" over an item that still asks at every launch, and not the
+        // record of how the item is protected.
+        let db = database("lock-read-refused");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let service = with_store(Some(db.clone()), &store, connecting());
+        connect(&service);
+        service.set_lock(true).unwrap();
+        let before = db.meta_value(ACCOUNT_KEY).unwrap();
+
+        // The next run of the app, whose first read of the sign-in is refused.
+        let cancelling = std::sync::Arc::new(MemoryStore {
+            account: Mutex::new(store.account.lock().unwrap().clone()),
+            refuse: true,
+            ..MemoryStore::working()
+        });
+        let later = with_store(Some(db.clone()), &cancelling, Box::new(FakeHttp::default()));
+        assert!(
+            later.set_lock(false).is_err(),
+            "a read that did not happen is not a success"
+        );
+
+        assert_eq!(db.meta_value(LOCK_KEY).unwrap().as_deref(), Some("on"));
+        assert_eq!(
+            db.meta_value(ACCOUNT_KEY).unwrap(),
+            before,
+            "the record is untouched"
+        );
+        let view = later.view();
+        assert!(view.locked, "the switch still says what the item is");
+        assert_eq!(view.protection, Protection::UserPresence);
+        assert_eq!(
+            cancelling.account.lock().unwrap().as_ref().map(|(_, p)| *p),
+            Some(Protection::UserPresence),
+            "and the item was not rewritten"
+        );
+    }
+
+    #[test]
+    fn a_code_that_fails_to_exchange_leaves_the_sign_in_waiting_for_the_right_one() {
+        // A mistyped paste, or a code from an earlier Connect tab, is refused by
+        // Dropbox. The verifier must survive that: it is the only one the code from
+        // the tab the learner is looking at will match, and losing it turned every
+        // later paste into "there is no sign-in in progress".
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = FakeHttp::default();
+        let service = with_http(Some(database("finish-retry")), &store, &http, true);
+        service.begin().unwrap();
+
+        let refused = service.finish("a-typo").unwrap_err();
+        assert!(!refused.contains("no sign-in in progress"), "{refused}");
+        assert!(!service.view().connected);
+
+        // The right code, against the same authorization.
+        http.inner
+            .token_response
+            .lock()
+            .unwrap()
+            .replace(connected_account().to_string());
+        let view = service.finish("the-code").unwrap();
+        assert!(view.connected, "{}", view.message);
+
+        let forms = http.inner.forms.lock().unwrap().clone();
+        assert_eq!(forms.len(), 2, "{forms:?}");
+        let verifier = |form: &str| {
+            form.split('&')
+                .find(|pair| pair.starts_with("code_verifier="))
+                .map(str::to_string)
+        };
+        assert!(verifier(&forms[0]).is_some(), "{}", forms[0]);
+        assert_eq!(
+            verifier(&forms[0]),
+            verifier(&forms[1]),
+            "one verifier, presented twice"
+        );
+
+        // A spent code is spent: once a sign-in is stored, there is none in progress.
+        let again = service.finish("the-code").unwrap_err();
+        assert!(again.contains("no sign-in in progress"), "{again}");
+    }
+
+    #[test]
+    fn a_code_exchanged_but_not_stored_does_not_leave_the_sign_in_in_progress() {
+        // The exchange spends the code, so a sign-in the store then refuses cannot be
+        // retried with it: Connect has to start a new one, and the message says so.
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        let service = with_http(Some(database("finish-spent")), &store, &http, true);
+        store
+            .refuse_saves
+            .lock()
+            .unwrap()
+            .replace("the keychain said no".to_string());
+        service.begin().unwrap();
+        assert!(service
+            .finish("the-code")
+            .unwrap_err()
+            .contains("Press Connect"));
+
+        store.refuse_saves.lock().unwrap().take();
+        let again = service.finish("the-code").unwrap_err();
+        assert!(again.contains("no sign-in in progress"), "{again}");
     }
 
     #[test]
