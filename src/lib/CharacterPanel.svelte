@@ -16,7 +16,7 @@
    * character and being able to place it in the course are different answers.
    */
   import type { CharacterSearchView, CharacterSummary, ProgressCard, Word, WordSearchView } from "./types";
-  import { dueLabel } from "./due";
+  import { dueLabel, unwrittenLabel } from "./due";
   import ReadingList from "./ReadingList.svelte";
   import TonedPinyin from "./TonedPinyin.svelte";
   import TonedText from "./TonedText.svelte";
@@ -38,6 +38,8 @@
     busy: boolean;
     /** Progress by character, for the practised and due marks. */
     cards: ProgressCard[];
+    /** How often each character was traced; a traced character may have no card. */
+    traced?: Record<string, number>;
     onPractise: (character: CharacterSummary) => void;
     /** Drill dictionary words straight from a character's page. */
     onPractiseWords: (words: Word[]) => void;
@@ -71,6 +73,7 @@
     message,
     busy,
     cards,
+    traced = {},
     onPractise,
     onPractiseWords,
     onAddToList,
@@ -314,7 +317,7 @@
                 {card.dueNow ? "due for review" : `next review ${dueLabel(card.due)}`}
               </li>
             {:else}
-              <li>not practised yet</li>
+              <li>{unwrittenLabel(traced[shown.ch])}</li>
             {/if}
           </ul>
 

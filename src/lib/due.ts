@@ -40,3 +40,16 @@ function calendarDay(moment: Date): number {
     Date.UTC(moment.getFullYear(), moment.getMonth(), moment.getDate()) / 86_400_000,
   );
 }
+
+/**
+ * What a character with no card is called, given how often it was traced.
+ *
+ * A card exists only once a character has been written from memory: a trace over
+ * the faint guide is kept but schedules nothing. So "not practised yet" was
+ * wrong for a character traced ten times, and this is the one wording every
+ * screen uses for it. `traced` is the count from `ProgressView.traced`.
+ */
+export function unwrittenLabel(traced: number | undefined): string {
+  if (traced && traced > 0) return `traced ${traced}× · not yet written from memory`;
+  return "not yet written from memory";
+}

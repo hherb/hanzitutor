@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use hanzi_core::progress::{CursorStore, ProgressError, ProgressStore};
 use hanzi_core::time::now_iso8601;
 use hanzi_core::vocab::{VocabError, VocabStore};
-use hanzi_core::AttemptRecord;
+use hanzi_core::{AttemptRecord, PracticeMode};
 use rusqlite::Connection;
 
 use crate::{
@@ -76,10 +76,24 @@ pub(crate) fn progress(
                 // measures behind it — and the strokes those came from are long
                 // gone, so this is unrecoverable rather than merely missing.
                 measures: None,
+                // The old documents recorded only what was scheduled.
+                mode: PracticeMode::Recall,
             };
             insert_attempt(&tx, device_id, seq, &record).map_err(|e| progress_error(&db, e))?;
             seq += 1;
         }
+    }
+    // The cards came from a build that advanced one on every Check, so they are
+    // rebuilt once under the current rules, exactly as a database an older build
+    // wrote is — see `Db::schedule_refold_pending`. In this transaction, so the
+    // cards and the request to rebuild them arrive together or not at all.
+    if !document.document().cards.is_empty() {
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, 'pending')
+             ON CONFLICT(key) DO NOTHING",
+            [crate::schema::REFOLD_KEY],
+        )
+        .map_err(|e| progress_error(&db, e))?;
     }
     set_meta(&tx, PROGRESS_KEY, &marker(&file)).map_err(|e| progress_error(&db, e))?;
     tx.commit().map_err(|e| progress_error(&db, e))
