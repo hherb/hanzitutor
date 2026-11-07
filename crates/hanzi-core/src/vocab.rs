@@ -301,7 +301,14 @@ pub struct ImportSummary {
 /// unlike the attempt log it is handed over whole.
 pub trait VocabSink: std::fmt::Debug + Send {
     fn load(&self) -> Result<Document, VocabError>;
-    fn save(&mut self, document: &Document) -> Result<(), VocabError>;
+    /// Persist `document`.
+    ///
+    /// Returns `Some(fresh)` when the backing store had moved on since this sink
+    /// last loaded or saved (a sync wrote to it in between), in which case the
+    /// sink has written only what the learner changed and `fresh` is the list as
+    /// it now stands. The store adopts it, so its next save starts from the truth
+    /// rather than from a document that no longer describes the database.
+    fn save(&mut self, document: &Document) -> Result<Option<Document>, VocabError>;
 }
 
 /// The vocabulary list, backed by a JSON file or by a [`VocabSink`].
@@ -424,7 +431,11 @@ impl VocabStore {
     /// leave a half-written list behind.
     pub fn save(&mut self) -> Result<(), VocabError> {
         if let Some(sink) = self.sink.as_mut() {
-            return sink.save(&self.document);
+            if let Some(fresh) = sink.save(&self.document)? {
+                self.document = fresh;
+                self.sort();
+            }
+            return Ok(());
         }
         if self.path.as_os_str().is_empty() {
             return Ok(()); // in-memory store
