@@ -463,7 +463,10 @@ store/                      the Play listing's copy and artwork
 scripts/                    fetch-data, fetch-sherpa, fetch-phrases, fetch-tts,
                             with-cargo-env, tauri-cli, build-release,
                             probe-app-sandbox, check-audio.py, cosyvoice-say.py
-.github/workflows/ci.yml    cargo test + vitest + clippy + svelte-check on push
+  lib/bundle.sh             where a build left its bundles (both build scripts)
+  tests/test-scripts.sh     the scripts' own tests, on stubs (pnpm test:scripts)
+.github/workflows/ci.yml    cargo test + vitest + script tests + clippy +
+                            svelte-check on push
 ```
 
 **The seam to preserve:** `hanzi-core` must stay free of Tauri and platform

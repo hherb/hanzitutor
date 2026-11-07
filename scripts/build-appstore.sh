@@ -80,8 +80,10 @@ EOF
 fi
 
 if [ -z "${APPLE_APPSTORE_SIGNING_IDENTITY:-}" ]; then
+  # `|| true` so that a failing `security` reaches the error below rather than
+  # ending the script silently under `pipefail`.
   APPLE_APPSTORE_SIGNING_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
-    | sed -n 's/.*"\(Apple Distribution: [^"]*\)".*/\1/p' | head -1)"
+    | sed -n 's/.*"\(Apple Distribution: [^"]*\)".*/\1/p' | head -1 || true)"
 fi
 if [ -z "${APPLE_APPSTORE_SIGNING_IDENTITY:-}" ]; then
   echo "error: no \"Apple Distribution\" certificate found in the keychain, and" >&2
@@ -94,7 +96,7 @@ if [ -z "${APPLE_INSTALLER_SIGNING_IDENTITY:-}" ]; then
   # Not `-p codesigning`: installer certificates are a different policy and
   # do not show up in that list, only in the unfiltered one.
   APPLE_INSTALLER_SIGNING_IDENTITY="$(security find-identity -v 2>/dev/null \
-    | sed -n 's/.*"\(3rd Party Mac Developer Installer: [^"]*\)".*/\1/p' | head -1)"
+    | sed -n 's/.*"\(3rd Party Mac Developer Installer: [^"]*\)".*/\1/p' | head -1 || true)"
 fi
 if [ -z "${APPLE_INSTALLER_SIGNING_IDENTITY:-}" ]; then
   echo "error: no \"3rd Party Mac Developer Installer\" certificate found in the" >&2
@@ -127,27 +129,30 @@ tauri() {
   (cd "$ROOT" && "$REPO/scripts/with-cargo-env.sh" "$REPO/scripts/tauri-cli.sh" "$@")
 }
 
+# shellcheck source-path=SCRIPTDIR source=lib/bundle.sh
+. "$REPO/scripts/lib/bundle.sh"
 APP_DIR="${APP_ROOT:-$ROOT}"
-BUNDLE=""
-for dir in "$REPO/.cargo-target/release/bundle" "$APP_DIR/src-tauri/target/release/bundle"; do
-  if [ -d "$dir" ]; then
-    BUNDLE="$dir"
-    break
-  fi
-done
+PRODUCT_NAME="$(bundle_conf_field "$ROOT/src-tauri/tauri.conf.json" productName)"
+if [ -z "$PRODUCT_NAME" ]; then
+  echo "error: no productName in $ROOT/src-tauri/tauri.conf.json" >&2
+  exit 1
+fi
 
 # `-b app`: no .dmg, and no `ios` bundle Tauri would otherwise also attempt
 # on a machine that has an iOS toolchain configured.
 APPLE_SIGNING_IDENTITY="$APPLE_APPSTORE_SIGNING_IDENTITY" tauri build -b app
 
+# Only now: on a fresh target directory the bundle directory does not exist
+# until the build above has made it, and looking it up first is what made this
+# script fail a build that had succeeded. See `scripts/lib/bundle.sh`.
+BUNDLE="$(bundle_dir "$REPO" "$APP_DIR")"
 if [ -z "$BUNDLE" ]; then
   echo "error: could not find the bundle directory after the build." >&2
   exit 1
 fi
 
-PRODUCT_NAME="$(sed -n 's/.*"productName": *"\([^"]*\)".*/\1/p' "$ROOT/src-tauri/tauri.conf.json" | head -1)"
 APP="$BUNDLE/macos/$PRODUCT_NAME.app"
-if [ ! -d "$APP" ]; then
+if [ -z "$(bundle_app "$BUNDLE" "$PRODUCT_NAME")" ]; then
   echo "error: expected $APP after the build, and it is not there — other bundles" >&2
   echo "       (this repo builds more than one Tauri app into the same" >&2
   echo "       .cargo-target/release/bundle/macos/) share that directory, so this" >&2

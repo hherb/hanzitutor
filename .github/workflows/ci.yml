@@ -75,6 +75,12 @@ jobs:
       - name: Test the interface
         run: pnpm run test:web
 
+      # The shell scripts' own tests: the packaging scripts' bundle lookup and the
+      # fetch and signing scripts' failure paths, on stubbed commands and a
+      # throwaway directory tree. Offline, and a few seconds.
+      - name: Test the scripts
+        run: pnpm run test:scripts
+
       - name: Lint the Rust
         run: pnpm run check:rust
 
