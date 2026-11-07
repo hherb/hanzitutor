@@ -35,7 +35,8 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -132,6 +133,26 @@ pub struct Say {
     root: Option<PathBuf>,
     install: Arc<Mutex<Install>>,
     model: Mutex<Option<hanzi_say::Model>>,
+    /// The number of the latest phrase asked for.
+    ///
+    /// Phrases take turns on the model's slot, and a learner tapping down a list
+    /// queues several. Each takes a number on the way in and checks it once it has
+    /// the slot: one that a later tap has overtaken is not synthesised, because the
+    /// screen would only throw its audio away.
+    latest: AtomicU64,
+}
+
+/// What [`Say::speak`] answers for a phrase a later one overtook while it waited.
+pub const SUPERSEDED: &str = "A later phrase was asked for before this one was spoken.";
+
+/// A slot, taken whether or not a thread that held it panicked.
+///
+/// A panic while a slot is held poisons it, and `expect` on a poisoned slot panics
+/// again — on every later call, for the life of the process. The data behind each
+/// slot is a model or a progress record, which a panic leaves no less usable than
+/// it found them, so the lock is simply recovered.
+fn hold<T>(slot: &Mutex<T>) -> MutexGuard<'_, T> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Say {
@@ -141,6 +162,7 @@ impl Say {
             root: data_dir.map(|dir| dir.join("say")),
             install: Arc::new(Mutex::new(Install::default())),
             model: Mutex::new(None),
+            latest: AtomicU64::new(0),
         }
     }
 
@@ -170,7 +192,7 @@ impl Say {
 
     /// Everything the settings screen needs, in one call.
     pub fn status(&self) -> SayStatus {
-        let install = self.install.lock().expect("say install slot");
+        let install = hold(&self.install);
         let installed = self.is_installed();
         let total: u64 = MODEL.files.iter().map(|f| f.bytes).sum();
 
@@ -228,7 +250,7 @@ impl Say {
             return Err("This build has nowhere to put the model.".to_string());
         };
         {
-            let mut install = self.install.lock().expect("say install slot");
+            let mut install = hold(&self.install);
             if install.state == InstallState::Downloading {
                 return Err("A download is already running.".to_string());
             }
@@ -240,7 +262,7 @@ impl Say {
         let progress = Arc::clone(&self.install);
         std::thread::spawn(move || {
             let outcome = fetch_all(&dir, &progress);
-            let mut install = progress.lock().expect("say install slot");
+            let mut install = hold(&progress);
             match outcome {
                 Ok(()) => install.state = InstallState::Installed,
                 Err(message) => {
@@ -253,15 +275,29 @@ impl Say {
     }
 
     /// Remove the weights and report the resulting state.
+    ///
+    /// The model's slot is taken **before** the files go and held until they have:
+    /// `say_speak` and `say_remove` run off the main thread (issue #26), so a phrase
+    /// can be loading or speaking while this is called. Taking the slot first waits
+    /// for that phrase to finish, and holding it means the next one cannot load
+    /// weights from a directory that is half deleted — it looks at the files again
+    /// once it has the slot, and finds none.
     pub fn remove(&self) -> Result<(), String> {
+        self.remove_with(|dir| fs::remove_dir_all(dir))
+    }
+
+    /// [`Self::remove`], with the delete handed in, so a test can see what is held
+    /// while it runs.
+    fn remove_with(&self, delete: impl FnOnce(&Path) -> std::io::Result<()>) -> Result<(), String> {
+        let mut model = hold(&self.model);
+        *model = None;
         if let Some(dir) = self.model_dir() {
             if dir.exists() {
-                fs::remove_dir_all(&dir)
-                    .map_err(|e| format!("could not remove {}: {e}", dir.display()))?;
+                delete(&dir).map_err(|e| format!("could not remove {}: {e}", dir.display()))?;
             }
         }
-        *self.model.lock().expect("say model slot") = None;
-        let mut install = self.install.lock().expect("say install slot");
+        drop(model);
+        let mut install = hold(&self.install);
         install.state = InstallState::Absent;
         install.downloaded = 0;
         install.error = None;
@@ -274,11 +310,23 @@ impl Say {
     /// ships: the caller falls back to the platform synthesiser and nothing is
     /// reported as an error. That is the same contract [`crate::asr`] uses, and
     /// for the same reason — an optional feature that is absent is not a fault.
+    ///
+    /// A phrase a later call overtook while it waited for the model answers
+    /// [`SUPERSEDED`] without being synthesised; see [`Self::latest`].
     pub fn speak(&self, text: &str) -> Result<Option<(Vec<f32>, u32)>, String> {
+        let mine = self.latest.fetch_add(1, Ordering::SeqCst) + 1;
         if !self.is_installed() {
             return Ok(None);
         }
-        let mut slot = self.model.lock().expect("say model slot");
+        let mut slot = hold(&self.model);
+        if self.latest.load(Ordering::SeqCst) != mine {
+            return Err(SUPERSEDED.to_string());
+        }
+        // Asked again now that the slot is held: a removal may have had it first
+        // and deleted the files since the check above — see [`Self::remove`].
+        if slot.is_none() && !self.is_installed() {
+            return Ok(None);
+        }
         if slot.is_none() {
             let dir = self
                 .model_dir()
@@ -487,6 +535,138 @@ mod tests {
         assert_eq!(say.status().state, InstallState::Absent);
         assert_eq!(say.speak("你好").unwrap(), None);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_phrase_waiting_on_an_uninstall_does_not_load_what_it_deleted() {
+        // `say_speak` and `say_remove` run off the main thread (issue #26), so a
+        // removal can now land while a phrase is waiting for the model. The phrase
+        // must not go on to load weights from a directory deleted underneath it:
+        // it is told there is no model, and the caller falls back to the platform
+        // voice. Holding the slot here stands in for `remove`, which deletes under
+        // it.
+        let dir = scratch("remove-race");
+        let model_dir = dir.join("say").join(MODEL.stem);
+        fs::create_dir_all(&model_dir).unwrap();
+        // The right sizes, so this reads as an install, without writing 50 MB:
+        // `set_len` on a fresh file leaves it sparse.
+        for spec in MODEL.files {
+            fs::File::create(model_dir.join(spec.name))
+                .unwrap()
+                .set_len(spec.bytes)
+                .unwrap();
+        }
+        let say = Say::new(Some(&dir));
+        assert!(say.is_installed());
+
+        let spoken = std::thread::scope(|scope| {
+            let slot = say.model.lock().unwrap();
+            let waiting = scope.spawn(|| say.speak("你好"));
+            // Long enough for the phrase to have checked the files and be queued
+            // on the slot.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            fs::remove_dir_all(&model_dir).unwrap();
+            drop(slot);
+            waiting.join().unwrap()
+        });
+        assert_eq!(
+            spoken,
+            Ok(None),
+            "a model removed while the phrase waited is a model that is not installed"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A model directory that reads as installed, without writing 50 MB: the right
+    /// sizes, and `set_len` on a fresh file leaves it sparse.
+    fn sparse_install(label: &str) -> (PathBuf, PathBuf) {
+        let dir = scratch(label);
+        let model_dir = dir.join("say").join(MODEL.stem);
+        fs::create_dir_all(&model_dir).unwrap();
+        for spec in MODEL.files {
+            fs::File::create(model_dir.join(spec.name))
+                .unwrap()
+                .set_len(spec.bytes)
+                .unwrap();
+        }
+        (dir, model_dir)
+    }
+
+    #[test]
+    fn a_removal_holds_the_model_until_its_files_are_gone() {
+        // The other half of the race above, driven through `remove` itself: a phrase
+        // asked for while the delete is under way has seen the files, and must wait
+        // for the slot until they are gone — then find no model — rather than get the
+        // slot between the model being dropped and the files being deleted, and load
+        // weights that are disappearing underneath it.
+        let (dir, _) = sparse_install("remove-holds");
+        let say = Say::new(Some(&dir));
+        assert!(say.is_installed());
+
+        let spoken = std::thread::scope(|scope| {
+            let mut waiting = None;
+            say.remove_with(|model_dir| {
+                let phrase = scope.spawn(|| say.speak("你好"));
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                assert!(
+                    !phrase.is_finished(),
+                    "a phrase got the model while its files were being deleted"
+                );
+                waiting = Some(phrase);
+                fs::remove_dir_all(model_dir)
+            })
+            .unwrap();
+            waiting.expect("the delete ran").join().unwrap()
+        });
+        assert_eq!(spoken, Ok(None));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_phrase_overtaken_while_it_waited_is_not_spoken() {
+        // Taps down a list queue on the model's slot. Only the latest is worth
+        // synthesising — the screen plays only the latest — so one that a later tap
+        // overtook gives up once it has the slot instead of spending a synthesis on
+        // audio nobody will hear.
+        let (dir, model_dir) = sparse_install("superseded");
+        let say = Say::new(Some(&dir));
+
+        let (first, second) = std::thread::scope(|scope| {
+            let slot = hold(&say.model);
+            let first = scope.spawn(|| say.speak("你好"));
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let second = scope.spawn(|| say.speak("再见"));
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            // Gone before either gets the slot, so the latest answers "no model"
+            // rather than loading weights a unit test does not have.
+            fs::remove_dir_all(&model_dir).unwrap();
+            drop(slot);
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_eq!(first, Err(SUPERSEDED.to_string()));
+        assert_eq!(second, Ok(None), "the latest is still answered");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_slot_left_poisoned_by_a_panic_still_answers() {
+        // A panic while a slot was held would otherwise make every later call panic
+        // too — the settings screen's status line, the next phrase — for the life
+        // of the app.
+        let say = Say::new(None);
+        std::thread::scope(|scope| {
+            let _ = scope
+                .spawn(|| {
+                    let _held = say.model.lock().unwrap();
+                    let _also = say.install.lock().unwrap();
+                    panic!("poison both slots");
+                })
+                .join();
+        });
+        assert!(say.model.is_poisoned() && say.install.is_poisoned());
+        assert_eq!(say.status().state, InstallState::Absent);
+        say.remove().unwrap();
+        assert_eq!(say.speak("你好"), Ok(None));
     }
 
     #[test]

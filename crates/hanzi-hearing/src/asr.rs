@@ -53,7 +53,7 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -192,6 +192,17 @@ struct Install {
     error: Option<String>,
 }
 
+/// A slot, taken whether or not a thread that held it panicked.
+///
+/// A panic while a slot is held poisons it, and `expect` on a poisoned slot panics
+/// again — on every later call, for the life of the process, which on a command
+/// the interface awaits is a button that never comes back. What each slot holds is
+/// a loaded model or a progress record, which a panic leaves no less usable than it
+/// found them, so the lock is simply recovered.
+fn hold<T>(slot: &Mutex<T>) -> MutexGuard<'_, T> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 impl Asr {
     /// Hold the model under `data_dir`, if the platform gave us one.
     ///
@@ -223,7 +234,7 @@ impl Asr {
 
     /// Everything the settings screen needs, in one call.
     pub fn status(&self) -> AsrStatus {
-        let install = self.install.lock().expect("asr install slot");
+        let install = hold(&self.install);
         let installed = self.is_installed();
 
         // A failure is reported as a failure even if an older install is still
@@ -302,7 +313,7 @@ impl Asr {
         };
 
         {
-            let mut install = self.install.lock().expect("asr install slot");
+            let mut install = hold(&self.install);
             if install.state == InstallState::Downloading {
                 return Err("The model is already being downloaded.".to_string());
             }
@@ -317,12 +328,12 @@ impl Asr {
         }
 
         // Anything half-loaded belongs to a model that is about to be replaced.
-        *self.engine.lock().expect("asr engine slot") = None;
+        *hold(&self.engine) = None;
 
         let progress = Arc::clone(&self.install);
         std::thread::spawn(move || {
             let outcome = fetch_and_unpack(&root, &progress);
-            let mut install = progress.lock().expect("asr install slot");
+            let mut install = hold(&progress);
             match outcome {
                 Ok(()) => {
                     install.state = InstallState::Installed;
@@ -343,34 +354,58 @@ impl Asr {
     /// The loaded recogniser goes with it: leaving a 228 MB model resident after
     /// the learner has asked for it to be removed would be both a lie in the
     /// status line and the largest thing this process holds.
+    ///
+    /// The slot is held **for the whole delete**, not just while it is emptied.
+    /// The commands that reach this run off the main thread (issue #26), so a
+    /// recognition can be waiting on the slot while this runs; holding it means a
+    /// model is never loaded from a directory that is half gone, and
+    /// [`Asr::engine`] looks at the files again once it has the slot. A
+    /// recognition that already holds the loaded model keeps it until it
+    /// finishes: the model is in memory, and the files are not read again.
     pub fn remove(&self) -> Result<(), String> {
-        *self.engine.lock().expect("asr engine slot") = None;
+        self.remove_with(|root| fs::remove_dir_all(root))
+    }
+
+    /// [`Asr::remove`], with the delete handed in, so a test can see what is held
+    /// while it runs.
+    fn remove_with(&self, delete: impl FnOnce(&Path) -> std::io::Result<()>) -> Result<(), String> {
+        let mut engine = hold(&self.engine);
+        *engine = None;
 
         let Some(root) = self.root.as_ref() else {
             return Ok(());
         };
         if root.is_dir() {
-            fs::remove_dir_all(root)
+            delete(root)
                 .map_err(|error| format!("could not remove {}: {error}", root.display()))?;
         }
+        drop(engine);
 
-        let mut install = self.install.lock().expect("asr install slot");
+        let mut install = hold(&self.install);
         *install = Install::default();
         Ok(())
     }
 
-    /// The loaded recogniser, building it if this is the first use.
-    fn engine(&self) -> Result<Arc<Engine>, String> {
-        let mut slot = self.engine.lock().expect("asr engine slot");
+    /// The loaded recogniser, building it if this is the first use, or `None`
+    /// when there is no model to build it from.
+    ///
+    /// Installed is asked again **under the slot**: the caller's own check was
+    /// made before it queued for it, and an uninstall that held the slot in
+    /// between has deleted the files since — see [`Asr::remove`].
+    fn engine(&self) -> Result<Option<Arc<Engine>>, String> {
+        let mut slot = hold(&self.engine);
         if let Some(engine) = slot.as_ref() {
-            return Ok(Arc::clone(engine));
+            return Ok(Some(Arc::clone(engine)));
+        }
+        if !self.is_installed() {
+            return Ok(None);
         }
         let dir = self
             .model_dir()
             .ok_or("There is nowhere the model could be: no data directory.")?;
         let engine = Arc::new(Engine::load(&dir)?);
         *slot = Some(Arc::clone(&engine));
-        Ok(engine)
+        Ok(Some(engine))
     }
 
     /// Transcribe one recording, or `Ok(None)` when no model is installed.
@@ -382,7 +417,9 @@ impl Asr {
         if !self.is_installed() {
             return Ok(None);
         }
-        let engine = self.engine()?;
+        let Some(engine) = self.engine()? else {
+            return Ok(None);
+        };
         engine.transcribe(samples, sample_rate).map(Some)
     }
 }
@@ -815,6 +852,100 @@ mod tests {
         asr.remove().unwrap();
 
         let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_recognition_waiting_on_an_uninstall_does_not_load_what_it_deleted() {
+        // The recognition commands run off the main thread (issue #26), so an
+        // uninstall can now land while a release is being judged. A recognition
+        // that had already seen the files, and was waiting for the slot, must not
+        // go on to load a model from a directory that has been deleted underneath
+        // it: the native loader reads files it checked a moment earlier, and a
+        // file gone in between is a failure at best. Holding the slot here stands
+        // in for `remove`, which deletes under it.
+        let directory = std::env::temp_dir().join("hanzi-asr-remove-race");
+        let _ = fs::remove_dir_all(&directory);
+        let stem = directory.join("asr").join(MODEL.stem);
+        fs::create_dir_all(&stem).unwrap();
+        fs::write(stem.join(MODEL_FILE), b"model").unwrap();
+        fs::write(stem.join(TOKENS_FILE), b"tokens").unwrap();
+        let asr = Asr::new(Some(&directory));
+        assert!(asr.status().installed);
+
+        let heard = std::thread::scope(|scope| {
+            let slot = asr.engine.lock().unwrap();
+            let waiting = scope.spawn(|| asr.recognize(&[0.0; 160], 16_000));
+            // Long enough for the recognition to have checked the files and be
+            // queued on the slot.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            fs::remove_dir_all(directory.join("asr")).unwrap();
+            drop(slot);
+            waiting.join().unwrap()
+        });
+        assert_eq!(
+            heard,
+            Ok(None),
+            "a model removed while the recognition waited is a model that is not installed"
+        );
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn an_uninstall_holds_the_slot_until_the_files_are_gone() {
+        // The race above driven through `remove` itself. A recognition that starts
+        // while the delete is under way has seen the files, and must queue on the
+        // slot until they are gone — then find no model — rather than get the slot
+        // between the model being dropped and the delete, and load a model whose
+        // files are disappearing underneath it.
+        let directory = std::env::temp_dir().join("hanzi-asr-remove-holds");
+        let _ = fs::remove_dir_all(&directory);
+        let stem = directory.join("asr").join(MODEL.stem);
+        fs::create_dir_all(&stem).unwrap();
+        fs::write(stem.join(MODEL_FILE), b"model").unwrap();
+        fs::write(stem.join(TOKENS_FILE), b"tokens").unwrap();
+        let asr = Asr::new(Some(&directory));
+        assert!(asr.status().installed);
+
+        let heard = std::thread::scope(|scope| {
+            let mut waiting = None;
+            asr.remove_with(|root| {
+                let recognition = scope.spawn(|| asr.recognize(&[0.0; 160], 16_000));
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                assert!(
+                    !recognition.is_finished(),
+                    "a recognition got the slot while the model was being deleted"
+                );
+                waiting = Some(recognition);
+                fs::remove_dir_all(root)
+            })
+            .unwrap();
+            waiting.expect("the delete ran").join().unwrap()
+        });
+        assert_eq!(heard, Ok(None));
+        assert!(!asr.status().installed);
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_slot_left_poisoned_by_a_panic_still_answers() {
+        // A panic while a slot was held would otherwise make every later call panic
+        // too — the status line, the next recognition — for the life of the app.
+        let asr = Asr::new(None);
+        std::thread::scope(|scope| {
+            let _ = scope
+                .spawn(|| {
+                    let _held = asr.engine.lock().unwrap();
+                    let _also = asr.install.lock().unwrap();
+                    panic!("poison both slots");
+                })
+                .join();
+        });
+        assert!(asr.engine.is_poisoned() && asr.install.is_poisoned());
+        assert_eq!(asr.status().state, InstallState::Absent);
+        assert_eq!(asr.recognize(&[0.0; 160], 16_000), Ok(None));
+        asr.remove().unwrap();
     }
 
     #[test]

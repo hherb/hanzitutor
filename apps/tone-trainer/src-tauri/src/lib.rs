@@ -41,7 +41,7 @@ use hanzi_core::{Dataset, Heard, ToneSet};
 use hanzi_hearing::{Asr, AsrStatus};
 use hanzi_voice::{MicrophoneStatus, Recorder, Recording, Speaker};
 use serde::Serialize;
-use tauri::State;
+use tauri::{Manager, State};
 
 mod platform;
 
@@ -515,6 +515,24 @@ impl ScoreResult {
 // ---------------------------------------------------------------------------
 // The commands the interface calls
 // ---------------------------------------------------------------------------
+//
+// **Which thread each one runs on is a decision, not a default** (issue #26). A
+// plain `#[tauri::command]` runs on the main thread — the one the window is drawn
+// on — so a command that takes seconds there freezes the app for those seconds.
+// `#[tauri::command(async)]` on the same synchronous function moves it to Tauri's
+// runtime with its signature unchanged. The microphone and the recogniser are moved:
+// opening the device can wait eight seconds behind a permission prompt, and the
+// first judgement after the model is installed loads 228 MB before it decodes.
+//
+// The three microphone commands go further, onto the *blocking* pool, through
+// [`on_a_blocking_thread`]: `(async)` runs a body on one of the runtime's core
+// workers, of which there are as many as the device has cores, and a decode or a
+// device waiting on a permission prompt would park one for seconds.
+//
+// The rest stay where they are on purpose. The lists and the statuses are quick,
+// and `speak` and `stop_speaking` are quick *and* order-sensitive: each tap cuts off
+// the utterance before it, and two that overtook each other on the runtime would
+// leave the wrong character speaking. `tests/dispatch.rs` pins both halves.
 
 /// Resolve the voices and wake the audio device, off the startup path.
 ///
@@ -563,9 +581,30 @@ fn microphone_status(trainer: State<'_, Trainer>) -> MicrophoneStatus {
 
 /// Begin listening. Resolves once the device is actually open, so a failure to
 /// open it arrives at the caller rather than as silence.
+///
+/// Off the main thread: the device can take up to the recorder's eight-second open
+/// timeout behind a permission prompt. The recorder's slot is held while it opens,
+/// so a stop or a cancel that arrives meanwhile waits for it rather than finding
+/// nothing to stop.
 #[tauri::command]
-fn listen_start(trainer: State<'_, Trainer>) -> Result<(), String> {
-    trainer.recorder.start()
+async fn listen_start(app: tauri::AppHandle) -> Result<(), String> {
+    on_a_blocking_thread(app, |trainer| trainer.recorder.start()).await
+}
+
+/// Run `work` on Tauri's blocking pool with the trainer, and hand back what it
+/// returns.
+///
+/// The trainer is reached through the `AppHandle` rather than a borrowed `State`,
+/// because the work outlives the command's borrow. A panic in it becomes an error
+/// the interface can show, rather than a promise that never settles.
+async fn on_a_blocking_thread<T, F>(app: tauri::AppHandle, work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&Trainer) -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || work(app.state::<Trainer>().inner()))
+        .await
+        .map_err(|e| format!("this stopped before it finished: {e}"))?
 }
 
 /// Stop listening and judge what was heard against what the drill was showing.
@@ -579,14 +618,21 @@ fn listen_start(trainer: State<'_, Trainer>) -> Result<(), String> {
 /// The **reading is resolved by the caller** because for a character drill the tone
 /// was chosen by the learner and appears in no dictionary. For a word the caller
 /// passes the dataset's own whole-word reading, which is what resolves a polyphone.
+///
+/// Off the main thread, because with the model installed this loads it on first use
+/// and decodes every recording. The interface shows "Scoring…" meanwhile and does
+/// not open the microphone again until the answer is back.
 #[tauri::command]
-fn listen_stop(
-    trainer: State<'_, Trainer>,
+async fn listen_stop(
+    app: tauri::AppHandle,
     text: String,
     reading: String,
 ) -> Result<ScoreResult, String> {
-    let recording = trainer.recorder.stop()?;
-    Ok(trainer.score(&recording, &text, &reading))
+    on_a_blocking_thread(app, move |trainer| {
+        let recording = trainer.recorder.stop()?;
+        Ok(trainer.score(&recording, &text, &reading))
+    })
+    .await
 }
 
 /// Stop listening and throw the recording away.
@@ -596,10 +642,17 @@ fn listen_stop(
 /// close it — and the system's recording indicator lit. Stopping is all this does:
 /// there is no longer a drill to judge the audio against, and a result posted onto
 /// a screen the learner has left is worse than a recording discarded.
+///
+/// Off the main thread with the other two: it waits on the same slot, which a
+/// device still opening holds for seconds.
 #[tauri::command]
-fn listen_cancel(trainer: State<'_, Trainer>) {
-    // A failure means nothing was open, which is what this wanted anyway.
-    let _ = trainer.recorder.stop();
+async fn listen_cancel(app: tauri::AppHandle) -> Result<(), String> {
+    on_a_blocking_thread(app, |trainer| {
+        // A failure means nothing was open, which is what this wanted anyway.
+        let _ = trainer.recorder.stop();
+        Ok(())
+    })
+    .await
 }
 
 /// Start pronouncing a character, cutting off anything already being said.
@@ -658,7 +711,10 @@ fn asr_status(trainer: State<'_, Trainer>) -> AsrStatus {
 /// when it finishes, so the interface is not held for the minutes a 163 MB
 /// transfer takes; the outcome and the progress come back through [`asr_status`],
 /// which the screen polls.
-#[tauri::command]
+///
+/// Off the main thread although it returns at once: it empties the recogniser's
+/// slot first, and a judgement loading the model holds that slot while it loads.
+#[tauri::command(async)]
 fn asr_install(trainer: State<'_, Trainer>) -> Result<(), String> {
     trainer.asr.install()
 }
@@ -667,7 +723,10 @@ fn asr_install(trainer: State<'_, Trainer>) -> Result<(), String> {
 ///
 /// Returns the new status so the screen has one thing to render rather than two
 /// calls that could disagree.
-#[tauri::command]
+///
+/// Off the main thread: a recursive delete of a few hundred megabytes, after
+/// waiting for a model that is being loaded.
+#[tauri::command(async)]
 fn asr_remove(trainer: State<'_, Trainer>) -> Result<AsrStatus, String> {
     trainer.asr.remove()?;
     Ok(trainer.asr.status())

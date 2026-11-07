@@ -33,6 +33,8 @@
   import { onMount } from "svelte";
   import * as api from "./lib/api";
   import { fold, searchFamilies } from "./lib/familySearch";
+  import { PushToTalk } from "./lib/pushToTalk";
+  import type { Outcome, Phase } from "./lib/pushToTalk";
   import ModelPanel from "./lib/ModelPanel.svelte";
   import RecognitionPanel from "./lib/RecognitionPanel.svelte";
   import ToneChart from "./lib/ToneChart.svelte";
@@ -131,10 +133,32 @@
     | { kind: "word"; key: string; text: string }
     | null
   >(null);
+  /**
+   * Where the one push-to-talk attempt is — see `lib/pushToTalk.ts`, which owns
+   * the rules (a release while the device opens, an answer for a drill the learner
+   * has left). This is only its mirror, for the template.
+   */
+  let talkPhase = $state<Phase>("idle");
   /** True while the microphone is open. */
-  let listening = $state(false);
+  const listening = $derived(talkPhase === "listening");
   /** True between pressing the button and the device actually opening. */
-  let starting = $state(false);
+  const starting = $derived(talkPhase === "starting");
+  /**
+   * True between letting go and the judgement coming back, and while a recording
+   * is being cancelled.
+   *
+   * With the recognition model installed that is the model loading and decoding,
+   * which can be seconds on the first attempt. The command runs off the window's
+   * thread, so the button can say so; and no new recording starts until the answer
+   * is back, so two judgements are never in flight at once.
+   */
+  const scoring = $derived(talkPhase === "scoring" || talkPhase === "stopping");
+  /**
+   * What the attempt in flight is judged against, captured on press — so a drill
+   * that moves on while the learner speaks cannot change what is scored. (It moves
+   * the attempt on instead: see the effect below.)
+   */
+  let attempt: { text: string; reading: string } | null = null;
   let result = $state<ScoreResult | null>(null);
   let scoreFailure = $state<string | null>(null);
   /**
@@ -494,42 +518,63 @@
     void say(word.text);
   }
 
-  async function startListening() {
-    if (listening || starting) return;
-    starting = true;
-    scoreFailure = null;
-    try {
-      // Stop playback first: the voice would otherwise be recorded alongside the
-      // learner's own, and a rising tone leaking from the speaker is the one thing
-      // that could make a wrong answer score as right.
-      await api.stopSpeaking();
-      await api.listenStart();
-      listening = true;
-      result = null;
-      judged = null;
-    } catch (cause) {
-      scoreFailure = `Could not open the microphone: ${cause}`;
-    } finally {
-      starting = false;
+  const talk = new PushToTalk<ScoreResult>(
+    {
+      async start() {
+        // Stop playback first: the voice would otherwise be recorded alongside the
+        // learner's own, and a rising tone leaking from the speaker is the one thing
+        // that could make a wrong answer score as right.
+        await api.stopSpeaking();
+        await api.listenStart();
+      },
+      // What was on screen when the learner pressed, sent so the judgement cannot be
+      // made against something the interface invented. One call for a character and
+      // for a word: the backend resolves the tones either way.
+      stop: () => api.listenStop(attempt?.text ?? "", attempt?.reading ?? ""),
+      cancel: () => api.listenCancel(),
+    },
+    (phase) => (talkPhase = phase),
+  );
+
+  /** Show what an attempt came to. */
+  function showOutcome(outcome: Outcome<ScoreResult>) {
+    switch (outcome.kind) {
+      case "listening":
+        result = null;
+        judged = null;
+        break;
+      case "scored":
+        result = outcome.result;
+        judged = attempt;
+        scoreFailure = null;
+        break;
+      case "failed":
+        scoreFailure =
+          outcome.during === "start"
+            ? `Could not open the microphone: ${outcome.cause}`
+            : `Could not judge that: ${outcome.cause}`;
+        break;
+      case "released-early":
+        scoreFailure =
+          "The button came up before the microphone was ready, so nothing was " +
+          "recorded. Hold it until it says it is listening, then speak.";
+        break;
+      default:
+        break;
     }
   }
 
-  async function stopListening() {
+  async function startListening() {
     const text = drillText;
     const reading = drillReading;
-    if (!listening || text === null || reading === null) return;
-    listening = false;
-    try {
-      // What was on screen while the learner spoke, sent so the judgement cannot be
-      // made against something the interface invented. One call for a character and
-      // for a word: the backend resolves the tones either way.
-      const scored = await api.listenStop(text, reading);
-      result = scored;
-      judged = { text, reading };
-      scoreFailure = null;
-    } catch (cause) {
-      scoreFailure = `Could not judge that: ${cause}`;
-    }
+    if (talk.phase !== "idle" || text === null || reading === null) return;
+    attempt = { text, reading };
+    scoreFailure = null;
+    showOutcome(await talk.press());
+  }
+
+  async function stopListening() {
+    showOutcome(await talk.release());
   }
 
   /**
@@ -547,35 +592,34 @@
     if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
     if (drillText === null) return;
     event.preventDefault();
-    if (listening) void stopListening();
+    // A second press while the device is still opening is a release too: it is
+    // remembered, and the recording is thrown away once the device is open.
+    if (listening || starting) void stopListening();
     else void startListening();
   }
 
   /**
-   * Let go of the microphone when the learner leaves the drill.
+   * Let go of the microphone when the learner leaves the drill, or the drill moves.
    *
    * Holding the button and clicking "Hear" leaves the pointer-up unread — the
    * button is gone by then — so without this the recorder stays open and the
    * system's recording indicator stays lit with nothing that can close it. The
-   * recording is *cancelled* rather than judged: the learner left the screen, so
-   * there is no drill to judge it against, and posting a result onto a screen they
-   * are no longer looking at is worse than throwing the audio away.
+   * recording is *cancelled* rather than judged: there is no longer a drill to judge
+   * it against, and posting a result onto a screen the learner is no longer looking
+   * at is worse than throwing the audio away. For the same reason a judgement still
+   * on its way back when the target changes is dropped when it arrives.
    */
   $effect(() => {
-    if (screen !== "say" && listening) {
-      listening = false;
-      void api.listenCancel().catch(() => {
-        // Nothing to report: this is cleanup, not a drill.
-      });
-    }
+    void drillText;
+    void drillReading;
+    void screen;
+    void talk.retarget();
   });
 
   // The same on the way out of the window entirely. `$effect` does not re-run on
   // teardown, so this needs its own listener.
   $effect(() => {
-    const release = () => {
-      if (listening) void api.listenCancel().catch(() => {});
-    };
+    const release = () => void talk.retarget();
     window.addEventListener("pagehide", release);
     return () => window.removeEventListener("pagehide", release);
   });
@@ -915,20 +959,23 @@
               <button
                 class="mic"
                 class:listening
-                disabled={starting || (microphone !== null && !microphone.available)}
+                disabled={scoring || (microphone !== null && !microphone.available)}
+                aria-busy={starting || scoring}
                 onpointerdown={(event) => {
                   event.preventDefault();
                   void startListening();
                 }}
                 onpointerup={() => void stopListening()}
-                onpointerleave={() => listening && void stopListening()}
-                onpointercancel={() => listening && void stopListening()}
+                onpointerleave={() => (listening || starting) && void stopListening()}
+                onpointercancel={() => (listening || starting) && void stopListening()}
                 title="Hold to record — or hold the space bar"
               >
                 {#if starting}
                   Opening the microphone…
                 {:else if listening}
                   ● Listening — release to judge
+                {:else if scoring}
+                  Scoring…
                 {:else}
                   Hold to say {drill?.kind === "word" ? (drillWord?.text ?? "") : (drillMember?.reading ?? "")}
                 {/if}

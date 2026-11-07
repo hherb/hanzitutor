@@ -3462,3 +3462,157 @@ fn a_group_remembers_where_the_learner_got_to() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// How a command in `source` is dispatched: `true` when Tauri runs it off the main
+/// thread, `false` when it runs on the thread the webview paints on.
+///
+/// Tauri 2 decides this from the attribute and the signature alone — a plain
+/// `#[tauri::command]` on a plain `fn` is called inline from the IPC handler, which
+/// the webview invokes on the main thread, while an `async` argument to the attribute
+/// (`#[tauri::command(async)]`, alone or beside `rename_all = …`) or an `async fn` is
+/// spawned on the async runtime (`tauri-macros`, `body_blocking` against
+/// `body_async`). So the source is the thing to read, and nothing behavioural can see it.
+fn runs_off_the_main_thread(source: &str, name: &str) -> bool {
+    let head = command_head(source, name);
+    let close = head.find(']').expect("the attribute closes");
+    let arguments = head["#[tauri::command".len()..close].trim();
+    let async_attribute = arguments
+        .strip_prefix('(')
+        .and_then(|inner| inner.strip_suffix(')'))
+        .is_some_and(|inner| inner.split(',').any(|argument| argument.trim() == "async"));
+    let async_fn = head[close + 1..]
+        .split_whitespace()
+        .any(|word| word == "async");
+    async_attribute || async_fn
+}
+
+/// Everything from the command attribute above `fn name(` to the name itself.
+fn command_head<'a>(source: &'a str, name: &str) -> &'a str {
+    let at = source
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("{name} should still be a command"));
+    let before = &source[..at];
+    let attribute = before
+        .rfind("#[tauri::command")
+        .unwrap_or_else(|| panic!("{name} has no command attribute"));
+    let head = &before[attribute..];
+    assert!(
+        !head.contains("fn "),
+        "the nearest command attribute above {name} belongs to another function"
+    );
+    head
+}
+
+/// The body of the function `name`, up to its closing brace at the margin.
+fn body_of<'a>(source: &'a str, name: &str) -> &'a str {
+    let at = source
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("{name} should still be a command"));
+    let rest = &source[at..];
+    &rest[..rest.find("\n}\n").expect("the function ends")]
+}
+
+#[test]
+fn the_dispatch_reading_understands_every_form_of_the_attribute() {
+    // The reading above is only as good as its parse, so it is checked against
+    // each spelling Tauri accepts.
+    let source = "
+#[tauri::command]
+pub fn plain() {}
+#[tauri::command(async)]
+pub fn attribute() {}
+#[tauri::command(rename_all = \"snake_case\", async)]
+pub fn among_others() {}
+#[tauri::command( async )]
+fn spaced() {}
+#[tauri::command(rename_all = \"snake_case\")]
+pub fn renamed_only() {}
+#[tauri::command]
+pub async fn keyword() {}
+#[tauri::command]
+async fn private_keyword() {}
+";
+    for name in [
+        "attribute",
+        "among_others",
+        "spaced",
+        "keyword",
+        "private_keyword",
+    ] {
+        assert!(runs_off_the_main_thread(source, name), "{name}");
+    }
+    for name in ["plain", "renamed_only"] {
+        assert!(!runs_off_the_main_thread(source, name), "{name}");
+    }
+}
+
+#[test]
+fn the_slow_commands_do_not_run_on_the_main_thread() {
+    // A plain `#[tauri::command]` runs on the main thread, so a slow one freezes the
+    // window: releasing the microphone used to hang it for the seconds the first
+    // recognition spends loading 228 MB of ONNX, and the fingerprint switch raised
+    // its prompt from the thread that has to draw it (issue #26). Each of these can
+    // block for seconds — a model load or a decode, a synthesis, a fingerprint
+    // prompt, a recursive delete of hundreds of megabytes, a permission prompt in
+    // front of the microphone — or waits on a lock one of the others holds that long.
+    let source =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands.rs"))
+            .expect("commands.rs is part of the crate");
+
+    for name in [
+        "listen_start",
+        "listen_stop",
+        "listen_cancel",
+        "asr_install",
+        "asr_remove",
+        "say_speak",
+        "say_remove",
+        "sync_set_lock",
+        // Already off it, and pinned so they stay there.
+        "sync_status",
+        "sync_connect_finish",
+        "sync_now",
+        "sync_disconnect",
+        "sync_auto",
+        "vocab_export",
+        "vocab_import",
+        "export_practice_log",
+        "backup_export",
+        "backup_import",
+    ] {
+        assert!(
+            runs_off_the_main_thread(&source, name),
+            "{name} is a plain command again, so it runs on the main thread and freezes \
+             the window while it works: mark it `#[tauri::command(async)]`"
+        );
+    }
+
+    // And the other way round. Starting and stopping the platform voice are quick,
+    // and they are the two whose *order* matters: each tap cuts off the utterance
+    // before it, and two taps that overtook each other on the runtime's threads would
+    // leave the earlier word the one still speaking. The main thread runs them in the
+    // order they were sent.
+    for name in ["speak", "stop_speaking"] {
+        assert!(
+            !runs_off_the_main_thread(&source, name),
+            "{name} should stay in order on the main thread"
+        );
+    }
+
+    // And the ones that block longest go further, onto the blocking pool: `(async)`
+    // runs a body on one of the runtime's core workers, of which there are as many as
+    // the device has cores, and a queue of phrases or a fingerprint prompt left open
+    // would park enough of them to stall every other async command.
+    for name in [
+        "listen_start",
+        "listen_stop",
+        "listen_cancel",
+        "say_speak",
+        "sync_set_lock",
+    ] {
+        assert!(
+            body_of(&source, name).contains("on_a_blocking_thread("),
+            "{name} should run its work on the blocking pool, not a runtime worker"
+        );
+    }
+}

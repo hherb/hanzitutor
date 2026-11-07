@@ -29,6 +29,8 @@
   import { INTRO_PAGES, notesFor } from "./lib/startupPages";
   import type { Page } from "./lib/startupPages";
   import { dueLabel } from "./lib/due";
+  import { PushToTalk } from "./lib/pushToTalk";
+  import type { Outcome, Phase } from "./lib/pushToTalk";
   import { shortcutFor } from "./lib/shortcuts";
   import type { ShortcutId } from "./lib/shortcuts";
   import { INK_WIDTH, polylineLength } from "./lib/render";
@@ -305,10 +307,24 @@
   let recognizeReady = $state(false);
   /** The last judgement, or `null` before anything has been said. */
   let toneResult = $state<ToneResult | null>(null);
-  /** True between pressing and releasing the button. */
-  let listening = $state(false);
-  /** True while the device is opening or the recording is being scored. */
-  let toneBusy = $state(false);
+  /**
+   * Where the one push-to-talk attempt is — see `lib/pushToTalk.ts`, which owns
+   * the rules (a release while the device opens, an answer for a board the learner
+   * has left). This is only its mirror, for the template.
+   */
+  let talkPhase = $state<Phase>("idle");
+  /** True between the device opening and the button coming up. */
+  const listening = $derived(talkPhase === "listening");
+  /**
+   * True while the recording is being scored.
+   *
+   * Its own flag so the button can say so: with the recognition model installed
+   * the first judgement loads the model before it decodes, which takes seconds, and
+   * a button that only goes grey for that long looks broken. The button is
+   * disabled for this and for the cancel of a recording, but **not** while the
+   * device opens — a release then has to reach the button, or it is lost.
+   */
+  const scoring = $derived(talkPhase === "scoring" || talkPhase === "stopping");
   /** Why the last attempt could not even be recorded. */
   let toneError = $state<string | null>(null);
   /** The text captured when the button went down, which is what gets judged. */
@@ -1249,6 +1265,9 @@
       speechText = text;
       toneResult = null;
       toneError = null;
+      // And what is still in flight for the old text: a recording is cancelled,
+      // and a judgement on its way back is dropped when it arrives.
+      void talk.retarget();
     }
     let current = true;
     void api
@@ -1281,6 +1300,40 @@
   });
 
   /**
+   * The attempt itself. `scoredText` is captured on press, so the judgement is
+   * against the text that was on screen when the learner started speaking; a
+   * change of text after that moves the attempt on (see the speech-target effect
+   * above), and its answer is dropped rather than shown against the new board.
+   */
+  const talk = new PushToTalk<ToneResult>(
+    {
+      start: () => api.listenStart(),
+      stop: () => api.listenStop(scoredText),
+      cancel: () => api.listenCancel(),
+    },
+    (phase) => (talkPhase = phase),
+  );
+
+  /** Show what an attempt came to. */
+  function showOutcome(outcome: Outcome<ToneResult>) {
+    switch (outcome.kind) {
+      case "scored":
+        toneResult = outcome.result;
+        break;
+      case "failed":
+        toneError = String(outcome.cause);
+        break;
+      case "released-early":
+        toneError =
+          "The button came up before the microphone was ready, so nothing was " +
+          "recorded. Hold it until the microphone is listening, then speak.";
+        break;
+      default:
+        break;
+    }
+  }
+
+  /**
    * Press to talk.
    *
    * The device is opened on press, before the learner has started speaking, so
@@ -1291,7 +1344,7 @@
     // The same reason the button is disabled, read again here: a pointer event
     // can still arrive on a control that has just become disabled, and opening
     // the device for a board nothing can judge is the failure this guards.
-    if (sayBlocked !== null || listening || toneBusy) return;
+    if (sayBlocked !== null || talk.phase !== "idle") return;
     toneError = null;
     // The previous judgement is deliberately *left on screen*. Clearing it here
     // removed the tone panel from the document, the page got shorter, and every
@@ -1299,39 +1352,12 @@
     // up. That is what made holding the button look like the interface jumping
     // and the recording stopping. The new judgement replaces it when it arrives.
     scoredText = toneText;
-    toneBusy = true;
-    try {
-      await api.listenStart();
-      listening = true;
-    } catch (cause) {
-      toneError = String(cause);
-    } finally {
-      toneBusy = false;
-    }
+    showOutcome(await talk.press());
   }
 
-  /**
-   * Release to be judged.
-   *
-   * `scoredText` is captured on press, so the judgement is against the text that
-   * was on screen when the learner started speaking rather than whatever the
-   * board has moved on to.
-   */
+  /** Release to be judged — or, while the device is still opening, to cancel. */
   async function stopListening() {
-    if (!listening) return;
-    listening = false;
-    toneBusy = true;
-    // The text is frozen for the duration of the attempt: the Rust side derives
-    // the tones from it, so what is scored is what was on screen when the learner
-    // pressed, even if the board advanced while they were speaking.
-    const text = scoredText;
-    try {
-      toneResult = await api.listenStop(text);
-    } catch (cause) {
-      toneError = String(cause);
-    } finally {
-      toneBusy = false;
-    }
+    showOutcome(await talk.release());
   }
 
   /**
@@ -3217,7 +3243,8 @@
                   }}
                   onpointercancel={() => void stopListening()}
                   oncontextmenu={(event) => event.preventDefault()}
-                  disabled={sayBlocked !== null || toneBusy}
+                  disabled={sayBlocked !== null || scoring}
+                  aria-busy={talkPhase !== "idle" && talkPhase !== "listening"}
                   aria-label={listening
                     ? "Hold to speak — listening, release to hear what was read back"
                     : sayBlocked
@@ -3228,7 +3255,7 @@
                   title={sayBlocked ?? sayPrompt}
                 >
                   <span class="tool-glyph"><Icon name="mic" /></span>
-                  <span class="tool-word">(hold…)</span>
+                  <span class="tool-word">{scoring ? "Scoring…" : "(hold…)"}</span>
                 </button>
               </div>
 
