@@ -97,6 +97,41 @@ const PUBLISHED_THROUGH: &str = "sync:published_seq";
 /// also why it is a document here rather than a table.
 const BASELINE_KEY: &str = "sync:baseline";
 
+/// Where a rename records the rows it held back under the old name because a
+/// damaged file of that name might hold them — see [`HeldBack`].
+const HELD_BACK_KEY: &str = "sync:held_back";
+
+/// A row a rename left under the old name because a hidden own shard could hold
+/// it (see [`HiddenOwn`]), and the file that could.
+///
+/// Recorded in `meta` at the rename, so that a restart does not forget it, and
+/// only these are ever moved to the new name later — once the store holds a
+/// different attempt at that number, or that file reads again and does not hold
+/// it. Nothing else under a former name is taken for this device's own just
+/// because the store shows none of it: the store can lose a file (a deletion, a
+/// rewind, a folder still syncing), and the attempts this device pulled from it
+/// are still the other device's.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct HeldBack {
+    device_id: String,
+    shard: String,
+    seq: i64,
+}
+
+fn held_back(db: &Db) -> Result<Vec<HeldBack>, SyncError> {
+    Ok(db
+        .meta_value(HELD_BACK_KEY)
+        .map_err(SyncError::Io)?
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default())
+}
+
+fn set_held_back(db: &Db, rows: &[HeldBack]) -> Result<(), SyncError> {
+    let text = serde_json::to_string(rows)
+        .map_err(|e| SyncError::Malformed(format!("the held-back rows could not be encoded: {e}")))?;
+    db.set_meta_value(HELD_BACK_KEY, &text).map_err(SyncError::Io)
+}
+
 /// What one sync did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
@@ -259,6 +294,11 @@ fn publish_against(
 ) -> Result<(usize, usize), SyncError> {
     let held = held_index(remote);
     let device = db.device_id();
+    let held_back = held_back(db)?;
+    let waiting: HashSet<(&str, i64)> = held_back
+        .iter()
+        .map(|row| (row.device_id.as_str(), row.seq))
+        .collect();
 
     let mut fresh: BTreeMap<String, Vec<MergedAttempt>> = BTreeMap::new();
     let mut unpublishable = 0usize;
@@ -267,6 +307,11 @@ fn publish_against(
             continue;
         }
         if attempt.device_id != device && left_out.contains(&attempt.device_id) {
+            continue;
+        }
+        if waiting.contains(&(attempt.device_id.as_str(), attempt.seq)) {
+            // Held back by a rename until the file that may hold it reads: not
+            // this name's to publish, and not yet known to be this device's.
             continue;
         }
         if attempt.device_id != device && !publishable_name(&attempt.device_id) {
@@ -353,11 +398,12 @@ fn publish_against(
 /// holds a *different* attempt under that name and number, only this device can
 /// have made this one, so it is moved to the current name as well
 /// ([`Db::reclaim_attempts`]) rather than left to fail every pull with
-/// [`SyncError::Rewritten`]. So is one numbered above every attempt the store
-/// holds under that name, when it holds any: had that name published it, the
-/// store would hold it. Any other former-name attempt the store does not hold is
-/// left alone: it is as likely to be the original's, pulled before a move to an
-/// empty store, and is published under that name like anyone else's.
+/// [`SyncError::Rewritten`]. So is a row a rename held back ([`HeldBack`]) once
+/// the file that might have held it reads again without it. Any other
+/// former-name attempt the store does not hold is left alone — even one numbered
+/// above all the store shows of that name: it is as likely to be the original's,
+/// pulled before a move to an empty store or before the store lost a file, and
+/// is published under that name like anyone else's.
 ///
 /// ## What it cannot do
 ///
@@ -403,8 +449,10 @@ fn publish_against(
 /// would publish shared history a second time under the new name, for every peer
 /// to fold twice. A row this device made that only *would* have gone in such a
 /// file stays behind with them, unpublished, until the file can be read again —
-/// then the store holds a different attempt at that number, or none at or above
-/// it, and the reclaim below moves it.
+/// then the store holds a different attempt at that number, or that file holds
+/// none there, and the reclaim below moves it. Those rows are recorded
+/// ([`HeldBack`]) so that nothing else is ever taken for them, and are not
+/// published under the old name meanwhile.
 ///
 /// Returns the new name, if there is one.
 fn settle_identity(
@@ -428,10 +476,32 @@ fn settle_identity(
     settle_baseline(db, store, someone_else)?;
 
     let renamed = if someone_else {
+        let kept_back = std::cell::RefCell::new(Vec::new());
         let published = |row: &LoggedAttempt| {
-            held_as_is(held, row) || (row.device_id == device && hidden.covers(row.seq))
+            if held_as_is(held, row) {
+                return true;
+            }
+            match hidden.covering(row.seq) {
+                Some(shard) if row.device_id == device => {
+                    kept_back.borrow_mut().push(HeldBack {
+                        device_id: device.clone(),
+                        shard: shard.to_string(),
+                        seq: row.seq,
+                    });
+                    true
+                }
+                _ => false,
+            }
         };
-        Some(db.rotate_device_id(&published).map_err(SyncError::Io)?)
+        let new = db.rotate_device_id(&published).map_err(SyncError::Io)?;
+        let mut rows = held_back(db)?;
+        for row in kept_back.into_inner() {
+            if !rows.contains(&row) {
+                rows.push(row);
+            }
+        }
+        set_held_back(db, &rows)?;
+        Some(new)
     } else {
         None
     };
@@ -440,31 +510,48 @@ fn settle_identity(
     // from before the rename, restored by a build that let it in — goes first, so
     // that it is neither reclaimed below as a second attempt nor published again.
     db.forget_moved_copies().map_err(SyncError::Io)?;
-    let given_up = renamed.as_ref().map(|_| device.as_str());
+    let waiting = held_back(db)?;
+    let listed: HashSet<String> = if waiting.is_empty() {
+        HashSet::new()
+    } else {
+        store.list()?.into_iter().map(|entry| entry.name).collect()
+    };
     for former in db.former_device_ids().map_err(SyncError::Io)? {
-        // The highest number the store holds under that name, if it holds any.
-        // A row of this log numbered above it was never published under that
-        // name — the store would hold it — so only this device can have made it:
-        // a row a rename held back because a damaged file might have held it
-        // (see `HiddenOwn`), at a number the original never reached. Left under
-        // the old name it would be published there, and the original would take
-        // it for a copy's and rename in turn. Not while that file is still the
-        // reason it was held back, in the sync that gave the name up: the
-        // listing then shows none of what the file holds.
-        let highest = held
-            .keys()
-            .filter(|(owner, _)| *owner == former)
-            .map(|(_, seq)| *seq)
-            .max();
+        // A row this device held back at a rename (see `HeldBack`) whose file now
+        // reads without it: the original never used that number, so the row is
+        // this device's, and left under the old name it would be published there
+        // and make the original rename in turn.
+        let unused: HashSet<i64> = waiting
+            .iter()
+            .filter(|row| row.device_id == former && listed.contains(&row.shard))
+            .map(|row| row.seq)
+            .collect();
         let keep = |row: &LoggedAttempt| match held.get(&(former.as_str(), row.seq)) {
             Some(remote) => **remote == MergedAttempt::from(row.clone()),
-            None => {
-                let beyond = highest.is_some_and(|highest| row.seq > highest);
-                let still_hidden = given_up == Some(former.as_str()) && hidden.covers(row.seq);
-                !beyond || still_hidden
-            }
+            None => !unused.contains(&row.seq),
         };
         db.reclaim_attempts(&former, &keep).map_err(SyncError::Io)?;
+    }
+    if !waiting.is_empty() {
+        // Settled once the store holds that number (the same attempt, which stays,
+        // or a different one, which the reclaim just moved) or the file reads; and
+        // forgotten if the row is gone.
+        let left: HashSet<(String, i64)> = full_log(db)?
+            .into_iter()
+            .map(|attempt| (attempt.device_id, attempt.seq))
+            .collect();
+        let still: Vec<HeldBack> = waiting
+            .iter()
+            .filter(|row| {
+                !held.contains_key(&(row.device_id.as_str(), row.seq))
+                    && !listed.contains(&row.shard)
+                    && left.contains(&(row.device_id.clone(), row.seq))
+            })
+            .cloned()
+            .collect();
+        if still != waiting {
+            set_held_back(db, &still)?;
+        }
     }
     Ok(renamed)
 }
@@ -479,11 +566,11 @@ struct HiddenOwn {
     /// readable shard holds. A shard is named after the attempt that sorts
     /// first, which need not be the lowest number — a clock that stepped back,
     /// or a repair that took in what a damaged neighbour held.
-    covered: BTreeSet<i64>,
+    covered: BTreeMap<i64, String>,
     /// The last shard's name, when it is hidden: an install may still be
     /// appending to it, so every number from there up is covered, whether this
     /// log holds it yet or not.
-    open_from: Option<i64>,
+    open_from: Option<(i64, String)>,
     /// What could still be read of one contradicts this log: a line this log
     /// lacks or holds differently, or more lines than this log has published
     /// attempts for that file. A truncation only ever shortens a file, so a file
@@ -492,8 +579,13 @@ struct HiddenOwn {
 }
 
 impl HiddenOwn {
-    fn covers(&self, seq: i64) -> bool {
-        self.covered.contains(&seq) || self.open_from.is_some_and(|from| seq >= from)
+    /// The hidden file that can hold `seq`, if one can.
+    fn covering(&self, seq: i64) -> Option<&str> {
+        match (self.covered.get(&seq), &self.open_from) {
+            (Some(shard), _) => Some(shard),
+            (None, Some((from, shard))) if seq >= *from => Some(shard),
+            _ => None,
+        }
     }
 }
 
@@ -550,9 +642,11 @@ fn hidden_own(db: &Db, screened: &Screened) -> Result<HiddenOwn, SyncError> {
         let elsewhere = |seq: i64| screened.holds_own(seq);
         let reach = end.unwrap_or(i64::MAX);
         let held_here = could_hold(own.keys().copied(), screened, first, reach, &elsewhere);
-        hidden.covered.extend(&held_here);
-        if end.is_none() {
-            hidden.open_from = Some(hidden.open_from.map_or(first, |from| from.min(first)));
+        for seq in held_here {
+            hidden.covered.entry(seq).or_insert_with(|| shard.name.clone());
+        }
+        if end.is_none() && hidden.open_from.as_ref().is_none_or(|(from, _)| first < *from) {
+            hidden.open_from = Some((first, shard.name.clone()));
         }
         if shard.newer_format {
             continue;

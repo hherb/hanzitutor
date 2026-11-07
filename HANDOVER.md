@@ -1231,10 +1231,19 @@ either file.
         never republished under the new name.
       - **Residuals of that.** A row the copy made that falls in a held-back
         range stays unpublished under the old name until the file is readable
-        again; then `reclaim_attempts` moves it if the store holds a different
-        attempt at that number, *or holds attempts under that name but none at
-        or above it* (only this device can have made such a row; not in the sync
-        that renamed, whose listing hides the file). A truncation that leaves
+        again. The rename records each such row and the file that could hold
+        it in `meta` (`sync:held_back`, so a restart keeps it); they are not
+        published under the old name meanwhile, and `reclaim_attempts` moves
+        one to the new name once the store holds a different attempt at that
+        number, or that file reads again without it — then the record is
+        cleared. Nothing else under a former name is taken for this device's
+        just because the store shows none of it: a store that lost a file
+        (deleted, rewound, still syncing) still means the other device's
+        attempts, and they are republished under *its* name, as #47 does. When
+        two adjacent own shards are both hidden, the later one's count takes in
+        the earlier one's numbers too (only readable shards are subtracted),
+        which weakens the line-count evidence toward "no rename" — the same
+        direction as the truncation residual below. A truncation that leaves
         no differing line and no extra line hides a copy for as long as the
         file stays damaged — in its heaviest form the whole file cut to a
         partial first line, or emptied, leaves no line at all, so there is no

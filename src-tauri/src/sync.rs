@@ -455,11 +455,14 @@ impl SyncService {
         // Dropbox answers a mistyped, expired or already-used code with the same
         // `invalid_grant` it gives a revoked sign-in, which arrives as
         // `Unauthorized`. Here, before anything is connected, "disconnect and connect
-        // again" would be advice about a connection that does not exist.
+        // again" would be advice about a connection that does not exist. A refused
+        // code spends nothing (see above), so a mistyped one can simply be pasted
+        // again, correctly.
         let tokens = exchange_code(self.http.as_ref(), APP_KEY, code.trim(), &pkce.verifier)
             .map_err(|e| match e {
                 SyncError::Unauthorized => {
-                    "Dropbox did not accept that code. Press Connect for a new one.".to_string()
+                    "Dropbox did not accept that code. Check it, or press Connect for a new one."
+                        .to_string()
                 }
                 other => describe(&other),
             })?;
@@ -2824,7 +2827,7 @@ mod tests {
         let error = service.finish("mistyped").unwrap_err();
         assert_eq!(
             error,
-            "Dropbox did not accept that code. Press Connect for a new one."
+            "Dropbox did not accept that code. Check it, or press Connect for a new one."
         );
         assert!(!service.view().connected);
     }

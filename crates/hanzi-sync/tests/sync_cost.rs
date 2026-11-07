@@ -742,7 +742,7 @@ fn a_copys_attempt_held_back_by_a_damaged_shard_goes_out_under_its_new_name() {
     let remote = FolderStore::open(&*shared).unwrap();
     practise(&a, 0, 5);
     sync(&a, &remote).unwrap();
-    let (_dir_b, b) = copy_of(&a, "held-b");
+    let (dir_b, b) = copy_of(&a, "held-b");
     practise(&a, 5, 2);
     sync(&a, &remote).unwrap();
     let id = a.device_id();
@@ -752,16 +752,59 @@ fn a_copys_attempt_held_back_by_a_damaged_shard_goes_out_under_its_new_name() {
     practise(&b, 50, 3);
     sync(&b, &remote).unwrap();
     assert_ne!(b.device_id(), id, "B renamed");
+    // What it held back is written down, and survives the app being restarted.
+    drop(b);
+    let b = Db::open(&*dir_b).unwrap();
+    assert!(b.meta_value("sync:held_back").unwrap().is_some_and(|rows| rows != "[]"));
 
     sync(&a, &remote).unwrap();
     sync(&b, &remote).unwrap();
     sync(&a, &remote).unwrap();
     assert_eq!(a.device_id(), id, "A keeps its name");
     assert_eq!(attempts_of(&b, &b), 3, "all three of B's are B's");
+    assert_eq!(
+        b.meta_value("sync:held_back").unwrap().as_deref(),
+        Some("[]"),
+        "and nothing is held back any more"
+    );
     let (_dir_c, c) = device("held-c");
     sync(&c, &remote).unwrap();
     assert_eq!(full_log(&c).unwrap().len(), 10);
     assert_eq!(attempts_of(&c, &a), 7);
+}
+
+#[test]
+fn a_renamed_copy_does_not_take_the_originals_attempts_when_the_store_loses_a_shard() {
+    // B is a copy of A that has renamed, and pulled every attempt of A's. Then
+    // A's last shard goes missing from the store — deleted by hand, a Dropbox
+    // rewind, a folder still syncing. The five attempts B pulled from it are
+    // still A's: B must not move them to its own name and publish them, or a new
+    // device would hold them twice once A publishes its own copies again.
+    let (_dir_a, a) = device("gone-a");
+    let shared = scratch("gone-store");
+    let remote = FolderStore::open(&*shared).unwrap();
+    practise(&a, 0, CHUNK as i64);
+    sync(&a, &remote).unwrap();
+    let (_dir_b, b) = copy_of(&a, "gone-b");
+    practise(&a, CHUNK as i64, 5);
+    sync(&a, &remote).unwrap();
+    practise(&b, 900, 1);
+    let on_b = sync(&b, &remote).unwrap();
+    assert_ne!(b.device_id(), a.device_id(), "B renamed");
+    assert_eq!(on_b.pulled, 5, "{on_b:?}");
+
+    let last = hanzi_sync::attempts_shard_name(&a.device_id(), CHUNK as i64 + 1);
+    fs::remove_file(shared.join(&last)).unwrap();
+    sync(&b, &remote).unwrap();
+    // B may publish them again — under A's name, the same lines A wrote, as #47
+    // does for anything the store lost — but never as its own.
+    assert_eq!(attempts_of(&b, &a), CHUNK + 5, "A's are still A's");
+    assert_eq!(attempts_of(&b, &b), 1, "and B's own is the one it made");
+
+    sync(&a, &remote).unwrap();
+    let (_dir_c, c) = device("gone-c");
+    sync(&c, &remote).unwrap();
+    assert_eq!(full_log(&c).unwrap().len(), CHUNK + 6);
 }
 
 // ---- a busy Dropbox is waited for, within a bound ----------------------------
