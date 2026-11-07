@@ -58,6 +58,7 @@ use crate::document::{
     Baseline, Baselines,
 };
 use crate::shard::{fold_cards, merge_attempts, read_attempts, write_attempts, MergedAttempt};
+use crate::skipped::{Screened, SkippedShard};
 use crate::store::{RemoteStore, SyncError};
 
 /// Where this device records how far it has published its own log.
@@ -90,6 +91,10 @@ pub struct Summary {
     pub vocab_changed: usize,
     /// Whether the course position moved.
     pub cursor_moved: bool,
+    /// Files this sync left out because they could not be used — another device's
+    /// newer format, or a damaged file — while everything else synced. See
+    /// [`crate::skipped`]; [`Summary::notice`] says it in words.
+    pub skipped: Vec<SkippedShard>,
 }
 
 impl Summary {
@@ -101,6 +106,12 @@ impl Summary {
             && self.recomputed == 0
             && self.vocab_changed == 0
             && !self.cursor_moved
+    }
+
+    /// What the learner should be told about files this sync left out, if any:
+    /// a sentence to put after the summary, never instead of it.
+    pub fn notice(&self) -> Option<String> {
+        crate::skipped::notice(&self.skipped)
     }
 }
 
@@ -375,7 +386,13 @@ pub fn pull_vocab_cursors(db: &Db, store: &dyn RemoteStore) -> Result<bool, Sync
 /// pulled, because the log is what the schedule is folded from and a device should
 /// never be in the position of having applied a peer's work without having offered
 /// its own.
+///
+/// A file that cannot be used — another device's newer format, a damaged shard — is
+/// left out rather than stopping the sync, and reported in [`Summary::skipped`]: see
+/// [`crate::skipped`] for why leaving one out loses nothing.
 pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
+    let screened = Screened::read(store, db.device_id())?;
+    let store: &dyn RemoteStore = &screened;
     let published = publish(db, store)?;
     publish_documents(db, store)?;
     let pulled = pull(db, store)?;
@@ -392,7 +409,14 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
     if let Some(own) = own_baseline(db)? {
         baselines.push(own);
     }
-    let (recomputed, left_alone) = recompute(db, &Baselines::resolve(baselines))?;
+    // Without every baseline the fold would rebuild a migrated card from the tail
+    // of its history, so a sync that could not read one leaves every schedule as it
+    // is: stale until the next sync, never wrong.
+    let (recomputed, left_alone) = if screened.baseline_skipped() {
+        (0, 0)
+    } else {
+        recompute(db, &Baselines::resolve(baselines))?
+    };
     Ok(Summary {
         published,
         pulled,
@@ -400,6 +424,7 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
         left_alone,
         vocab_changed,
         cursor_moved,
+        skipped: screened.skipped(),
     })
 }
 

@@ -1030,8 +1030,23 @@ fn describe(error: &SyncError) -> String {
     }
 }
 
-/// What one sync did, in a sentence.
+/// What one sync did, in a sentence — and, after it, what it had to leave out.
+///
+/// A file another device wrote that this build cannot use no longer stops the sync
+/// (see `hanzi_sync::Summary::skipped`), so it has to be *said*: otherwise a phone
+/// running an older version would report "Already up to date" for ever while the
+/// newer device's changes never arrived.
 fn describe_summary(summary: &hanzi_sync::Summary) -> String {
+    let mut message = describe_counts(summary);
+    if let Some(notice) = summary.notice() {
+        message.push(' ');
+        message.push_str(&notice);
+    }
+    message
+}
+
+/// What one sync did, in a sentence.
+fn describe_counts(summary: &hanzi_sync::Summary) -> String {
     if summary.is_empty() {
         let mut message = "Already up to date.".to_string();
         if summary.left_alone > 0 {
@@ -1947,6 +1962,25 @@ mod tests {
         assert!(message.contains("Already up to date"), "{message}");
         assert!(message.contains("1 character "), "{message}");
         assert!(!message.contains("characters"), "one character is singular: {message}");
+    }
+
+    #[test]
+    fn a_file_another_device_wrote_that_was_left_out_is_said_after_the_summary() {
+        let skipped = hanzi_sync::Summary {
+            skipped: vec![hanzi_sync::SkippedShard {
+                name: "devices/newer/vocab.json".into(),
+                device_id: "newer".into(),
+                kind: hanzi_sync::ShardKind::Vocab,
+                newer_format: true,
+                reason: "format 2".into(),
+            }],
+            ..hanzi_sync::Summary::default()
+        };
+        assert_eq!(
+            describe_summary(&skipped),
+            "Already up to date. Another device uses a newer version of the app; update this \
+             one to sync its changes."
+        );
     }
 
     #[test]

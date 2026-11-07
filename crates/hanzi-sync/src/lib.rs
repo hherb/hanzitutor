@@ -36,6 +36,7 @@ mod local;
 mod oauth;
 mod reach;
 mod shard;
+mod skipped;
 mod store;
 
 pub use document::{
@@ -53,4 +54,5 @@ pub use shard::{
     attempts_shard_name, device_of_shard, fold_cards, merge_attempts, parse_attempts_shard,
     read_attempts, write_attempts, MergedAttempt, CHUNK,
 };
+pub use skipped::{ShardKind, SkippedShard};
 pub use store::{FolderStore, RemoteEntry, RemoteStore, SyncError};

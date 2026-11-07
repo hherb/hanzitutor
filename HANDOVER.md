@@ -1083,6 +1083,30 @@ after each item) both do this now. The shape is the rule, not either file.
       `run_plugin_command` as internal Swift functions behind `@_cdecl`, so the
       `[profile.release.package.…] debug = 1` entries are still what make a release
       iOS build link. Re-check when a Tauri release makes them `public`.
+39. **Sync never keeps two live entries for one word in one group, never stops for
+    one bad file, and never stamps an edit earlier than a stamp it has seen**
+    (issue #35).
+    - **Duplicates collapse in `merge_vocab`, as a pure function of the merged
+      entries**: per (text, group) the lowest uuid survives carrying the newest
+      duplicate's content and stamp, and every other one becomes a tombstone with
+      its own stamp and `revision + 1`. Every device computes the same bytes, in
+      any order, and a second pass changes nothing. History is safe because the
+      attempt log is keyed by character; `apply_vocab_view` moves this device's
+      per-entry counters onto the survivor and keeps a never-held duplicate's
+      tombstone (the only never-held tombstone it keeps) so that a group position
+      naming it resolves to the survivor in `Db::vocab_cursor`.
+    - **A file this build cannot use is left out, per device and kind, and
+      reported** (`hanzi_sync::Summary::skipped`, `notice()`): `sync` reads the
+      store once through `skipped::Screened`, which hides those files from the
+      strict readers and refuses to overwrite one outside this device's own
+      directory. A device with one bad attempt shard is left out whole, and a
+      peer's unreadable baseline means no schedule is rebuilt that sync. The
+      public `read_*` functions stay strict on purpose.
+    - **Stamps come from `hanzi-store`'s `clock`**: `max(now, floor)`, where the
+      floor (in `meta` as `sync:clock`) is raised past every peer stamp a merge
+      applies, plus one second, and to this device's own last stamp. Never stamp a
+      synced record with `now_iso8601()` directly. The format is unchanged
+      (whole-second ISO-8601, compared as text), so older builds read it as before.
 
 ## 5. The verification loop
 

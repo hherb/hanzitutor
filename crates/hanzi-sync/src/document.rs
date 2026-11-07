@@ -38,6 +38,7 @@ use hanzi_core::progress::CardState;
 use hanzi_store::{SyncedCursor, SyncedEntry, SyncedGroup, SyncedVocabCursor};
 
 use crate::shard::device_of_shard;
+use crate::skipped::{ShardKind, SkippedShard};
 use crate::store::{RemoteStore, SyncError};
 
 /// The vocabulary document's format version.
@@ -92,6 +93,85 @@ fn owner_of<'a>(name: &'a str, file: &str) -> Option<&'a str> {
         && name.ends_with(file)
         && name.as_bytes()["devices/".len() + device.len()] == b'/')
         .then_some(device)
+}
+
+/// Whether `name` is one of the documents a sync reads.
+pub(crate) fn is_document(name: &str) -> bool {
+    [VOCAB_FILE, CURSOR_FILE, VOCAB_CURSOR_FILE, BASELINE_FILE]
+        .into_iter()
+        .any(|file| owner_of(name, file).is_some())
+}
+
+/// Whether the readers below can use these bytes for the document `name`, or
+/// `None` when `name` is not one of their documents.
+///
+/// The answer is exactly theirs: a document that passes here is one they read, and
+/// one that fails is one they would refuse — so a sync can leave it out *before*
+/// they see it, and carry on (see [`crate::skipped`]). The version is read first,
+/// from the bare JSON, so that a document a newer build wrote is recognised as that
+/// even when its shape has changed too far to parse: the difference between telling
+/// the learner to update the app and telling them a file is damaged.
+pub(crate) fn screen_document(name: &str, bytes: &[u8]) -> Option<Result<(), SkippedShard>> {
+    let (owner, kind, supported) = [
+        (VOCAB_FILE, ShardKind::Vocab, VOCAB_VERSION),
+        (CURSOR_FILE, ShardKind::Cursor, CURSOR_VERSION),
+        (
+            VOCAB_CURSOR_FILE,
+            ShardKind::VocabCursors,
+            VOCAB_CURSOR_VERSION,
+        ),
+        (BASELINE_FILE, ShardKind::Baseline, BASELINE_VERSION),
+    ]
+    .into_iter()
+    .find_map(|(file, kind, supported)| {
+        owner_of(name, file).map(|owner| (owner, kind, supported))
+    })?;
+    let skip = |newer_format: bool, reason: String| SkippedShard {
+        name: name.to_string(),
+        device_id: owner.to_string(),
+        kind,
+        newer_format,
+        reason,
+    };
+    let unreadable = |e: serde_json::Error| skip(false, format!("{name} could not be read: {e}"));
+
+    let value: serde_json::Value = match serde_json::from_slice(bytes) {
+        Ok(value) => value,
+        Err(e) => return Some(Err(unreadable(e))),
+    };
+    if let Some(version) = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|version| *version > u64::from(supported))
+    {
+        return Some(Err(skip(
+            true,
+            format!(
+                "{name} was written by a newer version of the app (format {version}, this \
+                 build understands {supported})"
+            ),
+        )));
+    }
+    // Parsed exactly as the reader parses it, from the bytes, so the two cannot
+    // disagree about what is readable.
+    let parsed = match kind {
+        ShardKind::Vocab => serde_json::from_slice::<VocabShard>(bytes).map(|_| None),
+        ShardKind::Cursor => serde_json::from_slice::<CursorShard>(bytes).map(|_| None),
+        ShardKind::VocabCursors => serde_json::from_slice::<VocabCursorShard>(bytes).map(|_| None),
+        ShardKind::Baseline => {
+            serde_json::from_slice::<BaselineShard>(bytes).map(|shard| Some(shard.device_id))
+        }
+        ShardKind::Attempts => unreachable!("an attempt shard is not a document"),
+    };
+    Some(match parsed {
+        Err(e) => Err(unreadable(e)),
+        // The check `read_baselines` makes, for the reason it gives.
+        Ok(Some(claimed)) if claimed != owner => Err(skip(
+            false,
+            format!("{name} claims to be {claimed}'s baseline, and it is in {owner}'s directory"),
+        )),
+        Ok(_) => Ok(()),
+    })
 }
 
 /// What travels for the vocabulary list.
@@ -308,12 +388,98 @@ pub fn merge_vocab_cursors(
 
 /// Settle one entry against another: the later stamp wins, and the device id only
 /// matters when two devices wrote inside the same second.
+///
+/// Two copies with the *same* stamp should be the same record; if one of them says
+/// the entry is removed, the removal wins. Without that last step the answer would
+/// depend on which copy arrived first, and two devices could keep different ones.
 fn later_than(candidate: &SyncedEntry, winner: &SyncedEntry) -> bool {
-    stamp(
-        &candidate.updated_at,
-        &candidate.device_id,
-        candidate.revision,
-    ) > stamp(&winner.updated_at, &winner.device_id, winner.revision)
+    (
+        stamp(
+            &candidate.updated_at,
+            &candidate.device_id,
+            candidate.revision,
+        ),
+        candidate.deleted,
+    ) > (
+        stamp(&winner.updated_at, &winner.device_id, winner.revision),
+        winner.deleted,
+    )
+}
+
+/// Collapse live entries that are the same word in the same group onto one.
+///
+/// ## Why this exists
+///
+/// An entry is named by a random uuid, so two devices that each add 学习 to HSK 1 —
+/// a learner who used both before connecting them, or imported the same list on
+/// each — hold two different entries, and a merge by uuid alone keeps both. The
+/// whole list doubles on the first sync. The engine's own `add_entry` refuses
+/// exactly this duplicate; a sync must not be the way round that rule.
+///
+/// ## The rule, and why every device makes the same choice
+///
+/// For each (text, group) with more than one live entry:
+///
+/// - **The lowest uuid survives.** Uuids are unique, so there is never a tie, and
+///   the choice depends on nothing but the entries themselves.
+/// - **It carries the newest of the duplicates' content and stamp** — pinyin and
+///   meaning, settled by last-writer-wins across the pair exactly as two edits of
+///   one entry would be. Its own uuid and `added_at` stay. If it is already the
+///   newest it is left byte-for-byte as it was.
+/// - **Every other one becomes a tombstone**, with its own stamp and the revision
+///   one higher. That stamp is strictly later than the live copy it replaces, so a
+///   peer still holding that copy loses to it under the ordinary rule, and every
+///   device that computes it computes the same bytes. A genuine edit made later on
+///   a device that has not synced yet still beats it — and is then collapsed again,
+///   its content carried onto the survivor by the rule above.
+///
+/// All of it is a function of the merged entries alone, so it gives the same answer
+/// on every device and in any order, and running it again changes nothing: the
+/// output has one live entry per word and group.
+///
+/// Practice history is not touched: the attempt log is keyed by character, not by
+/// entry. The per-entry counters this device keeps are moved onto the survivor when
+/// the store applies the result (`Db::apply_vocab_view`), and a group position that
+/// named a removed duplicate resolves to its survivor (`Db::vocab_cursor`).
+fn collapse_duplicates(entries: &mut BTreeMap<String, SyncedEntry>) {
+    let mut by_content: BTreeMap<(String, Option<String>), Vec<String>> = BTreeMap::new();
+    for entry in entries.values().filter(|e| !e.deleted) {
+        by_content
+            .entry((entry.text.clone(), entry.group.clone()))
+            .or_default()
+            .push(entry.uuid.clone());
+    }
+    for uuids in by_content.into_values().filter(|uuids| uuids.len() > 1) {
+        // `entries` is a BTreeMap by uuid, so these are already in uuid order.
+        let survivor = uuids[0].clone();
+        let newest = uuids
+            .iter()
+            .map(|uuid| &entries[uuid])
+            .reduce(|winner, candidate| {
+                if later_than(candidate, winner) {
+                    candidate
+                } else {
+                    winner
+                }
+            })
+            .cloned()
+            .expect("a group of duplicates is not empty");
+        if newest.uuid != survivor {
+            let kept = entries
+                .get_mut(&survivor)
+                .expect("the survivor is in the map");
+            *kept = SyncedEntry {
+                uuid: kept.uuid.clone(),
+                added_at: kept.added_at.clone(),
+                ..newest
+            };
+        }
+        for uuid in &uuids[1..] {
+            let gone = entries.get_mut(uuid).expect("a duplicate is in the map");
+            gone.deleted = true;
+            gone.revision += 1;
+        }
+    }
 }
 
 /// Merge two vocabulary views, last writer winning per entry and per group.
@@ -339,6 +505,7 @@ pub fn merge_vocab(
             }
         }
     }
+    collapse_duplicates(&mut entries);
 
     let mut groups: BTreeMap<String, SyncedGroup> = BTreeMap::new();
     for group in local_groups.into_iter().chain(remote_groups) {

@@ -135,26 +135,38 @@ pub fn read_attempts(store: &dyn RemoteStore) -> Result<Vec<MergedAttempt>, Sync
             continue;
         };
         let bytes = store.get(&entry.name)?;
-        let text = String::from_utf8(bytes)
-            .map_err(|e| SyncError::Malformed(format!("{}: not UTF-8: {e}", entry.name)))?;
-        for (number, line) in text.lines().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let record: ShardLine = serde_json::from_str(line).map_err(|e| {
-                SyncError::Malformed(format!("{} line {}: {e}", entry.name, number + 1))
-            })?;
-            out.push(MergedAttempt {
-                device_id: device_id.to_string(),
-                seq: record.seq,
-                ch: record.ch,
-                at: record.at,
-                score: record.score,
-                rating: record.rating,
-            });
-        }
+        out.extend(parse_shard(&entry.name, device_id, &bytes).map_err(SyncError::Malformed)?);
     }
     out.sort_by(canonical);
+    Ok(out)
+}
+
+/// One attempt shard's lines, or what is wrong with it.
+///
+/// All or nothing, for the reason [`read_attempts`] gives: a shard that is
+/// partly readable must not pass for a shorter one.
+pub(crate) fn parse_shard(
+    name: &str,
+    device_id: &str,
+    bytes: &[u8],
+) -> Result<Vec<MergedAttempt>, String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| format!("{name}: not UTF-8: {e}"))?;
+    let mut out = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: ShardLine =
+            serde_json::from_str(line).map_err(|e| format!("{name} line {}: {e}", number + 1))?;
+        out.push(MergedAttempt {
+            device_id: device_id.to_string(),
+            seq: record.seq,
+            ch: record.ch,
+            at: record.at,
+            score: record.score,
+            rating: record.rating,
+        });
+    }
     Ok(out)
 }
 
