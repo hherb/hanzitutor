@@ -44,7 +44,7 @@
   import KanaCanvas from "./KanaCanvas.svelte";
   import SpeakButton from "./SpeakButton.svelte";
   import WordCard from "./WordCard.svelte";
-  import { tick, untrack } from "svelte";
+  import { untrack } from "svelte";
   import { afterGrade } from "./board";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
   import { scheduleNote } from "./review";
@@ -299,11 +299,12 @@
    * Back from a detour. Both Back controls go away when pressed, so focus is put
    * somewhere that says where the learner now is, rather than dropped on the page.
    */
-  async function goBack() {
+  function goBack() {
     if (!back) return;
     go(back);
-    await tick();
-    (positionEl ?? glyphEl)?.focus();
+    // After the screen has redrawn without the control that was pressed (a frame
+    // runs after Svelte's own flush).
+    requestAnimationFrame(() => (positionEl ?? glyphEl)?.focus());
   }
 
   function onStrokes(strokes: Point[][]) {
