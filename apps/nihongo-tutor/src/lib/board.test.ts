@@ -97,7 +97,7 @@ describe("sweepAt", () => {
 });
 
 describe("isStroke", () => {
-  it("keeps a drawn stroke and drops a tap", () => {
+  it("keeps anything with two points and refuses less", () => {
     expect(isStroke([{ x: 1, y: 1 }, { x: 2, y: 2 }])).toBe(true);
     expect(isStroke([{ x: 1, y: 1 }])).toBe(false);
     expect(isStroke([])).toBe(false);

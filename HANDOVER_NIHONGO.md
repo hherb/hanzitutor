@@ -978,6 +978,11 @@ apps/nihongo-tutor/               the app
                                   (36)
   src/lib/board.test.ts   (150)   run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
+  src/lib/strokeInput.ts          LIFTED FROM THE CHINESE APP, UNCHANGED: which
+                                  pointer draws — not a palm or a second finger, a
+                                  pen over a touch — a cancel discards, and a tap is
+                                  a two-point dot (issue #30). The root
+                                  `strokeInput.test.ts` runs both copies
   src/lib/types.ts      (1045)    the IPC shapes, `Character = Drawable`, the
                                   chart's slots as `(string | null)[]`, the
                                   `Prefs` the remembered course crosses in,
@@ -1162,7 +1167,12 @@ to check first when the two apps' interfaces are compared.
 
 `KanaCanvas.svelte` and `board.ts` are new, not lifted: Hanzi Tutor's
 `PracticeCanvas` carries tone-panel and verdict-display concerns this app does
-not have. `KanaCanvas` keeps its name after growing a second and third caller, and
+not have. **The pointer rules are lifted, though**: `src/lib/strokeInput.ts` is
+byte-identical to Hanzi Tutor's (issue #30), so both boards agree on which
+pointer draws, what a cancel does and what a tap is. A tap now reaches the grader
+as a two-point dot rather than being dropped by `isStroke`, so `grade_kana` counts
+the strokes the grader *kept* when it decides whether to look for a joined hand —
+a tap beside さ written in two strokes would otherwise have read as three. `KanaCanvas` keeps its name after growing a second and third caller, and
 its prop is `character` rather than `kana` for the same reason.
 
 ### 7. **The board's geometry belongs to the stylesheet; the script only sets resolution.**

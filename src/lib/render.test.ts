@@ -360,6 +360,15 @@ describe("drawThumb", () => {
     expect(count(ops, "stroke")).toBe(0);
   });
 
+  it("draws a dot for a tap that arrived as two points in one place", () => {
+    // What the boards hand over for a tap since issue #30. A zero-length line is
+    // not something every canvas paints a cap for, so it must not be left to one.
+    const { ctx, ops } = recorder();
+    drawThumb(ctx, { size: 512, strokes: [[p(100, 200), p(100, 200)]], report: null });
+    expect(arcs(ops)).toEqual([{ op: "arc", x: 100, y: 200, r: INK_WIDTH / 2 }]);
+    expect(count(ops, "stroke")).toBe(0);
+  });
+
   it("strokes a line for a real stroke", () => {
     const { ctx, ops } = recorder();
     drawThumb(ctx, { size: 512, strokes: [[p(0, 0), p(50, 0)]], report: null });

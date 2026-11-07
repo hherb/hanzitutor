@@ -83,12 +83,16 @@ export function sweepAt(
 }
 
 /**
- * Whether a stroke is long enough to be a stroke.
+ * Whether a list of points can be a stroke at all: a polyline needs two.
  *
- * A tap or a stray click records one or two points and would otherwise be
- * submitted as an attempt, so the board drops it. The threshold is in design
- * units out of 1024, and it is deliberately tiny: this is a filter for
- * accidents, not a judgement about handwriting, which is the grader's business.
+ * This used to be the board's tap filter, and it was the wrong one: the board
+ * never added the release position, so a quick dot with no move between press and
+ * lift — a dakuten tick, the dots of ふ — was a single point, dropped here, and
+ * the grader reported a missing stroke (issue #30). `strokeInput.ts` now ends
+ * every stroke where the pointer was lifted and doubles a lone point, so what the
+ * board hands over always passes and this is only a guard. Whether a mark is too
+ * small to be a stroke is the grader's stray-tap filter's call, measured in design
+ * units — not a count of samples, which records drawing speed.
  */
 export const MIN_POINTS = 2;
 

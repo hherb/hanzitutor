@@ -1329,6 +1329,48 @@ mod tests {
         assert!(report.is_perfect(), "{report:#?}");
     }
 
+    /// A tap as both boards hand it over: its one point, doubled (issue #30).
+    ///
+    /// A zero-length stroke is the degenerate case of every measure here — no
+    /// arc length to resample along, no extent to normalise, no direction — so the
+    /// contract is pinned rather than assumed. It is a stray, it changes nothing
+    /// the real strokes scored, and nothing it reports is `NaN`, both beside real
+    /// strokes and as the whole attempt. That holds even against a reference whose
+    /// shortest stroke pulls the stray threshold down to a couple of units.
+    #[test]
+    fn a_tap_doubled_into_two_identical_points_is_a_stray() {
+        let tap = vec![Point::new(300.0, 300.0); 2];
+        let mut tiny = shi_reference();
+        tiny.push(line((700.0, 700.0), (704.0, 700.0), 2));
+
+        for reference in [shi_reference(), tiny] {
+            for options in [GradeOptions::default(), GradeOptions::tracing()] {
+                let clean = grade(&reference, &reference, &options);
+                let mut attempt = reference.clone();
+                attempt.insert(1, tap.clone());
+                let report = grade(&reference, &attempt, &options);
+                assert_eq!(report.stray_strokes, 1);
+                assert_eq!(report.given_strokes, reference.len());
+                assert!(report.count_ok);
+                assert_eq!(report.overall, clean.overall, "{report:#?}");
+
+                let alone = grade(&reference, std::slice::from_ref(&tap), &options);
+                assert_eq!(alone.stray_strokes, 1);
+                assert_eq!(alone.given_strokes, 0);
+                assert_eq!(alone.overall, 0.0);
+                for value in [
+                    alone.shape_score,
+                    alone.position_score,
+                    alone.ink_score,
+                    alone.ink_coverage,
+                    alone.order_score,
+                ] {
+                    assert!(value.is_finite(), "{alone:#?}");
+                }
+            }
+        }
+    }
+
     /// Coordinates no pointer can produce must be graded, not spun on.
     ///
     /// `Point::distance_to` squares its deltas in `f32`, so a coordinate near

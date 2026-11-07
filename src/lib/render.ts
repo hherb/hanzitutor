@@ -529,11 +529,15 @@ export function drawThumb(ctx: CanvasRenderingContext2D, scene: ThumbScene) {
 function strokePath(ctx: CanvasRenderingContext2D, points: Point[]) {
   if (points.length === 0) return;
 
-  if (points.length === 1) {
-    // A single tap produces no line; draw a dot so the mark is visible.
+  // A tap produces no line — one point, or since issue #30 the two identical
+  // points the boards hand over for one — so draw a dot to keep the mark visible.
+  // Whether a zero-length line gets round caps differs between canvases, so it is
+  // not left to the line.
+  const first = points[0];
+  if (points.every((point) => point.x === first.x && point.y === first.y)) {
     ctx.fillStyle = ctx.strokeStyle;
     ctx.beginPath();
-    ctx.arc(points[0].x, points[0].y, INK_WIDTH / 2, 0, Math.PI * 2);
+    ctx.arc(first.x, first.y, INK_WIDTH / 2, 0, Math.PI * 2);
     ctx.fill();
     return;
   }
