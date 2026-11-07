@@ -139,7 +139,7 @@
    * practice screen only needs to know *whether* there is a voice at all
    * ([`voice`]).
    */
-  let voices = $state<VoicesView>({ available: [], active: null });
+  let voices = $state<VoicesView>({ available: [], active: null, chosen: null });
   /** True while the voice list is still being read. */
   let voicesLoading = $state(true);
 
