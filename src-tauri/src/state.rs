@@ -413,6 +413,62 @@ pub struct BackupOutcome {
     pub message: String,
 }
 
+/// What an import of a vocabulary list left out or moved, as clauses for the
+/// sentence the interface shows, in the words the rules it was held to call for.
+///
+/// `source` names what was read — "file" or "backup" — because a skipped
+/// duplicate is a repeat inside it when the list was replaced, and either that or
+/// a word already in the list when it was added to.
+pub(crate) fn import_notes(
+    summary: &hanzi_core::vocab::ImportSummary,
+    rules: hanzi_core::vocab::ImportRules,
+    source: &str,
+) -> Vec<String> {
+    let typed = rules == hanzi_core::vocab::ImportRules::Typed;
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    let were = |n: usize| if n == 1 { "was" } else { "were" };
+    let mut notes = Vec::new();
+    if summary.skipped_duplicates > 0 {
+        let n = summary.skipped_duplicates;
+        notes.push(if summary.replaced {
+            format!(
+                "skipped {} repeated in the {source}",
+                plural(n, "entry", "entries")
+            )
+        } else {
+            format!(
+                "skipped {} already in your list or repeated in the {source}",
+                plural(n, "entry", "entries")
+            )
+        });
+    }
+    if summary.skipped_invalid > 0 {
+        notes.push(format!(
+            "left out {} that {} empty{} or held a control character",
+            plural(summary.skipped_invalid, "entry", "entries"),
+            were(summary.skipped_invalid),
+            if typed { ", too long" } else { "" },
+        ));
+    }
+    if summary.unfiled_invalid_group > 0 {
+        notes.push(format!(
+            "filed {} under no group because the group name {}held a control character",
+            plural(summary.unfiled_invalid_group, "entry", "entries"),
+            if typed { "was too long or " } else { "" },
+        ));
+    }
+    if summary.skipped_invalid_groups > 0 {
+        notes.push(format!(
+            "left out {} that {} blank{} or held a control character",
+            plural(summary.skipped_invalid_groups, "group name", "group names"),
+            were(summary.skipped_invalid_groups),
+            if typed { ", too long" } else { "" },
+        ));
+    }
+    notes
+}
+
 /// A sentence for the learner out of what a restore did.
 ///
 /// Every number here is one they can check against the file, and the two that
@@ -433,18 +489,14 @@ fn describe_restore(
     } else {
         parts.push(format!("added {} entries to your list", summary.added));
     }
-    if summary.skipped_duplicates > 0 {
-        parts.push(format!("left {} already there", summary.skipped_duplicates));
-    }
     if summary.groups_added > 0 {
         parts.push(format!("{} new groups", summary.groups_added));
     }
-    if summary.skipped_invalid > 0 {
-        parts.push(format!(
-            "left out {} that were empty, too long or held a control character",
-            summary.skipped_invalid
-        ));
-    }
+    parts.extend(import_notes(
+        summary,
+        hanzi_core::vocab::ImportRules::Restore,
+        "backup",
+    ));
 
     if attempts_added > 0 {
         parts.push(format!("recovered {attempts_added} attempts"));
@@ -1373,7 +1425,13 @@ impl AppState {
             let mut vocab = self.lock_vocab();
             let summary = vocab
                 .store
-                .import_json(&vocabulary_json, merge)
+                // The app's own data coming back: lenient on length, as the
+                // sync and the migration that wrote it never checked it.
+                .import_json_with(
+                    &vocabulary_json,
+                    merge,
+                    hanzi_core::vocab::ImportRules::Restore,
+                )
                 .map_err(|e| e.to_string())?;
             let warning = vocab.save();
             (summary, warning)
@@ -1577,6 +1635,46 @@ fn warm_voice(speaker: Arc<Speaker>, preferred: Option<String>) {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    /// The import's clauses say what happened in the words that fit it (issue
+    /// #40): a duplicate in a replace is a repeat in the file, and a restore,
+    /// which keeps over-long rows, never blames length.
+    #[test]
+    fn import_notes_say_what_was_left_out_and_why() {
+        use hanzi_core::vocab::{ImportRules, ImportSummary};
+        let summary = ImportSummary {
+            skipped_duplicates: 2,
+            skipped_invalid: 1,
+            unfiled_invalid_group: 3,
+            skipped_invalid_groups: 1,
+            replaced: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            import_notes(&summary, ImportRules::Typed, "file"),
+            [
+                "skipped 2 entries repeated in the file",
+                "left out 1 entry that was empty, too long or held a control character",
+                "filed 3 entries under no group because the group name was too long or held \
+                 a control character",
+                "left out 1 group name that was blank, too long or held a control character",
+            ]
+        );
+        let merged = ImportSummary {
+            replaced: false,
+            ..summary
+        };
+        assert_eq!(
+            import_notes(&merged, ImportRules::Restore, "backup"),
+            [
+                "skipped 2 entries already in your list or repeated in the backup",
+                "left out 1 entry that was empty or held a control character",
+                "filed 3 entries under no group because the group name held a control character",
+                "left out 1 group name that was blank or held a control character",
+            ]
+        );
+        assert!(import_notes(&ImportSummary::default(), ImportRules::Typed, "file").is_empty());
+    }
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()

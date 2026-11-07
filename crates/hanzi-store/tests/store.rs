@@ -1295,6 +1295,48 @@ fn a_removed_entry_leaves_a_tombstone_rather_than_nothing() {
 }
 
 #[test]
+fn a_group_removed_onto_an_unfiled_twin_tombstones_the_copy_it_merged_away() {
+    // Issue #40: unfiling a group's entries merges one whose word is already
+    // unfiled into that entry, rather than making a second copy. The copy merged
+    // away has to reach the database as a tombstone, for the reason above, and
+    // the survivor has to stay live with the counters it was given.
+    let dir = dir("vocab-merge-tombstone");
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    let survivor = vocab.add_entry("学习", "", "to study", None).unwrap().id;
+    let moved = vocab
+        .add_entry("学习", "xuéxí", "", Some("Lesson 1"))
+        .unwrap()
+        .id;
+    vocab.record_attempt(moved, 80.0).unwrap();
+    vocab.save().unwrap();
+
+    vocab.remove_group("Lesson 1", false).unwrap();
+    vocab.save().unwrap();
+
+    assert_eq!(
+        vocab_row(&db, moved).deleted,
+        1,
+        "the merged-away copy is a tombstone"
+    );
+    assert_eq!(
+        vocab_row(&db, survivor).deleted,
+        0,
+        "the survivor stays live"
+    );
+    let reopened = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(reopened.entries().len(), 1);
+    let entry = &reopened.entries()[0];
+    assert_eq!(entry.id, survivor);
+    assert_eq!(entry.group, None);
+    assert_eq!(entry.pinyin, "xuéxí");
+    assert_eq!(entry.attempts, 1);
+    assert_eq!(entry.best_score, Some(80.0));
+
+    finish(&dir);
+}
+
+#[test]
 fn a_schema_three_database_gains_vocabulary_identity_without_reusing_a_name() {
     // The upgrade path for schema 3 → 4. Every entry that predates the columns
     // needs a name no other device will ever pick, and there is nothing in the row

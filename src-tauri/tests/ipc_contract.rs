@@ -3257,7 +3257,13 @@ fn a_backup_carries_the_list_and_the_log_and_restores_both() {
     // attempt is named by (device, seq), and the pair already names it.
     let again = target.import_backup(&file, true).unwrap();
     assert_eq!(again.view.entries.len(), 2, "no duplicate entries");
-    assert!(again.message.contains("left 2 already there"), "{}", again.message);
+    assert!(
+        again
+            .message
+            .contains("skipped 2 entries already in your list or repeated in the backup"),
+        "{}",
+        again.message
+    );
     assert!(
         again.message.contains("every attempt in it was already in your log"),
         "{}",

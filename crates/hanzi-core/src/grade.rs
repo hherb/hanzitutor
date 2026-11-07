@@ -204,6 +204,10 @@ pub const RESAMPLE_K_RANGE: std::ops::RangeInclusive<usize> = 2..=256;
 /// The widest pen, in design units out of 1024, the ink measure is asked to
 /// rasterise; see [`GradeOptions::clamped`]. An eighth of the box, more than
 /// three times the canvas pen.
+///
+/// This bounds the *value*, not the work: each segment's rasterised box is
+/// already clipped to the grid, so what bounds the ink measure's time is how
+/// many segments there are — [`MAX_STROKE_POINTS`] and [`MAX_ATTEMPT_POINTS`].
 pub const MAX_INK_WIDTH: f32 = 128.0;
 
 /// The most strokes of one attempt the grader pairs (issue #40).
@@ -217,6 +221,63 @@ pub const MAX_INK_WIDTH: f32 = 128.0;
 /// count cannot be right. Every attempt of up to this many real strokes is graded
 /// exactly as before.
 pub const MAX_ATTEMPT_STROKES: usize = 128;
+
+/// The most points of one stroke the grader looks at (issue #40).
+///
+/// Shape comparison walks every point of a stroke for every reference stroke,
+/// and the ink measure rasterises every segment, whose box can be the whole grid
+/// when consecutive points are far apart: one zig-zag stroke of 100,000 points
+/// took six seconds to grade against 一. A stroke with more points than this is
+/// thinned to exactly this many, evenly by index and keeping its first and last
+/// point (see `decimate`), which on samples that dense moves the geometry by
+/// less than the spacing of the samples it drops.
+///
+/// No pointer comes near it. Hanzi Tutor's board keeps samples at least 2 units
+/// apart and stops a stroke at 1,024 points; Nihongo Tutor's keeps one per
+/// pointer event, and a pen reporting at 240 Hz — coalesced events included —
+/// takes seventeen seconds of one stroke to reach 4,096.
+pub const MAX_STROKE_POINTS: usize = 4096;
+
+/// The most points of a whole attempt the grader looks at (issue #40).
+///
+/// The per-stroke bound alone still allows [`MAX_ATTEMPT_STROKES`] × 4,096 —
+/// half a million points, and seconds of rasterising for a many-stroke
+/// character. When the kept strokes hold more than this between them, each is
+/// thinned to an equal share of it (strokes already under their share are left
+/// alone), so the total never exceeds it. A real attempt is far below: a
+/// thirty-stroke kanji written at 240 Hz holds about six thousand points.
+pub const MAX_ATTEMPT_POINTS: usize = 16_384;
+
+/// `points` thinned to at most `limit`, evenly by index, keeping the first and
+/// last point. Returned unchanged when it is already within the limit.
+fn decimate(points: &[Point], limit: usize) -> Vec<Point> {
+    let limit = limit.max(2);
+    if points.len() <= limit {
+        return points.to_vec();
+    }
+    // In `u64`, so the product cannot overflow a 32-bit `usize`.
+    let last = (points.len() - 1) as u64;
+    let steps = (limit - 1) as u64;
+    (0..limit as u64)
+        .map(|i| points[(i * last / steps) as usize])
+        .collect()
+}
+
+/// Hold the kept strokes to [`MAX_ATTEMPT_POINTS`] between them, each to an
+/// equal share, when they hold more. Each is already within
+/// [`MAX_STROKE_POINTS`].
+fn bound_attempt_points(kept: &mut [Kept]) {
+    let total: usize = kept.iter().map(|k| k.points.len()).sum();
+    if total <= MAX_ATTEMPT_POINTS {
+        return;
+    }
+    let share = MAX_ATTEMPT_POINTS / kept.len();
+    for k in kept.iter_mut() {
+        if k.points.len() > share {
+            k.points = decimate(&k.points, share);
+        }
+    }
+}
 
 /// What went wrong with one reference stroke.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -499,10 +560,11 @@ fn grade_inner(
         } else {
             kept.push(Kept {
                 original_index: i,
-                points: stroke.clone(),
+                points: decimate(stroke, MAX_STROKE_POINTS),
             });
         }
     }
+    bound_attempt_points(&mut kept);
 
     // 2. Score and pair the strokes.
     //
@@ -1228,6 +1290,130 @@ mod tests {
         let report = grade(&reference, at_cap, &GradeOptions::default());
         assert_eq!(report.given_strokes, MAX_ATTEMPT_STROKES);
         assert_eq!(report.stray_strokes, 0);
+    }
+
+    /// A zig-zag from corner to corner of the box, drifting a little each time:
+    /// every segment's raster box is nearly the whole grid, the most work one
+    /// segment can ask of the ink measure.
+    fn zigzag(points: usize, x0: f32, x1: f32) -> Vec<Point> {
+        (0..points)
+            .map(|i| {
+                let drift = 100.0 * i as f32 / (points - 1) as f32;
+                match i % 2 {
+                    0 => Point::new(x0 + drift, 40.0 + drift),
+                    _ => Point::new(x1 - drift, 980.0 - drift),
+                }
+            })
+            .collect()
+    }
+
+    /// A stroke of far more points than any pointer produces is graded quickly,
+    /// and graded as the same stroke thinned to [`MAX_STROKE_POINTS`] (issue
+    /// #40).
+    ///
+    /// One such stroke of 100,000 points — about 2.5 MB of JSON — took six
+    /// seconds against 一, and minutes against a many-stroke character. The time
+    /// bound is loose on purpose: it fails the unbounded grader by a wide margin
+    /// and passes a loaded machine with one to spare.
+    #[test]
+    fn a_stroke_of_absurdly_many_points_is_graded_quickly() {
+        let reference = vec![line((120.0, 400.0), (900.0, 400.0), 5)];
+        let posted = zigzag(100_000, 120.0, 900.0);
+        let started = std::time::Instant::now();
+        let report = grade(
+            &reference,
+            std::slice::from_ref(&posted),
+            &GradeOptions::default(),
+        );
+        let elapsed = started.elapsed();
+        assert!(elapsed.as_secs_f32() < 3.0, "took {elapsed:?}");
+        assert_eq!(report.given_strokes, 1);
+        assert!((0.0..=100.0).contains(&report.overall));
+        for value in [report.shape_score, report.position_score, report.ink_score] {
+            assert!(value.is_finite() && (0.0..=1.0).contains(&value));
+        }
+
+        let thinned = decimate(&posted, MAX_STROKE_POINTS);
+        assert_eq!(thinned.len(), MAX_STROKE_POINTS);
+        assert_eq!(thinned.first(), posted.first());
+        assert_eq!(thinned.last(), posted.last());
+        let expected = grade(&reference, &[thinned], &GradeOptions::default());
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+    }
+
+    /// Thinning never touches a stroke or an attempt within the bounds, so every
+    /// real attempt is graded on exactly the points it was drawn with.
+    ///
+    /// A stroke at [`MAX_STROKE_POINTS`] passes whole, and so does an attempt of
+    /// thirty-six 400-point strokes — denser than either board produces for the
+    /// most strokes any character has.
+    #[test]
+    fn real_strokes_are_graded_on_every_point_they_were_drawn_with() {
+        let long = line((120.0, 400.0), (900.0, 400.0), MAX_STROKE_POINTS);
+        assert_eq!(decimate(&long, MAX_STROKE_POINTS), long);
+        assert_eq!(decimate(&long[..2], MAX_STROKE_POINTS), long[..2].to_vec());
+
+        let strokes: Vec<Vec<Point>> = (0..36)
+            .map(|i| {
+                let y = 60.0 + 25.0 * i as f32;
+                line((100.0, y), (900.0, y), 400)
+            })
+            .collect();
+        let mut kept: Vec<Kept> = strokes
+            .iter()
+            .enumerate()
+            .map(|(i, points)| Kept {
+                original_index: i,
+                points: decimate(points, MAX_STROKE_POINTS),
+            })
+            .collect();
+        bound_attempt_points(&mut kept);
+        for (k, drawn) in kept.iter().zip(&strokes) {
+            assert_eq!(&k.points, drawn);
+        }
+    }
+
+    /// Past [`MAX_ATTEMPT_POINTS`] every stroke gets an equal share of it, ends
+    /// kept, and a stroke under its share is left alone.
+    #[test]
+    fn an_attempt_past_the_point_budget_is_thinned_to_it() {
+        let mut kept: Vec<Kept> = (0..MAX_ATTEMPT_STROKES)
+            .map(|i| Kept {
+                original_index: i,
+                points: if i == 0 {
+                    line((0.0, 0.0), (10.0, 10.0), 3)
+                } else {
+                    zigzag(MAX_STROKE_POINTS, 100.0, 900.0)
+                },
+            })
+            .collect();
+        let before: Vec<Vec<Point>> = kept.iter().map(|k| k.points.clone()).collect();
+        bound_attempt_points(&mut kept);
+        let total: usize = kept.iter().map(|k| k.points.len()).sum();
+        assert!(total <= MAX_ATTEMPT_POINTS, "{total}");
+        assert_eq!(kept[0].points, before[0], "under its share, so untouched");
+        for (k, was) in kept.iter().zip(&before).skip(1) {
+            assert_eq!(k.points.len(), MAX_ATTEMPT_POINTS / MAX_ATTEMPT_STROKES);
+            assert_eq!(k.points.first(), was.first());
+            assert_eq!(k.points.last(), was.last());
+        }
+
+        // And through the grader, against a many-stroke character, in bounded time.
+        let reference: Vec<Vec<Point>> = (0..30)
+            .map(|i| {
+                let y = 60.0 + 30.0 * i as f32;
+                line((100.0, y), (900.0, y), 5)
+            })
+            .collect();
+        let attempt: Vec<Vec<Point>> = (0..30).map(|_| zigzag(100_000, 100.0, 900.0)).collect();
+        let started = std::time::Instant::now();
+        let report = grade(&reference, &attempt, &GradeOptions::default());
+        let elapsed = started.elapsed();
+        assert!(elapsed.as_secs_f32() < 10.0, "took {elapsed:?}");
+        assert!((0.0..=100.0).contains(&report.overall));
     }
 
     // ---- assignment solver -------------------------------------------------
