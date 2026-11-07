@@ -1089,33 +1089,52 @@ after each item) both do this now. The shape is the rule, not either file.
     the IPC handler, which the webview invokes on the main thread — checked in
     `tauri-macros` 2.7.3, where it is `body_blocking`; `#[tauri::command(async)]`
     or an `async fn` is `body_async`, spawned on the Tokio runtime (issue #26).
-    So `listen_start` (up to the eight-second open timeout behind a microphone
-    prompt), `listen_stop` (the first recognition loads 228 MB of ONNX, then
-    decodes), `say_speak`, `asr_install`, `asr_remove`, `say_remove` and
-    `sync_set_lock` (the fingerprint prompt, and Android's `canLock` round trip)
-    are `(async)` in the full app, and the microphone and recogniser commands
-    likewise in the Tone Trainer. Three consequences to keep:
+    `(async)` on a sync `fn` runs the body on one of the runtime's **core**
+    workers, of which there are as many as the device has cores, so the commands
+    that block longest go one step further: an `async fn` that hands its work to
+    the blocking pool through `on_a_blocking_thread` (`commands.rs`, and its twin
+    in the Tone Trainer's `lib.rs`). That is `listen_start` (up to the
+    eight-second open timeout behind a microphone prompt), `listen_stop` (the
+    first recognition loads 228 MB of ONNX, then decodes), `listen_cancel`,
+    `say_speak` and `sync_set_lock` (a fingerprint prompt left open, and
+    Android's `canLock` round trip). `asr_install`, `asr_remove` and `say_remove`
+    are `(async)`. Five consequences to keep:
 
     - **A lock a moved command holds for seconds must not be one a main-thread
       command takes**, or the freeze only moves. The recorder's slot, the
       recogniser's and the synthesiser's are taken only by commands that are off
       it too; the main-thread readers (`microphone_status`, `asr_status`,
-      `speech_target`) take none of them.
+      `speech_target`) take none of them. Those slots recover from poisoning
+      (`PoisonError::into_inner`) rather than `expect`, because off the main
+      thread a panic leaves the app running and would otherwise make every later
+      call panic too.
     - **Two of them can now overlap, so the overlaps are decided.** An uninstall
       holds the model's slot *through* its delete and a load re-checks the files
       once it has the slot (`Asr::remove`/`engine`, `Say::remove`/`speak`), so a
-      model is never loaded from a half-deleted directory; a recognition already
-      decoding keeps the model it has. `SyncService::switching` lets one writer
-      of the stored sign-in in at a time (connect, the switch, disconnect), so two
-      presses cannot leave the switch disagreeing with the item. Both interfaces
-      refuse a new recording while one is being scored, and say "Scoring…"; the
-      phrases panel plays only the latest tap's synthesis, since two need not
-      come back in the order they were asked for.
+      model is never loaded from a half-deleted directory — which is not merely an
+      error: sherpa-onnx throws a C++ exception on a model it cannot parse, and that
+      aborts the process. A recognition already decoding keeps the model it has.
+      `Say::speak` skips a phrase a later tap overtook while it waited
+      (`SUPERSEDED`). `SyncService::switching` lets one writer of the stored
+      sign-in in at a time (connect, the switch, disconnect); disconnect only
+      *tries* it, so a fingerprint prompt left open cannot hold the sync gate.
+    - **The window is not frozen while a recording opens or is judged, so the
+      interface has to handle input meanwhile.** `src/lib/pushToTalk.ts` (copied
+      verbatim to the Tone Trainer; `pushToTalk.test.ts` runs both copies) owns
+      it: a release while the device is still opening is remembered and the
+      recording cancelled once it opens (the button is therefore *not* disabled
+      while it opens), each attempt has a generation that a change of target moves
+      on so a late answer is dropped, a running recording is cancelled when the
+      target moves, and no new recording starts while one is being scored. Both
+      apps say "Scoring…" meanwhile. The phrases panel plays only the latest tap,
+      and a new phrase cuts off the synthesised one still sounding.
     - **`speak` and `stop_speaking` stay on the main thread on purpose**: they are
       quick, and each tap cuts off the one before, so two that overtook each other
-      on the runtime would leave the wrong word speaking. `the_slow_commands_do_not_run_on_the_main_thread`
+      on the runtime would leave the wrong word speaking.
+    - **The source is what is tested.** `the_slow_commands_do_not_run_on_the_main_thread`
       (`tests/ipc_contract.rs`, and `apps/tone-trainer/src-tauri/tests/dispatch.rs`)
-      reads the source and pins both halves.
+      reads it and pins all three groups: off the main thread, on the blocking
+      pool, and staying put.
 
 ## 5. The verification loop
 

@@ -12,7 +12,7 @@ use hanzi_core::{
 };
 use serde::Serialize;
 use std::sync::{Arc, MutexGuard};
-use tauri::State;
+use tauri::{Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 use hanzi_hearing::AsrStatus;
@@ -734,6 +734,31 @@ pub fn speech_report() -> Result<SpeechReport, String> {
     }
 }
 
+/// Run `work` on Tauri's blocking pool with the managed state `S`, and hand back
+/// what it returns.
+///
+/// For the commands that block for seconds (issue #26). `#[tauri::command(async)]`
+/// already takes a command off the main thread, but it runs the body on one of the
+/// async runtime's *core* workers, and there are only as many of those as the
+/// device has cores: a few phrase taps queued on the synthesiser, or a fingerprint
+/// prompt left open, would park enough of them to stall every other async command —
+/// `sync_status`, the recording that was just released — until they let go. The
+/// blocking pool is where Tokio expects work that waits.
+///
+/// The state is reached through the `AppHandle` rather than a borrowed `State`,
+/// because the work outlives the command's borrow. A panic in it becomes an error
+/// the interface can show, rather than a promise that never settles.
+async fn on_a_blocking_thread<S, T, F>(app: tauri::AppHandle, work: F) -> Result<T, String>
+where
+    S: Send + Sync + 'static,
+    T: Send + 'static,
+    F: FnOnce(&S) -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || work(app.state::<S>().inner()))
+        .await
+        .map_err(|e| format!("this stopped before it finished: {e}"))?
+}
+
 /// Begin listening. Resolves once the device is actually open, so a failure is
 /// reported to the caller rather than swallowed in the audio thread.
 ///
@@ -743,9 +768,10 @@ pub fn speech_report() -> Result<SpeechReport, String> {
 /// window frozen for all of it. The recorder's slot is held while the device opens,
 /// so a [`listen_stop`] that arrives meanwhile waits for it rather than finding
 /// nothing to stop — and no command that runs on the main thread takes that slot.
-#[tauri::command(async)]
-pub fn listen_start(state: State<'_, AppState>) -> Result<(), String> {
-    state.capture.start()
+/// On the blocking pool rather than a runtime worker; see [`on_a_blocking_thread`].
+#[tauri::command]
+pub async fn listen_start(app: tauri::AppHandle) -> Result<(), String> {
+    on_a_blocking_thread(app, |state: &AppState| state.capture.start()).await
 }
 
 /// Stop listening and judge what was heard against `text`.
@@ -766,7 +792,7 @@ pub fn listen_start(state: State<'_, AppState>) -> Result<(), String> {
 /// can be neither is not offered a button in the first place — see
 /// [`speech_target`].
 ///
-/// **Off the main thread, and that is the point of the attribute** (issue #26). The
+/// **Off the main thread, and that is the point of the `async`** (issue #26). The
 /// first call after the model is installed loads 228 MB of ONNX before it decodes,
 /// and on the main thread that froze the window for seconds after the button was
 /// released — with the "busy" state the interface sets unable to paint until it was
@@ -774,11 +800,33 @@ pub fn listen_start(state: State<'_, AppState>) -> Result<(), String> {
 /// recogniser's slot is shared only with [`asr_install`] and [`asr_remove`], which
 /// are off the main thread too, and is not held during the decode itself. Two of
 /// these cannot judge one recording: the first takes it out of the recorder, and the
-/// second is told nothing is being recorded.
-#[tauri::command(async)]
-pub fn listen_stop(state: State<'_, AppState>, text: String) -> Result<ToneResult, String> {
-    let recording = state.capture.stop()?;
-    Ok(state.score_speech(&recording, &text))
+/// second is told nothing is being recorded. On the blocking pool rather than a
+/// runtime worker, for the decode's length; see [`on_a_blocking_thread`].
+#[tauri::command]
+pub async fn listen_stop(app: tauri::AppHandle, text: String) -> Result<ToneResult, String> {
+    on_a_blocking_thread(app, move |state: &AppState| {
+        let recording = state.capture.stop()?;
+        Ok(state.score_speech(&recording, &text))
+    })
+    .await
+}
+
+/// Stop listening and throw the recording away.
+///
+/// For a recording nothing should be judged from: the button came up before the
+/// device had opened, so nothing the learner said is in it, or the board moved on
+/// while it ran. Stopping is all this does — a judgement posted for a board the
+/// learner has left is worse than a recording discarded — and a failure means
+/// nothing was open, which is what this wanted. It waits on the recorder's slot,
+/// which a device still opening holds for seconds, so it runs where
+/// [`listen_start`] does.
+#[tauri::command]
+pub async fn listen_cancel(app: tauri::AppHandle) -> Result<(), String> {
+    on_a_blocking_thread(app, |state: &AppState| {
+        let _ = state.capture.stop();
+        Ok(())
+    })
+    .await
 }
 
 // ---- Speech recognition (ROADMAP.md M12) ----------------------------------
@@ -848,8 +896,10 @@ pub fn say_status(state: State<'_, AppState>) -> SayStatus {
 /// Fetch and verify the synthesis model.
 ///
 /// Like [`asr_install`], this is opt-in and never on a path a learner must take.
-/// It blocks until the files are on disk; the settings screen calls it from a
-/// background task and polls [`say_status`] for progress.
+/// It returns as soon as the download has started on a thread of its own — the
+/// files arrive later — and the settings screen polls [`say_status`] for the
+/// progress and the outcome. That is also why it can stay on the main thread: it
+/// takes the install slot for a moment and nothing else.
 #[tauri::command]
 pub fn say_install(state: State<'_, AppState>) -> Result<(), String> {
     state.say.install()
@@ -887,10 +937,13 @@ pub struct SpokenAudio {
 /// Off the main thread (issue #26): the first phrase loads the model, and every
 /// phrase runs it over up to [`SAY_MAX_CHARS`] characters, which is long enough to
 /// freeze the window. Two taps can now overlap; the model's slot makes them take
-/// turns, so they are synthesised one after the other rather than at once.
-#[tauri::command(async)]
-pub fn say_speak(state: State<'_, AppState>, text: String) -> Result<Option<SpokenAudio>, String> {
-    let trimmed = text.trim();
+/// turns, and a tap that a later one has overtaken while it waited is not
+/// synthesised at all — see `Say::speak`. On the blocking pool rather than a
+/// runtime worker, because the taps that wait their turn would otherwise each park
+/// one; see [`on_a_blocking_thread`].
+#[tauri::command]
+pub async fn say_speak(app: tauri::AppHandle, text: String) -> Result<Option<SpokenAudio>, String> {
+    let trimmed = text.trim().to_string();
     if trimmed.is_empty() {
         return Err("There is nothing to speak.".to_string());
     }
@@ -900,10 +953,16 @@ pub fn say_speak(state: State<'_, AppState>, text: String) -> Result<Option<Spok
             SAY_MAX_CHARS
         ));
     }
-    Ok(state.say.speak(trimmed)?.map(|(samples, sample_rate)| SpokenAudio {
-        samples,
-        sample_rate,
-    }))
+    on_a_blocking_thread(app, move |state: &AppState| {
+        Ok(state
+            .say
+            .speak(&trimmed)?
+            .map(|(samples, sample_rate)| SpokenAudio {
+                samples,
+                sample_rate,
+            }))
+    })
+    .await
 }
 
 // ---- Personal vocabulary list ---------------------------------------------
@@ -1685,8 +1744,10 @@ pub fn sync_auto(state: State<'_, AppState>, sync: State<'_, Arc<SyncService>>) 
 /// draw it, and blocking it until the learner answers. On Android, asking whether a
 /// fingerprint can be asked for at all waits on the platform's main thread. Two
 /// presses cannot interleave: `SyncService` lets one writer of the sign-in in at a
-/// time.
-#[tauri::command(async)]
-pub fn sync_set_lock(sync: State<'_, Arc<SyncService>>, locked: bool) -> Result<SyncView, String> {
-    sync.set_lock(locked)
+/// time. On the blocking pool rather than a runtime worker, because a prompt left
+/// open holds the thread for as long as the learner leaves it; see
+/// [`on_a_blocking_thread`].
+#[tauri::command]
+pub async fn sync_set_lock(app: tauri::AppHandle, locked: bool) -> Result<SyncView, String> {
+    on_a_blocking_thread(app, move |sync: &Arc<SyncService>| sync.set_lock(locked)).await
 }

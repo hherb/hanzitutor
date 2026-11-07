@@ -112,8 +112,20 @@
     setRate(rate);
   });
 
+  /**
+   * The latest tap, by number.
+   *
+   * Synthesis runs off the window's thread, so another phrase can be tapped while
+   * one is being made — and the two need not come back in the order they were
+   * asked for. Each tap takes a number, and only the latest one's answer is played
+   * or reported; a number rather than the phrase's id, so tapping the same phrase
+   * twice is two taps too. Not state: nothing renders it.
+   */
+  let tap = 0;
+
   function select(next: AudioSource) {
     if (next === source) return;
+    tap++;
     stop();
     playingId = null;
     source = next;
@@ -121,6 +133,7 @@
   }
 
   async function speak(phrase: GradedPhrase) {
+    const mine = ++tap;
     playingId = phrase.id;
     try {
       // A phrase with no recording is spoken by the app itself, using the
@@ -130,10 +143,7 @@
       const clip = slow ? phrase.audio?.slow : phrase.audio?.normal;
       if (!clip) {
         const spoken = await api.saySpeak(phrase.text);
-        // Synthesis runs off the window's thread now, so another phrase can be
-        // tapped while this one is being made — and the two need not come back in
-        // the order they were asked for. Only the latest tap is played.
-        if (playingId !== phrase.id) return;
+        if (mine !== tap) return;
         if (!spoken) {
           error =
             "That phrase has no recording, and no speech model is installed. " +
@@ -146,6 +156,10 @@
       }
       await play(clip, rate);
     } catch (cause) {
+      // A tap a later one overtook says nothing: its failure — including the
+      // backend's "a later phrase was asked for" — is about a phrase the learner
+      // has moved on from.
+      if (mine !== tap) return;
       // A clip that will not play is worth saying out loud rather than leaving a
       // row that looks like it played and made no sound.
       error = `Could not play ${phrase.text}: ${cause}`;

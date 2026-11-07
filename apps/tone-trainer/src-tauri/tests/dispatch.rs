@@ -10,11 +10,26 @@
 
 use std::path::Path;
 
-/// `true` when Tauri runs the command `name` in `source` off the main thread.
+/// `true` when Tauri runs the command `name` in `source` off the main thread: an
+/// `async` argument to the attribute, alone or beside others, or an `async fn`.
 fn runs_off_the_main_thread(source: &str, name: &str) -> bool {
-    let needle = format!("fn {name}(");
+    let head = command_head(source, name);
+    let close = head.find(']').expect("the attribute closes");
+    let arguments = head["#[tauri::command".len()..close].trim();
+    let async_attribute = arguments
+        .strip_prefix('(')
+        .and_then(|inner| inner.strip_suffix(')'))
+        .is_some_and(|inner| inner.split(',').any(|argument| argument.trim() == "async"));
+    let async_fn = head[close + 1..]
+        .split_whitespace()
+        .any(|word| word == "async");
+    async_attribute || async_fn
+}
+
+/// Everything from the command attribute above `fn name(` to the name itself.
+fn command_head<'a>(source: &'a str, name: &str) -> &'a str {
     let at = source
-        .find(&needle)
+        .find(&format!("fn {name}("))
         .unwrap_or_else(|| panic!("{name} should still be a command"));
     let before = &source[..at];
     let attribute = before
@@ -25,7 +40,16 @@ fn runs_off_the_main_thread(source: &str, name: &str) -> bool {
         !head.contains("fn "),
         "the nearest command attribute above {name} belongs to another function"
     );
-    head.starts_with("#[tauri::command(async)]") || head.contains("async ")
+    head
+}
+
+/// The body of the function `name`, up to its closing brace at the margin.
+fn body_of<'a>(source: &'a str, name: &str) -> &'a str {
+    let at = source
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("{name} should still be a command"));
+    let rest = &source[at..];
+    &rest[..rest.find("\n}\n").expect("the function ends")]
 }
 
 fn source() -> String {
@@ -55,6 +79,38 @@ fn the_slow_commands_do_not_run_on_the_main_thread() {
             "{name} is a plain command again, so it runs on the main thread and freezes \
              the window while it works: mark it `#[tauri::command(async)]`"
         );
+    }
+
+    // The microphone's three go further, onto the blocking pool: `(async)` runs a
+    // body on one of the runtime's core workers, and a decode or a device waiting on
+    // a permission prompt would park one for seconds.
+    for name in ["listen_start", "listen_stop", "listen_cancel"] {
+        assert!(
+            body_of(&source, name).contains("on_a_blocking_thread("),
+            "{name} should run its work on the blocking pool, not a runtime worker"
+        );
+    }
+}
+
+#[test]
+fn the_dispatch_reading_understands_every_form_of_the_attribute() {
+    let source = "
+#[tauri::command]
+fn plain() {}
+#[tauri::command(async)]
+fn attribute() {}
+#[tauri::command(rename_all = \"snake_case\", async)]
+fn among_others() {}
+#[tauri::command(rename_all = \"snake_case\")]
+fn renamed_only() {}
+#[tauri::command]
+async fn keyword() {}
+";
+    for name in ["attribute", "among_others", "keyword"] {
+        assert!(runs_off_the_main_thread(source, name), "{name}");
+    }
+    for name in ["plain", "renamed_only"] {
+        assert!(!runs_off_the_main_thread(source, name), "{name}");
     }
 }
 

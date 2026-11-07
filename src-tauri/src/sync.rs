@@ -524,8 +524,15 @@ impl SyncService {
         };
         // A switch pressed while this runs would otherwise write the item back after
         // it had been cleared, and the record with it: connected again, to a token
-        // Dropbox has just been told to forget.
-        let _switching = self.take_switch();
+        // Dropbox has just been told to forget. Tried rather than waited for, like
+        // the gate: the switch can be waiting on a fingerprint prompt for as long as
+        // the learner leaves it open, and this would hold the gate all that time —
+        // so a Sync pressed meanwhile would be told one was already running.
+        let Ok(_switching) = self.switching.try_lock() else {
+            return self.after(
+                "The fingerprint setting is being changed. Press Disconnect again in a moment.",
+            );
+        };
         // Revoking first is the point: forgetting the token locally would leave the
         // authorization standing on Dropbox's side, which is not what "disconnect"
         // means to somebody who pressed it. A failure to revoke is reported rather
@@ -2392,6 +2399,36 @@ mod tests {
             Some(Protection::DeviceOnly),
             "which is what the store itself holds"
         );
+    }
+
+    #[test]
+    fn disconnecting_while_the_switch_is_changing_answers_at_once() {
+        // The switch can be waiting on a fingerprint prompt for as long as the
+        // learner leaves it open. Disconnect must not wait behind it holding the sync
+        // gate — that would block a Sync pressed meanwhile as well — but say so and
+        // leave the account alone.
+        let db = database("disconnect-while-switching");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let service = with_store(Some(db), &store, connecting());
+        connect(&service);
+
+        let switching = service.switching.lock().unwrap();
+        let (answer, answered) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| answer.send(service.disconnect()).unwrap());
+            let view = answered
+                .recv_timeout(Duration::from_secs(5))
+                .expect("disconnect waited behind the fingerprint switch");
+            assert!(
+                view.message.contains("fingerprint setting"),
+                "{}",
+                view.message
+            );
+            assert!(view.connected, "nothing was disconnected");
+            assert!(service.gate.try_lock().is_ok(), "and the sync gate is free");
+            drop(switching);
+        });
+        assert!(service.view().connected);
     }
 
     #[test]

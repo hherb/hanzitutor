@@ -128,6 +128,7 @@ pub fn run() {
             commands::microphone_status,
             commands::listen_start,
             commands::listen_stop,
+            commands::listen_cancel,
             commands::asr_status,
             commands::asr_install,
             commands::asr_remove,

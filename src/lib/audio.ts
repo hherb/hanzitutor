@@ -118,6 +118,7 @@ export async function loadAllPhrases(): Promise<GradedPhrase[]> {
  * cannot be played at all.
  */
 export function play(url: string, rate = 1): Promise<void> {
+  stopSamples();
   theAudio.pause();
   theAudio.currentTime = 0;
   // `preservesPitch` keeps the voice from sounding like a chipmunk when slowed,
@@ -154,10 +155,27 @@ export function clampRate(rate: number): number {
   return Math.min(MAX_RATE, Math.max(MIN_RATE, rate));
 }
 
-/** Stop whatever is playing, if anything. */
+/** Stop whatever is playing, if anything — a clip or synthesised speech. */
 export function stop(): void {
   theAudio.pause();
   theAudio.currentTime = 0;
+  stopSamples();
+}
+
+/**
+ * The synthesised phrase now sounding, so the next one can cut it off rather than
+ * be heard on top of it — the same rule the element follows for clips.
+ */
+let sounding: AudioBufferSourceNode | null = null;
+
+function stopSamples(): void {
+  if (!sounding) return;
+  try {
+    sounding.stop();
+  } catch {
+    // Already finished, which is what stopping it wanted.
+  }
+  sounding = null;
 }
 
 /** True while a clip is sounding. */
@@ -206,6 +224,10 @@ export function playSamples(samples: number[], sampleRate: number, rate = 1): Pr
   source.playbackRate.value = clampRate(rate);
   source.connect(context.destination);
   source.start();
+  sounding = source;
+  source.onended = () => {
+    if (sounding === source) sounding = null;
+  };
   return context.resume().then(() => undefined);
 }
 

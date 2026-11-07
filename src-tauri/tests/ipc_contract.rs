@@ -3352,26 +3352,82 @@ fn a_group_remembers_where_the_learner_got_to() {
 ///
 /// Tauri 2 decides this from the attribute and the signature alone — a plain
 /// `#[tauri::command]` on a plain `fn` is called inline from the IPC handler, which
-/// the webview invokes on the main thread, while `#[tauri::command(async)]` or an
-/// `async fn` is spawned on the async runtime (`tauri-macros`, `body_blocking` against
+/// the webview invokes on the main thread, while an `async` argument to the attribute
+/// (`#[tauri::command(async)]`, alone or beside `rename_all = …`) or an `async fn` is
+/// spawned on the async runtime (`tauri-macros`, `body_blocking` against
 /// `body_async`). So the source is the thing to read, and nothing behavioural can see it.
 fn runs_off_the_main_thread(source: &str, name: &str) -> bool {
-    let needle = format!("fn {name}(");
+    let head = command_head(source, name);
+    let close = head.find(']').expect("the attribute closes");
+    let arguments = head["#[tauri::command".len()..close].trim();
+    let async_attribute = arguments
+        .strip_prefix('(')
+        .and_then(|inner| inner.strip_suffix(')'))
+        .is_some_and(|inner| inner.split(',').any(|argument| argument.trim() == "async"));
+    let async_fn = head[close + 1..]
+        .split_whitespace()
+        .any(|word| word == "async");
+    async_attribute || async_fn
+}
+
+/// Everything from the command attribute above `fn name(` to the name itself.
+fn command_head<'a>(source: &'a str, name: &str) -> &'a str {
     let at = source
-        .find(&needle)
+        .find(&format!("fn {name}("))
         .unwrap_or_else(|| panic!("{name} should still be a command"));
     let before = &source[..at];
     let attribute = before
         .rfind("#[tauri::command")
         .unwrap_or_else(|| panic!("{name} has no command attribute"));
-    // Everything from the attribute to the name: the attribute itself, any doc
-    // comment or `pub` after it, and the `async` keyword when there is one.
     let head = &before[attribute..];
     assert!(
         !head.contains("fn "),
         "the nearest command attribute above {name} belongs to another function"
     );
-    head.starts_with("#[tauri::command(async)]") || head.contains("async ")
+    head
+}
+
+/// The body of the function `name`, up to its closing brace at the margin.
+fn body_of<'a>(source: &'a str, name: &str) -> &'a str {
+    let at = source
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("{name} should still be a command"));
+    let rest = &source[at..];
+    &rest[..rest.find("\n}\n").expect("the function ends")]
+}
+
+#[test]
+fn the_dispatch_reading_understands_every_form_of_the_attribute() {
+    // The reading above is only as good as its parse, so it is checked against
+    // each spelling Tauri accepts.
+    let source = "
+#[tauri::command]
+pub fn plain() {}
+#[tauri::command(async)]
+pub fn attribute() {}
+#[tauri::command(rename_all = \"snake_case\", async)]
+pub fn among_others() {}
+#[tauri::command( async )]
+fn spaced() {}
+#[tauri::command(rename_all = \"snake_case\")]
+pub fn renamed_only() {}
+#[tauri::command]
+pub async fn keyword() {}
+#[tauri::command]
+async fn private_keyword() {}
+";
+    for name in [
+        "attribute",
+        "among_others",
+        "spaced",
+        "keyword",
+        "private_keyword",
+    ] {
+        assert!(runs_off_the_main_thread(source, name), "{name}");
+    }
+    for name in ["plain", "renamed_only"] {
+        assert!(!runs_off_the_main_thread(source, name), "{name}");
+    }
 }
 
 #[test]
@@ -3390,6 +3446,7 @@ fn the_slow_commands_do_not_run_on_the_main_thread() {
     for name in [
         "listen_start",
         "listen_stop",
+        "listen_cancel",
         "asr_install",
         "asr_remove",
         "say_speak",
@@ -3423,6 +3480,23 @@ fn the_slow_commands_do_not_run_on_the_main_thread() {
         assert!(
             !runs_off_the_main_thread(&source, name),
             "{name} should stay in order on the main thread"
+        );
+    }
+
+    // And the ones that block longest go further, onto the blocking pool: `(async)`
+    // runs a body on one of the runtime's core workers, of which there are as many as
+    // the device has cores, and a queue of phrases or a fingerprint prompt left open
+    // would park enough of them to stall every other async command.
+    for name in [
+        "listen_start",
+        "listen_stop",
+        "listen_cancel",
+        "say_speak",
+        "sync_set_lock",
+    ] {
+        assert!(
+            body_of(&source, name).contains("on_a_blocking_thread("),
+            "{name} should run its work on the blocking pool, not a runtime worker"
         );
     }
 }

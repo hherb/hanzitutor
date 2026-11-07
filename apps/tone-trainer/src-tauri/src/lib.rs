@@ -41,7 +41,7 @@ use hanzi_core::{Dataset, Heard, ToneSet};
 use hanzi_hearing::{Asr, AsrStatus};
 use hanzi_voice::{MicrophoneStatus, Recorder, Recording, Speaker};
 use serde::Serialize;
-use tauri::State;
+use tauri::{Manager, State};
 
 mod platform;
 
@@ -524,6 +524,11 @@ impl ScoreResult {
 // opening the device can wait eight seconds behind a permission prompt, and the
 // first judgement after the model is installed loads 228 MB before it decodes.
 //
+// The three microphone commands go further, onto the *blocking* pool, through
+// [`on_a_blocking_thread`]: `(async)` runs a body on one of the runtime's core
+// workers, of which there are as many as the device has cores, and a decode or a
+// device waiting on a permission prompt would park one for seconds.
+//
 // The rest stay where they are on purpose. The lists and the statuses are quick,
 // and `speak` and `stop_speaking` are quick *and* order-sensitive: each tap cuts off
 // the utterance before it, and two that overtook each other on the runtime would
@@ -581,9 +586,25 @@ fn microphone_status(trainer: State<'_, Trainer>) -> MicrophoneStatus {
 /// timeout behind a permission prompt. The recorder's slot is held while it opens,
 /// so a stop or a cancel that arrives meanwhile waits for it rather than finding
 /// nothing to stop.
-#[tauri::command(async)]
-fn listen_start(trainer: State<'_, Trainer>) -> Result<(), String> {
-    trainer.recorder.start()
+#[tauri::command]
+async fn listen_start(app: tauri::AppHandle) -> Result<(), String> {
+    on_a_blocking_thread(app, |trainer| trainer.recorder.start()).await
+}
+
+/// Run `work` on Tauri's blocking pool with the trainer, and hand back what it
+/// returns.
+///
+/// The trainer is reached through the `AppHandle` rather than a borrowed `State`,
+/// because the work outlives the command's borrow. A panic in it becomes an error
+/// the interface can show, rather than a promise that never settles.
+async fn on_a_blocking_thread<T, F>(app: tauri::AppHandle, work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&Trainer) -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || work(app.state::<Trainer>().inner()))
+        .await
+        .map_err(|e| format!("this stopped before it finished: {e}"))?
 }
 
 /// Stop listening and judge what was heard against what the drill was showing.
@@ -601,14 +622,17 @@ fn listen_start(trainer: State<'_, Trainer>) -> Result<(), String> {
 /// Off the main thread, because with the model installed this loads it on first use
 /// and decodes every recording. The interface shows "Scoring…" meanwhile and does
 /// not open the microphone again until the answer is back.
-#[tauri::command(async)]
-fn listen_stop(
-    trainer: State<'_, Trainer>,
+#[tauri::command]
+async fn listen_stop(
+    app: tauri::AppHandle,
     text: String,
     reading: String,
 ) -> Result<ScoreResult, String> {
-    let recording = trainer.recorder.stop()?;
-    Ok(trainer.score(&recording, &text, &reading))
+    on_a_blocking_thread(app, move |trainer| {
+        let recording = trainer.recorder.stop()?;
+        Ok(trainer.score(&recording, &text, &reading))
+    })
+    .await
 }
 
 /// Stop listening and throw the recording away.
@@ -621,10 +645,14 @@ fn listen_stop(
 ///
 /// Off the main thread with the other two: it waits on the same slot, which a
 /// device still opening holds for seconds.
-#[tauri::command(async)]
-fn listen_cancel(trainer: State<'_, Trainer>) {
-    // A failure means nothing was open, which is what this wanted anyway.
-    let _ = trainer.recorder.stop();
+#[tauri::command]
+async fn listen_cancel(app: tauri::AppHandle) -> Result<(), String> {
+    on_a_blocking_thread(app, |trainer| {
+        // A failure means nothing was open, which is what this wanted anyway.
+        let _ = trainer.recorder.stop();
+        Ok(())
+    })
+    .await
 }
 
 /// Start pronouncing a character, cutting off anything already being said.
