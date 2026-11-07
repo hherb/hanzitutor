@@ -128,6 +128,44 @@ export function limitationNote(): string {
   return "This checks what a machine can see: the pattern's own letters, the script and the length. It cannot tell whether a sentence is grammatical or natural, or whether the pattern is used in the right sense — that needs a reader.";
 }
 
+/**
+ * What there is to say when the draw comes back empty.
+ *
+ * `next_grammar_composition` draws from **every** pattern of the course — the prompt
+ * is the pattern itself and needs no sentence of it — so it can only come back
+ * `null` when the course holds no patterns at all. Drawn instead of "Loading…",
+ * which is what a `null` used to leave on screen for good (issue #34).
+ */
+export function emptyNote(): string {
+  return "Nothing to write about here: the grammar course holds no patterns, so there is none to ask for a sentence with.";
+}
+
+/**
+ * What a model check was asked about, kept beside the request.
+ *
+ * `ask` is the request's number: every new ask, every edit of the sentence, a new
+ * prompt and the screen going away all move the screen's number on, so a request
+ * that has been superseded or abandoned can tell. `prompt` is compared by identity,
+ * because the same pattern drawn twice is still a new question.
+ */
+export interface ModelAsk<P> {
+  ask: number;
+  prompt: P | null;
+  text: string;
+}
+
+/**
+ * Whether a model's answer may be drawn: only when it is the latest ask, about the
+ * prompt still on screen, about the text still in the box.
+ *
+ * `check_sentence` takes seconds. Before issue #34 the screen checked only the
+ * prompt, so a typo fixed while the model thought put the old sentence's answer —
+ * "The model would write: …" — under the new text.
+ */
+export function answerBelongs<P>(asked: ModelAsk<P>, now: ModelAsk<P>): boolean {
+  return asked.ask === now.ask && asked.prompt === now.prompt && asked.text === now.text;
+}
+
 /** How much of the course can be written about, in one sentence. */
 export function poolNote(size: CompositionSize): string {
   if (size.total <= 0 || size.points <= 0) {

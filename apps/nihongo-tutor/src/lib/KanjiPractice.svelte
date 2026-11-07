@@ -49,7 +49,13 @@
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
   import { scheduleNote } from "./review";
   import { canHear, voiceNote, type VoiceStatus } from "./speech";
-  import { neighbour, positionIn, spokenReading } from "./kanji";
+  import {
+    anchorAfter,
+    neighbour,
+    positionIn,
+    spokenReading,
+    wayBack,
+  } from "./kanji";
   import { pageWindow } from "./words";
   import * as api from "./api";
   import type {
@@ -104,6 +110,14 @@
     untrack(() => (start.kind === "radical" ? start.number : null)),
   );
 
+  /**
+   * Where a detour comes back to: the last of the stage's own places the board held
+   * (`kanji.ts`'s `anchorAfter`). A component chip or a radical-family member can
+   * put a character on the board that the lesson does not hold, and this is the
+   * lesson character — or the radical a lessonless stage opened on — to return to.
+   */
+  let anchor = $state<KanjiPick>(untrack(() => start));
+
   let kanji = $state<KanjiView | null>(null);
   let radical = $state<RadicalView | null>(null);
   let report = $state<GradeReport | null>(null);
@@ -136,6 +150,20 @@
   const next = $derived(ch ? neighbour(lesson, ch, 1) : null);
   const at = $derived(ch ? positionIn(lesson, ch) : 0);
   const of = $derived(lesson?.kanji.length ?? 0);
+  /** What is on the board, as the same kind of pick the stage was opened with. */
+  const here = $derived<KanjiPick>(
+    ch
+      ? { kind: "kanji", ch }
+      : radicalNumber !== null
+        ? { kind: "radical", number: radicalNumber }
+        : start,
+  );
+  /** The way back from a detour off the lesson, or null while the board is on it. */
+  const back = $derived(wayBack(lesson, start, here, anchor));
+  const backLabel = $derived(
+    back === null ? "" : back.kind === "kanji" ? back.ch : `radical ${back.number}`,
+  );
+  const backAt = $derived(back?.kind === "kanji" ? positionIn(lesson, back.ch) : 0);
 
   /**
    * What the primary control under the board offers: the verdict, then the way on.
@@ -144,8 +172,13 @@
    * about what "graded" means for the control — and so that a **radical**, which
    * belongs to no lesson, keeps asking for a verdict rather than offering a way on
    * that does not exist.
+   *
+   * "In the lesson" is `at > 0` — the character's own place in it — and not whether
+   * the stage has a lesson: a component tapped from 林 is not one of the ten, so
+   * grading it must not offer the lesson's `Next` or `Finish` (issue #34). Its way on
+   * is back to where it was tapped from, which the control offers once it is graded.
    */
-  const after = $derived(afterGrade(report !== null, lesson !== null, next !== null));
+  const after = $derived(afterGrade(report !== null, at > 0, next !== null));
 
   /** One page of the words written with `ch`, and the count they are a page of. */
   async function loadWords(target: string, page: number) {
@@ -218,6 +251,25 @@
   function step(delta: number) {
     const target = neighbour(lesson, ch ?? "", delta);
     if (target) ch = target;
+  }
+
+  /**
+   * Put another place on the board — a component, a radical's member, or the way
+   * back — remembering where to return to if it takes the board off the lesson.
+   */
+  function go(target: KanjiPick) {
+    anchor = anchorAfter(lesson, start, here, anchor);
+    if (target.kind === "kanji") {
+      radicalNumber = null;
+      ch = target.ch;
+    } else {
+      ch = null;
+      radicalNumber = target.number;
+    }
+  }
+
+  function goBack() {
+    if (back) go(back);
   }
 
   function onStrokes(strokes: Point[][]) {
@@ -293,7 +345,26 @@
       <span>Lessons</span>
     </button>
 
-    {#if lesson}
+    {#if back}
+      <!--
+        Off the lesson: a component or a radical's member is on the board, and the
+        lesson's arrows and count say nothing about it. In their place, the way back
+        to the character it was reached from, at that character's own place.
+      -->
+      <div class="nav">
+        <button
+          class="return"
+          onclick={goBack}
+          title={backAt > 0
+            ? `Back to ${backLabel}, character ${backAt} of ${of} in this lesson`
+            : `Back to ${backLabel}`}
+        >
+          <span class="flip"><Icon name="next" /></span>
+          <span>Back to <span lang={back.kind === "kanji" ? "ja" : undefined}>{backLabel}</span></span>
+          {#if backAt > 0}<span class="return-at">{backAt} / {of}</span>{/if}
+        </button>
+      </div>
+    {:else if lesson}
       <div class="nav" role="group" aria-label="Characters in this lesson">
         <button
           class="step"
@@ -430,7 +501,7 @@
                         {#if part.ch && part.drawable}
                           <button
                             class="cell small"
-                            onclick={() => (ch = part.ch as string)}
+                            onclick={() => go({ kind: "kanji", ch: part.ch as string })}
                             title="Write {part.ch} on the board"
                           >
                             {part.ch}
@@ -462,7 +533,7 @@
                       <li>
                         <button
                           class="cell small"
-                          onclick={() => (ch = member)}
+                          onclick={() => go({ kind: "kanji", ch: member })}
                           title="Write {member} on the board"
                         >
                           {member}
@@ -641,6 +712,19 @@
               <span class="primary-glyph"><Icon name="next" /></span>
               <span>Next</span>
             </button>
+          {:else if report && back}
+            <!-- A detour graded like any other attempt (`after` is `grade` off the
+                 lesson): the way on is back to where it was tapped from, never the
+                 lesson's Next or Finish. -->
+            <button
+              class="primary"
+              onclick={goBack}
+              aria-label="Back to {backLabel}"
+              title="Back to {backLabel}"
+            >
+              <span class="primary-glyph flip"><Icon name="next" /></span>
+              <span>Back</span>
+            </button>
           {:else if after === "finish"}
             <!-- The last character of the lesson: there is no next one, and the way
                  on is the course the stage was opened from. -->
@@ -782,6 +866,34 @@
   .position {
     min-width: 3.4rem;
     text-align: center;
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+  }
+
+  /* The way back from a detour, where the arrows were: the same pill as Lessons,
+     44px tall for the same finger, and the lesson character's own place beside
+     its name so the learner can see where it returns to. */
+  .return {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+    padding: 5px 12px 5px 9px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  .return:hover {
+    border-color: var(--accent);
+  }
+
+  .return-at {
     font-size: 0.78rem;
     font-variant-numeric: tabular-nums;
     color: var(--muted);

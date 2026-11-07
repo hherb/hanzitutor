@@ -49,6 +49,7 @@
    */
   import Icon from "./Icon.svelte";
   import SpeakButton from "./SpeakButton.svelte";
+  import { onDestroy } from "svelte";
   import * as api from "./api";
   import type {
     CompositionOutcome,
@@ -69,8 +70,10 @@
   } from "./model";
   import { needsRuby, spokenRuby } from "./words";
   import {
+    answerBelongs,
     canSubmit,
     checks,
+    emptyNote,
     instructionLine,
     keptLine,
     limitationNote,
@@ -116,6 +119,25 @@
   let checkError = $state<string | null>(null);
   let verdict = $state<ModelVerdict | null>(null);
   let showingSettings = $state(false);
+  /**
+   * Whether the "Ask a model" fold is open — its own state, and the learner's.
+   *
+   * It used to be `open={showingSettings}`, so Save and Done, which switch the fold
+   * from the settings to the check, also shut the fold the learner was using
+   * (issue #34). It opens by itself once, when the status first says nothing is
+   * configured, which is what the coupling did on arrival; after that only the
+   * summary opens and closes it.
+   */
+  let foldOpen = $state(false);
+  /** Whether the draw came back empty: the course has no pattern to ask about. */
+  let nothing = $state(false);
+
+  /**
+   * The model check's own ticket, moved on by every ask, by every edit of the
+   * sentence, by a new pattern and by the screen going away — so an answer that
+   * arrives after any of them is dropped rather than drawn (`answerBelongs`).
+   */
+  let asking = 0;
 
   /**
    * A ticket per ask, so an earlier request cannot land on top of a later one.
@@ -133,7 +155,11 @@
       error = null;
       const drawn = await api.nextGrammarComposition();
       if (mine !== ticket) return;
+      // A new pattern ends any ask about the old one, so `Asking…` does not carry
+      // over and hold the new pattern's button down.
+      dropCheck();
       prompt = drawn;
+      nothing = drawn === null;
       outcome = null;
       typed = "";
     } catch (e) {
@@ -202,20 +228,41 @@
     }
   }
 
+  /** What is on screen now, in the shape a request remembers what it asked about. */
+  function onScreen() {
+    return { ask: asking, prompt, text: typed };
+  }
+
+  /**
+   * Drop the model check: any answer still in flight and any answer on screen.
+   *
+   * Moving the ticket on is what drops the one in flight — its result no longer
+   * belongs (`answerBelongs`) and its `finally` no longer owns `checking`.
+   */
+  function dropCheck() {
+    asking += 1;
+    checking = false;
+    verdict = null;
+    checkError = null;
+  }
+
   /** Ask the model about the sentence in the box. */
   async function check() {
     const askedPattern = prompt;
     if (!askedPattern || !canSubmit(typed) || checking) return;
+    // The text is captured with the request: an answer is about *this* sentence, and
+    // a learner fixing a typo while the model thinks must not get it under the new one.
+    const asked = { ask: ++asking, prompt: askedPattern, text: typed };
     try {
       checking = true;
       checkError = null;
-      const answered = await api.checkSentence(askedPattern.point, typed);
-      if (prompt !== askedPattern) return;
+      const answered = await api.checkSentence(askedPattern.point, asked.text);
+      if (!answerBelongs(asked, onScreen())) return;
       verdict = answered;
     } catch (e) {
-      if (prompt === askedPattern) checkError = failureLine(e);
+      if (answerBelongs(asked, onScreen())) checkError = failureLine(e);
     } finally {
-      checking = false;
+      if (asked.ask === asking) checking = false;
     }
   }
 
@@ -226,6 +273,7 @@
         endpoint = model.endpoint;
         modelName = model.model;
         showingSettings = !model.configured;
+        foldOpen = !model.configured;
       } catch {
         // The fold says nothing about a status it could not read; the check itself
         // reports the failure that matters.
@@ -234,11 +282,17 @@
   });
 
   // An answer belongs to the sentence it was asked about: editing the sentence drops
-  // it, so a model's verdict for old text is never drawn under new text.
+  // it, so a model's verdict for old text is never drawn under new text — and an ask
+  // still in flight is dropped with it, since its answer would be about the old text.
   $effect(() => {
     void typed;
-    verdict = null;
-    checkError = null;
+    dropCheck();
+  });
+
+  // Gone is gone: an answer that lands after the screen has been left is not drawn.
+  onDestroy(() => {
+    asking += 1;
+    ticket += 1;
   });
 
   $effect(() => {
@@ -408,7 +462,7 @@
       off until the learner names an endpoint. The corpus's model sentences above carry a
       `Hear it`; this asks a model about the learner's own.
     -->
-    <details class="model-check" open={showingSettings}>
+    <details class="model-check" bind:open={foldOpen}>
       <summary>Ask a model about this sentence</summary>
       {#if !model}
         <p class="hint">Loading the model settings…</p>
@@ -481,6 +535,8 @@
         {/if}
       {/if}
     </details>
+  {:else if nothing && !error}
+    <p class="hint" role="status">{emptyNote()}</p>
   {:else if !error}
     <p class="hint">{busy ? "Choosing a pattern…" : "Loading…"}</p>
   {/if}

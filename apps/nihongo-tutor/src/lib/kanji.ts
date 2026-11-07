@@ -10,7 +10,7 @@
  * furigana and the board.
  */
 
-import type { KanjiLessonView, RadicalFamilyView } from "./types";
+import type { KanjiLessonView, KanjiPick, RadicalFamilyView } from "./types";
 
 /** One grade of the kanji course, as the tabs above the course show it. */
 export interface GradeTab {
@@ -89,6 +89,67 @@ export function positionIn(lesson: KanjiLessonView | null, ch: string): number {
   if (!lesson) return 0;
   const at = lesson.kanji.indexOf(ch);
   return at < 0 ? 0 : at + 1;
+}
+
+/**
+ * Whether `place` is one of the stage's own — somewhere the stage's navigation
+ * describes — rather than a detour from it.
+ *
+ * Inside a lesson that is any of the lesson's characters: the arrows and the
+ * `3 / 10` are about those, and nothing else. A stage with no lesson (a radical
+ * head form, or a character no lesson holds) has exactly one place of its own,
+ * the one it was opened on.
+ *
+ * A component chip and a radical-family member can both put a character on the
+ * board that is *not* home: 林 is in its lesson and 木, tapped from it, is not.
+ * Issue #34 was the stage treating that character as if it were — `0 / 10` with
+ * both arrows dead, and `Finish` after grading it.
+ */
+export function isHomePlace(
+  lesson: KanjiLessonView | null,
+  start: KanjiPick,
+  place: KanjiPick,
+): boolean {
+  if (lesson) return place.kind === "kanji" && lesson.kanji.includes(place.ch);
+  return samePick(place, start);
+}
+
+/**
+ * Where to come back to after leaving `leaving` for somewhere else.
+ *
+ * The last home the board held: leaving a lesson character makes it the anchor,
+ * and leaving a detour (木 for one of its own parts) keeps the anchor it had — so a
+ * chain of taps still comes back to the character of the lesson it started from.
+ */
+export function anchorAfter(
+  lesson: KanjiLessonView | null,
+  start: KanjiPick,
+  leaving: KanjiPick,
+  anchor: KanjiPick,
+): KanjiPick {
+  return isHomePlace(lesson, start, leaving) ? leaving : anchor;
+}
+
+/**
+ * The way back the stage offers, or `null` when there is none to offer.
+ *
+ * Only off home — on a lesson character the arrows are the way on — and only to a
+ * place that is home, so the control can never lead into a second detour.
+ */
+export function wayBack(
+  lesson: KanjiLessonView | null,
+  start: KanjiPick,
+  here: KanjiPick,
+  anchor: KanjiPick,
+): KanjiPick | null {
+  if (isHomePlace(lesson, start, here)) return null;
+  return isHomePlace(lesson, start, anchor) ? anchor : null;
+}
+
+/** Whether two picks name the same place on the board. */
+function samePick(a: KanjiPick, b: KanjiPick): boolean {
+  if (a.kind === "kanji") return b.kind === "kanji" && a.ch === b.ch;
+  return b.kind === "radical" && a.number === b.number;
 }
 
 /** How the radicals panel orders the 214. */

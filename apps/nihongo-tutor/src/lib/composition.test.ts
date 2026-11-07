@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   COMPOSITION_MIN,
+  answerBelongs,
   canSubmit,
   checks,
+  emptyNote,
   instructionLine,
   keptLine,
   limitationNote,
@@ -152,5 +154,44 @@ describe("ownNote", () => {
     expect(ownNote(["私は学生です。", "今日は天気がいいです。"])).toBe(
       "The 2 sentences you have written with this pattern, oldest first:",
     );
+  });
+});
+
+/**
+ * Issue #34: `check_sentence` takes seconds, and the screen only checked that the
+ * prompt had not changed — so fixing a typo while the model thought put the old
+ * sentence's answer under the new text.
+ */
+describe("answerBelongs", () => {
+  const prompt = { point: "no-hou-ga-yori" };
+  const asked = { ask: 3, prompt, text: "いぬのほうがねこよりすきです" };
+
+  it("keeps an answer about the sentence still on screen", () => {
+    expect(answerBelongs(asked, { ...asked })).toBe(true);
+  });
+
+  it("drops an answer about text the learner has since edited", () => {
+    expect(answerBelongs(asked, { ...asked, text: "いぬのほうがねこよりすきです。" })).toBe(false);
+  });
+
+  it("drops an answer about a prompt that is no longer on screen", () => {
+    // The same pattern drawn twice is still a new prompt: identity, not the id.
+    expect(answerBelongs(asked, { ...asked, prompt: { point: "no-hou-ga-yori" } })).toBe(false);
+    expect(answerBelongs(asked, { ...asked, prompt: null })).toBe(false);
+  });
+
+  it("drops an answer a later ask has superseded", () => {
+    // Two overlapping requests about the same text: only the latest owns the screen,
+    // and an abandoned one (navigation, unmount) has had its number moved on.
+    expect(answerBelongs(asked, { ...asked, ask: 4 })).toBe(false);
+  });
+});
+
+describe("emptyNote", () => {
+  it("says there is nothing to write about rather than that it is loading", () => {
+    const line = emptyNote();
+    expect(line).toContain("Nothing to write about here");
+    expect(line).toContain("no patterns");
+    expect(line).not.toContain("Loading");
   });
 });
