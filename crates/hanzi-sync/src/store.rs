@@ -19,8 +19,9 @@ pub enum SyncError {
     /// Two shards disagree about what one attempt was.
     ///
     /// `(device_id, seq)` names an attempt that was written once and never
-    /// rewritten, so the same pair carrying different contents means a shard was
-    /// replaced — a merge must not guess which copy is real.
+    /// rewritten — a shard may grow, but a line in it never changes — so the same
+    /// pair carrying different contents means a shard was replaced or edited, and a
+    /// merge must not guess which copy is real.
     Rewritten { device_id: String, seq: i64 },
     /// The store could not be read or written.
     Io(String),
@@ -30,6 +31,18 @@ pub enum SyncError {
     /// obvious next move: refresh the token and try again, rather than report a
     /// network fault to somebody whose network is fine.
     Unauthorized,
+    /// The service is busy or failing for the moment: a 429 (too many requests) or
+    /// a 5xx.
+    ///
+    /// Distinguished from [`SyncError::Io`] because it is the one failure worth
+    /// trying again in a moment, and the Dropbox store does — see
+    /// [`crate::DropboxStore`]. `retry_after` is how many seconds the service
+    /// asked for, when it said.
+    Unavailable {
+        status: u16,
+        retry_after: Option<u64>,
+        reason: String,
+    },
 }
 
 impl fmt::Display for SyncError {
@@ -46,6 +59,7 @@ impl fmt::Display for SyncError {
                 f,
                 "Dropbox refused the access token, so it has expired or been revoked"
             ),
+            SyncError::Unavailable { reason, .. } => write!(f, "{reason}"),
         }
     }
 }
@@ -59,18 +73,24 @@ pub struct RemoteEntry {
     pub name: String,
     /// A value that changes whenever the shard's contents do.
     ///
-    /// A local file's size and modification time; Dropbox's `rev` or
-    /// `content_hash`. Sync compares it with what it recorded last time and skips
-    /// the download when it matches, which is the difference between a sync that
-    /// re-reads everything and one that reads what changed.
+    /// A local file's size and modification time; Dropbox's `rev`. Sync compares
+    /// it with what it recorded last time and skips the download of an attempt
+    /// shard it has already folded when it matches, which is the difference between
+    /// a sync that re-reads everything and one that reads what changed. An empty
+    /// revision means "unknown", and is never taken to match anything.
+    ///
+    /// It is also what [`RemoteStore::replace`] checks a file against before it
+    /// writes over it.
     pub revision: String,
 }
 
 /// Somewhere that can hold named blobs.
 ///
-/// Three methods, and no notion of a conflict, a lock or a transaction. That is
-/// the point: every writer owns its own directory (see the crate docs), so the
-/// weakest useful storage is enough.
+/// Three methods, and no notion of a lock or a transaction. That is the point:
+/// every writer owns its own directory (see the crate docs), so the weakest useful
+/// storage is enough. The fourth, [`RemoteStore::replace`], is a compare-and-swap
+/// for a store that has one, and falls back to [`RemoteStore::put`] for one that
+/// does not.
 pub trait RemoteStore {
     /// Every shard currently held, in no particular order.
     fn list(&self) -> Result<Vec<RemoteEntry>, SyncError>;
@@ -80,6 +100,20 @@ pub trait RemoteStore {
     /// the format makes it a no-op by construction, and a transport that had to
     /// distinguish the two would be a transport doing sync's job.
     fn put(&self, name: &str, bytes: &[u8]) -> Result<(), SyncError>;
+    /// Write over a file **only if it is still the version `revision` names** —
+    /// the revision it was listed with — and fail otherwise.
+    ///
+    /// The one write that replaces a file with *different* contents in the
+    /// ordinary course of a sync is a device topping up its own open attempt shard
+    /// (see [`crate::shard`]). Every writer owns its own directory, so nothing else
+    /// writes that file; but two installs that share one device's identity — a
+    /// copied database, #12 — would, and this is what makes the second of them
+    /// fail rather than drop what the first appended. A store with no
+    /// compare-and-swap writes as [`RemoteStore::put`] does, which is the default.
+    fn replace(&self, name: &str, bytes: &[u8], revision: &str) -> Result<(), SyncError> {
+        let _ = revision;
+        self.put(name, bytes)
+    }
 }
 
 /// A store that is a directory.
@@ -158,22 +192,28 @@ impl FolderStore {
                 self.walk(&entry.path(), &name, out)?;
                 continue;
             }
-            // Size and modification time: enough to notice a shard changing, and
-            // all a plain directory can offer. A store with a real content hash
-            // reports that instead.
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
             out.push(RemoteEntry {
                 name,
-                revision: format!("{}:{modified}", metadata.len()),
+                revision: revision_of(&metadata),
             });
         }
         Ok(())
     }
+}
+
+/// A file's revision, as a directory can tell it: its size and modification time.
+///
+/// Enough to notice a shard changing — an attempt shard only ever grows, so its
+/// size changes with every write — and all a plain directory can offer. A store
+/// with a real revision (Dropbox's `rev`) reports that instead.
+fn revision_of(metadata: &std::fs::Metadata) -> String {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}:{modified}", metadata.len())
 }
 
 impl RemoteStore for FolderStore {
@@ -205,5 +245,22 @@ impl RemoteStore for FolderStore {
         std::fs::rename(&temporary, &path)
             .map_err(|e| SyncError::Io(format!("{}: {e}", path.display())))?;
         Ok(())
+    }
+
+    /// Checked, then written. A directory has no compare-and-swap, so there is a
+    /// moment between the check and the rename in which another writer could slip
+    /// in; what this does catch is the ordinary case of one having written since
+    /// the listing, which is the window that is seconds long rather than
+    /// microseconds.
+    fn replace(&self, name: &str, bytes: &[u8], revision: &str) -> Result<(), SyncError> {
+        let path = self.path_of(name)?;
+        let current = std::fs::metadata(&path).ok().map(|m| revision_of(&m));
+        if current.as_deref() != Some(revision) {
+            return Err(SyncError::Io(format!(
+                "{name} changed since this sync listed it, so another copy of this device \
+                 may be writing to it; it was left as it is"
+            )));
+        }
+        self.put(name, bytes)
     }
 }

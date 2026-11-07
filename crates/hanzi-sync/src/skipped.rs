@@ -31,6 +31,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::document::{is_document, screen_document};
+use crate::seen::Seen;
 use crate::shard::{device_of_shard, parse_attempts_shard, parse_shard};
 use crate::store::{RemoteEntry, RemoteStore, SyncError};
 
@@ -70,10 +71,15 @@ pub struct SkippedShard {
 /// listing without the files they would refuse. So every reader on the sync's path
 /// tolerates a bad file the same way, without each having to remember to.
 ///
-/// Files are kept as they are read, so this costs no extra download: each is
-/// fetched once per sync, as before. A write goes through to the real store and
-/// into the view too, so a reader later in the sync sees what this device has just
-/// published.
+/// Files are kept as they are read, so this costs no extra download: the store is
+/// **listed once per sync** and each file fetched at most once, and every reader
+/// after that is served from here. An attempt shard this database has already
+/// folded at the revision it is listed with is not fetched at all: its text is
+/// rebuilt from the local log ([`crate::seen`]). The one exception is this
+/// device's own *last* shard, which is always fetched, because it is the file a
+/// publish appends to and the append keeps its bytes exactly as they are. A write
+/// goes through to the real store and into the view too, so a reader later in the
+/// sync sees what this device has just published.
 ///
 /// One guard, because a view that leaves files out must never be the reason one is
 /// overwritten: a write to a file that was left out is **not made**, unless it is
@@ -111,24 +117,49 @@ impl<'a> Screened<'a> {
     /// than carry on as though every device had gone quiet.
     ///
     /// `own_device` is whatever `Db::device_id` hands back, borrowed or owned.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn read(
         inner: &'a dyn RemoteStore,
         own_device: impl Into<String>,
     ) -> Result<Self, SyncError> {
+        Self::read_with(inner, own_device, &Seen::nothing())
+    }
+
+    /// The same, rebuilding from the local log every attempt shard `seen` says
+    /// this database has already folded at the revision it is listed with, rather
+    /// than downloading it.
+    pub(crate) fn read_with(
+        inner: &'a dyn RemoteStore,
+        own_device: impl Into<String>,
+        seen: &Seen,
+    ) -> Result<Self, SyncError> {
         let own_device: String = own_device.into();
         let listing = inner.list()?;
         let mut own_readable = BTreeSet::new();
-        let mut own_starts = BTreeSet::new();
+        let own_starts: BTreeSet<i64> = listing
+            .iter()
+            .filter_map(|entry| parse_attempts_shard(&entry.name))
+            .filter(|(device_id, _)| *device_id == own_device)
+            .map(|(_, first)| first)
+            .collect();
+        let own_last = own_starts.last().copied();
         let mut held = BTreeMap::new();
         let mut left_out = BTreeSet::new();
         let mut skipped = Vec::new();
         let mut unreadable_logs = BTreeSet::new();
         for entry in &listing {
             if let Some((device_id, first)) = parse_attempts_shard(&entry.name) {
-                if device_id == own_device {
-                    own_starts.insert(first);
-                }
-                let bytes = inner.get(&entry.name)?;
+                // This device's last shard is always fetched: a publish appends to
+                // its bytes, which must be the store's and not a rebuilt copy.
+                let open_tail = device_id == own_device && Some(first) == own_last;
+                let rebuilt = match open_tail {
+                    true => None,
+                    false => seen.rebuild(&entry.name, &entry.revision),
+                };
+                let bytes = match rebuilt {
+                    Some(bytes) => bytes,
+                    None => inner.get(&entry.name)?,
+                };
                 match parse_shard(&entry.name, device_id, &bytes) {
                     Ok(attempts) => {
                         if device_id == own_device {
@@ -217,6 +248,36 @@ impl<'a> Screened<'a> {
         self.own_starts.range(first + 1..).next().copied()
     }
 
+    /// The sequence number this device's last attempt shard is named after,
+    /// readable or not: the one a publish may append to.
+    pub(crate) fn last_own_start(&self) -> Option<i64> {
+        self.own_starts.last().copied()
+    }
+
+    /// Every attempt shard in view at a known revision, with the sequence numbers
+    /// it holds: what [`crate::seen`] records once the pull has folded them.
+    ///
+    /// A file this sync wrote is not among them — its new revision is not known
+    /// until the next listing — and neither is one that was left out.
+    pub(crate) fn folded_attempt_shards(&self) -> Vec<(String, String, Vec<i64>)> {
+        let held = self.held.borrow();
+        self.listing
+            .borrow()
+            .iter()
+            .filter(|entry| !entry.revision.is_empty())
+            .filter_map(|entry| {
+                let (device_id, _) = parse_attempts_shard(&entry.name)?;
+                let bytes = held.get(&entry.name)?;
+                let attempts = parse_shard(&entry.name, device_id, bytes).ok()?;
+                Some((
+                    entry.name.clone(),
+                    entry.revision.clone(),
+                    attempts.into_iter().map(|a| a.seq).collect(),
+                ))
+            })
+            .collect()
+    }
+
     /// The first sequence number of the previous one, if there is one.
     pub(crate) fn previous_own_start(&self, first: i64) -> Option<i64> {
         self.own_starts.range(..first).next_back().copied()
@@ -282,6 +343,28 @@ impl RemoteStore for Screened<'_> {
     }
 
     fn put(&self, name: &str, bytes: &[u8]) -> Result<(), SyncError> {
+        if self.withhold(name, bytes) {
+            return Ok(());
+        }
+        self.inner.put(name, bytes)?;
+        self.written(name, bytes);
+        Ok(())
+    }
+
+    /// The same guard as [`Screened::put`], then the store's compare-and-swap.
+    fn replace(&self, name: &str, bytes: &[u8], revision: &str) -> Result<(), SyncError> {
+        if self.withhold(name, bytes) {
+            return Ok(());
+        }
+        self.inner.replace(name, bytes, revision)?;
+        self.written(name, bytes);
+        Ok(())
+    }
+}
+
+impl Screened<'_> {
+    /// Whether the guard refuses this write, recording it if so.
+    fn withhold(&self, name: &str, bytes: &[u8]) -> bool {
         let own = device_of_shard(name) == Some(self.own_device.as_str());
         let attempts = parse_attempts_shard(name).is_some();
         if (!own || attempts) && self.left_out.borrow().contains(name) {
@@ -304,13 +387,11 @@ impl RemoteStore for Screened<'_> {
                 self.withheld_attempts
                     .set(self.withheld_attempts.get() + lines);
             }
-            return Ok(());
+            return true;
         }
-        self.write_through(name, bytes)
+        false
     }
-}
 
-impl Screened<'_> {
     /// Replace one of this device's own damaged attempt shards — the one write the
     /// guard in `put` lets through to such a file. Only `repair_own_shards` calls
     /// it, once it has checked that this log can have written the file.
@@ -322,18 +403,29 @@ impl Screened<'_> {
     /// Write to the store, and into this view.
     fn write_through(&self, name: &str, bytes: &[u8]) -> Result<(), SyncError> {
         self.inner.put(name, bytes)?;
+        self.written(name, bytes);
+        Ok(())
+    }
+
+    /// Bring this view up to date with a write the store has accepted.
+    ///
+    /// The file's revision is not known until the next listing, so it is
+    /// recorded as unknown: a later write in this sync is then a plain one, and
+    /// [`crate::seen`] does not record the file as folded at the revision it had
+    /// before.
+    fn written(&self, name: &str, bytes: &[u8]) {
         self.left_out.borrow_mut().remove(name);
         self.held
             .borrow_mut()
             .insert(name.to_string(), bytes.to_vec());
         let mut listing = self.listing.borrow_mut();
-        if !listing.iter().any(|entry| entry.name == name) {
-            listing.push(RemoteEntry {
+        match listing.iter_mut().find(|entry| entry.name == name) {
+            Some(entry) => entry.revision.clear(),
+            None => listing.push(RemoteEntry {
                 name: name.to_string(),
                 revision: String::new(),
-            });
+            }),
         }
-        Ok(())
     }
 }
 

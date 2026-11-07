@@ -1155,6 +1155,53 @@ after each item) both do this now. The shape is the rule, not either file.
     - **A course-cursor save that did not move writes nothing.** The app saves on
       every visit; a write would make an unmoved position look newer, or claim a
       peer's position under this device's name.
+40. **A sync costs what changed, not what has accumulated** (issue #36).
+    - **A device's last attempt shard is open, and grows.** Each publish appends
+      its new attempts to the end of the device's last shard until it holds
+      `CHUNK` (500), then starts the next; N small syncs make at most
+      ceil(N / CHUNK) files. **The rule:** a new version of a shard is the old
+      version's bytes, unchanged, followed by more lines of this device's own,
+      newer attempts. Only the owning device appends, only to its *last* shard
+      (counting unreadable ones, so a damaged last shard means a new file, never
+      an append to the one before), and only when every attempt already in it is
+      one its own log holds identically (`shard::open_tail`) — otherwise it starts
+      a new shard as before. The one other write to an existing attempt shard is
+      still `repair_own_shards`, and only to an *unreadable* one.
+    - **Readers treat a shard as a set of attempts**: a longer version adds what
+      was not held; `SyncError::Rewritten` is still any attempt whose content
+      differs from the copy already held — about an attempt, never about a file
+      having changed. Released builds (v0.5.11 and origin/main) read exactly this
+      way, every shard every sync, so to them a grown shard is more attempts; no
+      format change was needed. An older build on the *same* device after a
+      downgrade starts new shards past the watermark, which is still written.
+    - **The append is a compare-and-swap** (`RemoteStore::replace`): Dropbox
+      `update` mode with the listed `rev`, a checked write for a directory. Two
+      installs sharing one identity (#12) therefore fail with a conflict rather
+      than drop each other's lines. Every other upload still overwrites.
+    - **The store is listed once per sync** (`skipped::Screened`), and **an
+      attempt shard already folded at the listed revision is not downloaded**:
+      `seen.rs` records, in `meta` as `sync:seen_shards`, each folded shard's
+      revision and sequence numbers — *after* the pull merged it without a
+      disagreement — and the next sync rebuilds its text from the local log. It
+      is rebuilt only if the log still holds every one of those attempts, never
+      for an empty revision, never for this device's own last shard (always
+      fetched: the append keeps its bytes), and an unreadable file is never
+      recorded, so it is fetched each sync and a mended one comes back. The
+      documents (`vocab.json` and friends, ≤ 4 per device) are still read every
+      sync. The fold is unchanged: still a pure function of the merged log.
+    - **A busy Dropbox is waited for, briefly.** `UreqHttp` reports a 429 or 5xx
+      as `SyncError::Unavailable` with `Retry-After` (or the 429 body's
+      `retry_after`); `DropboxStore` retries it up to `RETRY_TRIES` (5) times,
+      after the wait asked for or a jittered doubling backoff from 0.5 s, and
+      never sleeps more than `RETRY_BUDGET` (30 s) in all per store — one store
+      per sync — refusing outright a wait that would pass it. Tests inject the
+      sleep (`DropboxStore::with_sleep`). The token endpoint is not retried.
+    - **Merging with #47**: its `publish_against` writes every owner's fresh
+      attempts with `write_attempts`; for this device's own name use
+      `append_attempts(store, &device, attempts, open_tail(...).as_ref())` with
+      `last_start` from `Screened::last_own_start()`, so its own new attempts top
+      up the open shard. `Screened::read_with(…, &Seen::load(db)?)` replaces
+      `Screened::read` in `sync`, and `Seen::save` goes right after the pull.
 
 ## 5. The verification loop
 

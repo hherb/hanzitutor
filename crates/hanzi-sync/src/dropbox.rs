@@ -16,12 +16,26 @@
 //! anything else the learner keeps in Dropbox. That is enforced by Dropbox, not by
 //! this code — which is the point.
 //!
-//! **Uploads overwrite.** A shard name is derived from the sequence numbers inside
-//! it, and this program only ever writes a name once, so an upload is a re-upload of
-//! identical bytes and overwriting is harmless — and unlike a create-only upload it
-//! survives a retry after a timeout the device could not distinguish from a failure.
-//! Immutability is the writer's discipline here rather than the transport's; what
-//! checks it is the merge, which refuses two shards that disagree about one attempt.
+//! **Uploads overwrite, except an append.** A new shard, and every document, is
+//! written in `overwrite` mode: writing a shard again writes the same bytes, so
+//! overwriting is harmless — and unlike a create-only upload it survives a retry
+//! after a timeout the device could not distinguish from a failure. The one write
+//! that changes a file's contents is a device topping up its own open attempt shard
+//! ([`crate::shard`]), and that is [`RemoteStore::replace`]: `update` mode with the
+//! `rev` the file was listed with, so if anything else wrote the file since — a
+//! second install sharing this device's identity — Dropbox answers with a conflict
+//! and nothing is overwritten. A retry of an update that Dropbox had in fact
+//! applied sends identical bytes, which Dropbox does not count as a conflict
+//! (`strict_conflict` is left off for exactly that).
+//!
+//! **A busy Dropbox is waited for, briefly.** A 429 or a 5xx
+//! ([`SyncError::Unavailable`]) is tried again, up to five times a request, after
+//! the wait Dropbox asked for (`Retry-After`) or, when it did not say, a jittered
+//! wait that doubles from half a second. All of a store's waiting together is
+//! capped at thirty seconds, and a wait Dropbox asks for that would go past that
+//! is not started: a sync must not hang. Every request here is safe to repeat —
+//! listing and downloading read, an `overwrite` upload writes the same bytes again,
+//! and an `update` upload either writes them again or reports a conflict.
 //!
 //! ## What this does not do
 //!
@@ -29,6 +43,10 @@
 //! hours, and a sync is a handful of calls, so the caller refreshes once before it
 //! starts; if the token has expired anyway, the API answers 401 and this reports
 //! [`SyncError::Unauthorized`] rather than pretending it was a network fault.
+
+use std::cell::Cell;
+use std::hash::BuildHasher;
+use std::time::Duration;
 
 use serde_json::json;
 
@@ -56,10 +74,21 @@ pub fn content_root() -> String {
     format!("https://{CONTENT_HOST}/2")
 }
 
+/// How many times one request is sent before a busy Dropbox is reported.
+pub const RETRY_TRIES: u32 = 5;
+/// How long one store waits for a busy Dropbox, in all.
+pub const RETRY_BUDGET: Duration = Duration::from_secs(30);
+/// The first wait, when Dropbox does not say how long; each one after doubles.
+const FIRST_WAIT: Duration = Duration::from_millis(500);
+
 /// A Dropbox app folder, seen as a store.
+///
+/// One is made for each sync, so its retry budget is one sync's.
 pub struct DropboxStore<'a> {
     http: &'a dyn Http,
     access_token: String,
+    sleep: Box<dyn Fn(Duration) + 'a>,
+    waited: Cell<Duration>,
 }
 
 impl<'a> DropboxStore<'a> {
@@ -68,17 +97,73 @@ impl<'a> DropboxStore<'a> {
         Self {
             http,
             access_token: access_token.into(),
+            sleep: Box::new(std::thread::sleep),
+            waited: Cell::new(Duration::ZERO),
+        }
+    }
+
+    /// The same, waiting through `sleep` rather than the thread's own, so that a
+    /// test can see the waits without spending them.
+    pub fn with_sleep(mut self, sleep: impl Fn(Duration) + 'a) -> Self {
+        self.sleep = Box::new(sleep);
+        self
+    }
+
+    /// Send a request, and send it again while Dropbox is busy — see the module
+    /// note for how long, and why every request here may be repeated.
+    fn retrying<T>(&self, mut send: impl FnMut() -> Result<T, SyncError>) -> Result<T, SyncError> {
+        let mut tries = 1;
+        loop {
+            match send() {
+                Err(SyncError::Unavailable {
+                    status,
+                    retry_after,
+                    reason,
+                }) if tries < RETRY_TRIES => {
+                    let wait = match retry_after {
+                        Some(seconds) => Duration::from_secs(seconds),
+                        None => backoff(tries),
+                    };
+                    let waited = self.waited.get().saturating_add(wait);
+                    if waited > RETRY_BUDGET {
+                        // Not started: waiting would only end in this same error
+                        // with the learner's time spent.
+                        return Err(SyncError::Unavailable {
+                            status,
+                            retry_after,
+                            reason,
+                        });
+                    }
+                    (self.sleep)(wait);
+                    self.waited.set(waited);
+                    tries += 1;
+                }
+                other => return other,
+            }
         }
     }
 
     /// One RPC call, with the arguments as JSON.
     fn rpc(&self, endpoint: &str, body: serde_json::Value) -> Result<serde_json::Value, SyncError> {
         let url = format!("{}/{endpoint}", api_root());
-        let response = self.http.rpc(&url, &self.access_token, &body.to_string())?;
+        let body = body.to_string();
+        let response = self.retrying(|| self.http.rpc(&url, &self.access_token, &body))?;
         serde_json::from_str(&response).map_err(|e| {
             SyncError::Malformed(format!("{endpoint} answered something that is not JSON: {e}"))
         })
     }
+}
+
+/// The wait before try `tries + 1` when Dropbox gave none: half a second, doubling,
+/// each somewhere between half of that and all of it so that devices told to wait
+/// at the same moment do not all come back at the same moment.
+fn backoff(tries: u32) -> Duration {
+    let full = FIRST_WAIT.saturating_mul(1 << (tries - 1).min(16));
+    // A random fraction in [0, 1), from the standard library's own randomly seeded
+    // hasher: no dependency for what only has to differ between devices.
+    let fraction = (std::collections::hash_map::RandomState::new().hash_one(tries) >> 11) as f64
+        / (1u64 << 53) as f64;
+    full.mul_f64(0.5 + fraction / 2.0)
 }
 
 /// A Dropbox path for a shard name.
@@ -156,34 +241,42 @@ impl RemoteStore for DropboxStore<'_> {
     }
 
     fn get(&self, name: &str) -> Result<Vec<u8>, SyncError> {
-        self.http.download(
-            &format!("{}/files/download", content_root()),
-            &self.access_token,
-            &json!({ "path": path_of(name) }).to_string(),
-        )
+        let url = format!("{}/files/download", content_root());
+        let arg = json!({ "path": path_of(name) }).to_string();
+        self.retrying(|| self.http.download(&url, &self.access_token, &arg))
     }
 
     fn put(&self, name: &str, bytes: &[u8]) -> Result<(), SyncError> {
-        self.http.upload(
-            &format!("{}/files/upload", content_root()),
-            &self.access_token,
-            &json!({
-                "path": path_of(name),
-                // The **object** form, not the bare string. Dropbox's schema types
-                // `mode` as a union whose variants are objects with a required
-                // `.tag`, and a bare `"overwrite"` is answered with a 400 whose
-                // summary is `other/...` — which reads as neither a path problem nor
-                // a permissions one, and cost a real debugging session against the
-                // live API to find. The test below pins the shape.
-                "mode": { ".tag": "overwrite" },
-                "autorename": false,
-                // Keeps the learner's Dropbox activity feed to themselves: a sync is
-                // not something anybody needs a notification about.
-                "mute": true,
-            })
-            .to_string(),
-            bytes,
-        )?;
+        // The **object** form, not the bare string. Dropbox's schema types `mode`
+        // as a union whose variants are objects with a required `.tag`, and a bare
+        // `"overwrite"` is answered with a 400 whose summary is `other/...` — which
+        // reads as neither a path problem nor a permissions one, and cost a real
+        // debugging session against the live API to find. The test below pins the
+        // shape.
+        self.upload(name, bytes, json!({ ".tag": "overwrite" }))
+    }
+
+    /// `update` mode with the listed `rev`: Dropbox writes only if the file is
+    /// still that version, and otherwise answers with a conflict.
+    fn replace(&self, name: &str, bytes: &[u8], revision: &str) -> Result<(), SyncError> {
+        self.upload(name, bytes, json!({ ".tag": "update", "update": revision }))
+    }
+}
+
+impl DropboxStore<'_> {
+    /// One upload, in the given write mode.
+    fn upload(&self, name: &str, bytes: &[u8], mode: serde_json::Value) -> Result<(), SyncError> {
+        let url = format!("{}/files/upload", content_root());
+        let arg = json!({
+            "path": path_of(name),
+            "mode": mode,
+            "autorename": false,
+            // Keeps the learner's Dropbox activity feed to themselves: a sync is
+            // not something anybody needs a notification about.
+            "mute": true,
+        })
+        .to_string();
+        self.retrying(|| self.http.upload(&url, &self.access_token, &arg, bytes))?;
         Ok(())
     }
 }

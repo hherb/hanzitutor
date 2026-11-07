@@ -77,12 +77,28 @@ impl UreqHttp {
     /// `other/...`, which named neither the field nor the reason. A 401, 403, 409 or
     /// 429 is a situation with a sentence attached, and dumping JSON under it would
     /// only make the sentence harder to read.
+    ///
+    /// A 429 or a 5xx is [`SyncError::Unavailable`], with the wait Dropbox asked
+    /// for: the `Retry-After` header in seconds, or failing that the `retry_after`
+    /// its 429 body carries. Those are the failures worth trying again, and the
+    /// store does — see [`crate::DropboxStore`].
     fn failed(url: &str, error: ureq::Error) -> SyncError {
         match error {
             ureq::Error::Status(401, _) => SyncError::Unauthorized,
             ureq::Error::Status(400, response) => {
                 let body = response.into_string().unwrap_or_default();
                 refused(url, &body)
+            }
+            ureq::Error::Status(code, response) if code == 429 || (500..600).contains(&code) => {
+                let header = response
+                    .header("Retry-After")
+                    .and_then(|value| value.trim().parse::<u64>().ok());
+                let body = response.into_string().unwrap_or_default();
+                SyncError::Unavailable {
+                    status: code,
+                    retry_after: header.or_else(|| retry_after_in(&body)),
+                    reason: format!("{url} answered {code}: {}", summarise(&body)),
+                }
             }
             ureq::Error::Status(code, response) => {
                 let body = response.into_string().unwrap_or_default();
@@ -125,6 +141,15 @@ fn refused(url: &str, body: &str) -> SyncError {
     }
     let explanation = user_message(body).unwrap_or_else(|| body.trim().to_string());
     SyncError::Io(format!("{url} refused the request (400): {explanation}"))
+}
+
+/// The wait a Dropbox 429 body asks for, in seconds: `error.retry_after`.
+fn retry_after_in(body: &str) -> Option<u64> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("error")?
+        .get("retry_after")?
+        .as_u64()
 }
 
 /// Dropbox's `user_message`, the field it writes to be shown to a person.
@@ -280,6 +305,57 @@ mod tests {
                 "{body}: {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_429_or_a_5xx_is_a_failure_worth_trying_again_with_the_wait_asked_for() {
+        let url = "https://api.dropboxapi.com/2/files/list_folder";
+        let response = |text: &str| text.parse::<ureq::Response>().unwrap();
+
+        let header = UreqHttp::failed(
+            url,
+            ureq::Error::Status(
+                429,
+                response("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\n\r\n"),
+            ),
+        );
+        assert!(
+            matches!(header, SyncError::Unavailable { status: 429, retry_after: Some(7), .. }),
+            "{header:?}"
+        );
+
+        // Dropbox also says it in the body; the header wins when both are there.
+        let body = r#"{"error_summary": "too_many_requests/..", "error": {"reason": {".tag": "too_many_requests"}, "retry_after": 3}}"#;
+        let in_body = UreqHttp::failed(
+            url,
+            ureq::Error::Status(
+                429,
+                response(&format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )),
+            ),
+        );
+        assert!(
+            matches!(in_body, SyncError::Unavailable { retry_after: Some(3), .. }),
+            "{in_body:?}"
+        );
+
+        let unavailable = UreqHttp::failed(
+            url,
+            ureq::Error::Status(503, response("HTTP/1.1 503 Service Unavailable\r\n\r\n")),
+        );
+        assert!(
+            matches!(unavailable, SyncError::Unavailable { status: 503, retry_after: None, .. }),
+            "{unavailable:?}"
+        );
+
+        // A conflict is an answer, not a busy server, and is not tried again.
+        let conflict = UreqHttp::failed(
+            url,
+            ureq::Error::Status(409, response("HTTP/1.1 409 Conflict\r\n\r\n")),
+        );
+        assert!(matches!(conflict, SyncError::Io(_)), "{conflict:?}");
     }
 
     #[test]

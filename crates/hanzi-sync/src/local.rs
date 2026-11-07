@@ -15,8 +15,8 @@
 //!
 //! ## What a sync does, in order
 //!
-//! 1. **Publish** this device's attempts that no shard holds yet, and move the
-//!    watermark.
+//! 1. **Publish** this device's attempts that no shard holds yet — onto the end
+//!    of its open shard, then into new ones — and move the watermark.
 //! 2. **Pull** every shard back into the local log, adding only what is missing.
 //! 3. **Recompute** the schedule from the whole log, which is the step that makes
 //!    two devices agree: neither schedule is merged, both are rebuilt from the
@@ -57,9 +57,10 @@ use crate::document::{
     read_vocab_cursors, write_baseline, write_cursor, write_vocab, write_vocab_cursors,
     Baseline, Baselines,
 };
+use crate::seen::Seen;
 use crate::shard::{
-    fold_cards, merge_attempts, read_attempts, shard_body, sort_canonical, write_attempts,
-    MergedAttempt,
+    append_attempts, fold_cards, merge_attempts, open_tail, parse_attempts_shard, read_attempts,
+    shard_body, sort_canonical, MergedAttempt,
 };
 use crate::skipped::{Screened, SkippedShard};
 use crate::store::{RemoteStore, SyncError};
@@ -148,19 +149,46 @@ pub fn own_log(db: &Db) -> Result<Vec<MergedAttempt>, SyncError> {
 /// The watermark is the highest sequence number already published, so a sync
 /// publishes only what is new and a retried sync publishes nothing. It is advanced
 /// only after the shards are written, so a failure re-publishes rather than
-/// skipping — and re-publishing is safe, because the same attempts produce the same
-/// shard names and the same bytes.
+/// skipping — and re-publishing is safe: the same attempts produce the same shard
+/// names and the same bytes, and an attempt the open shard already holds is not
+/// appended to it again.
+///
+/// New attempts go onto the end of this device's last shard until it holds
+/// [`crate::CHUNK`], and only then into a new one — see [`crate::shard`] for the
+/// rule that keeps that safe for every reader.
 pub fn publish(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
+    let device = db.device_id().to_string();
+    let last_start = store
+        .list()?
+        .iter()
+        .filter_map(|entry| parse_attempts_shard(&entry.name))
+        .filter(|(owner, _)| *owner == device)
+        .map(|(_, first)| first)
+        .max();
+    publish_onto(db, store, last_start)
+}
+
+/// [`publish`], told which shard is this device's last — counting any that could
+/// not be read, which a screened listing does not show.
+fn publish_onto(
+    db: &Db,
+    store: &dyn RemoteStore,
+    last_start: Option<i64>,
+) -> Result<usize, SyncError> {
     let published_through = watermark(db)?;
-    let fresh: Vec<MergedAttempt> = own_log(db)?
-        .into_iter()
+    let own = own_log(db)?;
+    let fresh: Vec<MergedAttempt> = own
+        .iter()
         .filter(|attempt| attempt.seq > published_through)
+        .cloned()
         .collect();
     if fresh.is_empty() {
         return Ok(0);
     }
 
-    write_attempts(store, db.device_id(), &fresh)?;
+    let device = db.device_id().to_string();
+    let tail = open_tail(store, &device, last_start, &own)?;
+    let (_, written) = append_attempts(store, &device, &fresh, tail.as_ref())?;
 
     let highest = fresh
         .iter()
@@ -169,7 +197,7 @@ pub fn publish(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
         .unwrap_or(published_through);
     db.set_meta_value(PUBLISHED_THROUGH, &highest.to_string())
         .map_err(SyncError::Io)?;
-    Ok(fresh.len())
+    Ok(written)
 }
 
 /// Publish this device's vocabulary list and course position.
@@ -400,13 +428,20 @@ pub fn pull_vocab_cursors(db: &Db, store: &dyn RemoteStore) -> Result<bool, Sync
 /// A file that cannot be used — another device's newer format, a damaged shard — is
 /// left out rather than stopping the sync, and reported in [`Summary::skipped`]: see
 /// [`crate::skipped`] for why leaving one out loses nothing.
+///
+/// The store is listed **once**, and an attempt shard this database has already
+/// folded at the same revision is not downloaded again: see [`crate::seen`].
 pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
-    let screened = Screened::read(store, db.device_id())?;
+    let screened = Screened::read_with(store, db.device_id(), &Seen::load(db)?)?;
     let store: &dyn RemoteStore = &screened;
     repair_own_shards(db, &screened)?;
-    let published = publish(db, store)?.saturating_sub(screened.withheld_attempts());
+    let published = publish_onto(db, store, screened.last_own_start())?
+        .saturating_sub(screened.withheld_attempts());
     publish_documents(db, store)?;
     let pulled = pull(db, store)?;
+    // Only now, with every shard in view merged into the log without a
+    // disagreement, are they recorded as folded.
+    Seen::save(db, screened.folded_attempt_shards())?;
     let vocab_changed = pull_vocab(db, store)?;
     let cursor_moved = pull_cursor(db, store)?;
     // Whether a group position moved is not reported: unlike the course
@@ -445,8 +480,9 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
 ///
 /// ## Why this device has to
 ///
-/// A shard is named once and never rewritten, and [`publish`] only ever writes
-/// attempts past the watermark — so a shard of this device's that a sync client
+/// A shard is named once and only ever grown — and only the last one, and only
+/// while it reads (see [`crate::shard`]) — and [`publish`] only ever writes
+/// attempts past the watermark, so a shard of this device's that a sync client
 /// truncated, or that was damaged some other way, would stay damaged for good. And
 /// every peer leaves a device with an unreadable shard out *whole*, so from then on
 /// none of this device's attempts, old or new, would reach anyone. Nobody else can
