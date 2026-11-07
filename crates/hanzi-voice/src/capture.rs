@@ -470,12 +470,14 @@ impl Recorder {
 /// that calls it cannot be built or run anywhere else.
 #[cfg(any(target_os = "android", test))]
 fn decode_pcm16(bytes: &[u8], limit: usize) -> (Vec<f32>, bool) {
-    let mut samples: Vec<f32> = bytes
-        .chunks_exact(2)
+    // A stray odd byte at the end is not a sample, and is left out.
+    let (pairs, _stray) = bytes.as_chunks::<2>();
+    let mut samples: Vec<f32> = pairs
+        .iter()
         // 32768 rather than 32767: it is the exact scale of the negative
         // half, so a full-scale sample lands on -1.0 rather than slightly
         // past it, and the sign is symmetric.
-        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32_768.0)
+        .map(|pair| i16::from_le_bytes(*pair) as f32 / 32_768.0)
         .collect();
     let truncated = samples.len() >= limit;
     samples.truncate(limit);
