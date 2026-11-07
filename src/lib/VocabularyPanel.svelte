@@ -56,8 +56,23 @@
     busy: boolean;
     /** Resolve a character or word into a draft reading and meaning. */
     lookup: (text: string) => Promise<TextLookup>;
-    onAdd: (text: string, pinyin: string, meaning: string, group: string | null) => void;
-    onUpdate: (id: number, pinyin: string, meaning: string, group: string | null) => void;
+    /**
+     * Add or save the draft. Each resolves `true` once the list has it, and
+     * `false` when it was refused or could not run — the reason is the app's to
+     * show — so the form is cleared only when nothing typed would be lost.
+     */
+    onAdd: (
+      text: string,
+      pinyin: string,
+      meaning: string,
+      group: string | null,
+    ) => Promise<boolean>;
+    onUpdate: (
+      id: number,
+      pinyin: string,
+      meaning: string,
+      group: string | null,
+    ) => Promise<boolean>;
     onRemove: (id: number) => void;
     onAddGroup: (name: string) => void;
     onRenameGroup: (from: string, to: string) => void;
@@ -256,19 +271,35 @@
     formError = null;
   }
 
-  function submit() {
+  /**
+   * Add the draft, or save the entry being edited.
+   *
+   * The form is cleared only once the list has taken it: a refusal — "already in
+   * that group" — or a command that could not run must leave the reading and the
+   * meaning that were typed where they are, to be corrected and sent again
+   * (issue #33). The draft is compared with what was sent before it is cleared,
+   * so that one started while the save was in flight is not thrown away with it.
+   */
+  async function submit() {
     formError = null;
     const trimmed = text.trim();
     if (!trimmed) {
       formError = "Enter a character or word.";
       return;
     }
-    if (editingId !== null) {
-      onUpdate(editingId, pinyin, meaning, group.trim() || null);
-    } else {
-      onAdd(trimmed, pinyin, meaning, group.trim() || null);
-    }
-    resetDraft();
+    const sent = { editingId, text, pinyin, meaning, group };
+    const saved =
+      editingId !== null
+        ? await onUpdate(editingId, pinyin, meaning, group.trim() || null)
+        : await onAdd(trimmed, pinyin, meaning, group.trim() || null);
+    if (!saved) return;
+    const untouched =
+      editingId === sent.editingId &&
+      text === sent.text &&
+      pinyin === sent.pinyin &&
+      meaning === sent.meaning &&
+      group === sent.group;
+    if (untouched) resetDraft();
   }
 
   function startEdit(entry: VocabEntry) {
@@ -343,9 +374,15 @@
              system keyboard's own language key is what changes the layout, so
              the fields are arranged to need it as little as possible: the
              character here, Latin pinyin beside it, English meaning after. -->
+        <!-- Read-only while an entry is being edited: an entry's text is what its
+             practice history and its place in a group are filed under, and saving
+             changes only the reading, meaning and group. A different text is a
+             different entry, so the hint below says to add it as one. -->
         <input
           bind:this={textInput}
           bind:value={text}
+          readonly={editingId !== null}
+          aria-describedby={editingId !== null ? "vocab-text-locked" : undefined}
           placeholder="学习"
           lang="zh-Hans"
           autocomplete="off"
@@ -464,10 +501,17 @@
       {#if editingId !== null}
         <button type="button" onclick={resetDraft} disabled={busy}>Cancel</button>
       {/if}
-      <span class="hint">
-        A character fills both fields automatically. A word gets its reading
-        composed from its characters, and you write the meaning.
-      </span>
+      {#if editingId !== null}
+        <span class="hint" id="vocab-text-locked">
+          Editing changes the reading, meaning and group. To change the character
+          or word itself, add it as a new entry and remove this one.
+        </span>
+      {:else}
+        <span class="hint">
+          A character fills both fields automatically. A word gets its reading
+          composed from its characters, and you write the meaning.
+        </span>
+      {/if}
     </div>
     {#if lookupNote}
       <p class="warning">{lookupNote}</p>
@@ -752,6 +796,12 @@
   input:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+  }
+  /* The entry's text while it is being edited: shown, but not a field to type in. */
+  input[readonly] {
+    border-style: dashed;
+    color: var(--muted);
+    cursor: default;
   }
 
   /* The tone keys: small, close together, and under the fields they write into. */

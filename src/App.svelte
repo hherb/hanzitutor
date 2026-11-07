@@ -12,6 +12,7 @@
   import LessonSidebar from "./lib/LessonSidebar.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
+  import { boardFractionOf } from "./lib/boardSize";
   import ReadingList from "./lib/ReadingList.svelte";
   import PhrasesPanel from "./lib/PhrasesPanel.svelte";
   import RadicalsPanel from "./lib/RadicalsPanel.svelte";
@@ -238,20 +239,10 @@
 
   /**
    * How much of the room available the board takes, from the board-size
-   * preference.
-   *
-   * A share of the container rather than a pixel side: the board fits whatever
-   * window it is in, and the preference says how much of that fit to use, so a
-   * large board stays large on a big screen and a compact one stays usable on a
-   * small one.
-   *
-   * **This is the only place a board size becomes a number.** `BoardSize` in
-   * `hanzi-core` carries the name, not the fraction, precisely so that the value
-   * cannot exist in two places and drift; the same goes for the pace below.
+   * preference. The numbers live in `boardSize.ts`, the one place a board size
+   * becomes a number; the same rule holds for the pace below.
    */
-  const boardFraction = $derived(
-    settings.boardSize === "compact" ? 0.72 : 1,
-  );
+  const boardFraction = $derived(boardFractionOf(settings.boardSize));
 
   /**
    * The scale applied to the whole stroke-order timeline, from the pace
@@ -1986,13 +1977,21 @@
    * A failure is reported but never clears the list: the store refuses to save
    * over a file it could not read, and that must stay visible rather than
    * looking like the entries were lost.
+   *
+   * Resolves `true` once the command has been applied and `false` when it was
+   * refused or could not run, so that a form can keep what was typed into it. One
+   * command runs at a time; one asked for while another is still running is not
+   * run, and the learner is told so rather than left to think it was (issue #33).
    */
   async function withVocab(
     action: () => Promise<VocabView>,
     note?: string,
     after?: (view: VocabView) => void,
-  ) {
-    if (vocabBusy) return;
+  ): Promise<boolean> {
+    if (vocabBusy) {
+      error = "Your vocabulary list is busy with another request. Try again in a moment.";
+      return false;
+    }
     vocabBusy = true;
     error = null;
     try {
@@ -2000,8 +1999,10 @@
       applyVocab(next);
       if (note) statusMessage = note;
       after?.(next);
+      return true;
     } catch (cause) {
       error = String(cause);
+      return false;
     } finally {
       vocabBusy = false;
     }
@@ -2012,8 +2013,8 @@
     pinyin: string,
     meaning: string,
     group: string | null,
-  ) {
-    void withVocab(
+  ): Promise<boolean> {
+    return withVocab(
       () => api.vocabAdd(text, pinyin, meaning, group),
       `Added ${text} to your list`,
     );
@@ -2028,7 +2029,7 @@
   function addCurrentToVocabulary() {
     if (!character) return;
     const group = vocabSelection && vocabSelection !== "" ? vocabSelection : null;
-    addToVocabulary(
+    void addToVocabulary(
       character.ch,
       character.pinyin.join(" / "),
       character.definition,
@@ -2621,6 +2622,8 @@
   function switchView(next: View) {
     if (next === view) return;
     view = next;
+    // An error belongs to the screen it happened on (issue #33).
+    error = null;
     statusMessage = null;
     wordMessage = null;
     characterMessage = null;
@@ -2672,6 +2675,7 @@
               : "vocabulary";
     leavePractice();
     view = target;
+    error = null;
     statusMessage = null;
     wordMessage = null;
     characterMessage = null;
@@ -2797,7 +2801,20 @@
     </div>
 
     {#if error}
-      <p class="error">{error}</p>
+      <!-- Dismissable, and cleared on the way to another screen: a one-off such
+           as "Could not pronounce…" otherwise followed the learner everywhere,
+           because only Check and the vocabulary commands ever cleared it (issue
+           #33). Not on a timer — some of these have to be read to be acted on. -->
+      <p class="error" role="alert">
+        <span>{error}</span>
+        <button
+          type="button"
+          class="dismiss"
+          aria-label="Dismiss this message"
+          title="Dismiss"
+          onclick={() => (error = null)}><span aria-hidden="true">×</span></button
+        >
+      </p>
     {/if}
 
     {#if syncNotice}
@@ -2841,7 +2858,7 @@
         lookup={lookupText}
         onAdd={addToVocabulary}
         onUpdate={(id, pinyin, meaning, group) =>
-          void withVocab(() => api.vocabUpdate(id, pinyin, meaning, group), "Saved")}
+          withVocab(() => api.vocabUpdate(id, pinyin, meaning, group), "Saved")}
         onRemove={(id) =>
           void withVocab(() => api.vocabRemove(id), "Removed from your list")}
         onAddGroup={(name) =>
@@ -3499,6 +3516,13 @@
     display: flex;
     height: 100vh;
     overflow: hidden;
+    /* Clear of the notch, the status bar, the home indicator and the rounded
+       corners on every side. The wide layout is what a landscape iPhone and an
+       iPad get, and with no inset here the sidebar sat under the notch (issue
+       #33). All four are zero on the desktop. The phone layout below pads its
+       own top and bottom, inside the scrolling column, so it keeps only the
+       sides from this. */
+    padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
   }
 
   main {
@@ -4091,6 +4115,38 @@
     background: #fef2f2;
     color: #991b1b;
     font-size: 0.84rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .error > span {
+    flex: 1;
+    min-width: 0;
+  }
+  /* A plain × at the end of the line, on a 32px target (44px on a phone, below). */
+  .error .dismiss {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    margin: -7px -8px -7px 0;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 1.15rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .error .dismiss:hover {
+    background: #fee2e2;
+  }
+  .error .dismiss:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: -2px;
   }
 
   /* What the app is doing rather than what is wrong: a sync that started by itself
@@ -4181,6 +4237,8 @@
   @media (max-width: 760px) {
     .app {
       display: block;
+      padding-top: 0;
+      padding-bottom: 0;
     }
 
     main {
@@ -4281,6 +4339,8 @@
       width: min(86vw, 320px);
       padding-top: var(--safe-top);
       padding-bottom: var(--safe-bottom);
+      /* The sheet is fixed to the screen's edge, not inside `.app`'s padding. */
+      padding-left: var(--safe-left);
       background: var(--surface);
       box-shadow: 0 10px 40px rgb(15 23 42 / 0.3);
       transform: translateX(-102%);
@@ -4341,13 +4401,21 @@
     .hint {
       order: 5;
     }
-    /* The board is square and as wide as the phone: at this size it is the
-       screen's job to fit the board, not the board's to fit a column. */
-    :global(.board) {
+    /* The board is square and as wide as the phone's share of it: at this size
+       it is the screen's job to fit the board, not the board's to fit a column.
+       The frame itself is sized from the board-size preference, so a Compact or
+       Normal board gives the height it does not use to the controls below rather
+       than leaving it as an empty square (issue #33); `--board-presized` tells
+       the canvas the share is already taken. Scoped under `.workspace` so that it
+       outranks the canvas's own scoped `.board` rule — a bare `:global(.board)`
+       lost to it, and its `flex` and `min-height` never applied. */
+    .workspace :global(.board) {
       flex: none;
-      width: 100%;
+      align-self: center;
+      width: calc(100% * var(--board-fraction, 1));
       aspect-ratio: 1;
       min-height: 0;
+      --board-presized: 1;
     }
 
     /* Fingers, not a pointer: every control reaches a comfortable target, and
@@ -4395,6 +4463,11 @@
     .nav button {
       min-height: 44px;
       min-width: 44px;
+    }
+    .error .dismiss {
+      width: 44px;
+      height: 44px;
+      margin: -13px -12px -13px 0;
     }
     .slots :global(button) {
       min-width: 54px;

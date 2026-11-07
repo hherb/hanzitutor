@@ -9,6 +9,12 @@
   /* The mobile shells report their insets; the desktop has none. Defined here
      for the same reason the other two apps define it, and read by `main`. */
   --safe-top: max(env(safe-area-inset-top, 0px), var(--inset-top, 0px));
+  /* And the other three sides, which Hanzi Tutor defines the same way: the home
+     indicator below, and — once a phone is turned — the notch and the rounded
+     corners on the left or the right (issue #33). */
+  --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--inset-bottom, 0px));
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
   --bg: #fbfaf7;
   --panel: #ffffff;
   --ink: #1d1c19;
@@ -63,7 +69,13 @@ main {
      insets (notch, status bar) and is 0 on the desktop, so this is the desktop's
      allowance plus whatever the mobile shell reports. There is no heading above
      the course switch to absorb it any more, so the switch itself has to clear. */
-  padding: calc(var(--safe-top, 0px) + 2.25rem) clamp(12px, 3vw, 28px) 2.5rem;
+  /* The other three sides clear the home indicator and, in landscape, the notch
+     and the rounded corners (issue #33). Each is zero on the desktop, so this is
+     the same page there. `main` is the whole app here: there is no `.app`. */
+  padding: calc(var(--safe-top, 0px) + 2.25rem)
+    calc(var(--safe-right, 0px) + clamp(12px, 3vw, 28px))
+    calc(var(--safe-bottom, 0px) + 2.5rem)
+    calc(var(--safe-left, 0px) + clamp(12px, 3vw, 28px));
 }
 
 /* For a heading the eye does not need and the document does: the app's name is the
@@ -99,6 +111,40 @@ main {
   padding: 8px 12px;
   border-radius: var(--radius);
   font-size: 0.9rem;
+}
+
+/* An error the learner can put away: the message, then a × at the end of the
+   line. The button is a 32px target drawn as a plain glyph, so the banner does
+   not grow a second control's worth of chrome. */
+.error.dismissable {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.error.dismissable > span {
+  flex: 1;
+  min-width: 0;
+}
+.error .dismiss {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin: -6px -8px -6px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.error .dismiss:hover {
+  background: color-mix(in srgb, var(--bad) 14%, transparent);
+}
+.error .dismiss:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
 }
 
 /* A preference that could not be written, or any other non-fatal "this did not

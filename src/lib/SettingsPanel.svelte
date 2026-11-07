@@ -605,8 +605,10 @@
       <div class="what">
         <span class="name" id="set-board">Board size</span>
         <span class="why">
-          How much of the space beside the feedback the board takes. It is always
-          square, and it always fits the window whatever this is set to.
+          How much of the space beside the feedback the board takes: Large fills
+          it, Normal leaves a margin, and Compact leaves the most room for
+          everything else. It is always square, and it always fits the window
+          whatever this is set to.
         </span>
       </div>
       <div class="how">

@@ -124,7 +124,11 @@ export function play(url: string, rate = 1): Promise<void> {
   // which matters for a pronunciation exercise: the reading is the point, not
   // the pitch. Supported under this name in WebKit and Chromium.
   theAudio.preservesPitch = true;
-  theAudio.playbackRate = rate;
+  // Loading a new `src` resets `playbackRate` to `defaultPlaybackRate`, so the
+  // rate is set on both: the speed slider has to hold from a clip's first
+  // syllable, not from the next time it is moved (issue #33).
+  theAudio.defaultPlaybackRate = clampRate(rate);
+  theAudio.playbackRate = clampRate(rate);
   theAudio.src = url;
   return theAudio.play();
 }
@@ -137,6 +141,7 @@ export function play(url: string, rate = 1): Promise<void> {
  * normal take a little quick has nothing to adjust otherwise.
  */
 export function setRate(rate: number): void {
+  theAudio.defaultPlaybackRate = clampRate(rate);
   theAudio.playbackRate = clampRate(rate);
 }
 

@@ -342,7 +342,22 @@
   <h1 class="sr-only">Nihongo Tutor</h1>
 
   {#if error}
-    <p class="error" role="alert">{error}</p>
+    <!--
+      Dismissable, because otherwise only opening another kana cleared it (issue
+      #33). Not cleared by moving between screens: most of these are the app's own
+      failures at start — the dataset's numbers, the remembered course, the voice —
+      which say why something is missing everywhere, not on one screen.
+    -->
+    <p class="error dismissable" role="alert">
+      <span>{error}</span>
+      <button
+        type="button"
+        class="dismiss"
+        aria-label="Dismiss this message"
+        title="Dismiss"
+        onclick={() => (error = null)}><span aria-hidden="true">×</span></button
+      >
+    </p>
   {/if}
   {#if warning}
     <p class="warning" role="status">{warning}</p>

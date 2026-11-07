@@ -2270,6 +2270,24 @@ back.
   system bar insets by the `android_insets` command, and `app.css` takes
   `max(env(…), var(--inset-…))`. Taking the maximum makes one rule right on both: on a
   notched phone the two agree instead of summing.
+- **The sides need insets too, and the wide layout is what a turned phone gets.**
+  A landscape iPhone is 844–932 px wide, so it is drawn with the desktop layout,
+  and its notch is on the left or the right. `.app` is padded with `--safe-top`,
+  `--safe-right`, `--safe-bottom` and `--safe-left` on all four sides (the phone
+  layout keeps only the sides, because its scrolling `main` pads its own top and
+  bottom); Nihongo Tutor's `main` does the same. The sides are `env()` only:
+  `android_insets` measures the top and bottom bars (issue #33).
+- **A bare `:global(.board)` in `App.svelte` loses to `PracticeCanvas`'s own
+  scoped `.board`.** Svelte's scoped selector is `.board.svelte-…`, one class
+  heavier, so the phone layout's `flex` and `min-height` never applied until the
+  rule was written `.workspace :global(.board)`. The phone frame is sized from the
+  board-size preference (`--board-fraction`, which the canvas publishes) and says
+  `--board-presized: 1`, so the canvas fills it instead of taking the fraction a
+  second time; on the wide layout the canvas takes the fraction of its frame
+  itself. The fractions are in `src/lib/boardSize.ts`.
+- **Loading a new `src` resets an audio element's `playbackRate`** to its
+  `defaultPlaybackRate`. `audio.ts` sets both, or the Phrases speed slider is
+  ignored for the first moments of every clip (issue #33).
 - **Tauri dispatches mobile plugin commands on the Android main thread.**
   `run_command` goes through `run_on_android_context`, so a Kotlin plugin method that
   blocks freezes the UI, and one that waits on a latch deadlocks. The speech plugin
