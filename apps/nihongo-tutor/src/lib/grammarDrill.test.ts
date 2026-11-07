@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  emptyNote,
   isRight,
   optionState,
   outcomeLine,
@@ -148,5 +149,53 @@ describe("poolNote", () => {
       "No pattern in this course can be asked this way yet.",
     );
     expect(poolNote({ points: 0, examples: 0, total: 526 })).toContain("No pattern");
+  });
+});
+
+/** Issue #34: a `null` draw drew "Loading…" for good, on both grammar stages. */
+describe("emptyNote", () => {
+  it("says there is no question, with the course's own count, and where to go", () => {
+    const line = emptyNote({ points: 0, examples: 0, total: 526 }, "choose");
+    expect(line).toContain("Nothing to ask here");
+    expect(line).toContain("526 patterns");
+    expect(line).toContain("make a question of");
+    expect(line).toContain("another exercise");
+    expect(line).not.toContain("Loading");
+  });
+
+  it("says the production stage has nothing to write, for its own reason", () => {
+    const line = emptyNote({ points: 0, examples: 0, total: 526 }, "write");
+    expect(line).toContain("Nothing to write here");
+    expect(line).toContain("typeable answer");
+    expect(line).toContain("another exercise");
+  });
+
+  it("says exactly what each stage says over an empty course", () => {
+    expect(emptyNote({ points: 0, examples: 0, total: 0 }, "choose")).toBe(
+      "Nothing to ask here: the grammar course holds no patterns.",
+    );
+    expect(emptyNote({ points: 0, examples: 0, total: 0 }, "write")).toBe(
+      "Nothing to write here: the grammar course holds no patterns.",
+    );
+  });
+
+  it("words the drill's own reason, with its count", () => {
+    expect(emptyNote({ points: 0, examples: 0, total: 526 }, "choose")).toBe(
+      "Nothing to ask here: none of the course's 526 patterns has a sentence this drill can make a question of. Try another exercise from the grammar course.",
+    );
+  });
+
+  it("says when the course itself is empty, with no other exercise to send to", () => {
+    for (const exercise of ["choose", "write"] as const) {
+      const line = emptyNote({ points: 0, examples: 0, total: 0 }, exercise);
+      expect(line).toContain("holds no patterns");
+      expect(line).not.toContain("another exercise");
+    }
+  });
+
+  it("still says it when the size never arrived", () => {
+    const line = emptyNote(null, "choose");
+    expect(line).toContain("Nothing to ask here");
+    expect(line).not.toMatch(/\d/);
   });
 });

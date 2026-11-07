@@ -427,7 +427,9 @@ fn backfill_entry_uuids(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// This device's identity, generated once and then never changed.
+/// This device's identity, generated once and then never changed — except by sync,
+/// when it finds the name already in use by another copy of this database (see
+/// `Db::rotate_device_id`).
 ///
 /// Stored in `meta` rather than derived from the machine: a hostname or a MAC
 /// address would be a stable identifier the learner cannot reset, and would

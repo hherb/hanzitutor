@@ -562,12 +562,62 @@ fn every_preference_round_trips_through_the_database() {
 }
 
 #[test]
-fn a_stored_name_the_build_does_not_know_is_reported_rather_than_guessed() {
-    // A pace is a closed set of names. A row holding anything else means either
-    // a hand-edited database or a build whose names changed, and silently
-    // calling it "normal" would hide a real mismatch behind a plausible default.
+fn a_pace_or_board_size_a_newer_build_wrote_falls_back_to_the_default() {
+    // Issue #41. A pace or a board size is a closed set of names *in this build*,
+    // and a newer build that adds one writes a name this one has no variant for —
+    // without a schema bump, because the row is still a name. Refusing the whole
+    // settings table for that would cost the learner every other preference, so
+    // the one value reads as its default and the rest are read as written.
     let dir = dir("settings-bad-pace");
     let db = Db::open(&dir).unwrap();
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        for (key, value) in [
+            ("animation_pace", "leisurely"),
+            ("board_size", "enormous"),
+            ("click_to_draw", "true"),
+        ] {
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                [key, value],
+            )
+            .unwrap();
+        }
+    }
+
+    let mut store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert_eq!(store.view().pace(), Pace::Normal);
+    assert_eq!(store.view().board_size(), BoardSize::Normal);
+    assert_eq!(
+        store.click_to_draw(),
+        Some(true),
+        "the rest of the table is kept"
+    );
+
+    // What this build saves is what it shows. Preserving the newer build's row
+    // would leave a learner unable to choose the default over it here: the screen
+    // already shows "normal", so there is no change to make that would write it.
+    let stored = |key: &str| -> Option<String> {
+        rusqlite::Connection::open(db.path())
+            .unwrap()
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .ok()
+    };
+    assert!(store.set_tone_colours(true));
+    store.save().unwrap();
+    assert_eq!(stored("animation_pace"), None, "normal is stored as no row");
+    assert_eq!(stored("board_size"), None);
+    assert_eq!(stored("tone_colours").as_deref(), Some("true"));
+
+    finish(&dir);
+}
+
+#[test]
+fn picking_normal_over_a_pace_this_build_does_not_know_stores_normal() {
+    let dir = dir("settings-pick-normal");
+    let mut db = Db::open(&dir).unwrap();
     rusqlite::Connection::open(db.path())
         .unwrap()
         .execute(
@@ -576,12 +626,22 @@ fn a_stored_name_the_build_does_not_know_is_reported_rather_than_guessed() {
         )
         .unwrap();
 
-    let error = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap_err();
-    assert!(
-        matches!(&error, hanzi_core::SettingsError::Malformed(_)),
-        "{error}"
-    );
-    assert!(error.to_string().contains("animation_pace"), "{error}");
+    let chosen = hanzi_core::Settings {
+        animation_pace: Pace::Normal,
+        ..Default::default()
+    };
+    hanzi_core::SettingsSink::save(&mut db, &chosen).unwrap();
+    let row: Option<String> = rusqlite::Connection::open(db.path())
+        .unwrap()
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'animation_pace'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    assert_eq!(row, None, "normal replaced the unknown name");
+    let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert_eq!(store.view().pace(), Pace::Normal);
 
     finish(&dir);
 }
@@ -832,6 +892,117 @@ fn a_database_has_one_device_identity_that_does_not_change() {
 }
 
 #[test]
+fn a_new_identity_moves_only_the_attempts_it_is_given_and_every_handle_follows() {
+    // Sync's half of a restored database: the attempts the store already holds stay
+    // under the old name, the rest are renumbered from 1 under the new one, and a
+    // handle opened before the rename writes under the new name afterwards.
+    let dir = dir("rotate");
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    for (score, at) in [
+        (80.0, "2026-09-19T09:00:00Z"),
+        (81.0, "2026-09-19T10:00:00Z"),
+        (82.0, "2026-09-19T11:00:00Z"),
+    ] {
+        store.record_at('好', score, at).unwrap();
+        store.save().unwrap();
+    }
+    let old = db.device_id();
+
+    let new = db.rotate_device_id(&|attempt| attempt.seq == 1).unwrap();
+    assert_ne!(new, old);
+    assert_eq!(db.device_id(), new);
+    let origins: Vec<(String, i64, String)> = db
+        .attempts(None)
+        .unwrap()
+        .into_iter()
+        .map(|a| (a.device_id, a.seq, a.at))
+        .collect();
+    assert_eq!(
+        origins,
+        vec![
+            (old.clone(), 1, "2026-09-19T09:00:00Z".to_string()),
+            (new.clone(), 1, "2026-09-19T10:00:00Z".to_string()),
+            (new.clone(), 2, "2026-09-19T11:00:00Z".to_string()),
+        ],
+        "renumbered in the order they were made"
+    );
+
+    // The store was opened before the rename and numbers on from the new name.
+    store.record_at('好', 83.0, "2026-09-19T12:00:00Z").unwrap();
+    store.save().unwrap();
+    let own: Vec<(String, i64)> = db
+        .own_attempts()
+        .unwrap()
+        .into_iter()
+        .map(|a| (a.device_id, a.seq))
+        .collect();
+    assert_eq!(
+        own,
+        vec![(new.clone(), 1), (new.clone(), 2), (new.clone(), 3)]
+    );
+
+    // The old name is remembered, and an attempt that turns up under it later can
+    // be moved over, numbered on after the current name's newest.
+    assert_eq!(db.former_device_ids().unwrap(), vec![old.clone()]);
+    let straggler = hanzi_store::IncomingAttempt {
+        device_id: old.clone(),
+        seq: 2,
+        ch: "好".into(),
+        at: "2026-09-19T13:00:00Z".into(),
+        score: 50.0,
+        rating: Rating::Hard,
+        measures: None,
+    };
+    db.merge_attempts(&[straggler]).unwrap();
+    assert_eq!(
+        db.reclaim_attempts(&old, &|attempt| attempt.seq == 1)
+            .unwrap(),
+        1
+    );
+    let moved = db.own_attempts().unwrap().pop().unwrap();
+    assert_eq!((moved.seq, moved.at.as_str()), (4, "2026-09-19T13:00:00Z"));
+    assert_eq!(db.attempts(None).unwrap().len(), 5, "moved, not copied");
+
+    // A copy, under the old name, of an attempt the rename moved — a backup from
+    // before the rename — is the same attempt, so it is not let back in...
+    let moved_one = db.own_attempts().unwrap().remove(0);
+    let copy = hanzi_store::IncomingAttempt {
+        device_id: old.clone(),
+        seq: 9,
+        ch: moved_one.ch.clone(),
+        at: moved_one.at.clone(),
+        score: moved_one.score,
+        rating: Rating::from_name(&moved_one.rating).unwrap(),
+        measures: None,
+    };
+    assert_eq!(db.merge_attempts(&[copy]).unwrap(), 0);
+    // ...and one that got in anyway is dropped.
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO attempt (device_id, seq, ch, at, score, rating)
+             VALUES (?1, 9, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                old,
+                moved_one.ch,
+                moved_one.at,
+                moved_one.score,
+                moved_one.rating
+            ],
+        )
+        .unwrap();
+    assert_eq!(db.attempts(None).unwrap().len(), 6);
+    assert_eq!(db.forget_moved_copies().unwrap(), 1);
+    assert_eq!(db.attempts(None).unwrap().len(), 5);
+    assert_eq!(db.forget_moved_copies().unwrap(), 0, "and nothing else");
+
+    // And it is the name the database answers to from now on.
+    assert_eq!(Db::open(&dir).unwrap().device_id(), new);
+    finish(&dir);
+}
+
+#[test]
 fn an_attempt_is_stamped_with_its_device_and_its_number_on_it() {
     let second_dir = dir("provenance-second");
     let dir = dir("provenance");
@@ -844,7 +1015,11 @@ fn an_attempt_is_stamped_with_its_device_and_its_number_on_it() {
     let logged = db.attempts(Some('好')).unwrap();
     assert_eq!(logged.len(), 2);
     assert_eq!(logged[0].device_id, db.device_id(), "this device made it");
-    assert_eq!(logged[0].origin(), (db.device_id(), 1), "numbered from 1");
+    assert_eq!(
+        logged[0].origin(),
+        (db.device_id().as_str(), 1),
+        "numbered from 1"
+    );
     assert_eq!(logged[1].origin().1, 2, "and in order");
 
     // The numbers are per device, so a second device also starts at 1. That is
@@ -1293,6 +1468,48 @@ fn a_removed_entry_leaves_a_tombstone_rather_than_nothing() {
     assert_eq!(row.deleted, 1, "marked removed");
     assert_ne!(row.updated_at, before, "with a stamp that beats the old copy");
     assert_eq!(row.device_id, db.device_id());
+
+    finish(&dir);
+}
+
+#[test]
+fn a_group_removed_onto_an_unfiled_twin_tombstones_the_copy_it_merged_away() {
+    // Issue #40: unfiling a group's entries merges one whose word is already
+    // unfiled into that entry, rather than making a second copy. The copy merged
+    // away has to reach the database as a tombstone, for the reason above, and
+    // the survivor has to stay live with the counters it was given.
+    let dir = dir("vocab-merge-tombstone");
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    let survivor = vocab.add_entry("学习", "", "to study", None).unwrap().id;
+    let moved = vocab
+        .add_entry("学习", "xuéxí", "", Some("Lesson 1"))
+        .unwrap()
+        .id;
+    vocab.record_attempt(moved, 80.0).unwrap();
+    vocab.save().unwrap();
+
+    vocab.remove_group("Lesson 1", false).unwrap();
+    vocab.save().unwrap();
+
+    assert_eq!(
+        vocab_row(&db, moved).deleted,
+        1,
+        "the merged-away copy is a tombstone"
+    );
+    assert_eq!(
+        vocab_row(&db, survivor).deleted,
+        0,
+        "the survivor stays live"
+    );
+    let reopened = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(reopened.entries().len(), 1);
+    let entry = &reopened.entries()[0];
+    assert_eq!(entry.id, survivor);
+    assert_eq!(entry.group, None);
+    assert_eq!(entry.pinyin, "xuéxí");
+    assert_eq!(entry.attempts, 1);
+    assert_eq!(entry.best_score, Some(80.0));
 
     finish(&dir);
 }

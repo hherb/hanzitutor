@@ -23,12 +23,15 @@
 //! nothing is skipped rather than offered: a review screen that hands the learner
 //! something the board cannot write is the dead end invariant 13 forbids.
 
+use std::collections::{BTreeMap, HashMap};
+
 use serde::{Deserialize, Serialize};
 
 use hanzi_core::progress::{CardState, ProgressStore};
 
+use crate::curriculum::{to_hiragana, CHOONPU, SMALL_KANA};
 use crate::kana::KanaDataset;
-use crate::kanji::KanjiDataset;
+use crate::kanji::{Kanji, KanjiDataset};
 use crate::readings::reading;
 
 /// What kind of thing a scheduled character is.
@@ -106,8 +109,9 @@ impl Section {
 pub struct DueItem {
     pub ch: char,
     pub kind: ReviewKind,
-    /// The prompt beside the character: a kana's reading, a kanji's first gloss,
-    /// or the radical's number. Never empty — see [`hint_for`].
+    /// The prompt the learner writes the character from: a kana's sound and
+    /// script, a kanji's gloss, or the radical's number. Never empty, and never
+    /// shared by two kana or two kanji — see [`hint_for`].
     pub hint: String,
     /// The Kangxi number, when this is a head form that is *not* a jōyō character.
     /// It is the only way to ask for that geometry, because the character course
@@ -152,33 +156,163 @@ fn radical_number(ch: char, kanji: &KanjiDataset) -> Option<u8> {
 /// character with nothing to say, so each kind falls back through its own fields
 /// and finally to the character's code point.
 ///
-/// A kana's prompt comes from the readings rather than from the dataset, because
-/// a reading is what a learner is being asked to produce and the two are already
-/// one table — the same reason `input.rs` derives its spellings from it.
-fn hint_for(ch: char, kind: ReviewKind, kanji: &KanjiDataset) -> String {
+/// **It is the whole question.** The Review screen hides a kana or a kanji until
+/// the attempt is graded, so the prompt has to have one answer: a prompt two
+/// characters share is a review where the right answer to the other one is
+/// graded as a lapse. A kana's prompt therefore names its script and says which
+/// of a pair it is ([`kana_prompt`]), and a kanji's grows until no other kanji
+/// has it ([`kanji_prompts`]). Both are pinned over the shipped tables by tests.
+///
+/// A radical head form keeps its number. The table has no names for the 214, so
+/// there is nothing to recall it *from*; the Review screen shows the head form
+/// and the review is of how it is written, which is what the board grades.
+fn hint_for(
+    ch: char,
+    kind: ReviewKind,
+    kana: &KanaDataset,
+    kanji: &KanjiDataset,
+    kanji_table: &mut Option<HashMap<char, String>>,
+) -> String {
     match kind {
-        ReviewKind::Kana => match reading(ch) {
-            Some(read) if read.is_silent() => "no sound of its own".to_string(),
-            Some(read) => read
-                .hepburn
-                .first()
-                .map(|sound| (*sound).to_string())
-                .unwrap_or_else(|| fallback(ch)),
-            None => fallback(ch),
-        },
-        ReviewKind::Kanji => {
-            let kanji = kanji.get(ch);
-            kanji
-                .and_then(|k| k.meanings.first().cloned())
-                .or_else(|| kanji.and_then(|k| k.on.first().cloned()))
-                .or_else(|| kanji.and_then(|k| k.kun.first().cloned()))
-                .unwrap_or_else(|| fallback(ch))
-        }
+        ReviewKind::Kana => kana_prompt(ch, kana),
+        ReviewKind::Kanji => kanji_table
+            .get_or_insert_with(|| kanji_prompts(kanji))
+            .get(&ch)
+            .cloned()
+            .unwrap_or_else(|| fallback(ch)),
         ReviewKind::Radical => match radical_number(ch, kanji) {
             Some(number) => format!("radical {number} of 214"),
             None => fallback(ch),
         },
     }
+}
+
+/// A kana's prompt: its sound, said so that no other kana has it, and its script.
+///
+/// The readings table is what a learner is asked to produce, so the sound comes
+/// from it — but the table is a table of sounds, and the sounds are shared:
+///
+/// * every small kana sounds like its full-size one (ぁ and あ are both `a`, and
+///   ゕ, ゖ are the small か, け), so a small one says **small**;
+/// * じ and ぢ are both `ji`, ず and づ both `zu`, so each says which row it is
+///   written in — the voiced s-row (`za`) or the voiced t-row (`da`);
+/// * を is pronounced `o`, so it is asked for by its spelling, as the particle;
+/// * っ and ー have no sound of their own, so each is named for what it does.
+///
+/// The script is always named, because か and カ are the same sound.
+fn kana_prompt(ch: char, kana: &KanaDataset) -> String {
+    let sound = kana_sound(ch);
+    match kana.get(ch) {
+        Some(entry) => format!("{sound} · {}", entry.script.name()),
+        None => sound,
+    }
+}
+
+/// The sound half of [`kana_prompt`].
+fn kana_sound(ch: char) -> String {
+    if ch == CHOONPU {
+        return "long-vowel mark".to_string();
+    }
+    let hiragana = to_hiragana(ch).unwrap_or(ch);
+    match hiragana {
+        'っ' => return "small tsu (doubling mark)".to_string(),
+        'を' => return "wo (the particle o)".to_string(),
+        'じ' => return "ji (za row)".to_string(),
+        'ぢ' => return "ji (da row)".to_string(),
+        'ず' => return "zu (za row)".to_string(),
+        'づ' => return "zu (da row)".to_string(),
+        _ => {}
+    }
+    let Some(sound) = reading(ch).and_then(|read| read.hepburn.first().copied()) else {
+        return fallback(ch);
+    };
+    if SMALL_KANA.contains(&hiragana) || matches!(hiragana, 'ゕ' | 'ゖ') {
+        format!("small {sound}")
+    } else {
+        sound.to_string()
+    }
+}
+
+/// Every jōyō kanji's prompt, each one different from every other.
+///
+/// A kanji starts with its first English gloss, which is usually enough. Where
+/// two or more share it — "dark" is 冥, 昧 and 曖 — each of them takes its next
+/// gloss as well ("dark, gloomy"), and so on until the group comes apart. A kanji
+/// whose glosses run out takes its readings too, in brackets, the first on and
+/// the first kun reading before the rest: the readings are kana, and a kana is not the character being
+/// asked for. The steps are taken together for a whole group, so the result does
+/// not depend on which of a group is looked at first.
+///
+/// Built once per queue rather than per item, because whether a gloss is shared
+/// is a question about the whole table.
+fn kanji_prompts(kanji: &KanjiDataset) -> HashMap<char, String> {
+    let ladders: Vec<(char, Vec<String>)> = kanji
+        .kanji()
+        .iter()
+        .map(|entry| (entry.ch, prompt_ladder(entry)))
+        .collect();
+    let mut step = vec![0usize; ladders.len()];
+    loop {
+        let mut groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+        for (index, (_, ladder)) in ladders.iter().enumerate() {
+            groups
+                .entry(ladder[step[index]].as_str())
+                .or_default()
+                .push(index);
+        }
+        let mut moved = false;
+        for members in groups.values().filter(|members| members.len() > 1) {
+            for &index in members {
+                if step[index] + 1 < ladders[index].1.len() {
+                    step[index] += 1;
+                    moved = true;
+                }
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    ladders
+        .into_iter()
+        .zip(step)
+        .map(|((ch, ladder), at)| (ch, ladder[at].clone()))
+        .collect()
+}
+
+/// The prompts a kanji can be asked by, shortest first: one gloss, two, … all of
+/// them, then all of them with one reading beside, two, … every reading. Never
+/// empty.
+fn prompt_ladder(entry: &Kanji) -> Vec<String> {
+    let mut ladder: Vec<String> = (1..=entry.meanings.len())
+        .map(|n| entry.meanings[..n].join(", "))
+        .collect();
+    // The first on and first kun reading, then the rest of each: 沙 and 砂 are
+    // both only "sand", read サ and すな, and come apart at 砂's シャ.
+    let readings: Vec<&String> = entry
+        .on
+        .iter()
+        .take(1)
+        .chain(entry.kun.iter().take(1))
+        .chain(entry.on.iter().skip(1))
+        .chain(entry.kun.iter().skip(1))
+        .collect();
+    let glosses = ladder.last().cloned();
+    for n in 1..=readings.len() {
+        let said = readings[..n]
+            .iter()
+            .map(|reading| reading.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        ladder.push(match &glosses {
+            Some(glosses) => format!("{glosses} ({said})"),
+            None => said,
+        });
+    }
+    if ladder.is_empty() {
+        ladder.push(fallback(entry.ch));
+    }
+    ladder
 }
 
 /// The last-resort prompt, which names the character rather than showing nothing.
@@ -204,10 +338,13 @@ pub fn due_items(
     now: &str,
     section: Option<Section>,
 ) -> Vec<DueItem> {
+    // The kanji prompts are a property of the whole table, built the first time a
+    // due kanji needs one and not at all for a queue of kana.
+    let mut kanji_table = None;
     store
         .due(now)
         .into_iter()
-        .filter_map(|(ch, card)| due_item(ch, card, kana, kanji))
+        .filter_map(|(ch, card)| due_item(ch, card, kana, kanji, &mut kanji_table))
         .filter(|item| section.is_none_or(|section| section.covers(item.kind)))
         .collect()
 }
@@ -290,12 +427,13 @@ fn due_item(
     card: &CardState,
     kana: &KanaDataset,
     kanji: &KanjiDataset,
+    kanji_table: &mut Option<HashMap<char, String>>,
 ) -> Option<DueItem> {
     let kind = kind_of(ch, kana, kanji)?;
     Some(DueItem {
         ch,
         kind,
-        hint: hint_for(ch, kind, kanji),
+        hint: hint_for(ch, kind, kana, kanji, kanji_table),
         radical: match kind {
             ReviewKind::Radical => radical_number(ch, kanji),
             _ => None,
@@ -381,18 +519,17 @@ mod tests {
 
     #[test]
     fn a_prompt_is_what_the_learner_needs_and_never_empty() {
-        let (_, kanji) = datasets();
-        assert_eq!(hint_for('あ', ReviewKind::Kana, &kanji), "a");
-        // っ has no sound of its own, and saying so is the prompt.
+        let (kana, kanji) = datasets();
+        let mut table = None;
+        let mut hint = |ch, kind| hint_for(ch, kind, &kana, &kanji, &mut table);
+        assert_eq!(hint('あ', ReviewKind::Kana), "a · hiragana");
+        // っ has no sound of its own, so it is named for what it does.
         assert_eq!(
-            hint_for('っ', ReviewKind::Kana, &kanji),
-            "no sound of its own"
+            hint('っ', ReviewKind::Kana),
+            "small tsu (doubling mark) · hiragana"
         );
-        assert!(!hint_for('学', ReviewKind::Kanji, &kanji).is_empty());
-        assert_eq!(
-            hint_for('亅', ReviewKind::Radical, &kanji),
-            "radical 6 of 214"
-        );
+        assert!(!hint('学', ReviewKind::Kanji).is_empty());
+        assert_eq!(hint('亅', ReviewKind::Radical), "radical 6 of 214");
     }
 
     // ---- the queue --------------------------------------------------------
@@ -561,5 +698,93 @@ mod tests {
             queue(&store, &kana, &kanji, now, Some(Section::Kanji)).cards,
             0
         );
+    }
+
+    // ---- every prompt is a question with one answer ------------------------
+
+    /// Every character of one kind put on the schedule and made due, and the
+    /// prompts the queue offers for them, grouped by prompt. A group of more than
+    /// one is a prompt that two characters share: the learner cannot know which
+    /// to write, and the right answer to the other one is graded as a lapse.
+    fn shared_prompts(chars: &[char], kind: ReviewKind) -> Vec<(String, Vec<char>)> {
+        let (kana, kanji) = datasets();
+        let mut store = ProgressStore::in_memory();
+        for &ch in chars {
+            score(&mut store, ch, 10.0, "2020-01-01T00:00:00Z");
+        }
+        let items = due_items(&store, &kana, &kanji, "2026-09-19T09:00:00Z", None);
+        let mut groups: std::collections::BTreeMap<String, Vec<char>> = Default::default();
+        for item in items.into_iter().filter(|item| item.kind == kind) {
+            groups.entry(item.hint).or_default().push(item.ch);
+        }
+        groups
+            .into_iter()
+            .filter(|(_, chars)| chars.len() > 1)
+            .collect()
+    }
+
+    #[test]
+    fn every_kana_has_a_prompt_of_its_own() {
+        let (kana, _) = datasets();
+        let all: Vec<char> = kana.kana().iter().map(|k| k.ch).collect();
+        assert!(all.len() > 150, "the whole kana table: {}", all.len());
+        let shared = shared_prompts(&all, ReviewKind::Kana);
+        assert!(
+            shared.is_empty(),
+            "kana prompts shared by more than one kana: {shared:?}"
+        );
+    }
+
+    #[test]
+    fn every_kanji_has_a_prompt_of_its_own() {
+        let (_, kanji) = datasets();
+        let all: Vec<char> = kanji.kanji().iter().map(|k| k.ch).collect();
+        assert!(all.len() > 2000, "the whole jōyō table: {}", all.len());
+        let shared = shared_prompts(&all, ReviewKind::Kanji);
+        assert!(
+            shared.is_empty(),
+            "kanji prompts shared by more than one kanji: {shared:?}"
+        );
+    }
+
+    #[test]
+    fn the_prompts_that_used_to_be_shared_now_say_which() {
+        let (kana, kanji) = datasets();
+        let mut store = ProgressStore::in_memory();
+        for ch in [
+            'あ', 'ぁ', 'じ', 'ぢ', 'ず', 'づ', 'お', 'を', 'ッ', 'ー', 'か', 'カ', 'ゕ',
+        ] {
+            score(&mut store, ch, 10.0, "2020-01-01T00:00:00Z");
+        }
+        let items = due_items(&store, &kana, &kanji, "2026-09-19T09:00:00Z", None);
+        let hint = |ch: char| {
+            items
+                .iter()
+                .find(|item| item.ch == ch)
+                .map(|item| item.hint.clone())
+                .expect("due")
+        };
+        assert_eq!(hint('あ'), "a · hiragana");
+        assert_eq!(hint('ぁ'), "small a · hiragana");
+        assert_eq!(hint('じ'), "ji (za row) · hiragana");
+        assert_eq!(hint('ぢ'), "ji (da row) · hiragana");
+        assert_eq!(hint('ず'), "zu (za row) · hiragana");
+        assert_eq!(hint('づ'), "zu (da row) · hiragana");
+        assert_eq!(hint('お'), "o · hiragana");
+        assert_eq!(hint('を'), "wo (the particle o) · hiragana");
+        assert_eq!(hint('ッ'), "small tsu (doubling mark) · katakana");
+        assert_eq!(hint('ー'), "long-vowel mark · katakana");
+        assert_eq!(hint('か'), "ka · hiragana");
+        assert_eq!(hint('カ'), "ka · katakana");
+        assert_eq!(hint('ゕ'), "small ka · hiragana");
+        // No prompt names the character it asks for.
+        for item in &items {
+            assert!(
+                !item.hint.contains(item.ch),
+                "{} is in its own prompt {:?}",
+                item.ch,
+                item.hint
+            );
+        }
     }
 }

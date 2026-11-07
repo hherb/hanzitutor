@@ -169,6 +169,32 @@ impl Word {
         self.text.chars().filter(|c| is_kanji(*c)).collect()
     }
 
+    /// Where the reading's は or へ is a particle and is said `wa` or `e`: the
+    /// positions [`crate::check_kana_text_with`] takes, counted in characters of
+    /// [`Word::reading`].
+    ///
+    /// A word's は is a particle only as its **last kana, written as kana**, after
+    /// something else: 今日は and 今晩は, 実は, 又は, 若しくは, 時には — the greetings
+    /// and the fused particles are where a word ends in one. Everywhere else it is
+    /// the sound `ha`, and the rule is narrow on purpose, because a wrong answer
+    /// accepted is worse than a right one refused: 花 (はな) and 母 (はは) write it in a
+    /// kanji, はず begins with it, and 当てはまる, 軽はずみ and 浅はか write it as kana in
+    /// the middle of a word and still say `ha`. Measured over the shipped
+    /// vocabulary, eight words have a particle here and none of them is wrong.
+    pub fn particles(&self) -> Vec<usize> {
+        let (mut text, reading) = (self.text.chars(), self.reading.chars());
+        let last = text.next_back();
+        let count = reading.clone().count();
+        match (last, reading.last()) {
+            (Some(written), Some(said))
+                if text.next().is_some() && written == said && matches!(written, 'は' | 'へ') =>
+            {
+                vec![count - 1]
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// The reading its furigana spells out, for a caller that wants to check the
     /// two agree. Empty when there is no furigana.
     pub fn reading_from_furigana(&self) -> String {

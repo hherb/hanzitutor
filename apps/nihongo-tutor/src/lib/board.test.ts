@@ -3,7 +3,9 @@ import {
   MIN_POINTS,
   afterGrade,
   afterGradeInQueue,
+  ghostAfterAnimation,
   isStroke,
+  traceReason,
   pointerToDisplay,
   sweepAt,
 } from "./board";
@@ -146,5 +148,35 @@ describe("afterGradeInQueue", () => {
     // The queue's end is a state, not the stage's `finish`: there is nowhere to
     // go and nothing to go back to, so the control reads "nothing due".
     expect(afterGradeInQueue(true, false)).toBe("nothing");
+  });
+});
+
+describe("traceReason", () => {
+  it("is null only for an attempt written from memory", () => {
+    expect(traceReason({ guide: false, watched: false, answered: false })).toBeNull();
+  });
+
+  it("names the guide while it is on the board", () => {
+    expect(traceReason({ guide: true, watched: false, answered: false })).toBe("guide");
+    expect(traceReason({ guide: true, watched: true, answered: true })).toBe("guide");
+  });
+
+  it("names the stroke animation when it drew the character with the guide off", () => {
+    expect(traceReason({ guide: false, watched: true, answered: false })).toBe("animation");
+    expect(traceReason({ guide: false, watched: true, answered: true })).toBe("animation");
+  });
+
+  it("names an earlier verdict, which showed the character as the answer", () => {
+    expect(traceReason({ guide: false, watched: false, answered: true })).toBe("answered");
+  });
+});
+
+describe("ghostAfterAnimation", () => {
+  it("leaves the whole guide up when the guide is on", () => {
+    expect(ghostAfterAnimation(true, 3)).toBe(3);
+  });
+
+  it("takes the guide away again in recall", () => {
+    expect(ghostAfterAnimation(false, 3)).toBe(0);
   });
 });

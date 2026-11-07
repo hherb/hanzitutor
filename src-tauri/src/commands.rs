@@ -12,12 +12,13 @@ use hanzi_core::{
 };
 use serde::Serialize;
 use std::sync::{Arc, MutexGuard};
-use tauri::State;
+use tauri::{Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 use hanzi_hearing::AsrStatus;
 use crate::say::SayStatus;
 use hanzi_voice::MicrophoneStatus;
+use crate::chosen_file::{ChosenFile, PickedFile};
 use crate::licences::{AppInfo, LicenceNotice};
 use crate::state::{AppState, BackupOutcome, ProgressState, VocabState};
 use crate::sync::{AutoSync, SyncService, SyncView};
@@ -478,7 +479,13 @@ pub fn speech_status(state: State<'_, AppState>) -> Option<String> {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceOption {
-    /// The name as the system reports it, which is what a choice is stored as.
+    /// What a choice of this voice is stored as, and what the settings screen
+    /// keys its options on: the platform's identifier for it on macOS and iOS
+    /// (`com.apple.eloquence.zh-CN.Eddy`), the name on Android, whose names are
+    /// already unique. Not the name everywhere, because AVFoundation's novelty
+    /// voices share one bare name across every language — see issue #39.
+    pub id: String,
+    /// The name as the system reports it, for the label.
     pub name: String,
     /// The locale, e.g. `zh_CN`. Shown beside the name because it is the only
     /// thing that tells two similarly named Chinese voices apart.
@@ -490,6 +497,11 @@ pub struct VoiceOption {
     /// one that does not, which is worth saying before the learner picks it
     /// rather than after.
     pub network: bool,
+    /// How good the voice's data is — `standard`, `enhanced` or `premium` — or
+    /// `None` where the platform does not say. macOS and iOS list a downloaded
+    /// enhanced voice beside the compact one under the same name and locale,
+    /// and this is what tells the two rows apart.
+    pub quality: Option<String>,
 }
 
 /// The Chinese voices this machine offers, and the one actually in use.
@@ -509,6 +521,18 @@ pub struct VoicesView {
     /// The name of the voice in use, or `None` when nothing Chinese is
     /// installed and pronunciation is unavailable.
     pub active: Option<String>,
+    /// The [`VoiceOption::id`] the stored choice resolves to here, or `None`
+    /// when nothing is chosen or the chosen voice is not installed.
+    ///
+    /// Not the stored value itself: a bare name an older build stored (`Eddy`)
+    /// is one of several entries now, one per locale, and this says which of
+    /// them it means — so the screen selects the right one, and can tell a
+    /// choice that is missing here (this is `None`) from one in use.
+    pub chosen: Option<String>,
+    /// When the stored choice names no Chinese voice but does name one of
+    /// another language here, that voice as `name (locale)` — so the screen can
+    /// say it "isn't available as a Chinese voice" rather than "not installed".
+    pub elsewhere: Option<String>,
 }
 
 /// The voices a Chinese character can be spoken with, and the one in use.
@@ -734,11 +758,44 @@ pub fn speech_report() -> Result<SpeechReport, String> {
     }
 }
 
+/// Run `work` on Tauri's blocking pool with the managed state `S`, and hand back
+/// what it returns.
+///
+/// For the commands that block for seconds (issue #26). `#[tauri::command(async)]`
+/// already takes a command off the main thread, but it runs the body on one of the
+/// async runtime's *core* workers, and there are only as many of those as the
+/// device has cores: a few phrase taps queued on the synthesiser, or a fingerprint
+/// prompt left open, would park enough of them to stall every other async command —
+/// `sync_status`, the recording that was just released — until they let go. The
+/// blocking pool is where Tokio expects work that waits.
+///
+/// The state is reached through the `AppHandle` rather than a borrowed `State`,
+/// because the work outlives the command's borrow. A panic in it becomes an error
+/// the interface can show, rather than a promise that never settles.
+async fn on_a_blocking_thread<S, T, F>(app: tauri::AppHandle, work: F) -> Result<T, String>
+where
+    S: Send + Sync + 'static,
+    T: Send + 'static,
+    F: FnOnce(&S) -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || work(app.state::<S>().inner()))
+        .await
+        .map_err(|e| format!("this stopped before it finished: {e}"))?
+}
+
 /// Begin listening. Resolves once the device is actually open, so a failure is
 /// reported to the caller rather than swallowed in the audio thread.
+///
+/// Off the main thread, like every command in this section that can take seconds
+/// (issue #26): opening the device can wait up to `hanzi_voice`'s eight-second open
+/// timeout behind a microphone permission prompt, and a plain command would hold the
+/// window frozen for all of it. The recorder's slot is held while the device opens,
+/// so a [`listen_stop`] that arrives meanwhile waits for it rather than finding
+/// nothing to stop — and no command that runs on the main thread takes that slot.
+/// On the blocking pool rather than a runtime worker; see [`on_a_blocking_thread`].
 #[tauri::command]
-pub fn listen_start(state: State<'_, AppState>) -> Result<(), String> {
-    state.capture.start()
+pub async fn listen_start(app: tauri::AppHandle) -> Result<(), String> {
+    on_a_blocking_thread(app, |state: &AppState| state.capture.start()).await
 }
 
 /// Stop listening and judge what was heard against `text`.
@@ -758,10 +815,42 @@ pub fn listen_start(state: State<'_, AppState>) -> Result<(), String> {
 /// refusal: text that cannot be tone-scored is recognised instead, and text that
 /// can be neither is not offered a button in the first place — see
 /// [`speech_target`].
+///
+/// **Off the main thread, and that is the point of the `async`** (issue #26). The
+/// first call after the model is installed loads 228 MB of ONNX before it decodes,
+/// and on the main thread that froze the window for seconds after the button was
+/// released — with the "busy" state the interface sets unable to paint until it was
+/// over. Nothing this takes is a lock a main-thread command waits on: the
+/// recogniser's slot is shared only with [`asr_install`] and [`asr_remove`], which
+/// are off the main thread too, and is not held during the decode itself. Two of
+/// these cannot judge one recording: the first takes it out of the recorder, and the
+/// second is told nothing is being recorded. On the blocking pool rather than a
+/// runtime worker, for the decode's length; see [`on_a_blocking_thread`].
 #[tauri::command]
-pub fn listen_stop(state: State<'_, AppState>, text: String) -> Result<ToneResult, String> {
-    let recording = state.capture.stop()?;
-    Ok(state.score_speech(&recording, &text))
+pub async fn listen_stop(app: tauri::AppHandle, text: String) -> Result<ToneResult, String> {
+    on_a_blocking_thread(app, move |state: &AppState| {
+        let recording = state.capture.stop()?;
+        Ok(state.score_speech(&recording, &text))
+    })
+    .await
+}
+
+/// Stop listening and throw the recording away.
+///
+/// For a recording nothing should be judged from: the button came up before the
+/// device had opened, so nothing the learner said is in it, or the board moved on
+/// while it ran. Stopping is all this does — a judgement posted for a board the
+/// learner has left is worse than a recording discarded — and a failure means
+/// nothing was open, which is what this wanted. It waits on the recorder's slot,
+/// which a device still opening holds for seconds, so it runs where
+/// [`listen_start`] does.
+#[tauri::command]
+pub async fn listen_cancel(app: tauri::AppHandle) -> Result<(), String> {
+    on_a_blocking_thread(app, |state: &AppState| {
+        let _ = state.capture.stop();
+        Ok(())
+    })
+    .await
 }
 
 // ---- Speech recognition (ROADMAP.md M12) ----------------------------------
@@ -784,7 +873,11 @@ pub fn asr_status(state: State<'_, AppState>) -> AsrStatus {
 /// when it finishes, so the interface is not held for the minutes a 163 MB
 /// transfer takes; the outcome and the progress come back through
 /// [`asr_status`], which the settings screen polls.
-#[tauri::command]
+///
+/// Off the main thread although it returns at once, because the first thing it
+/// does is empty the recogniser's slot — and a [`listen_stop`] loading the model
+/// holds that slot for the second or two the load takes.
+#[tauri::command(async)]
 pub fn asr_install(state: State<'_, AppState>) -> Result<(), String> {
     state.asr.install()
 }
@@ -793,7 +886,11 @@ pub fn asr_install(state: State<'_, AppState>) -> Result<(), String> {
 ///
 /// Returns the new status so the screen has one thing to render rather than two
 /// calls that could disagree.
-#[tauri::command]
+///
+/// Off the main thread: it deletes a few hundred megabytes, and waits for a model
+/// that is being loaded to finish first. A recognition already decoding keeps the
+/// model it loaded — see `Asr::remove`.
+#[tauri::command(async)]
 pub fn asr_remove(state: State<'_, AppState>) -> Result<AsrStatus, String> {
     state.asr.remove()?;
     Ok(state.asr.status())
@@ -823,15 +920,20 @@ pub fn say_status(state: State<'_, AppState>) -> SayStatus {
 /// Fetch and verify the synthesis model.
 ///
 /// Like [`asr_install`], this is opt-in and never on a path a learner must take.
-/// It blocks until the files are on disk; the settings screen calls it from a
-/// background task and polls [`say_status`] for progress.
+/// It returns as soon as the download has started on a thread of its own — the
+/// files arrive later — and the settings screen polls [`say_status`] for the
+/// progress and the outcome. That is also why it can stay on the main thread: it
+/// takes the install slot for a moment and nothing else.
 #[tauri::command]
 pub fn say_install(state: State<'_, AppState>) -> Result<(), String> {
     state.say.install()
 }
 
 /// Delete the synthesis model, and report the resulting state.
-#[tauri::command]
+///
+/// Off the main thread for [`asr_remove`]'s reasons: a recursive delete of the
+/// weights, after waiting for a phrase being spoken with them to finish.
+#[tauri::command(async)]
 pub fn say_remove(state: State<'_, AppState>) -> Result<SayStatus, String> {
     state.say.remove()?;
     Ok(state.say.status())
@@ -855,9 +957,17 @@ pub struct SpokenAudio {
 /// Answers `None` when no model is installed, which is how the app ships. That is
 /// not a failure: the caller falls back to the platform synthesiser, and nothing
 /// is reported as an error for a feature the learner never asked for.
+///
+/// Off the main thread (issue #26): the first phrase loads the model, and every
+/// phrase runs it over up to [`SAY_MAX_CHARS`] characters, which is long enough to
+/// freeze the window. Two taps can now overlap; the model's slot makes them take
+/// turns, and a tap that a later one has overtaken while it waited is not
+/// synthesised at all — see `Say::speak`. On the blocking pool rather than a
+/// runtime worker, because the taps that wait their turn would otherwise each park
+/// one; see [`on_a_blocking_thread`].
 #[tauri::command]
-pub fn say_speak(state: State<'_, AppState>, text: String) -> Result<Option<SpokenAudio>, String> {
-    let trimmed = text.trim();
+pub async fn say_speak(app: tauri::AppHandle, text: String) -> Result<Option<SpokenAudio>, String> {
+    let trimmed = text.trim().to_string();
     if trimmed.is_empty() {
         return Err("There is nothing to speak.".to_string());
     }
@@ -867,10 +977,16 @@ pub fn say_speak(state: State<'_, AppState>, text: String) -> Result<Option<Spok
             SAY_MAX_CHARS
         ));
     }
-    Ok(state.say.speak(trimmed)?.map(|(samples, sample_rate)| SpokenAudio {
-        samples,
-        sample_rate,
-    }))
+    on_a_blocking_thread(app, move |state: &AppState| {
+        Ok(state
+            .say
+            .speak(&trimmed)?
+            .map(|(samples, sample_rate)| SpokenAudio {
+                samples,
+                sample_rate,
+            }))
+    })
+    .await
 }
 
 // ---- Personal vocabulary list ---------------------------------------------
@@ -1113,7 +1229,7 @@ pub fn vocab_record_attempt(
     Ok(committed(&state, vocab))
 }
 
-/// Ask for a path to write to, with the dialog owned here rather than by the
+/// Ask for a file to write to, with the dialog owned here rather than by the
 /// caller.
 ///
 /// **The path must never cross the IPC boundary as a free-form string.** These
@@ -1123,17 +1239,20 @@ pub fn vocab_record_attempt(
 /// command trusted whatever arrived instead of the learner's choice. Since these
 /// commands also *overwrite*, that included the study database itself and the
 /// shell profiles of anything that could call the IPC. Showing the dialog here
-/// removes the question: the only path written to is one the learner chose in a
+/// removes the question: the only file written to is one the learner chose in a
 /// native dialog a moment ago, and the frontend never gets to name a file.
 ///
-/// The save dialog's own answer is already restricted to a real path on desktop
-/// (`FilePath::Url` is a `file://`/`content://` URI and is refused here).
-fn ask_where_to_save(
-    app: &tauri::AppHandle,
+/// The dialog's answer is kept as it came — a path on desktop, a `content://`
+/// URI on Android — and opened through [`PickedFile`], never turned into a path:
+/// `FilePath::into_path` refuses a `content://` URI, and doing that here is what
+/// once made every export and restore fail on Android. See
+/// [`crate::chosen_file`].
+fn ask_where_to_save<'a>(
+    app: &'a tauri::AppHandle,
     title: &str,
     file_name: &str,
     filter: (&str, &[&str]),
-) -> Result<Option<std::path::PathBuf>, String> {
+) -> Option<PickedFile<'a, tauri::Wry>> {
     use tauri_plugin_dialog::DialogExt;
     let chosen = app
         .dialog()
@@ -1145,15 +1264,26 @@ fn ask_where_to_save(
         // async command on the async runtime rather than the main thread, and
         // the plugin marshals the dialog onto the main thread itself. A
         // synchronous command would deadlock here — the plugin's own docs say so.
-        .blocking_save_file();
-    match chosen {
-        None => Ok(None),
-        Some(path) => path
-            .simplified()
-            .into_path()
-            .map(Some)
-            .map_err(|e| format!("that file cannot be written: {e}")),
-    }
+        .blocking_save_file()?;
+    Some(PickedFile::from_dialog(app, chosen))
+}
+
+/// Ask for a file to read, the open-dialog half of [`ask_where_to_save`], whose
+/// reasoning — no path over IPC, blocking because the command is `async`, the
+/// answer opened as it came — applies here unchanged.
+fn ask_which_to_open<'a>(
+    app: &'a tauri::AppHandle,
+    title: &str,
+    filter: (&str, &[&str]),
+) -> Option<PickedFile<'a, tauri::Wry>> {
+    use tauri_plugin_dialog::DialogExt;
+    let chosen = app
+        .dialog()
+        .file()
+        .set_title(title)
+        .add_filter(filter.0, filter.1)
+        .blocking_pick_file()?;
+    Some(PickedFile::from_dialog(app, chosen))
 }
 
 /// Write the list to a file the learner chooses, as `format`: `"json"`
@@ -1184,15 +1314,14 @@ pub async fn vocab_export(
 
     let title = format!("Export vocabulary as {label}");
     let file_name = format!("hanzi-vocabulary.{extension}");
-    let Some(path) = ask_where_to_save(&app, &title, &file_name, (label, &[extension]))? else {
+    let Some(file) = ask_where_to_save(&app, &title, &file_name, (label, &[extension])) else {
         return Ok(None);
     };
 
-    std::fs::write(&path, contents)
-        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    file.write(contents.as_bytes())?;
     Ok(Some(format!(
         "Exported {count} entries as {label} to {}",
-        path.display()
+        file.describe()
     )))
 }
 
@@ -1207,29 +1336,15 @@ pub async fn vocab_import(
     state: State<'_, AppState>,
     merge: bool,
 ) -> Result<Option<VocabOutcome>, String> {
-    use tauri_plugin_dialog::DialogExt;
-    // Blocking on an `async` command, and so off the main thread — see
-    // [`ask_where_to_save`], whose reasoning applies here unchanged.
-    let chosen = app
-        .dialog()
-        .file()
-        .set_title(if merge {
-            "Add to your list"
-        } else {
-            "Replace your list"
-        })
-        .add_filter("JSON", &["json"])
-        .blocking_pick_file();
-    let Some(chosen) = chosen else {
+    let title = if merge {
+        "Add to your list"
+    } else {
+        "Replace your list"
+    };
+    let Some(file) = ask_which_to_open(&app, title, ("JSON", &["json"])) else {
         return Ok(None);
     };
-    let path = chosen
-        .simplified()
-        .into_path()
-        .map_err(|e| format!("that file cannot be read: {e}"))?;
-
-    let json = std::fs::read_to_string(&path)
-        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let json = file.read_to_string()?;
 
     // The other half of the wrong-file guard: a backup holds a list *and* a log,
     // and this import takes a list on its own. Saying which screen wants the file
@@ -1250,18 +1365,26 @@ pub async fn vocab_import(
     let view = committed(&state, vocab);
 
     let mut message = if summary.replaced {
-        format!("Replaced your list with {} entries", summary.added)
+        format!(
+            "Replaced your list with {}",
+            crate::state::plural(summary.added, "entry", "entries")
+        )
     } else {
-        format!("Added {} entries", summary.added)
+        format!(
+            "Added {}",
+            crate::state::plural(summary.added, "entry", "entries")
+        )
     };
-    if summary.skipped_duplicates > 0 {
+    if summary.groups_added > 0 {
         message.push_str(&format!(
-            ", skipped {} already in the list",
-            summary.skipped_duplicates
+            ", {}",
+            crate::state::plural(summary.groups_added, "new group", "new groups")
         ));
     }
-    if summary.groups_added > 0 {
-        message.push_str(&format!(", {} new groups", summary.groups_added));
+    for note in crate::state::import_notes(&summary, hanzi_core::vocab::ImportRules::Typed, "file")
+    {
+        message.push_str(", ");
+        message.push_str(&note);
     }
 
     Ok(Some(VocabOutcome { view, message }))
@@ -1341,10 +1464,10 @@ pub async fn export_practice_log(
     };
     let title = format!("Export your practice log as {label}");
     let file_name = format!("hanzi-practice-log.{format}");
-    let Some(path) = ask_where_to_save(&app, &title, &file_name, (label, &[&format]))? else {
+    let Some(file) = ask_where_to_save(&app, &title, &file_name, (label, &[&format])) else {
         return Ok(None);
     };
-    state.export_practice_log(&path, &format).map(Some)
+    state.export_practice_log(&file, &format).map(Some)
 }
 
 /// Write everything the learner has made — their list and their log — to one file.
@@ -1363,10 +1486,10 @@ pub async fn backup_export(
 ) -> Result<Option<String>, String> {
     let title = "Back up your vocabulary and your practice log";
     let file_name = "hanzi-tutor-backup.json";
-    let Some(path) = ask_where_to_save(&app, title, file_name, ("Backup", &["json"]))? else {
+    let Some(file) = ask_where_to_save(&app, title, file_name, ("Backup", &["json"])) else {
         return Ok(None);
     };
-    state.export_backup(&path).map(Some)
+    state.export_backup(&file).map(Some)
 }
 
 /// Read a backup back in, adding it to this device.
@@ -1385,27 +1508,15 @@ pub async fn backup_import(
     state: State<'_, AppState>,
     merge: bool,
 ) -> Result<Option<BackupOutcome>, String> {
-    use tauri_plugin_dialog::DialogExt;
-    // Blocking on an `async` command, and so off the main thread — see
-    // [`ask_where_to_save`], whose reasoning applies here unchanged.
-    let chosen = app
-        .dialog()
-        .file()
-        .set_title(if merge {
-            "Add a backup to this device"
-        } else {
-            "Replace your vocabulary list from a backup"
-        })
-        .add_filter("Backup", &["json"])
-        .blocking_pick_file();
-    let Some(chosen) = chosen else {
+    let title = if merge {
+        "Add a backup to this device"
+    } else {
+        "Replace your vocabulary list from a backup"
+    };
+    let Some(file) = ask_which_to_open(&app, title, ("Backup", &["json"])) else {
         return Ok(None);
     };
-    let path = chosen
-        .simplified()
-        .into_path()
-        .map_err(|e| format!("that file cannot be read: {e}"))?;
-    state.import_backup(&path, merge).map(Some)
+    state.import_backup(&file, merge).map(Some)
 }
 
 /// What is due for review now, most overdue first, from the course and the
@@ -1651,7 +1762,17 @@ pub fn sync_auto(state: State<'_, AppState>, sync: State<'_, Arc<SyncService>>) 
 /// is rewritten only when there is one — which is the one moment turning the prompt
 /// *off* has to read it. See `crate::sync` for why asking for nothing is the default
 /// and why drawing the screen never unlocks anything.
+///
+/// Off the main thread, for `sync_status`'s reason and more urgently (issue #26):
+/// with the prompt on, a run that has not read the sign-in yet reads it here, and on
+/// Apple that read *is* the fingerprint prompt — raised from the thread that has to
+/// draw it, and blocking it until the learner answers. On Android, asking whether a
+/// fingerprint can be asked for at all waits on the platform's main thread. Two
+/// presses cannot interleave: `SyncService` lets one writer of the sign-in in at a
+/// time. On the blocking pool rather than a runtime worker, because a prompt left
+/// open holds the thread for as long as the learner leaves it; see
+/// [`on_a_blocking_thread`].
 #[tauri::command]
-pub fn sync_set_lock(sync: State<'_, Arc<SyncService>>, locked: bool) -> Result<SyncView, String> {
-    sync.set_lock(locked)
+pub async fn sync_set_lock(app: tauri::AppHandle, locked: bool) -> Result<SyncView, String> {
+    on_a_blocking_thread(app, move |sync: &Arc<SyncService>| sync.set_lock(locked)).await
 }

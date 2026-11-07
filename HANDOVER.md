@@ -343,6 +343,9 @@ crates/hanzi-say/           speech synthesis, wrapping sherpa-onnx's OfflineTts.
                             difference a recogniser prefers
   src/judge.rs              the judgement half of `verify-audio`, kept apart from
                             the recogniser so it is testable without a model
+  src/resume.rs             what makes re-running synthesize-audio safe: a key per
+                            phrase in the manifest (text, model, voice), clips
+                            encoded to .tmp and renamed, and a merged manifest
   src/bin/synthesize_audio.rs   corpus -> MP3 clips + manifest.json. Resumable;
                             the only place that needs ffmpeg. See §3a
   src/bin/verify_audio.rs   does a clip say what its text says? It drives a
@@ -463,7 +466,11 @@ store/                      the Play listing's copy and artwork
 scripts/                    fetch-data, fetch-sherpa, fetch-phrases, fetch-tts,
                             with-cargo-env, tauri-cli, build-release,
                             probe-app-sandbox, check-audio.py, cosyvoice-say.py
-.github/workflows/ci.yml    cargo test + vitest + clippy + svelte-check on push
+  lib/bundle.sh             where a build left its bundles (both build scripts)
+  lib/fetch.sh              a download checked against a SHA-256 (fetch-data)
+  tests/test-scripts.sh     the scripts' own tests, on stubs (pnpm test:scripts)
+.github/workflows/ci.yml    cargo test + vitest + script tests + clippy +
+                            svelte-check on push
 ```
 
 **The seam to preserve:** `hanzi-core` must stay free of Tauri and platform
@@ -507,16 +514,27 @@ the same is true of a crash, a laptop sleeping, or a sandbox being torn down.
 
 The shape to use:
 
-* write each item's output as soon as it exists, under the final name;
-* record it in a **progress file** written after each item, so a re-run can skip
-  what is already done and verified;
-* make skipping safe by checking the artifact, not just the bookkeeping — a
-  truncated file must not be mistaken for a finished one;
+* write each item's output as soon as it exists — to a temporary name, renamed
+  to the final one only once it is complete, so a file under the final name is
+  never a truncated one (a size check cannot tell: a half-written MP3 is well
+  over any plausible minimum);
+* record it in a **progress file** written after each item, itself renamed into
+  place, so a re-run can skip what is already done;
+* make skipping safe by recording *what each item was made from*, not just that
+  it exists — an item whose inputs have changed since is redone, not kept;
+* when a run covers a subset, merge into the progress file rather than replace
+  it, so the items outside the subset are not forgotten;
 * summarise only at the end, and say what was skipped.
 
-`crates/hanzi-say/src/bin/synthesize_audio.rs` (which checks the clip's size, not
-just its name) and `scripts/cosyvoice-say.py` (`progress.json`, renamed into place
-after each item) both do this now. The shape is the rule, not either file.
+`crates/hanzi-say/src/bin/synthesize_audio.rs` does all of it: clips are encoded
+to `<clip>.mp3.tmp` and renamed, the manifest is its progress file (merged, and
+rewritten atomically after every phrase), and each entry carries a key — a digest
+of the text, engine, model, voice and encoder settings — that must match for a
+clip to be reused (`crates/hanzi-say/src/resume.rs`). It also refuses to
+overwrite clips it did not make, such as `no7z`'s own recordings, without
+`--replace-foreign-clips`. `scripts/cosyvoice-say.py` (`progress.json`, renamed
+into place after each item) follows the same shape. The shape is the rule, not
+either file.
 
 ## 4. Invariants — do not break these
 
@@ -1037,8 +1055,9 @@ after each item) both do this now. The shape is the rule, not either file.
 36. **A file path never crosses the IPC boundary as a value the frontend chose.**
     `vocab_export`, `vocab_import`, `export_practice_log`, `backup_export` and
     `backup_import` take no `path`: each
-    opens its own dialog with `tauri-plugin-dialog` and does the I/O with the
-    path the learner picked. They used to take `path: String` and hand it to
+    opens its own dialog with `tauri-plugin-dialog` and does the I/O on the
+    file the learner picked, through `tauri-plugin-fs` (`chosen_file.rs`), so a
+    `content://` URI from the Android dialog works as well as a path. They used to take `path: String` and hand it to
     `std::fs`, which made every one of them a "write anywhere the process can
     write" primitive — the interface *did* use the dialog, but the command
     trusted whatever string arrived, so anything that could call the IPC could
@@ -1119,6 +1138,58 @@ after each item) both do this now. The shape is the rule, not either file.
       `run_plugin_command` as internal Swift functions behind `@_cdecl`, so the
       `[profile.release.package.…] debug = 1` entries are still what make a release
       iOS build link. Re-check when a Tauri release makes them `public`.
+
+39. **A command that can take seconds runs off the main thread, and says why.**
+    In Tauri 2 a plain `#[tauri::command]` on a plain `fn` is called inline from
+    the IPC handler, which the webview invokes on the main thread — checked in
+    `tauri-macros` 2.7.3, where it is `body_blocking`; `#[tauri::command(async)]`
+    or an `async fn` is `body_async`, spawned on the Tokio runtime (issue #26).
+    `(async)` on a sync `fn` runs the body on one of the runtime's **core**
+    workers, of which there are as many as the device has cores, so the commands
+    that block longest go one step further: an `async fn` that hands its work to
+    the blocking pool through `on_a_blocking_thread` (`commands.rs`, and its twin
+    in the Tone Trainer's `lib.rs`). That is `listen_start` (up to the
+    eight-second open timeout behind a microphone prompt), `listen_stop` (the
+    first recognition loads 228 MB of ONNX, then decodes), `listen_cancel`,
+    `say_speak` and `sync_set_lock` (a fingerprint prompt left open, and
+    Android's `canLock` round trip). `asr_install`, `asr_remove` and `say_remove`
+    are `(async)`. Five consequences to keep:
+
+    - **A lock a moved command holds for seconds must not be one a main-thread
+      command takes**, or the freeze only moves. The recorder's slot, the
+      recogniser's and the synthesiser's are taken only by commands that are off
+      it too; the main-thread readers (`microphone_status`, `asr_status`,
+      `speech_target`) take none of them. Those slots recover from poisoning
+      (`PoisonError::into_inner`) rather than `expect`, because off the main
+      thread a panic leaves the app running and would otherwise make every later
+      call panic too.
+    - **Two of them can now overlap, so the overlaps are decided.** An uninstall
+      holds the model's slot *through* its delete and a load re-checks the files
+      once it has the slot (`Asr::remove`/`engine`, `Say::remove`/`speak`), so a
+      model is never loaded from a half-deleted directory — which is not merely an
+      error: sherpa-onnx throws a C++ exception on a model it cannot parse, and that
+      aborts the process. A recognition already decoding keeps the model it has.
+      `Say::speak` skips a phrase a later tap overtook while it waited
+      (`SUPERSEDED`). `SyncService::switching` lets one writer of the stored
+      sign-in in at a time (connect, the switch, disconnect); disconnect only
+      *tries* it, so a fingerprint prompt left open cannot hold the sync gate.
+    - **The window is not frozen while a recording opens or is judged, so the
+      interface has to handle input meanwhile.** `src/lib/pushToTalk.ts` (copied
+      verbatim to the Tone Trainer; `pushToTalk.test.ts` runs both copies) owns
+      it: a release while the device is still opening is remembered and the
+      recording cancelled once it opens (the button is therefore *not* disabled
+      while it opens), each attempt has a generation that a change of target moves
+      on so a late answer is dropped, a running recording is cancelled when the
+      target moves, and no new recording starts while one is being scored. Both
+      apps say "Scoring…" meanwhile. The phrases panel plays only the latest tap,
+      and a new phrase cuts off the synthesised one still sounding.
+    - **`speak` and `stop_speaking` stay on the main thread on purpose**: they are
+      quick, and each tap cuts off the one before, so two that overtook each other
+      on the runtime would leave the wrong word speaking.
+    - **The source is what is tested.** `the_slow_commands_do_not_run_on_the_main_thread`
+      (`tests/ipc_contract.rs`, and `apps/tone-trainer/src-tauri/tests/dispatch.rs`)
+      reads it and pins all three groups: off the main thread, on the blocking
+      pool, and staying put.
 
 ## 5. The verification loop
 
@@ -1449,6 +1520,16 @@ back.
 - **macOS voice names carry a locale qualifier**: `Tingting (Chinese (China
   mainland))`, not `Tingting`. Compare `base_name()`. A fixture with tidy names
   passed while the real list never matched, so the app quietly used another voice.
+- **AVFoundation voice names are not unique** (issue #39): `speechVoices()` reports
+  bare names, and the novelty voices (Eddy, Flo, Reed, Sandy, Shelley, Grandma,
+  Grandpa, Rocko) exist under the same name in every language. A voice is carried
+  as `Voice::identifier` (`AVSpeechSynthesisVoice.identifier`) and a choice is
+  stored as `Voice::id()`; a name an older build stored is matched only among
+  the app's own language's voices (`find_voice`). A `say`-era name such as
+  `Eddy (Chinese (Taiwan))` is matched on its base name, and its qualifier picks
+  the locale; otherwise home locale first, then Taiwan for Chinese. The utterance
+  is given the voice by identifier (`voiceWithIdentifier:`, else
+  `installed_index`), never the first one with that name.
 - **`say -v '?'` takes ~1 s** and lists every voice twice. Resolve it lazily and
   warm it on a background thread; never on the startup path.
 - **Never kill a `say` process to stop speech on macOS.** This was the cause of
@@ -2306,6 +2387,28 @@ back.
   system bar insets by the `android_insets` command, and `app.css` takes
   `max(env(…), var(--inset-…))`. Taking the maximum makes one rule right on both: on a
   notched phone the two agree instead of summing.
+- **The sides need insets too, and the wide layout is what a turned phone gets.**
+  A landscape iPhone is 844–932 px wide, so it is drawn with the desktop layout,
+  and its notch is on the left or the right. `.app` is padded with `--safe-top`,
+  `--safe-right`, `--safe-bottom` and `--safe-left` on all four sides (the phone
+  layout keeps only the sides, because its scrolling `main` pads its own top and
+  bottom); Nihongo Tutor's `main` does the same. The sides are `env()` only:
+  `android_insets` measures the top and bottom bars (issue #33).
+- **A bare `:global(.board)` in `App.svelte` loses to `PracticeCanvas`'s own
+  scoped `.board`.** Svelte's scoped selector is `.board.svelte-…`, one class
+  heavier, so the phone layout's `flex` and `min-height` never applied until the
+  rule was written `.workspace :global(.board)`. The phone frame is sized from the
+  board-size preference (`--board-fraction`, which the canvas publishes) and says
+  `--board-presized: 1`, so the canvas fills it instead of taking the fraction a
+  second time; on the wide layout the canvas takes the fraction of its frame
+  itself. The fractions are in `src/lib/boardSize.ts`. **The next release's
+  `NOTES` entry should say so:** before issue #33 Normal and Large were the same
+  size, and now Normal (the default) leaves a margin, so Large is the board's old
+  full size. It is not in an entry yet because the release it ships in has no
+  version number; an entry under `0.7.0` would be shown as 0.7.0's news.
+- **Loading a new `src` resets an audio element's `playbackRate`** to its
+  `defaultPlaybackRate`. `audio.ts` sets both, or the Phrases speed slider is
+  ignored for the first moments of every clip (issue #33).
 - **Tauri dispatches mobile plugin commands on the Android main thread.**
   `run_command` goes through `run_on_android_context`, so a Kotlin plugin method that
   blocks freezes the UI, and one that waits on a latch deadlocks. The speech plugin
@@ -3795,6 +3898,35 @@ are reported, so the interface can show "tone 2 (dictionary 3)". Rules 2 and 3 d
 *which character* it is, not which tone, which is why the function takes the characters
 as well as the tones. README has the table and the full argument.
 
+**The stored reading keeps pinyin's own boundaries.** `prepare-data` used to delete
+the source's spaces, and the splitter then put about a hundred boundaries in the wrong
+place (全国 → `quáng` + `uó`, 晚安 → `wǎ` + `nān`) and could not divide 131 readings at
+all (女儿 `nǚér`, 可爱 `kěài`) — issue #19. The source is now joined by
+`pinyin::join_syllables`, which writes the apostrophe orthography requires before a
+vowel-initial syllable and nothing anywhere else (`nánguò`, `nǚ'ér`, erhua `zhèr`), so
+the artifact holds the reading a dictionary prints and the interface can show it as it
+is. The splitter's half of the same rule: an unmarked `ng` + vowel is `n` | `g`, and an
+`r` with no vowel after it is erhua. A reading composed from characters by
+`lookup_text` is joined the same way. `crates/hanzi-core/tests/words_artifact.rs` holds
+every word in the artifact to it. Erhua words (57) still make no tone target: their 儿
+is not a syllable, and a target is one syllable per character.
+
+Three consequences of the same rule, each deliberate:
+
+- **`TonedPinyin` writes what the reading itself has between two syllables**
+  (`syllableGaps` in `tones.svelte.ts`), so an aligned `kě'ài` is shown with its
+  apostrophe rather than as `kěài`. It walks the text for the syllables Rust gave it;
+  it does not split anything.
+- **Character search reads a typed `n` + `g` + vowel both ways.** Typed pinyin has no
+  apostrophes, and `pingan` is `pin` + `gan` by the orthography, so `CharacterQuery`
+  also searches `ping` + `an`. Without that, 平安, 公安, 方案 and 嫦娥 typed toneless
+  stopped finding their characters.
+- **Readings saved by older builds are not migrated.** A vocabulary entry saved as
+  `píngān` (no apostrophe — what `prepare-data` used to store) now aligns as `pín` +
+  `gān`. The tones are unchanged and still on the right characters; only which
+  syllable the `g` is coloured with moves. Re-adding the word from the dictionary
+  stores `píng'ān`.
+
 **Do not "simplify" this by scoring character by character.** Sandhi is a word-level
 phenomenon; a per-character loop cannot see it.
 
@@ -3985,8 +4117,8 @@ Neutral tone was refused for a long time: it is short and its pitch is set by th
 syllable before it, so scoring it from one syllable looked like it needed context this
 module does not have. What that missed is that "level" is still judgeable — and that the
 cost was paid on 的, the most common character in the language, whose tone button could
-not be pressed at all. (README's "What it deliberately does not do" still says neutral
-tone is not scored; the code and this file are right.)
+not be pressed at all. (README once said neutral tone was not scored; it now says what
+the code does, including the asymmetry below.)
 
 Three things were wrong, and only one was in `tone.rs`:
 
@@ -4011,6 +4143,22 @@ is not scored at all. That limit is said to the learner every time (`NEUTRAL_LIM
 because 85 for a neutral tone means less than 85 for a rising one. If that ever needs to
 be more than "level", duration is the thing to add — the part of a neutral tone a
 listener actually hears — and it would need real recordings to calibrate.
+
+**A neutral syllable counts towards the word only when it matched** (issue #18). The
+aggregate in `ToneReport::finish` once filtered on `(1..=4)` and ignored the neutral
+tone entirely, so 的 said well read "Nothing in this could be scored" and a word with a
+wrong neutral syllable read "All 1 tones are right". Counting it fully was tried and
+was worse: the level rule is context-free (a match only within `FLAT_ST`, 1.2 st), and a
+real neutral tone is a 2–5 st transition — a fall after tones 1, 2 and 4, a rise after a
+half-third tone 3 — so correctly spoken 妈妈, 谢谢, 东西, 朋友, 你们 and 的 failed on
+synthetic contours, and 妈妈's voiced `m` leaks enough glide into the segment that even
+a level neutral can fail. So a match counts, a miss is shown on its syllable's chart and
+named in the summary but does not count, and a report left with nothing but a missed
+neutral syllable is uncertain, worded by that syllable. **Follow-up, before counting it
+both ways:** make the neutral rule depend on the preceding tone — after 1, 2 or 4 accept
+level or falling, after 3 accept level or rising, and cap the fall so that 谢谢 said as
+two full tone 4s still fails. With it goes a second problem: a half-third tone 3 before
+a neutral syllable (the 你 of 你们) is a low fall and is heard as tone 4.
 
 ### A phrase with no tone target is recognised, not refused
 

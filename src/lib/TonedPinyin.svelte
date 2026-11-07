@@ -23,7 +23,7 @@
    * be noise around the reading rather than a second cue. See the `.tone-pinyin`
    * rules in `app.css`.
    */
-  import { syllableTonesOf } from "./tones.svelte";
+  import { syllableGaps, syllableTonesOf } from "./tones.svelte";
 
   interface Props {
     /** The reading to write. One syllable, or several run together. */
@@ -36,21 +36,30 @@
     syllables?: readonly string[] | null;
     /** One tone per character the reading belongs to, aligned to `syllables`. */
     tones?: readonly (number | null)[] | null;
-    /** What to put between syllables. The default keeps a word run together. */
+    /**
+     * What to put between syllables. Left out, each gap is what `text` itself
+     * writes there — nothing in `xuéxí`, the apostrophe in `kě'ài` — so the
+     * reading is shown as it is spelled. See `syllableGaps`.
+     */
     separator?: string;
   }
 
-  let { text, syllables = null, tones = null, separator = "" }: Props = $props();
+  let { text, syllables = null, tones = null, separator }: Props = $props();
 
   const parts = $derived.by(() => {
     const split = syllables ?? [];
     if (split.length > 0) {
       const list = syllableTonesOf(text, split, tones);
-      return split.map((syllable, index) => ({ text: syllable, tone: list[index] ?? null }));
+      const gaps = syllableGaps(text, split);
+      return split.map((syllable, index) => ({
+        text: syllable,
+        tone: list[index] ?? null,
+        gap: separator ?? gaps[index] ?? "",
+      }));
     }
-    return [{ text, tone: syllableTonesOf(text, null, tones)[0] ?? null }];
+    return [{ text, tone: syllableTonesOf(text, null, tones)[0] ?? null, gap: "" }];
   });
 </script>
 
 <!-- Adjacent on purpose, so a word's reading keeps the spacing it had. -->
-{#each parts as part, index (index)}{#if index > 0}{separator}{/if}<span class="tone-char tone-pinyin" data-tone={part.tone ?? undefined}>{part.text}</span>{/each}
+{#each parts as part, index (index)}{#if index > 0}{part.gap}{/if}<span class="tone-char tone-pinyin" data-tone={part.tone ?? undefined}>{part.text}</span>{/each}
