@@ -121,3 +121,17 @@ export function joinedLabel(joined: number[][]): string | null {
   if (joined.length === 0) return null;
   return joined.map((group) => group.join("+")).join(", ");
 }
+
+/**
+ * What the drill says when an exercise has nothing to ask, instead of "Loading the
+ * pairs…" for good (issue #34).
+ *
+ * `next_drill_question` is `null` only when none of the exercise's pairs can be
+ * asked: a pair is askable when every character either side is written with is a
+ * kana the app holds and neither side is empty. That is a fact about the data, not
+ * about the learner, so asking again would find the same — the other exercises are
+ * the way forward, and their chips are right above.
+ */
+export function emptyDrillNote(label: string): string {
+  return `Nothing to ask here: none of the ${label} pairs can be drawn from the kana this app holds. Choose another exercise above.`;
+}

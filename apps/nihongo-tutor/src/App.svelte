@@ -333,7 +333,9 @@
   });
 </script>
 
-<main>
+<!-- `tabindex="-1"`: focusable by the app but not a tab stop, so that focus has
+     somewhere to go when the error banner's × takes itself away. -->
+<main tabindex="-1">
   <!--
     The app's name is the window's own title on the desktop and is not repeated on
     screen: it is four words of the most valuable space in the interface, and every
@@ -343,7 +345,27 @@
   <h1 class="sr-only">Nihongo Tutor</h1>
 
   {#if error}
-    <p class="error" role="alert">{error}</p>
+    <!--
+      Dismissable, because otherwise only opening another kana cleared it (issue
+      #33). Not cleared by moving between screens: most of these are the app's own
+      failures at start — the dataset's numbers, the remembered course, the voice —
+      which say why something is missing everywhere, not on one screen.
+    -->
+    <p class="error dismissable">
+      <span role="alert">{error}</span>
+      <button
+        type="button"
+        class="dismiss"
+        aria-label="Dismiss this message"
+        title="Dismiss"
+        onclick={(event) => {
+          // The button is about to go, and focus with it would fall to the page
+          // itself; the screen it was on is the place to put it.
+          event.currentTarget.closest("main")?.focus({ preventScroll: true });
+          error = null;
+        }}><span aria-hidden="true">×</span></button
+      >
+    </p>
   {/if}
   {#if warning}
     <p class="warning" role="status">{warning}</p>

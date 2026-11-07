@@ -434,6 +434,15 @@ export const listenStart = () => invoke<void>("listen_start");
  */
 export const listenStop = (text: string) => invoke<ToneResult>("listen_stop", { text });
 
+/**
+ * Stop listening and throw the recording away.
+ *
+ * For a recording nothing should be judged from: the button came up before the
+ * device was open, so nothing the learner said is in it, or the board moved on
+ * while it ran. A failure means nothing was open, which is what this wanted.
+ */
+export const listenCancel = () => invoke<void>("listen_cancel");
+
 // ---- speech recognition ----------------------------------------------------
 
 /**

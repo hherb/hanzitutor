@@ -90,6 +90,19 @@ pub fn parse(reading: &str) -> Option<Syllable> {
             }
             continue;
         }
+        // A decomposed spelling — the letter, then a combining mark — says the
+        // same as the precomposed one, so it is read the same way.
+        if let Some(t) = combining_tone(ch) {
+            tone.get_or_insert(t);
+            continue;
+        }
+        if ch == COMBINING_DIAERESIS {
+            if body.ends_with('u') {
+                body.pop();
+                body.push('ü');
+            }
+            continue;
+        }
         match TONE_MARKS.iter().find(|(marked, _, _)| *marked == ch) {
             Some((_, plain, t)) => {
                 body.push(*plain);
@@ -103,17 +116,19 @@ pub fn parse(reading: &str) -> Option<Syllable> {
     }
     let tone = tone.unwrap_or(NEUTRAL);
 
-    // `v` is how the numbered sources spell `ü`; make them one character. It is
-    // emphatically *not* folded into `u`: lǜ and lù are different syllables, and
-    // treating them as the same would hide a real mispronunciation.
-    let body = body.replace('v', "ü");
+    // `v` is how the numbered sources spell `ü`, and `u:` is how CC-CEDICT does
+    // (`lu:4` for 绿); make them all one character. It is emphatically *not*
+    // folded into `u`: lǜ and lù are different syllables, and treating them as
+    // the same would hide a real mispronunciation.
+    let body = body.replace("u:", "ü").replace('v', "ü");
 
     let initial = INITIALS
         .iter()
         .find(|i| body.starts_with(**i))
         .copied()
         .unwrap_or("");
-    let final_ = &body[initial.len()..];
+    let final_ = umlaut_after(initial, &body[initial.len()..]);
+    let final_ = final_.as_str();
     if final_.is_empty() {
         return None;
     }
@@ -124,6 +139,43 @@ pub fn parse(reading: &str) -> Option<Syllable> {
     // that may not exist.
     let final_ = FINALS.iter().find(|f| **f == final_).copied()?;
     Some(Syllable { initial, final_, tone })
+}
+
+/// Restore the dots pinyin leaves off `ü`.
+///
+/// After `j`, `q`, `x` and `y` the orthography writes `ü` as plain `u` — 学 is
+/// `xué`, 月 `yuè`, 去 `qù`, 军 `jūn` — because no plain `u` can follow them, so
+/// the dots carry no information there. They do carry it after `l` and `n`
+/// (绿 `lǜ` against 路 `lù`), which is why this is keyed on the initial and
+/// never applied to `u` in general. Without it `xue` matched no final at all and
+/// every one of these characters was dropped as unreadable.
+///
+/// `lue` and `nue` are the one other case: some sources write them without
+/// dots, and they cannot be read as anything but `lüe` / `nüe` (略, 虐), because
+/// there is no plain `ue` final for them to be.
+fn umlaut_after(initial: &str, final_: &str) -> String {
+    match initial {
+        "j" | "q" | "x" | "y" => match final_.strip_prefix('u') {
+            Some(rest) => format!("ü{rest}"),
+            None => final_.to_string(),
+        },
+        "l" | "n" if final_ == "ue" => "üe".to_string(),
+        _ => final_.to_string(),
+    }
+}
+
+/// U+0308, the combining diaeresis: `u` followed by it is `ü`.
+const COMBINING_DIAERESIS: char = '\u{308}';
+
+/// The tone a combining tone mark (macron, acute, caron, grave) carries.
+fn combining_tone(ch: char) -> Option<u8> {
+    match ch {
+        '\u{304}' => Some(1),
+        '\u{301}' => Some(2),
+        '\u{30c}' => Some(3),
+        '\u{300}' => Some(4),
+        _ => None,
+    }
 }
 
 /// Every final that appears in the two bundled pinyin sources.
@@ -451,6 +503,112 @@ mod tests {
         // `hanziDB.csv` writes alternatives this way.
         let readings = Readings::from_pairs([('的', "de, dí, dì".into())]);
         assert_eq!(readings.of('的').len(), 3);
+    }
+
+    #[test]
+    fn u_after_j_q_x_y_is_read_as_u_umlaut() {
+        // Pinyin drops the dots after j, q, x and y because nothing there could
+        // be a plain `u`. Each of these used to parse to `None`.
+        for (reading, initial, final_) in [
+            ("ju4", "j", "ü"),
+            ("qu4", "q", "ü"),
+            ("xu1", "x", "ü"),
+            ("yu3", "y", "ü"),
+            ("xue2", "x", "üe"),
+            ("jue2", "j", "üe"),
+            ("que4", "q", "üe"),
+            ("yue4", "y", "üe"),
+            ("quan2", "q", "üan"),
+            ("xuan3", "x", "üan"),
+            ("yuan1", "y", "üan"),
+            ("jun1", "j", "ün"),
+            ("xun2", "x", "ün"),
+            ("yun2", "y", "ün"),
+        ] {
+            let syllable = s(reading);
+            assert_eq!(syllable.initial, initial, "{reading}");
+            assert_eq!(syllable.final_, final_, "{reading}");
+        }
+    }
+
+    #[test]
+    fn the_ue_final_parses_in_every_spelling() {
+        // 学 雪 月 觉 却 越 确 缺 决 约 — the characters the issue found unknown.
+        assert_eq!(parse("xué"), parse("xue2"));
+        assert_eq!(parse("xuě"), parse("xue3"));
+        assert_eq!(parse("yuè"), parse("yue4"));
+        assert_eq!(parse("jué"), parse("jue2"));
+        assert_eq!(parse("què"), parse("que4"));
+        assert_eq!(parse("quē"), parse("que1"));
+        assert_eq!(parse("yuē"), parse("yue1"));
+        assert_eq!(parse("quán"), parse("quan2"));
+        assert_eq!(parse("jūn"), parse("jun1"));
+        assert_eq!(parse("yuān"), parse("yuan1"));
+        assert_eq!(parse("yún"), parse("yun2"));
+        assert_eq!(s("xué").tone, 2);
+        assert_eq!(s("xuě").tone, 3);
+        // Writing the dots, or the keyboard's `v` / CEDICT's `u:`, is the same
+        // syllable as leaving them off.
+        assert_eq!(parse("xüé"), parse("xue2"));
+        assert_eq!(parse("xve2"), parse("xue2"));
+        assert_eq!(parse("ju:e2"), parse("jue2"));
+        assert_eq!(parse("XUE2"), parse("xue2"));
+    }
+
+    #[test]
+    fn cedict_u_colon_is_u_umlaut() {
+        // CC-CEDICT writes 绿 as `lu:4` and 女 as `nu:3`.
+        assert_eq!(parse("lu:4"), parse("lǜ"));
+        assert_eq!(parse("lu:4"), parse("lv4"));
+        assert_eq!(parse("nu:3"), parse("nǚ"));
+        assert_eq!(parse("lu:e4"), parse("lüè"));
+        assert_eq!(s("lu:4").final_, "ü");
+        assert_eq!(s("lu:e4").final_, "üe");
+        // A decomposed ü (u + combining diaeresis) is the same letter.
+        assert_eq!(parse("lu\u{308}4"), parse("lǜ"));
+    }
+
+    #[test]
+    fn lu_and_lü_stay_different_syllables() {
+        // The distinction the j/q/x/y rule must not leak into: after l and n a
+        // plain `u` really is `u`.
+        assert_eq!(s("lu4").final_, "u");
+        assert_eq!(s("nu3").final_, "u");
+        assert_eq!(s("lǜ").final_, "ü");
+        assert_eq!(s("nǚ").final_, "ü");
+        assert_ne!(parse("lu4"), parse("lu:4"));
+        assert!(compare(&set(&["lü4"]), &set(&["lu4"])).is_corruption());
+        assert!(compare(&set(&["nü3"]), &set(&["nu3"])).is_corruption());
+        // `lue` / `nue` cannot be plain `u` + `e`, so they are read as üe.
+        assert_eq!(parse("lue4"), parse("lüè"));
+        assert_eq!(parse("nue4"), parse("nüè"));
+        // Other initials keep their `u`: 多 duo, 对 dui, 春 chun, 关 guan.
+        assert_eq!(s("duo1").final_, "uo");
+        assert_eq!(s("chun1").final_, "un");
+        assert_eq!(s("guan1").final_, "uan");
+        assert_eq!(s("wu3").final_, "u");
+    }
+
+    #[test]
+    fn ue_syllables_are_compared_rather_than_unknown() {
+        // 学 xué vs 雪 xuě: the same syllable at a different tone, which is the
+        // recogniser's spelling and so tolerated — the point is that it is now
+        // *judged*, where it used to come back Unknown.
+        assert_eq!(
+            compare(&set(&["xue2"]), &set(&["xue3"])),
+            Difference::ToneOnly
+        );
+        assert_eq!(
+            compare(&set(&["xué"]), &set(&["xué"])),
+            Difference::ToneOnly
+        );
+        // 学 xué vs 觉 jué: same final, unrelated initial — corruption.
+        assert!(compare(&set(&["xué"]), &set(&["jué"])).is_corruption());
+        // 学 xué vs 鞋 xié, 雪 xuě vs 选 xuǎn: a different final.
+        assert_eq!(compare(&set(&["xué"]), &set(&["xié"])), Difference::Final);
+        assert_eq!(compare(&set(&["xuě"]), &set(&["xuǎn"])), Difference::Final);
+        // 月 yuè vs 叶 yè.
+        assert_eq!(compare(&set(&["yuè"]), &set(&["yè"])), Difference::Final);
     }
 
     #[test]

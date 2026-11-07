@@ -32,6 +32,12 @@ export default mergeConfig(
         "apps/nihongo-tutor/src/**/*.test.ts",
       ],
       environment: "node",
+      // Each test file in a process of its own, pinned rather than left to the
+      // default: `due.test.ts` changes `TZ` for its daylight-saving cases, and the
+      // time zone is the whole process's. In worker threads that change could
+      // reach a file running beside it, and its own cases could run in the wrong
+      // zone.
+      pool: "forks",
     },
   }),
 );

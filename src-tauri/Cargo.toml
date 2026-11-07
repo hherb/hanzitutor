@@ -39,6 +39,13 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 # Native open/save dialogs, for exporting and importing the vocabulary list.
 tauri-plugin-dialog = "2"
+# Reading and writing the file that dialog chose. On Android the dialog answers
+# with a `content://` URI rather than a path, and this plugin's Kotlin half is
+# what opens one (see `chosen_file.rs`). It was already in the graph — the dialog
+# plugin depends on it — but a plugin's Android library is only linked into the
+# app when the app depends on it directly. Used from Rust only: no capability
+# grants an `fs:` permission, so the webview can call none of its commands.
+tauri-plugin-fs = "2"
 # Opening the Dropbox authorization page in the *system browser* (ROADMAP M13).
 # Deliberately not a webview, which is also why this is a plugin rather than
 # `window.open`: Dropbox asks for the system browser, and Google's policy forbids
@@ -92,3 +99,8 @@ sha2 = "0.10"
 # nothing.
 [target.'cfg(target_vendor = "apple")'.dependencies]
 security-framework = { version = "3", features = ["OSX_10_15"] }
+
+[dev-dependencies]
+# `tauri::test`'s mock runtime, so `chosen_file.rs` can be tested through the real
+# fs plugin without a window.
+tauri = { version = "2", features = ["test"] }

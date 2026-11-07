@@ -34,7 +34,14 @@
   import type { GrammarDrillSize, GrammarQuestion, GrammarTally } from "./types";
   import type { VoiceStatus } from "./speech";
   import { needsRuby } from "./words";
-  import { optionState, outcomeLine, poolNote, recordLine, sessionLine } from "./grammarDrill";
+  import {
+    emptyNote,
+    optionState,
+    outcomeLine,
+    poolNote,
+    recordLine,
+    sessionLine,
+  } from "./grammarDrill";
 
   interface Props {
     /** What the `voice` command answered, asked once by `App.svelte`. */
@@ -53,6 +60,8 @@
   let right = $state(0);
   let error = $state<string | null>(null);
   let busy = $state(false);
+  /** Whether the draw came back empty: there is no question to ask, not one coming. */
+  let nothing = $state(false);
 
   /**
    * A ticket per ask, so an earlier request cannot land on top of a later one.
@@ -73,6 +82,7 @@
       const drawn = await api.nextGrammarQuestion();
       if (mine !== ticket) return;
       question = drawn;
+      nothing = drawn === null;
       picked = null;
       tally = null;
     } catch (e) {
@@ -214,6 +224,11 @@
     {:else}
       <p class="hint">Which pattern does this sentence take?</p>
     {/if}
+  {:else if nothing && !error}
+    <p class="hint" role="status">{emptyNote(size, "choose")}</p>
+    <div class="after">
+      <button class="next" onclick={onleave}>Back to the grammar course</button>
+    </div>
   {:else if !error}
     <p class="hint">{busy ? "Drawing a question…" : "Loading…"}</p>
   {/if}
