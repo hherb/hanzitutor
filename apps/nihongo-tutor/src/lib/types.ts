@@ -1021,6 +1021,12 @@ export interface GradedAttempt {
   joined: number[][];
   /** True when the character was new or due, so the attempt advanced the schedule. */
   scheduled: boolean;
+  /**
+   * True when the attempt was sent as traced: written over the guide, or after
+   * the stroke animation. It was graded and never reached the schedule, so
+   * `scheduled` is false beside it.
+   */
+  traced: boolean;
   /** When the character comes back, ISO-8601 UTC. */
   nextDue: string | null;
   /**
@@ -1043,7 +1049,12 @@ export type ReviewKind = "kana" | "kanji" | "radical";
 export interface DueItem {
   ch: string;
   kind: ReviewKind;
-  /** The prompt beside it: a kana's reading, a kanji's gloss, or the radical's number. */
+  /**
+   * The prompt the character is written from: a kana's sound and script ("ji (da
+   * row) · hiragana"), a kanji's glosses, or the radical's number. No two kana and
+   * no two kanji share one, because the Review screen hides the character until
+   * the attempt is graded and the prompt is then the whole question.
+   */
   hint: string;
   /**
    * The Kangxi number, for a head form the character course cannot reach — 92 of

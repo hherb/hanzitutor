@@ -177,6 +177,8 @@
       <!-- The field and the button are one row at every width: measured at 390px,
            the label beside them pushed `Check` onto a line of its own, which put the
            one control the question has below the box the learner had just typed in. -->
+      <!-- The placeholder says what may be typed and never what to type: an example
+           answer here would be the answer to every question on the same pattern. -->
       <div class="row">
         <input
           id="written"
@@ -184,7 +186,7 @@
           autocomplete="off"
           autocapitalize="off"
           spellcheck="false"
-          placeholder="nohouga ・ のほうが"
+          placeholder="in romaji or kana"
           bind:value={typed}
           disabled={outcome !== null}
           onkeydown={(event) => event.key === "Enter" && void submit()}

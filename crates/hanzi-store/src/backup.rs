@@ -180,6 +180,22 @@ impl Backup {
         if backup.version > BACKUP_VERSION {
             return Err(BackupError::UnsupportedVersion(backup.version));
         }
+        // A backup this app wrote names every attempt's device with a UUID, so a
+        // name that is not a plain one means the file was edited — and it would
+        // become a path on the sync store, where `..` fails every sync and `.` is
+        // written to on every sync and never read back. Refused here, before it can
+        // reach the log, rather than carried along and stepped around for ever.
+        if let Some(attempt) = backup
+            .attempts
+            .iter()
+            .find(|attempt| !crate::is_valid_device_id(&attempt.device_id))
+        {
+            return Err(BackupError::Malformed(format!(
+                "an attempt says it was made on a device called {:?}, which is not a \
+                 name any device of this app has",
+                attempt.device_id
+            )));
+        }
         Ok(backup)
     }
 
@@ -419,5 +435,25 @@ mod tests {
         let incoming = Backup::parse(&text).unwrap().incoming_attempts();
         assert_eq!(incoming[0].rating, Rating::Easy);
         assert_eq!(incoming[0].measures, None);
+    }
+
+    #[test]
+    fn a_device_name_no_device_could_have_is_refused() {
+        // Every device names itself with a UUID, so a backup this app wrote never
+        // holds one of these. A hand-edited one might, and each would end up as a
+        // path on the sync store: `..` and a backslash are refused there outright,
+        // and `.` names a directory sync never reads back.
+        for device in ["..", ".", "a\\\\b", "", "a/b"] {
+            let text = format!(
+                r#"{{"format":"{BACKUP_FORMAT}","version":1,"exportedAt":"2026-09-27T12:00:00Z",
+                    "vocabulary":{LIST},
+                    "attempts":[{{"ch":"好","at":"2026-09-22T09:00:00Z","score":95.0,
+                    "rating":"easy","deviceId":"{device}","seq":1}}]}}"#
+            );
+            match Backup::parse(&text) {
+                Err(BackupError::Malformed(why)) => assert!(why.contains("device"), "{why}"),
+                other => panic!("{device:?} should be refused, got {other:?}"),
+            }
+        }
     }
 }

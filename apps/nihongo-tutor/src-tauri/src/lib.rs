@@ -445,17 +445,40 @@ impl AppState {
     /// is new, or its due date has passed. Writing あ five times in one sitting
     /// must not multiply SM-2's interval five times, so a later attempt inside the
     /// interval is graded and not rescheduled — see [`store::ReviewStore`].
+    ///
+    /// `traced` is the screen's word that the attempt was helped: written over the
+    /// faint guide, or after the stroke animation had drawn it. A traced attempt
+    /// is graded and never scheduled, new or due, because the schedule is a record
+    /// of what the learner can write from memory.
     pub fn grade_and_schedule(
         &self,
         ch: char,
         strokes: &[Vec<Point>],
         options: &GradeOptions,
+        traced: bool,
     ) -> Result<GradedAttempt, String> {
         let GradedCharacter { report, joined } = self.grade(ch, strokes, options)?;
         let mut store = self
             .review
             .lock()
             .expect("the review store is not poisoned");
+        // A traced attempt never reaches the scheduler, whether the character is
+        // new or due: copying the guide is not remembering the character, and a
+        // legible trace would otherwise lengthen the interval of something the
+        // learner may not be able to write. It is answered like an attempt inside
+        // the interval, with the card's date when there is a card, and with what
+        // the schedule's file has to say by the same rule as any other response.
+        if traced {
+            let next_due = store.store().card(ch).map(|card| card.due.clone());
+            return Ok(GradedAttempt {
+                report,
+                joined,
+                scheduled: false,
+                traced,
+                next_due,
+                warning: store.notice(),
+            });
+        }
         // What the schedule's file has to say — "kept aside" once, "not remembered"
         // on every grade — is already joined to the attempt's own outcome by the
         // store, so a failed write cannot hide it and it cannot hide a failed write.
@@ -470,6 +493,7 @@ impl AppState {
             report,
             joined,
             scheduled,
+            traced,
             next_due,
             warning,
         })
@@ -2221,6 +2245,12 @@ pub struct GradedAttempt {
     /// due date had passed. A later attempt inside the interval is practice — it
     /// is still graded, and the schedule does not move.
     pub scheduled: bool,
+    /// True when the attempt was written over the guide, or after the stroke
+    /// animation had shown it. Such an attempt is graded and shown like any
+    /// other, and never reaches the schedule: copying a character is not
+    /// remembering it, so `scheduled` is always false beside it.
+    #[serde(default)]
+    pub traced: bool,
     /// When the character comes up next, ISO-8601 UTC. Present whenever a card
     /// exists for the character, whether or not this attempt changed it.
     #[serde(default)]
@@ -2298,14 +2328,18 @@ fn kana(state: State<'_, AppState>, ch: char) -> Result<KanaView, String> {
 /// that did. `scheduled` is false for a second attempt inside a character's
 /// interval, which is the rule that keeps one sitting from stretching an interval
 /// by months.
+///
+/// `traced` is required rather than defaulted: an interface that does not say
+/// whether the guide was on would otherwise have every trace counted as recall.
 #[tauri::command]
 fn grade_attempt(
     state: State<'_, AppState>,
     ch: char,
     strokes: Vec<Vec<Point>>,
     options: Option<GradeOptions>,
+    traced: bool,
 ) -> Result<GradedAttempt, String> {
-    state.grade_and_schedule(ch, &strokes, &options.unwrap_or_default())
+    state.grade_and_schedule(ch, &strokes, &options.unwrap_or_default(), traced)
 }
 
 /// The whole kana chart — the gojūon grid and the characters off it — for one
@@ -4037,7 +4071,7 @@ mod tests {
         let state = state();
         let said = state.kana('あ').expect("あ");
         let graded = state
-            .grade_and_schedule('あ', &said.medians, &GradeOptions::default())
+            .grade_and_schedule('あ', &said.medians, &GradeOptions::default(), false)
             .expect("grades");
         assert!(graded.scheduled, "score {:.0}", graded.report.overall);
         let due = graded.next_due.clone().expect("a new card has a due date");
@@ -4057,7 +4091,7 @@ mod tests {
         let state = state();
         let radical = state.radical(6).expect("亅 is radical 6");
         let graded = state
-            .grade_and_schedule(radical.ch, &[], &GradeOptions::default())
+            .grade_and_schedule(radical.ch, &[], &GradeOptions::default(), false)
             .expect("the board can write a head form the character course cannot");
         assert!(graded.scheduled);
         assert!(graded.next_due.is_some());
@@ -4073,7 +4107,7 @@ mod tests {
         let state = state();
         let said = state.kana('あ').expect("あ");
         state
-            .grade_and_schedule('あ', &said.medians, &GradeOptions::default())
+            .grade_and_schedule('あ', &said.medians, &GradeOptions::default(), false)
             .expect("grades");
 
         let kana = state.review_queue(40, Some(Section::Kana));

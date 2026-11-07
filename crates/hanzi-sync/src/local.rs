@@ -4,21 +4,34 @@
 //! tested: the `hanzi-store` log, and the pure merge in [`crate::shard`]. It is
 //! kept in its own file precisely so that it is the *only* place the two meet.
 //!
-//! ## Why a device must publish only its own attempts
+//! ## Why a device never publishes an attempt under its own name that it did not make
 //!
 //! [`Db::attempts`] answers with everything the log holds, which after one sync
-//! includes attempts made on other devices. Publishing that would relabel a peer's
-//! work as this device's, and `(device_id, seq)` is the identity the entire merge
-//! rests on — so publishing reads [`Db::own_attempts`] and nothing else. The two
-//! questions look interchangeable and are not, which is why they have different
-//! names.
+//! includes attempts made on other devices. Publishing those under this device's
+//! name would relabel a peer's work as this device's, and `(device_id, seq)` is the
+//! identity the entire merge rests on. So an attempt is only ever published under
+//! the device that **made** it: this device's own under its own name, and anything
+//! else the log holds that no shard does — a restored backup's, or everything,
+//! after a move to an empty store — under its maker's name. See [`publish`].
+//!
+//! ## What "already published" means
+//!
+//! Whatever the store holds, read from the store. Not a watermark in the database:
+//! a watermark describes the store this database last synced *to*, and is wrong
+//! about any other — a second Dropbox account, an app folder deleted to start
+//! again — and it is carried, unchanged, by a database restored onto another phone.
+//! The store is read anyway, because the pull needs every shard, so asking it costs
+//! nothing extra; [`sync`] reads it once and hands the same answer to both halves.
 //!
 //! ## What a sync does, in order
 //!
-//! 1. **Publish** this device's attempts that no shard holds yet, and move the
-//!    watermark.
-//! 2. **Pull** every shard back into the local log, adding only what is missing.
-//! 3. **Recompute** the schedule from the whole log, which is the step that makes
+//! 1. **Settle this device's identity** against the store: if the store holds
+//!    attempts under this device's name that this log does not, this database is a
+//!    copy of another one, and it takes a new name before writing anything — see
+//!    [`settle_identity`].
+//! 2. **Publish** every attempt the log holds that no shard does.
+//! 3. **Pull** every shard back into the local log, adding only what is missing.
+//! 4. **Recompute** the schedule from the whole log, which is the step that makes
 //!    two devices agree: neither schedule is merged, both are rebuilt from the
 //!    same attempts.
 //!
@@ -47,24 +60,29 @@
 //! `an_open_schedule_store_that_is_not_reloaded_can_undo_a_sync` in
 //! `tests/two_devices.rs` is the test that says so.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use hanzi_core::progress::{CardState, ProgressError, ProgressSink};
 use hanzi_store::{Db, IncomingAttempt, LoggedAttempt};
 
 use crate::document::{
-    merge_cursor, merge_vocab, merge_vocab_cursors, read_baselines, read_cursor, read_vocab,
-    read_vocab_cursors, write_baseline, write_cursor, write_vocab, write_vocab_cursors,
-    Baseline, Baselines,
+    baseline_shard_name, merge_cursor, merge_vocab, merge_vocab_cursors, read_baselines,
+    read_cursor, read_vocab, read_vocab_cursors, write_baseline, write_cursor, write_vocab,
+    write_vocab_cursors, Baseline, Baselines,
 };
-use crate::shard::{fold_cards, merge_attempts, read_attempts, write_attempts, MergedAttempt};
+use crate::shard::{
+    attempts_shard_name, fold_cards, merge_attempts, parse_attempts_shard, read_attempts,
+    write_attempts, MergedAttempt,
+};
 use crate::store::{RemoteStore, SyncError};
 
 /// Where this device records how far it has published its own log.
 ///
-/// In the database's `meta` table beside the schema version and the import
-/// markers, so that one backup captures it and a restored database does not
-/// re-publish everything it ever recorded.
+/// **Written, and no longer read.** What has been published is read from the store
+/// itself — see the module note for why a value in the database cannot answer that.
+/// It is still kept up to date for an older build that opens this database after a
+/// downgrade: that build trusts it, and a value that had stopped moving would have it
+/// re-publish everything from the point this one took over.
 const PUBLISHED_THROUGH: &str = "sync:published_seq";
 
 /// Where this device keeps its own baseline, as a JSON document.
@@ -78,7 +96,11 @@ const BASELINE_KEY: &str = "sync:baseline";
 /// What one sync did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
-    /// Attempts of this device's that were written to shards for the first time.
+    /// Attempts written to shards for the first time.
+    ///
+    /// Usually this device's newest, but not only: anything the log holds that the
+    /// store did not — a restored backup's attempts, or the whole history after a
+    /// move to an empty store — is published too, under the device that made it.
     pub published: usize,
     /// A peer's attempts that this log did not already hold.
     pub pulled: usize,
@@ -86,6 +108,10 @@ pub struct Summary {
     pub recomputed: usize,
     /// Characters deliberately left alone because their log is incomplete.
     pub left_alone: usize,
+    /// Attempts the store lacks that were *not* published, because the device
+    /// they name has a name no device of this app could have — see
+    /// `publishable_name`. They stay in the log; this says they are there.
+    pub unpublishable: usize,
     /// Vocabulary entries and groups whose stored form changed.
     pub vocab_changed: usize,
     /// Whether the course position moved.
@@ -122,33 +148,287 @@ pub fn own_log(db: &Db) -> Result<Vec<MergedAttempt>, SyncError> {
     Ok(rows.into_iter().map(MergedAttempt::from).collect())
 }
 
-/// Publish this device's attempts that no shard holds yet.
+/// Publish every attempt the local log holds that no shard holds yet.
 ///
-/// The watermark is the highest sequence number already published, so a sync
-/// publishes only what is new and a retried sync publishes nothing. It is advanced
-/// only after the shards are written, so a failure re-publishes rather than
-/// skipping — and re-publishing is safe, because the same attempts produce the same
-/// shard names and the same bytes.
+/// Reads the store to find out what it holds; [`sync`] reads it once for this and
+/// the pull together. See `publish_against` for what is published, and why.
 pub fn publish(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
-    let published_through = watermark(db)?;
-    let fresh: Vec<MergedAttempt> = own_log(db)?
-        .into_iter()
-        .filter(|attempt| attempt.seq > published_through)
+    let remote = read_attempts(store)?;
+    Ok(publish_against(db, store, &remote)?.0)
+}
+
+/// Publish against a reading of the store already in hand.
+///
+/// ## What is already published
+///
+/// Exactly what `remote` holds, matched by `(device_id, seq)`. So a retried sync
+/// publishes nothing, a sync to an empty store publishes everything, and a failure
+/// part-way re-publishes rather than skipping: nothing is recorded as published
+/// until the store says it is.
+///
+/// ## What is published, and under whose name
+///
+/// Every attempt the log holds that `remote` does not, each **under the device
+/// that made it**. This device's own are the ordinary case. The rest are a peer's
+/// attempts this log holds and the store has lost — a move to a new account — or
+/// attempts restored from a backup file under the old phone's name, which nobody
+/// else is going to publish because the old phone is gone.
+///
+/// Writing into another device's directory looks like it breaks the rule that
+/// every writer owns its own, and it is safe for the reason that rule exists: an
+/// attempt is the same attempt whoever holds a copy of it, so two devices writing
+/// one device's attempts write the same lines. What could go wrong is a *name*
+/// colliding with a different shard, and that cannot happen either — a shard is
+/// named after the first attempt in it, and every attempt written here is one the
+/// store did not hold, so no shard of that name can be there. Two phones that
+/// restored the same backup and both publish it write the same attempts under the
+/// same name, which every peer merges as one.
+///
+/// An attempt the store holds a *different* copy of is not published: that
+/// disagreement is for the pull to report, never for a publish to settle by
+/// overwriting. This device's own name is the exception that needs more than
+/// that, and gets it first — see [`settle_identity`].
+fn publish_against(
+    db: &Db,
+    store: &dyn RemoteStore,
+    remote: &[MergedAttempt],
+) -> Result<(usize, usize), SyncError> {
+    let held: HashMap<(&str, i64), &MergedAttempt> = remote
+        .iter()
+        .map(|attempt| ((attempt.device_id.as_str(), attempt.seq), attempt))
         .collect();
-    if fresh.is_empty() {
-        return Ok(0);
+
+    settle_identity(db, store, &held)?;
+    let device = db.device_id();
+
+    let mut fresh: BTreeMap<String, Vec<MergedAttempt>> = BTreeMap::new();
+    let mut unpublishable = 0usize;
+    for attempt in full_log(db)? {
+        if held.contains_key(&(attempt.device_id.as_str(), attempt.seq)) {
+            continue;
+        }
+        if attempt.device_id != device && !publishable_name(&attempt.device_id) {
+            // A name arrived in a backup file, which is text anybody can edit.
+            // Skipped and counted rather than written — see `publishable_name`.
+            // This device's own name is generated here and is always fine.
+            unpublishable += 1;
+            continue;
+        }
+        fresh
+            .entry(attempt.device_id.clone())
+            .or_default()
+            .push(attempt);
     }
 
-    write_attempts(store, db.device_id(), &fresh)?;
+    let mut published = 0usize;
+    for (owner, attempts) in &fresh {
+        write_attempts(store, owner, attempts)?;
+        published += attempts.len();
+    }
 
-    let highest = fresh
-        .iter()
-        .map(|attempt| attempt.seq)
+    // Kept for an older build only — see `PUBLISHED_THROUGH`.
+    let highest = held
+        .keys()
+        .filter(|(owner, _)| *owner == device)
+        .map(|(_, seq)| *seq)
+        .chain(
+            fresh
+                .get(&device)
+                .into_iter()
+                .flatten()
+                .map(|attempt| attempt.seq),
+        )
         .max()
-        .unwrap_or(published_through);
+        .unwrap_or(0);
     db.set_meta_value(PUBLISHED_THROUGH, &highest.to_string())
         .map_err(SyncError::Io)?;
-    Ok(fresh.len())
+    Ok((published, unpublishable))
+}
+
+/// Make sure this device's name is its own before anything is written under it.
+///
+/// ## The failure this prevents
+///
+/// The device id lives in the database, so a database restored from a backup —
+/// a new phone, a reinstall, a copied data directory — comes back with the id it
+/// was backed up with, and numbers its next attempt from where the *backup*
+/// ended. If the original went on syncing after that backup, the store already
+/// holds attempts under those numbers. Publishing would overwrite them, which
+/// loses the original's attempts from the store and leaves every peer that pulled
+/// them with two stories about one attempt — [`SyncError::Rewritten`] on every
+/// sync from then on, with no way back. Two live copies of one database meet the
+/// same collision on whichever syncs second.
+///
+/// ## How it is detected, and what it does
+///
+/// The store holds an attempt under this device's name that this log does not
+/// hold, or holds differently. Nothing else produces that: this device's own log
+/// is append-only and every attempt it publishes it keeps, so a store that knows
+/// more about this name than this log does has heard from another copy of it.
+///
+/// The answer is a **new name**, never an overwrite. Everything this log shares
+/// with the store stays under the old name, because it is the same history the
+/// store already has; the attempts the store does not hold move to the new name,
+/// numbered from 1, and are published there; and the pull that follows brings in
+/// whatever the other copy did. Every device ends up with every attempt, each
+/// under exactly one name, and nothing on the store was rewritten.
+///
+/// ## Attempts left under a former name
+///
+/// The rename asks of every row, inside its own transaction, whether the store
+/// holds it — so an attempt a review records *while* this runs is either moved or
+/// written under the new name, never left behind under the old one. An attempt can
+/// still turn up under a former name some other way: a database renamed by a build
+/// without that care, or a backup restored from before the rename. If the store
+/// holds a *different* attempt under that name and number, only this device can
+/// have made this one, so it is moved to the current name as well
+/// ([`Db::reclaim_attempts`]) rather than left to fail every pull with
+/// [`SyncError::Rewritten`]. A former name's attempts that the store does not hold
+/// at all are left alone: they are as likely to be the original's, pulled before a
+/// move to an empty store, and are published under that name like anyone else's.
+///
+/// ## What it cannot do
+///
+/// - **Repair a store the old behaviour already damaged.** A build without this
+///   check overwrote the original's shard; a peer that had pulled the original's
+///   attempt still disagrees with the store about it, and still fails with
+///   [`SyncError::Rewritten`] — there is no telling, from here, which copy is the
+///   real one. Worse, the *original* now finds the copy's attempt under its own
+///   name, takes a new one itself, and republishes its own overwritten attempt
+///   under it, so a peer that kept the first copy holds it twice.
+/// - **Judge "unpublished" against any store but this one.** A copy used with two
+///   accounts in turn renames what the *current* store lacks, which can include
+///   attempts it already published to the other; were the two stores' contents
+///   ever brought together, those would be there twice.
+/// - **Help a third device with a copy's old backup.** A backup exported on a copy
+///   *before* it renamed holds its attempts under the inherited name. Restored on
+///   this device, they are dropped, because the rename recorded where they went
+///   ([`Db::merge_attempts`]). Restored on any *other* device, nothing says so:
+///   that device holds them as the inherited name's, publishes those the store
+///   lacks, and one that collides with the original's attempt of the same number
+///   leaves it failing with [`SyncError::Rewritten`] for good — much as restoring
+///   any backup that disagrees with the store already did.
+/// - **Cover the group positions published between syncs.** The app publishes a
+///   group position on its own, outside a sync (`publish_positions_to` in
+///   `src-tauri/src/sync.rs`), under whatever name the database has at that
+///   moment. Before a copy's first sync, or in the moment around a rename, that is
+///   the inherited name, so the copy can overwrite the original's
+///   `vocab-cursor.json` once. Positions are settled per group by their stamps and
+///   the file is rewritten whole on every publish, so the original's next publish
+///   restores it; no attempt is involved and nothing fails.
+/// - **Rebuild a migrated card when there is no baseline to adopt.** A rename with
+///   none leaves a pre-M10 card stale on the copy — see `settle_baseline` — until
+///   the original publishes a baseline, and for good if it never does.
+///
+/// Returns the new name, if there is one.
+fn settle_identity(
+    db: &Db,
+    store: &dyn RemoteStore,
+    held: &HashMap<(&str, i64), &MergedAttempt>,
+) -> Result<Option<String>, SyncError> {
+    let device = db.device_id();
+    let own: HashMap<i64, MergedAttempt> = own_log(db)?
+        .into_iter()
+        .map(|attempt| (attempt.seq, attempt))
+        .collect();
+    let someone_else = held
+        .iter()
+        .filter(|((owner, _), _)| *owner == device)
+        .any(|((_, seq), remote)| own.get(seq) != Some(*remote));
+
+    // Before the name can change, because a baseline accounts for rows by name.
+    settle_baseline(db, store, someone_else)?;
+
+    let renamed = if someone_else {
+        let published = |row: &LoggedAttempt| held_as_is(held, row);
+        Some(db.rotate_device_id(&published).map_err(SyncError::Io)?)
+    } else {
+        None
+    };
+
+    // A copy under a former name of an attempt the rename already moved — a backup
+    // from before the rename, restored by a build that let it in — goes first, so
+    // that it is neither reclaimed below as a second attempt nor published again.
+    db.forget_moved_copies().map_err(SyncError::Io)?;
+    for former in db.former_device_ids().map_err(SyncError::Io)? {
+        let keep = |row: &LoggedAttempt| {
+            held.get(&(former.as_str(), row.seq))
+                .is_none_or(|remote| **remote == MergedAttempt::from(row.clone()))
+        };
+        db.reclaim_attempts(&former, &keep).map_err(SyncError::Io)?;
+    }
+    Ok(renamed)
+}
+
+/// Whether the store holds exactly this attempt, under its name and number.
+fn held_as_is(held: &HashMap<(&str, i64), &MergedAttempt>, row: &LoggedAttempt) -> bool {
+    held.get(&(row.device_id.as_str(), row.seq))
+        .is_some_and(|remote| **remote == MergedAttempt::from(row.clone()))
+}
+
+/// Settle this device's baseline before its name is checked, once.
+///
+/// A baseline says "this device's rows up to here are already inside these cards",
+/// by name and number, so it has to agree with the store about both. Capturing one
+/// here, the way a device that has never synced does, is wrong for a copy:
+///
+/// - **The store already holds a baseline under this name.** Then this database is
+///   a copy of the device that captured it, taken before it did. That baseline is
+///   *this* history too — the copy shares it up to the moment it was taken — and
+///   every peer already folds from it, so it is adopted as this device's own. A
+///   baseline of the copy's own would cover the original's attempts it never saw,
+///   claim its own new ones, and overwrite the original's file besides.
+/// - **The name is about to change.** The attempts the rename moves are inside the
+///   cards as they stand, and would sit outside a baseline taken under the old name
+///   — folded on top of a state that already counts them. There is no range under
+///   one name that describes the cards, so none is captured: an empty one is
+///   written down, and a migrated card is left alone rather than rebuilt wrong,
+///   which is what a missing baseline has always meant. If the original publishes
+///   its own later, every device folds from that.
+///
+/// Anything else is the ordinary first capture.
+fn settle_baseline(db: &Db, store: &dyn RemoteStore, renaming: bool) -> Result<(), SyncError> {
+    if own_baseline(db)?.is_some() {
+        return Ok(());
+    }
+    let device = db.device_id();
+    let adopted = read_baselines(store)?
+        .into_iter()
+        .find(|baseline| baseline.device_id == device);
+    let baseline = match adopted {
+        Some(baseline) => baseline,
+        None if renaming => Baseline {
+            device_id: device,
+            from: 0,
+            to: 0,
+            cards: BTreeMap::new(),
+        },
+        None => {
+            capture_baseline(db)?;
+            return Ok(());
+        }
+    };
+    let text = serde_json::to_string(&baseline)
+        .map_err(|e| SyncError::Malformed(format!("the baseline could not be encoded: {e}")))?;
+    db.set_meta_value(BASELINE_KEY, &text)
+        .map_err(SyncError::Io)
+}
+
+/// Whether a device name is one this device may write a shard under.
+///
+/// Strictly a name a device of this app could have ([`hanzi_store::is_valid_device_id`]),
+/// not merely one a path can hold. A name is a directory on the store, and the
+/// names that are not plain are the dangerous ones: `..` or a backslash is refused
+/// by a folder store and would fail *every* sync, and `.` or a `/` writes
+/// somewhere [`parse_attempts_shard`] never reads back, so the same attempts would
+/// be written again on every sync and never found. A restored backup is refused
+/// such a name before it reaches the log; this is the guard for one that got in
+/// some other way. The round trip is checked as well, so the two rules can never
+/// drift apart.
+fn publishable_name(device_id: &str) -> bool {
+    let name = attempts_shard_name(device_id, 1);
+    hanzi_store::is_valid_device_id(device_id)
+        && parse_attempts_shard(&name) == Some((device_id, 1))
 }
 
 /// Publish this device's vocabulary list and course position.
@@ -159,28 +439,44 @@ pub fn publish(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
 /// what a device has to say about an entry is whatever it currently holds. See
 /// [`crate::document`] for why that does not put the merge at risk.
 pub fn publish_documents(db: &Db, store: &dyn RemoteStore) -> Result<(), SyncError> {
+    let device = db.device_id();
     let (entries, groups) = db.vocab_view().map_err(SyncError::Io)?;
-    write_vocab(store, db.device_id(), &entries, &groups)?;
+    write_vocab(store, &device, &entries, &groups)?;
     // A device that has never moved the cursor has nothing to say about where it
     // is, and publishing a guess would be worse than publishing nothing.
     if let Some(cursor) = db.cursor_view().map_err(SyncError::Io)? {
-        write_cursor(store, db.device_id(), &cursor)?;
+        write_cursor(store, &device, &cursor)?;
     }
     // And where the learner got to in each of their own groups. Nothing to say
     // when there is nothing to say: absence must not mean "forget every group",
     // or a device that had merely not synced yet would wipe a peer's places.
     let cursors = db.vocab_cursors().map_err(SyncError::Io)?;
     if !cursors.is_empty() {
-        write_vocab_cursors(store, db.device_id(), &cursors)?;
+        write_vocab_cursors(store, &device, &cursors)?;
     }
     // Before the pull, and that ordering is the point: a peer that reads this
     // device's attempts must be able to read the baseline that says how to fold
     // them. A peer that misses it folds what it can and is corrected by its next
     // sync, which is the right direction to fail in.
+    //
+    // Only under this device's current name, or where the store has none for the
+    // name it carries. A device that has been renamed still holds the baseline of
+    // its former name, and the store's copy of that is the former name's to keep:
+    // two devices writing one baseline file is how a peer's would be overwritten.
+    // Republishing it to a store that lacks one — a move to a new account — is what
+    // lets the new account fold that name's attempts correctly.
     if let Some(baseline) = capture_baseline(db)? {
-        write_baseline(store, &baseline)?;
+        if baseline.device_id == device || !holds_baseline_of(store, &baseline.device_id)? {
+            write_baseline(store, &baseline)?;
+        }
     }
     Ok(())
+}
+
+/// Whether the store holds a baseline for `device_id`.
+fn holds_baseline_of(store: &dyn RemoteStore, device_id: &str) -> Result<bool, SyncError> {
+    let name = baseline_shard_name(device_id);
+    Ok(store.list()?.iter().any(|entry| entry.name == name))
 }
 
 /// This device's baseline, captured on first use and read back afterwards.
@@ -243,7 +539,7 @@ fn capture_baseline(db: &Db) -> Result<Option<Baseline>, SyncError> {
         .collect();
 
     let baseline = Baseline {
-        device_id: db.device_id().to_string(),
+        device_id: db.device_id(),
         from: 0,
         to: next,
         cards,
@@ -262,7 +558,16 @@ fn capture_baseline(db: &Db) -> Result<Option<Baseline>, SyncError> {
 /// pass: a rewritten shard means something has gone wrong that the learner would
 /// otherwise never hear about.
 pub fn pull(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
-    let remote = read_attempts(store)?;
+    pull_from(db, read_attempts(store)?)
+}
+
+/// The pull, from a reading of the store already in hand.
+///
+/// [`sync`] hands it the reading the publish was decided from, rather than reading
+/// every shard a second time. What that reading lacks is only what was written in
+/// the moments since — this device's own just-published shards, which the log
+/// already holds, and anything a peer wrote meanwhile, which the next sync brings.
+fn pull_from(db: &Db, remote: Vec<MergedAttempt>) -> Result<usize, SyncError> {
     if remote.is_empty() {
         return Ok(0);
     }
@@ -371,14 +676,20 @@ pub fn pull_vocab_cursors(db: &Db, store: &dyn RemoteStore) -> Result<bool, Sync
 
 /// Publish, pull, and rebuild: one whole sync.
 ///
-/// The order matters in one place only. Attempts are published before anything is
+/// The order matters in two places. Attempts are published before anything is
 /// pulled, because the log is what the schedule is folded from and a device should
 /// never be in the position of having applied a peer's work without having offered
-/// its own.
+/// its own. And the documents are published *after* the attempts, because
+/// publishing the attempts is where this device may take a new name — see
+/// `settle_identity` — and the documents must go out under the name it ends up
+/// with, not over the directory of the copy it turned out to be.
 pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
-    let published = publish(db, store)?;
+    // Read once, for both halves: the publish decides from it what the store
+    // lacks, and the pull merges it.
+    let remote = read_attempts(store)?;
+    let (published, unpublishable) = publish_against(db, store, &remote)?;
     publish_documents(db, store)?;
-    let pulled = pull(db, store)?;
+    let pulled = pull_from(db, remote)?;
     let vocab_changed = pull_vocab(db, store)?;
     let cursor_moved = pull_cursor(db, store)?;
     // Whether a group position moved is not reported: unlike the course
@@ -398,6 +709,7 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
         pulled,
         recomputed,
         left_alone,
+        unpublishable,
         vocab_changed,
         cursor_moved,
     })
@@ -425,15 +737,6 @@ fn own_baseline(db: &Db) -> Result<Option<Baseline>, SyncError> {
 /// is the whole story and every card folds from the beginning.
 pub fn local_baselines(db: &Db) -> Result<Baselines, SyncError> {
     Ok(Baselines::resolve(own_baseline(db)?.into_iter().collect()))
-}
-
-/// How far this device has published its own log.
-fn watermark(db: &Db) -> Result<i64, SyncError> {
-    Ok(db
-        .meta_value(PUBLISHED_THROUGH)
-        .map_err(SyncError::Io)?
-        .and_then(|text| text.parse().ok())
-        .unwrap_or(0))
 }
 
 /// A local log row, as it travels.

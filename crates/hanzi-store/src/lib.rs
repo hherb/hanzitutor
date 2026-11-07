@@ -32,7 +32,7 @@ pub mod export;
 mod migrate;
 mod schema;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -60,11 +60,59 @@ pub struct Db {
     /// This device's identity, read once at open. It is what makes an attempt's
     /// `(device_id, seq)` pair mean the same thing on every device, so two logs
     /// can be merged without a row colliding — see [`schema`]'s `upgrade`.
-    device_id: String,
+    ///
+    /// Shared between the clones rather than copied into each, because it can
+    /// change once the database is open: sync gives a device a new name when it
+    /// finds its old one already in use — see [`Db::rotate_device_id`]. A clone
+    /// that kept the old name would go on numbering attempts under it, which is
+    /// the collision the new name exists to end. It is only ever changed with the
+    /// connection held, and every write reads it with the connection held, so a
+    /// write sees one name or the other and never half of a rename.
+    device_id: Arc<Mutex<String>>,
     /// Whether this app had run in this directory before this launch — see
     /// [`Db::is_first_run`]. Read once, before the schema was stamped.
     first_run: bool,
+    /// The vocabulary list as this handle last loaded or saved it — see
+    /// [`VocabSeen`]. Per handle, not shared between clones.
+    vocab_seen: VocabSeen,
 }
+
+/// What one vocabulary handle last saw of the list, and at which generation.
+///
+/// The list is handed to [`VocabSink::save`] whole, and a whole document cannot
+/// say what the learner *changed*: an entry missing from it might have been
+/// removed, or might simply have arrived (by sync) after the document was read.
+/// Treating every absence as a removal is what used to make a save from a stale
+/// document tombstone every entry a sync had just pulled, and spread that
+/// deletion to every device. So each handle remembers the document it last
+/// read or wrote, and a save writes only the difference between that and the
+/// document it is given.
+///
+/// The generation is a counter in `meta` that every vocabulary write bumps —
+/// this handle's saves and [`Db::apply_vocab_view`] alike. A save that finds a
+/// generation other than the one it remembers knows the database moved
+/// underneath it, writes its difference with that in mind, and hands back the
+/// list as it now stands.
+///
+/// Cloning gives an empty record on purpose: `Db` is cloned to hand each store
+/// its own handle, and a fresh handle has seen nothing until it loads.
+#[derive(Debug, Default)]
+struct VocabSeen(Mutex<Option<SeenVocab>>);
+
+impl Clone for VocabSeen {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+#[derive(Debug)]
+struct SeenVocab {
+    generation: i64,
+    document: VocabDocument,
+}
+
+/// The `meta` key holding the vocabulary generation — see [`VocabSeen`].
+const VOCAB_GENERATION: &str = "vocab_generation";
 
 impl Db {
     /// The database's file name inside the data directory.
@@ -133,8 +181,9 @@ impl Db {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             dir,
-            device_id,
+            device_id: Arc::new(Mutex::new(device_id)),
             first_run: existing_schema.is_none() && !legacy_documents_present(&path),
+            vocab_seen: VocabSeen::default(),
         })
     }
 
@@ -156,8 +205,164 @@ impl Db {
     }
 
     /// This device's identity, for the sync layer to name its shards with.
-    pub fn device_id(&self) -> &str {
-        &self.device_id
+    ///
+    /// An owned value rather than a borrow, because the identity can change while
+    /// the database is open — see [`Db::rotate_device_id`].
+    pub fn device_id(&self) -> String {
+        self.device()
+    }
+
+    /// The identity, read from the shared cell.
+    fn device(&self) -> String {
+        // Poisoning is recovered from for the same reason as in `lock`: the
+        // string is still a whole string.
+        self.device_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Give this device a new identity, and move its unpublished attempts to it.
+    ///
+    /// This is what sync does when it finds this device's name already holding
+    /// attempts this log does not have — a database restored from a backup, or
+    /// copied to a second phone, carries its id with it, and both copies would
+    /// otherwise number their next attempts from the same place. See
+    /// `hanzi_sync`'s `settle_identity` for when it is called; this is only the
+    /// storage half.
+    ///
+    /// `published` answers, for one attempt of the *current* identity, whether a
+    /// shard already holds exactly that attempt. Every attempt it says no to is
+    /// renumbered from 1 under the new identity, in the order they were made.
+    /// Everything the old name has already published stays under the old name: it
+    /// is somebody's history now — a peer may hold it — and renaming it would make
+    /// it a second attempt on every device that already has the first.
+    ///
+    /// ## Why it is asked of every row, inside the transaction
+    ///
+    /// Rather than handed a list of rows decided beforehand. A review can record an
+    /// attempt while a sync runs, and an attempt saved between "these are the
+    /// unpublished ones" and the rename would be numbered under the old name, left
+    /// behind by a list that predates it, and collide with the original's attempt
+    /// of the same number for good. Asked here, with the connection held, the
+    /// question covers every row that exists at the moment of the rename, and no
+    /// row can be written under the old name afterwards — see `device_id` on
+    /// [`Db`]. `published` is called with the connection held, so it must not
+    /// touch this database.
+    ///
+    /// The old name is remembered among the [former](Db::former_device_ids) ones.
+    /// One transaction for all of it, so a failure leaves the database as it was
+    /// rather than holding attempts under a name it does not answer to. Returns the
+    /// new identity.
+    pub fn rotate_device_id(
+        &self,
+        published: &dyn Fn(&LoggedAttempt) -> bool,
+    ) -> Result<String, String> {
+        let path = self.path();
+        let mut conn = self.lock();
+        let old = self.device();
+        let new = uuid::Uuid::new_v4().to_string();
+
+        let tx = conn.transaction().map_err(|e| at(&path, e))?;
+        let mut former = former_ids(&tx).map_err(|e| at(&path, e))?;
+        if !former.contains(&old) {
+            former.push(old.clone());
+        }
+        let text = serde_json::to_string(&former)
+            .map_err(|e| format!("{}: the former device ids: {e}", path.display()))?;
+        set_meta(&tx, FORMER_DEVICE_IDS_KEY, &text).map_err(|e| at(&path, e))?;
+        set_meta(&tx, schema::DEVICE_ID_KEY, &new).map_err(|e| at(&path, e))?;
+        move_attempts(&tx, &old, &new, published).map_err(|e| at(&path, e))?;
+        tx.commit().map_err(|e| at(&path, e))?;
+
+        // Still holding the connection, so no write can slip in between the
+        // committed rename and the name every clone answers to.
+        *self
+            .device_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = new.clone();
+        drop(conn);
+        Ok(new)
+    }
+
+    /// The names this device has given up, oldest first.
+    ///
+    /// Sync needs them because an attempt under a former name is not quite a
+    /// stranger's: see [`Db::reclaim_attempts`].
+    pub fn former_device_ids(&self) -> Result<Vec<String>, String> {
+        let conn = self.lock();
+        former_ids(&conn).map_err(|e| at(&self.path(), e))
+    }
+
+    /// Move attempts of a former name to the current one, renumbered after its
+    /// newest, returning how many moved.
+    ///
+    /// Every attempt of `former` that `keep` says no to is moved; the question is
+    /// asked inside the transaction, with the same care as in
+    /// [`Db::rotate_device_id`], and `keep` must not touch this database either.
+    /// This is the repair for an attempt that ended up under a former name anyway
+    /// — a database renamed by a build without that care, or one restored from a
+    /// backup taken before the rename — and that the store already holds a
+    /// different attempt for, under the same number. Only this device can have
+    /// made it, so it is moved to this device's name rather than left to collide.
+    pub fn reclaim_attempts(
+        &self,
+        former: &str,
+        keep: &dyn Fn(&LoggedAttempt) -> bool,
+    ) -> Result<usize, String> {
+        let path = self.path();
+        let mut conn = self.lock();
+        let current = self.device();
+        if former == current {
+            return Ok(0);
+        }
+        let tx = conn.transaction().map_err(|e| at(&path, e))?;
+        let moved = move_attempts(&tx, former, &current, keep).map_err(|e| at(&path, e))?;
+        tx.commit().map_err(|e| at(&path, e))?;
+        Ok(moved)
+    }
+
+    /// Drop every attempt under a former name that this database also holds under
+    /// a newer one, returning how many went.
+    ///
+    /// The same rule [`Db::merge_attempts`] applies on the way in, applied to what
+    /// is already here, so that a copy which got in some other way — a build
+    /// without that rule — is neither published again under the old name nor
+    /// folded into the schedule twice. A rename only ever moves an attempt to a
+    /// *newer* name, so the copy under the older one is the one to drop.
+    pub fn forget_moved_copies(&self) -> Result<usize, String> {
+        let path = self.path();
+        let mut conn = self.lock();
+        let current = self.device();
+        let tx = conn.transaction().map_err(|e| at(&path, e))?;
+        let former = former_ids(&tx).map_err(|e| at(&path, e))?;
+        let mut dropped = 0usize;
+        for name in &former {
+            let rows: Vec<LoggedAttempt> = {
+                let mut stmt = tx
+                    .prepare(&format!(
+                        "SELECT {ATTEMPT_COLUMNS} FROM attempt WHERE device_id = ?1"
+                    ))
+                    .map_err(|e| at(&path, e))?;
+                let rows = stmt
+                    .query_map([name], read_attempt)
+                    .map_err(|e| at(&path, e))?;
+                rows.collect::<rusqlite::Result<_>>()
+                    .map_err(|e| at(&path, e))?
+            };
+            let newer = newer_names(&former, &current, name);
+            for row in rows {
+                if copy_under(&tx, newer, &row.ch, &row.at, row.score, &row.rating)
+                    .map_err(|e| at(&path, e))?
+                {
+                    tx.execute("DELETE FROM attempt WHERE id = ?1", [row.id])
+                        .map_err(|e| at(&path, e))?;
+                    dropped += 1;
+                }
+            }
+        }
+        tx.commit().map_err(|e| at(&path, e))?;
+        Ok(dropped)
     }
 
     /// The database file.
@@ -263,7 +468,7 @@ impl Db {
             ))
             .map_err(|e| at(&path, e))?;
         let rows = stmt
-            .query_map([&self.device_id], read_attempt)
+            .query_map([self.device()], read_attempt)
             .map_err(|e| at(&path, e))?;
 
         let mut out = Vec::new();
@@ -293,8 +498,28 @@ impl Db {
         let path = self.path();
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(|e| at(&path, e))?;
+        let current = self.device();
+        let former = former_ids(&tx).map_err(|e| at(&path, e))?;
         let mut added = 0usize;
         for attempt in incoming {
+            // An attempt under a name this database has given up, which it already
+            // holds under a newer one: it was this device's, and the rename moved
+            // it. That is a backup taken before the rename coming back, and letting
+            // it in would put the same attempt in the log twice — once under each
+            // name — and on the store twice after the next sync.
+            let newer = newer_names(&former, &current, &attempt.device_id);
+            let moved = copy_under(
+                &tx,
+                newer,
+                &attempt.ch,
+                &attempt.at,
+                attempt.score,
+                attempt.rating.name(),
+            )
+            .map_err(|e| at(&path, e))?;
+            if moved {
+                continue;
+            }
             let m = attempt.measures;
             added += tx
                 .execute(
@@ -341,6 +566,119 @@ impl Db {
         let conn = self.lock();
         set_meta(&conn, key, value).map_err(|e| at(&self.path(), e))
     }
+}
+
+/// Where the names this device has given up are kept, as a JSON list.
+///
+/// Beside `device_id` in `meta`, so a backup carries the history of the name with
+/// the name itself.
+const FORMER_DEVICE_IDS_KEY: &str = "former_device_ids";
+
+/// The former names, from `meta`. A value that cannot be read is treated as none,
+/// which costs only the repair in [`Db::reclaim_attempts`], never an attempt.
+fn former_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    Ok(meta_get(conn, FORMER_DEVICE_IDS_KEY)?
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default())
+}
+
+/// The names newer than `name` among this database's own, oldest first: the former
+/// names after it, then the current one.
+///
+/// Empty when `name` is not a former name of this database, which is how every
+/// other device's name is answered — the duplicate rule below is about this
+/// device's own renames and nobody else's attempts.
+fn newer_names<'a>(former: &'a [String], current: &'a str, name: &str) -> NewerNames<'a> {
+    match former.iter().position(|f| f == name) {
+        Some(at) => NewerNames {
+            former: &former[at + 1..],
+            current: Some(current),
+        },
+        None => NewerNames {
+            former: &[],
+            current: None,
+        },
+    }
+}
+
+/// See [`newer_names`].
+#[derive(Clone, Copy)]
+struct NewerNames<'a> {
+    former: &'a [String],
+    current: Option<&'a str>,
+}
+
+/// Whether one of `names` holds an attempt with these exact contents.
+///
+/// The contents, not the number: a moved attempt was renumbered, so its number
+/// under the newer name says nothing. The character, the second it happened, the
+/// score and the rating together are an attempt's fingerprint — two genuinely
+/// different attempts agreeing on all four is not a case worth designing for.
+fn copy_under(
+    conn: &Connection,
+    names: NewerNames<'_>,
+    ch: &str,
+    at: &str,
+    score: f32,
+    rating: &str,
+) -> rusqlite::Result<bool> {
+    for name in names.former.iter().map(String::as_str).chain(names.current) {
+        let found: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM attempt WHERE device_id = ?1 AND ch = ?2
+                           AND at = ?3 AND score = ?4 AND rating = ?5)",
+            params![name, ch, at, score, rating],
+            |row| row.get(0),
+        )?;
+        if found {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Move every attempt of `from` that `keep` says no to over to `to`, numbered on
+/// from `to`'s newest, in the order `from` numbered them.
+///
+/// By rowid rather than by `(device_id, seq)`, so that a row moved early in the
+/// loop can never be mistaken for one still waiting to move.
+fn move_attempts(
+    conn: &Connection,
+    from: &str,
+    to: &str,
+    keep: &dyn Fn(&LoggedAttempt) -> bool,
+) -> rusqlite::Result<usize> {
+    let rows: Vec<LoggedAttempt> = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {ATTEMPT_COLUMNS} FROM attempt WHERE device_id = ?1 ORDER BY seq"
+        ))?;
+        let rows = stmt.query_map([from], read_attempt)?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let first = next_seq(conn, to)?;
+    let mut moved = 0usize;
+    for (fresh, row) in (first..).zip(rows.iter().filter(|row| !keep(row))) {
+        conn.execute(
+            "UPDATE attempt SET device_id = ?1, seq = ?2 WHERE id = ?3",
+            params![to, fresh, row.id],
+        )?;
+        moved += 1;
+    }
+    Ok(moved)
+}
+
+/// Whether `id` is a name a device of this app could have.
+///
+/// Every device names itself with a UUID ([`schema`]'s `device_id`), so this is
+/// letters, digits, `-` and `_`, and not too long — deliberately narrower than
+/// "anything a filesystem accepts". A device name becomes a directory on the sync
+/// store, and the names that are not plain ones are exactly the dangerous ones:
+/// `..` and a backslash are refused by a folder store outright, and `.` names a
+/// directory sync writes to and never reads back.
+pub fn is_valid_device_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Read one attempt row, in the column order [`ATTEMPT_COLUMNS`] selects.
@@ -510,7 +848,7 @@ fn settings_error(path: &Path, e: rusqlite::Error) -> SettingsError {
 impl ProgressSink for Db {
     fn load(&self) -> Result<ProgressDocument, ProgressError> {
         let mut conn = self.lock();
-        migrate::progress(&mut conn, self.dir(), &self.device_id)?;
+        migrate::progress(&mut conn, self.dir(), &self.device())?;
         let path = self.path();
         let mut cards = read_cards(&conn, &path)?;
         read_histories(&conn, &path, &mut cards)?;
@@ -540,10 +878,10 @@ impl ProgressSink for Db {
                 write_card(&tx, ch, card).map_err(|e| progress_error(&path, e))?;
             }
         }
-        let first = next_seq(&tx, &self.device_id).map_err(|e| progress_error(&path, e))?;
+        let device = self.device();
+        let first = next_seq(&tx, &device).map_err(|e| progress_error(&path, e))?;
         for (seq, record) in (first..).zip(attempts.iter()) {
-            insert_attempt(&tx, &self.device_id, seq, record)
-                .map_err(|e| progress_error(&path, e))?;
+            insert_attempt(&tx, &device, seq, record).map_err(|e| progress_error(&path, e))?;
         }
         tx.commit().map_err(|e| progress_error(&path, e))
     }
@@ -778,7 +1116,7 @@ impl CursorSink for Db {
                  updated_at = excluded.updated_at,
                  device_id = excluded.device_id,
                  revision = course_cursor.revision + 1",
-            params![document.index as i64, document.updated_at, self.device_id],
+            params![document.index as i64, document.updated_at, self.device()],
         )
         .map_err(|e| progress_error(&path, e))?;
         Ok(())
@@ -790,172 +1128,363 @@ impl CursorSink for Db {
 impl VocabSink for Db {
     fn load(&self) -> Result<VocabDocument, VocabError> {
         let mut conn = self.lock();
-        migrate::vocabulary(&mut conn, self.dir(), &self.device_id)?;
+        migrate::vocabulary(&mut conn, self.dir(), &self.device())?;
         let path = self.path();
-
-        let next_id = meta_i64(&conn, "vocab_next_id")
-            .map_err(|e| vocab_error(&path, e))?
-            .unwrap_or(1)
-            .max(1) as u64;
-
-        let mut groups = Vec::new();
-        {
-            let mut stmt = conn
-                .prepare("SELECT name FROM vocab_group WHERE deleted = 0 ORDER BY position, name")
-                .map_err(|e| vocab_error(&path, e))?;
-            let rows = stmt
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(|e| vocab_error(&path, e))?;
-            for row in rows {
-                groups.push(row.map_err(|e| vocab_error(&path, e))?);
-            }
-        }
-
-        let mut entries = Vec::new();
-        {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, text, pinyin, meaning, group_name, added_at, \
-                            attempts, best_score, last_practised
-                     FROM vocab_entry WHERE deleted = 0
-                     ORDER BY group_name, added_at, text",
-                )
-                .map_err(|e| vocab_error(&path, e))?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok(Entry {
-                        id: row.get::<_, i64>(0)?.max(0) as u64,
-                        text: row.get(1)?,
-                        pinyin: row.get(2)?,
-                        meaning: row.get(3)?,
-                        group: row.get(4)?,
-                        added_at: row.get(5)?,
-                        attempts: row.get(6)?,
-                        best_score: row.get(7)?,
-                        last_practised: row.get(8)?,
-                    })
-                })
-                .map_err(|e| vocab_error(&path, e))?;
-            for row in rows {
-                entries.push(row.map_err(|e| vocab_error(&path, e))?);
-            }
-        }
-
-        Ok(VocabDocument {
-            version: hanzi_core::vocab::FORMAT_VERSION,
-            next_id,
-            groups,
-            entries,
-        })
+        let document = read_vocab(&conn).map_err(|e| vocab_error(&path, e))?;
+        let generation = vocab_generation(&conn).map_err(|e| vocab_error(&path, e))?;
+        *self.vocab_seen.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(SeenVocab {
+            generation,
+            document: document.clone(),
+        });
+        Ok(document)
     }
 
-    fn save(&mut self, document: &VocabDocument) -> Result<(), VocabError> {
+    fn save(&mut self, document: &VocabDocument) -> Result<Option<VocabDocument>, VocabError> {
         let path = self.path();
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(|e| vocab_error(&path, e))?;
         let now = now_iso8601();
-        let device = self.device_id.clone();
+        let device = self.device();
+        let mut seen = self.vocab_seen.0.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Nothing is deleted any more, and that is the change sync forced. An
-        // entry that disappears from the document is **tombstoned**: a row saying
-        // "this was removed, at this time, by this device". Erasing it instead
-        // would be worse than losing the record — a peer that still holds an older
-        // copy would put it straight back on the next sync, because absence cannot
-        // be distinguished from "I have not heard about that one yet".
-        //
-        // Groups go the same way, and a group is named by its name because there is
-        // nothing else to name it by: a rename arrives as one name leaving and
-        // another arriving.
-        let wanted: HashSet<&str> = document.groups.iter().map(String::as_str).collect();
-        for name in group_names(&tx, false).map_err(|e| vocab_error(&path, e))? {
-            if !wanted.contains(name.as_str()) {
-                tx.execute(
-                    "UPDATE vocab_group SET deleted = 1, updated_at = ?1, device_id = ?2,
-                             revision = revision + 1
-                     WHERE name = ?3",
-                    params![now, device, name],
-                )
-                .map_err(|e| vocab_error(&path, e))?;
-            }
+        let current = vocab_generation(&tx).map_err(|e| vocab_error(&path, e))?;
+        // Without a record — a handle that saves before it ever loaded — the list
+        // as the database holds it now is the baseline, which is what a whole-
+        // document save always meant.
+        let (base, stale) = match seen.as_ref() {
+            Some(record) => (record.document.clone(), record.generation != current),
+            None => (read_vocab(&tx).map_err(|e| vocab_error(&path, e))?, false),
+        };
+        let known_base = seen.is_some();
+
+        let outcome = write_vocab_changes(&tx, &base, document, stale, known_base, &now, &device)
+            .map_err(|e| vocab_error(&path, e))?;
+
+        let generation = current + 1;
+        set_meta(&tx, VOCAB_GENERATION, &generation.to_string())
+            .map_err(|e| vocab_error(&path, e))?;
+        // The document the store should hold from here on: its own, unless the
+        // database moved underneath it or one of its ids had to be moved aside.
+        let fresh = if stale || outcome.renumbered {
+            Some(read_vocab(&tx).map_err(|e| vocab_error(&path, e))?)
+        } else {
+            None
+        };
+        tx.commit().map_err(|e| vocab_error(&path, e))?;
+
+        *seen = Some(SeenVocab {
+            generation,
+            document: fresh.clone().unwrap_or_else(|| document.clone()),
+        });
+        Ok(fresh)
+    }
+}
+
+/// What [`write_vocab_changes`] had to do beyond writing.
+struct VocabWrite {
+    /// A new entry's id was already taken by a row this handle never saw (one a
+    /// sync inserted), so it was given another one.
+    renumbered: bool,
+}
+
+/// Write the difference between `base` (what this handle last saw) and
+/// `document` (what the learner's list now says).
+///
+/// Nothing is deleted, and that is the change sync forced: an entry that
+/// disappears from the document is **tombstoned** — a row saying "this was
+/// removed, at this time, by this device". Erasing it would be worse than losing
+/// the record, because a peer that still holds an older copy would put it straight
+/// back on the next sync. But only an entry that was in `base` and is missing from
+/// `document` was removed by the learner; anything else missing simply arrived
+/// after the document was read. A tombstone is never stamped again, either: its
+/// time is when the deletion happened, and moving it forward would let an old
+/// deletion beat a newer edit made on another device.
+///
+/// When `stale` (the database moved since `base` was read), a row the learner did
+/// not touch is left alone however the document describes it, a row a peer
+/// deleted is not brought back by a practice attempt, and an edit writes only the
+/// fields the learner actually changed — so a stale copy of the others cannot
+/// overwrite what the sync just brought in.
+fn write_vocab_changes(
+    tx: &Connection,
+    base: &VocabDocument,
+    document: &VocabDocument,
+    stale: bool,
+    known_base: bool,
+    now: &str,
+    device: &str,
+) -> rusqlite::Result<VocabWrite> {
+    // ---- groups
+    //
+    // A group is named by its name because there is nothing else to name it by: a
+    // rename arrives as one name leaving and another arriving.
+    let before: HashSet<&str> = base.groups.iter().map(String::as_str).collect();
+    let after: HashSet<&str> = document.groups.iter().map(String::as_str).collect();
+    if before != after {
+        for name in before.difference(&after) {
+            tx.execute(
+                "UPDATE vocab_group SET deleted = 1, updated_at = ?1, device_id = ?2,
+                         revision = revision + 1
+                 WHERE name = ?3 AND deleted = 0",
+                params![now, device, name],
+            )?;
         }
         for (position, name) in document.groups.iter().enumerate() {
-            // The stamp moves only when something the learner chose moves. A sync
-            // saves the whole document many times over, and a stamp that advanced
-            // on every save would make each device's newest write the winner for no
-            // reason — turning "nobody has touched this" into a race.
-            tx.execute(
-                "INSERT INTO vocab_group (name, position, updated_at, deleted, device_id)
-                 VALUES (?1, ?2, ?3, 0, ?4)
-                 ON CONFLICT(name) DO UPDATE SET
-                     updated_at = CASE
-                         WHEN vocab_group.position <> excluded.position
-                           OR vocab_group.deleted <> 0
-                         THEN excluded.updated_at ELSE vocab_group.updated_at END,
-                     device_id = CASE
-                         WHEN vocab_group.position <> excluded.position
-                           OR vocab_group.deleted <> 0
-                         THEN excluded.device_id ELSE vocab_group.device_id END,
-                     revision = CASE
-                         WHEN vocab_group.position <> excluded.position
-                           OR vocab_group.deleted <> 0
-                         THEN vocab_group.revision + 1 ELSE vocab_group.revision END,
-                     position = excluded.position,
-                     deleted = 0",
-                params![name, position as i64, now, device],
-            )
-            .map_err(|e| vocab_error(&path, e))?;
+            if stale
+                && before.contains(name.as_str())
+                && group_state(tx, name)?.is_some_and(|state| state.4)
+            {
+                // Deleted by a peer while this list was open, and not touched here.
+                continue;
+            }
+            upsert_group(tx, name, position as i64, now, device)?;
         }
+    }
 
-        let kept: HashSet<i64> = document.entries.iter().map(|e| e.id as i64).collect();
-        for id in entry_ids(&tx, false).map_err(|e| vocab_error(&path, e))? {
-            if !kept.contains(&id) {
-                tx.execute(
-                    "UPDATE vocab_entry SET deleted = 1, updated_at = ?1, device_id = ?2,
-                             revision = revision + 1
-                     WHERE id = ?3",
-                    params![now, device, id],
-                )
-                .map_err(|e| vocab_error(&path, e))?;
+    // ---- entries
+    let base_entries: HashMap<u64, &Entry> = base.entries.iter().map(|e| (e.id, e)).collect();
+    let kept: HashSet<u64> = document.entries.iter().map(|e| e.id).collect();
+    for id in base_entries.keys().filter(|id| !kept.contains(id)) {
+        tx.execute(
+            "UPDATE vocab_entry SET deleted = 1, updated_at = ?1, device_id = ?2,
+                     revision = revision + 1
+             WHERE id = ?3 AND deleted = 0",
+            params![now, device, *id as i64],
+        )?;
+    }
+
+    let mut next_id =
+        (meta_i64(tx, "vocab_next_id")?.unwrap_or(1).max(1) as u64).max(document.next_id);
+    let mut renumbered = false;
+    let mut touched_groups: BTreeSet<String> = BTreeSet::new();
+    for entry in &document.entries {
+        match base_entries.get(&entry.id) {
+            Some(old) if *old == entry => {}
+            Some(old) => {
+                let row = entry_state(tx, entry.id as i64)?;
+                let live = row.as_ref().is_some_and(|state| !state.8);
+                if !live {
+                    if stale && !typed_change(old, entry) {
+                        // A peer deleted it after this list was read, and a
+                        // practice attempt is not a reason to bring it back.
+                        continue;
+                    }
+                    // Either the learner edited it, and an edit made now beats the
+                    // older deletion exactly as the merge would settle it; or the
+                    // database is what this handle last wrote and the row was never
+                    // written. Both mean: write it whole.
+                    write_entry(tx, entry, now, device)?;
+                    touched_groups.extend(entry.group.clone());
+                    continue;
+                }
+                if typed_change(old, entry) {
+                    touched_groups.extend(entry.group.clone());
+                }
+                update_changed_fields(tx, old, entry, now, device)?;
+            }
+            None => {
+                let taken = entry_state(tx, entry.id as i64)?.is_some();
+                if taken && known_base {
+                    // The id belongs to a row this handle never saw: a sync
+                    // inserted it with the same number this list allocated.
+                    // Upserting would overwrite that entry with this one, so this
+                    // one moves to a free number instead.
+                    let mut moved = entry.clone();
+                    moved.id = next_id.max(max_entry_id(tx)? + 1);
+                    next_id = moved.id + 1;
+                    write_entry(tx, &moved, now, device)?;
+                    renumbered = true;
+                } else {
+                    write_entry(tx, entry, now, device)?;
+                }
+                touched_groups.extend(entry.group.clone());
             }
         }
-        for entry in &document.entries {
-            write_entry(&tx, entry, &now, &device).map_err(|e| vocab_error(&path, e))?;
+    }
+    // A group an entry was just filed under has to exist. A stale list can still
+    // name a group a peer has since deleted — its document says the group is there,
+    // so adding an entry to it changes nothing about the group set — and without
+    // this the entry would sit in a group no device shows. Filing something under it
+    // now is a newer act than the deletion, so the group comes back.
+    for name in &touched_groups {
+        let live = group_state(tx, name)?.is_some_and(|state| !state.4);
+        if !live {
+            let position = document
+                .groups
+                .iter()
+                .position(|g| g == name)
+                .unwrap_or(document.groups.len());
+            upsert_group(tx, name, position as i64, now, device)?;
         }
-
-        set_meta(&tx, "vocab_next_id", &document.next_id.to_string())
-            .map_err(|e| vocab_error(&path, e))?;
-        tx.commit().map_err(|e| vocab_error(&path, e))
     }
+    if renumbered {
+        next_id = next_id.max(max_entry_id(tx)? + 1);
+    }
+    set_meta(tx, "vocab_next_id", &next_id.to_string())?;
+    Ok(VocabWrite { renumbered })
 }
 
-/// The ids of the entries this build can see, live or tombstoned.
-fn entry_ids(conn: &Connection, live_only: bool) -> rusqlite::Result<Vec<i64>> {
-    let sql = match live_only {
-        true => "SELECT id FROM vocab_entry WHERE deleted = 0",
-        false => "SELECT id FROM vocab_entry",
-    };
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
-    let mut ids = Vec::new();
-    for row in rows {
-        ids.push(row?);
+/// Write the fields of `entry` that differ from `old`, the copy this handle last
+/// saw.
+///
+/// What the learner typed (`text`, `pinyin`, `meaning`, the group) moves the
+/// last-writer-wins stamp; the practice counters do not, and are this device's
+/// own. Writing only what changed is what keeps a document that is otherwise stale
+/// from overwriting a peer's edit to a field this device never touched.
+fn update_changed_fields(
+    tx: &Connection,
+    old: &Entry,
+    entry: &Entry,
+    now: &str,
+    device: &str,
+) -> rusqlite::Result<()> {
+    let id = entry.id as i64;
+    if old.text != entry.text {
+        tx.execute(
+            "UPDATE vocab_entry SET text = ?1 WHERE id = ?2",
+            params![entry.text, id],
+        )?;
     }
-    Ok(ids)
+    if old.pinyin != entry.pinyin {
+        tx.execute(
+            "UPDATE vocab_entry SET pinyin = ?1 WHERE id = ?2",
+            params![entry.pinyin, id],
+        )?;
+    }
+    if old.meaning != entry.meaning {
+        tx.execute(
+            "UPDATE vocab_entry SET meaning = ?1 WHERE id = ?2",
+            params![entry.meaning, id],
+        )?;
+    }
+    if old.group != entry.group {
+        tx.execute(
+            "UPDATE vocab_entry SET group_name = ?1 WHERE id = ?2",
+            params![entry.group, id],
+        )?;
+    }
+    if typed_change(old, entry) {
+        tx.execute(
+            "UPDATE vocab_entry SET updated_at = ?1, device_id = ?2, revision = revision + 1
+             WHERE id = ?3",
+            params![now, device, id],
+        )?;
+    }
+    if old.attempts != entry.attempts
+        || old.best_score != entry.best_score
+        || old.last_practised != entry.last_practised
+    {
+        tx.execute(
+            "UPDATE vocab_entry SET attempts = ?1, best_score = ?2, last_practised = ?3
+             WHERE id = ?4",
+            params![entry.attempts, entry.best_score, entry.last_practised, id],
+        )?;
+    }
+    Ok(())
 }
 
-/// The names of the groups this build can see, live or tombstoned.
-fn group_names(conn: &Connection, live_only: bool) -> rusqlite::Result<Vec<String>> {
-    let sql = match live_only {
-        true => "SELECT name FROM vocab_group WHERE deleted = 0",
-        false => "SELECT name FROM vocab_group",
-    };
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-    let mut names = Vec::new();
-    for row in rows {
-        names.push(row?);
+/// Whether the learner changed what they typed — the fields that move the
+/// last-writer-wins stamp — as opposed to only practising.
+fn typed_change(old: &Entry, entry: &Entry) -> bool {
+    old.text != entry.text
+        || old.pinyin != entry.pinyin
+        || old.meaning != entry.meaning
+        || old.group != entry.group
+}
+
+/// Insert or revive a group at `position`.
+///
+/// The stamp moves only when something the learner chose moves; a save that
+/// rewrote it every time would make each device's newest write the winner for no
+/// reason.
+fn upsert_group(
+    tx: &Connection,
+    name: &str,
+    position: i64,
+    now: &str,
+    device: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO vocab_group (name, position, updated_at, deleted, device_id)
+         VALUES (?1, ?2, ?3, 0, ?4)
+         ON CONFLICT(name) DO UPDATE SET
+             updated_at = CASE
+                 WHEN vocab_group.position <> excluded.position
+                   OR vocab_group.deleted <> 0
+                 THEN excluded.updated_at ELSE vocab_group.updated_at END,
+             device_id = CASE
+                 WHEN vocab_group.position <> excluded.position
+                   OR vocab_group.deleted <> 0
+                 THEN excluded.device_id ELSE vocab_group.device_id END,
+             revision = CASE
+                 WHEN vocab_group.position <> excluded.position
+                   OR vocab_group.deleted <> 0
+                 THEN vocab_group.revision + 1 ELSE vocab_group.revision END,
+             position = excluded.position,
+             deleted = 0",
+        params![name, position, now, device],
+    )?;
+    Ok(())
+}
+
+/// The vocabulary list as the database holds it: live groups and entries only.
+fn read_vocab(conn: &Connection) -> rusqlite::Result<VocabDocument> {
+    let next_id = meta_i64(conn, "vocab_next_id")?.unwrap_or(1).max(1) as u64;
+
+    let mut groups = Vec::new();
+    {
+        let mut stmt =
+            conn.prepare("SELECT name FROM vocab_group WHERE deleted = 0 ORDER BY position, name")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            groups.push(row?);
+        }
     }
-    Ok(names)
+
+    let mut entries = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, text, pinyin, meaning, group_name, added_at, \
+                    attempts, best_score, last_practised
+             FROM vocab_entry WHERE deleted = 0
+             ORDER BY group_name, added_at, text",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Entry {
+                id: row.get::<_, i64>(0)?.max(0) as u64,
+                text: row.get(1)?,
+                pinyin: row.get(2)?,
+                meaning: row.get(3)?,
+                group: row.get(4)?,
+                added_at: row.get(5)?,
+                attempts: row.get(6)?,
+                best_score: row.get(7)?,
+                last_practised: row.get(8)?,
+            })
+        })?;
+        for row in rows {
+            entries.push(row?);
+        }
+    }
+
+    Ok(VocabDocument {
+        version: hanzi_core::vocab::FORMAT_VERSION,
+        next_id,
+        groups,
+        entries,
+    })
+}
+
+/// The vocabulary generation — see [`VocabSeen`].
+fn vocab_generation(conn: &Connection) -> rusqlite::Result<i64> {
+    Ok(meta_i64(conn, VOCAB_GENERATION)?.unwrap_or(0))
+}
+
+/// The highest entry id in use, live or tombstoned, or 0.
+pub(crate) fn max_entry_id(conn: &Connection) -> rusqlite::Result<u64> {
+    let max: Option<i64> =
+        conn.query_row("SELECT MAX(id) FROM vocab_entry", [], |row| row.get(0))?;
+    Ok(max.unwrap_or(0).max(0) as u64)
 }
 
 /// Write one entry from the document the engine handed over.
@@ -1272,7 +1801,7 @@ pub(crate) fn meta_get(conn: &Connection, key: &str) -> rusqlite::Result<Option<
     })
 }
 
-fn meta_i64(conn: &Connection, key: &str) -> rusqlite::Result<Option<i64>> {
+pub(crate) fn meta_i64(conn: &Connection, key: &str) -> rusqlite::Result<Option<i64>> {
     Ok(meta_get(conn, key)?.and_then(|text| text.parse().ok()))
 }
 
@@ -1457,6 +1986,21 @@ impl Db {
             // merged record said another one wrote it, and the next merge would
             // compare two stamps that disagree about who was last.
             let before = group_state(&tx, &group.name).map_err(|e| at(&path, e))?;
+            // The merge was computed from a view read before the network round
+            // trip, and the learner may have changed this row since. A row whose
+            // stamp is now newer than the merged one is that change: it beats what
+            // the merge chose by the merge's own rule, so it is kept, and the next
+            // sync carries it out.
+            if before.as_ref().is_some_and(|state| {
+                (state.1.as_str(), state.2.as_str(), state.3)
+                    > (
+                        group.updated_at.as_str(),
+                        group.device_id.as_str(),
+                        group.revision,
+                    )
+            }) {
+                continue;
+            }
             let after = (
                 group.position,
                 group.updated_at.clone(),
@@ -1498,6 +2042,18 @@ impl Db {
             match id_for_uuid(&tx, &entry.uuid).map_err(|e| at(&path, e))? {
                 Some(id) => {
                     let before = entry_state(&tx, id).map_err(|e| at(&path, e))?;
+                    // Changed locally since the view the merge started from — see
+                    // the groups above.
+                    if before.as_ref().is_some_and(|state| {
+                        (state.5.as_str(), state.6.as_str(), state.7)
+                            > (
+                                entry.updated_at.as_str(),
+                                entry.device_id.as_str(),
+                                entry.revision,
+                            )
+                    }) {
+                        continue;
+                    }
                     let after = (
                         entry.text.clone(),
                         entry.pinyin.clone(),
@@ -1566,6 +2122,14 @@ impl Db {
             changed += 1;
         }
         set_meta(&tx, "vocab_next_id", &next_id.to_string()).map_err(|e| at(&path, e))?;
+        if changed > 0 {
+            // Tell every open list that the database moved underneath it — see
+            // [`VocabSeen`]. Without this, a list opened before the sync would
+            // save its stale document as though nothing had happened.
+            let generation = vocab_generation(&tx).map_err(|e| at(&path, e))? + 1;
+            set_meta(&tx, VOCAB_GENERATION, &generation.to_string())
+                .map_err(|e| at(&path, e))?;
+        }
 
         tx.commit().map_err(|e| at(&path, e))?;
         Ok(changed)
@@ -1724,7 +2288,7 @@ impl Db {
                  updated_at = excluded.updated_at,
                  device_id  = excluded.device_id,
                  revision   = vocab_cursor.revision + 1",
-            params![group, uuid, now_iso8601(), self.device_id],
+            params![group, uuid, now_iso8601(), self.device()],
         )
         .map_err(|e| at(&path, e))?;
         Ok(())
