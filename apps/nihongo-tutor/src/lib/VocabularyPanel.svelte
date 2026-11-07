@@ -129,8 +129,8 @@
       <h2>Words</h2>
       <p class="sub">
         {bands.reduce((sum, b) => sum + b.words, 0).toLocaleString()} words, each with the
-        reading the dictionary gives it and an English gloss. Choose a word to see its
-        furigana and to check its reading.
+        reading the dictionary gives it and an English gloss. Choose a word to type its
+        reading — its furigana stays hidden until you have checked, or asked to see it.
       </p>
       <p class="hint">
         The bands are <strong>ours</strong>: a word's band is the highest school grade among
@@ -168,7 +168,7 @@
             <button
               class="row"
               onclick={() => (open = entry)}
-              title="Open {entry.text} to see its furigana and check its reading"
+              title="Open {entry.text} to type its reading and see its furigana"
             >
               <span class="text" lang="ja">{entry.text}</span>
               <span class="reading" lang="ja">{entry.reading}</span>

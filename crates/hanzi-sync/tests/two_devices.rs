@@ -147,8 +147,12 @@ fn a_device_publishes_its_own_attempts_and_attributes_a_peers_to_the_peer() {
     for attempt in full_log(&db_a).unwrap() {
         *by_device.entry(attempt.device_id.clone()).or_insert(0) += 1;
     }
-    assert_eq!(by_device[db_a.device_id()], 3);
-    assert_eq!(by_device[db_b.device_id()], 3, "the phone's are the phone's");
+    assert_eq!(by_device[&db_a.device_id()], 3);
+    assert_eq!(
+        by_device[&db_b.device_id()],
+        3,
+        "the phone's are the phone's"
+    );
 
     // What was published is each device's own, under its own name, in its own
     // directory — which is what makes a dumb transport safe.
@@ -168,8 +172,12 @@ fn a_device_publishes_its_own_attempts_and_attributes_a_peers_to_the_peer() {
             .unwrap()
             .count()
     };
-    assert_eq!(shards_in(db_a.device_id()), 1, "and no attempt was published twice");
-    assert_eq!(shards_in(db_b.device_id()), 1);
+    assert_eq!(
+        shards_in(&db_a.device_id()),
+        1,
+        "and no attempt was published twice"
+    );
+    assert_eq!(shards_in(&db_b.device_id()), 1);
 
     finish(&dir_a);
     finish(&dir_b);

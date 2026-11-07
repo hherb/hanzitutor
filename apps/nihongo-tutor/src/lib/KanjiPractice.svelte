@@ -45,12 +45,18 @@
   import SpeakButton from "./SpeakButton.svelte";
   import WordCard from "./WordCard.svelte";
   import { untrack } from "svelte";
-  import { afterGrade } from "./board";
+  import { afterGrade, traceReason } from "./board";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
   import { everyStrokeFine, strokeCountNote } from "./verdict";
   import { scheduleNote } from "./review";
   import { canHear, voiceNote, type VoiceStatus } from "./speech";
-  import { neighbour, positionIn, spokenReading } from "./kanji";
+  import {
+    moveTo,
+    neighbour,
+    positionIn,
+    spokenReading,
+    wayBack,
+  } from "./kanji";
   import { pageWindow } from "./words";
   import * as api from "./api";
   import type {
@@ -105,6 +111,14 @@
     untrack(() => (start.kind === "radical" ? start.number : null)),
   );
 
+  /**
+   * Where a detour comes back to: the last of the stage's own places the board held
+   * (`kanji.ts`'s `anchorAfter`). A component chip or a radical-family member can
+   * put a character on the board that the lesson does not hold, and this is the
+   * lesson character — or the radical a lessonless stage opened on — to return to.
+   */
+  let anchor = $state<KanjiPick>(untrack(() => start));
+
   let kanji = $state<KanjiView | null>(null);
   let radical = $state<RadicalView | null>(null);
   let report = $state<GradeReport | null>(null);
@@ -119,6 +133,12 @@
    * while it is not. The board itself clears the attempt when this changes.
    */
   let guide = $state(true);
+  /**
+   * Whether the stroke animation has drawn this character since it was opened.
+   * With the guide, it makes an attempt traced (`board.ts`'s `traceReason`): the
+   * learner has just watched it written, so writing it now is copying it.
+   */
+  let watched = $state(false);
   /** Whether the card's other facts are folded out. A phone control only. */
   let showDetails = $state(false);
 
@@ -137,6 +157,20 @@
   const next = $derived(ch ? neighbour(lesson, ch, 1) : null);
   const at = $derived(ch ? positionIn(lesson, ch) : 0);
   const of = $derived(lesson?.kanji.length ?? 0);
+  /** What is on the board, as the same kind of pick the stage was opened with. */
+  const here = $derived<KanjiPick>(
+    ch
+      ? { kind: "kanji", ch }
+      : radicalNumber !== null
+        ? { kind: "radical", number: radicalNumber }
+        : start,
+  );
+  /** The way back from a detour off the lesson, or null while the board is on it. */
+  const back = $derived(wayBack(lesson, start, here, anchor));
+  const backLabel = $derived(
+    back === null ? "" : back.kind === "kanji" ? back.ch : `radical ${back.number}`,
+  );
+  const backAt = $derived(back?.kind === "kanji" ? positionIn(lesson, back.ch) : 0);
 
   /**
    * What the primary control under the board offers: the verdict, then the way on.
@@ -145,8 +179,13 @@
    * about what "graded" means for the control — and so that a **radical**, which
    * belongs to no lesson, keeps asking for a verdict rather than offering a way on
    * that does not exist.
+   *
+   * "In the lesson" is `at > 0` — the character's own place in it — and not whether
+   * the stage has a lesson: a component tapped from 林 is not one of the ten, so
+   * grading it must not offer the lesson's `Next` or `Finish` (issue #34). Its way on
+   * is back to where it was tapped from, which the control offers once it is graded.
    */
-  const after = $derived(afterGrade(report !== null, lesson !== null, next !== null));
+  const after = $derived(afterGrade(report !== null, at > 0, next !== null));
 
   /** One page of the words written with `ch`, and the count they are a page of. */
   async function loadWords(target: string, page: number) {
@@ -156,29 +195,36 @@
       openedWord = null;
       const window_ = pageWindow(wordTotal, WORD_PAGE, page);
       const found = await api.wordsOfKanji(target, window_.offset, window_.limit);
+      // The board has moved on while this was asked: the list is another character's.
+      if (ch !== target) return;
       words = found.words;
       wordTotal = found.total;
       wordPage = window_.page;
     } catch (e) {
-      error = String(e);
+      if (ch === target) error = String(e);
     } finally {
-      wordsBusy = false;
+      if (ch === target) wordsBusy = false;
     }
   }
 
   async function openKanji(target: string) {
     try {
       error = null;
-      kanji = await api.kanji(target);
+      const opened = await api.kanji(target);
+      // Out of order: the board was sent elsewhere (an arrow, a chip, Back) before
+      // this arrived, and the later request owns the screen.
+      if (ch !== target) return;
+      kanji = opened;
       radical = null;
       radicalNumber = null;
       report = null;
       note = null;
       attempt = [];
+      watched = false;
       showDetails = false;
       await loadWords(target, 1);
     } catch (e) {
-      error = String(e);
+      if (ch === target) error = String(e);
     }
   }
 
@@ -186,18 +232,21 @@
   async function openRadical(number: number) {
     try {
       error = null;
-      radical = await api.radical(number);
+      const opened = await api.radical(number);
+      if (ch !== null || radicalNumber !== number) return;
+      radical = opened;
       kanji = null;
       report = null;
       note = null;
       attempt = [];
+      watched = false;
       showDetails = false;
       words = [];
       wordTotal = 0;
       wordPage = 1;
       openedWord = null;
     } catch (e) {
-      error = String(e);
+      if (ch === null && radicalNumber === number) error = String(e);
     }
   }
 
@@ -218,7 +267,53 @@
 
   function step(delta: number) {
     const target = neighbour(lesson, ch ?? "", delta);
-    if (target) ch = target;
+    if (!target) return;
+    leaveBoard();
+    ch = target;
+  }
+
+  /**
+   * The verdict and the attempt belong to the character being left, and they go at
+   * once rather than when the next one has loaded: until then `after` would still
+   * read the old verdict, and a second press on Back would land on its `Next`.
+   */
+  function leaveBoard() {
+    board?.clear();
+    report = null;
+    note = null;
+    attempt = [];
+  }
+
+  /**
+   * Put another place on the board — a component, a radical's member, or the way
+   * back — remembering where to return to if it takes the board off the lesson.
+   */
+  function go(target: KanjiPick) {
+    anchor = moveTo(lesson, start, { here, anchor }, target).anchor;
+    leaveBoard();
+    if (target.kind === "kanji") {
+      radicalNumber = null;
+      ch = target.ch;
+    } else {
+      ch = null;
+      radicalNumber = target.number;
+    }
+  }
+
+  /** The lesson's position, or — on a radical stage — the character's glyph. */
+  let positionEl = $state<HTMLElement | null>(null);
+  let glyphEl = $state<HTMLElement | null>(null);
+
+  /**
+   * Back from a detour. Both Back controls go away when pressed, so focus is put
+   * somewhere that says where the learner now is, rather than dropped on the page.
+   */
+  function goBack() {
+    if (!back) return;
+    go(back);
+    // After the screen has redrawn without the control that was pressed (a frame
+    // runs after Svelte's own flush).
+    requestAnimationFrame(() => (positionEl ?? glyphEl)?.focus());
   }
 
   function onStrokes(strokes: Point[][]) {
@@ -236,9 +331,10 @@
       error = null;
       // Grading and scheduling are one command: the report comes back with what
       // the review schedule did with the attempt beside it.
-      const graded = await api.gradeAttempt(drawn.ch, attempt);
+      const reason = traceReason({ guide, watched, answered: false });
+      const graded = await api.gradeAttempt(drawn.ch, attempt, reason !== null);
       report = graded.report;
-      note = scheduleNote(graded, new Date().toISOString());
+      note = scheduleNote(graded, new Date().toISOString(), reason);
     } catch (e) {
       error = String(e);
     } finally {
@@ -292,7 +388,29 @@
       <span>Lessons</span>
     </button>
 
-    {#if lesson}
+    {#if back}
+      <!--
+        Off the lesson: a component or a radical's member is on the board, and the
+        lesson's arrows and count say nothing about it. In their place, the way back
+        to the character it was reached from, at that character's own place.
+      -->
+      <div class="nav">
+        <button
+          class="return"
+          onclick={goBack}
+          aria-label={backAt > 0
+            ? `Back to ${backLabel}, character ${backAt} of ${of}`
+            : `Back to ${backLabel}`}
+          title={backAt > 0
+            ? `Back to ${backLabel}, character ${backAt} of ${of} in this lesson`
+            : `Back to ${backLabel}`}
+        >
+          <span class="flip"><Icon name="next" /></span>
+          <span>Back to <span lang={back.kind === "kanji" ? "ja" : undefined}>{backLabel}</span></span>
+          {#if backAt > 0}<span class="return-at">{backAt} / {of}</span>{/if}
+        </button>
+      </div>
+    {:else if lesson}
       <div class="nav" role="group" aria-label="Characters in this lesson">
         <button
           class="step"
@@ -303,7 +421,12 @@
         >
           <span class="flip"><Icon name="next" /></span>
         </button>
-        <span class="position" title="{lesson.title} · lesson {at} of {of}">
+        <span
+          class="position"
+          bind:this={positionEl}
+          tabindex="-1"
+          title="{lesson.title} · lesson {at} of {of}"
+        >
           {at} / {of}
         </span>
         <button
@@ -332,7 +455,7 @@
     -->
     <div class="meta" class:open={showDetails}>
       <div class="who">
-        <span class="big" lang="ja">{drawn.ch}</span>
+        <span class="big" lang="ja" bind:this={glyphEl} tabindex="-1">{drawn.ch}</span>
         <div class="gloss">
           <!--
             Above the board: **the readings and nothing else**. The meaning, the
@@ -429,7 +552,7 @@
                         {#if part.ch && part.drawable}
                           <button
                             class="cell small"
-                            onclick={() => (ch = part.ch as string)}
+                            onclick={() => go({ kind: "kanji", ch: part.ch as string })}
                             title="Write {part.ch} on the board"
                           >
                             {part.ch}
@@ -461,7 +584,7 @@
                       <li>
                         <button
                           class="cell small"
-                          onclick={() => (ch = member)}
+                          onclick={() => go({ kind: "kanji", ch: member })}
                           title="Write {member} on the board"
                         >
                           {member}
@@ -551,7 +674,8 @@
 
                 {#if openedWord}
                   <div class="word-slot">
-                    <WordCard word={openedWord} {voice} />
+                    <!-- A lookup: the row that opened it shows the reading. -->
+                    <WordCard word={openedWord} {voice} askReading={false} />
                   </div>
                 {/if}
               </div>
@@ -561,7 +685,14 @@
       </div>
     </div>
 
-    <KanaCanvas bind:this={board} character={drawn} {report} {guide} onchange={onStrokes} />
+    <KanaCanvas
+      bind:this={board}
+      character={drawn}
+      {report}
+      {guide}
+      onchange={onStrokes}
+      onanimate={() => (watched = true)}
+    />
 
     <!--
       Below the board, only the tools: nothing that is a *fact* about the
@@ -581,7 +712,7 @@
               ? "Hint: a faint copy of the character is on the board. Switch to recall, which hides it"
               : "Hint: the character is hidden while you write it. Switch to tracing, where a faint copy is on the board"}
             title={guide
-              ? "The character is on the board to follow. Press to hide it and write it from memory — either way the board is cleared."
+              ? "The character is on the board to follow. Press to hide it and write it from memory — either way the board is cleared. A traced attempt is graded but not counted as a review."
               : "Write it from memory. Press to put a faint copy back on the board — either way the board is cleared."}
           >
             <span class="tool-glyph"><Icon name={guide ? "eye" : "eye-off"} /></span>
@@ -639,6 +770,19 @@
             >
               <span class="primary-glyph"><Icon name="next" /></span>
               <span>Next</span>
+            </button>
+          {:else if report && back}
+            <!-- A detour graded like any other attempt (`after` is `grade` off the
+                 lesson): the way on is back to where it was tapped from, never the
+                 lesson's Next or Finish. -->
+            <button
+              class="primary"
+              onclick={goBack}
+              aria-label="Back to {backLabel}"
+              title="Back to {backLabel}"
+            >
+              <span class="primary-glyph flip"><Icon name="next" /></span>
+              <span>Back</span>
             </button>
           {:else if after === "finish"}
             <!-- The last character of the lesson: there is no next one, and the way
@@ -784,6 +928,34 @@
   .position {
     min-width: 3.4rem;
     text-align: center;
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+  }
+
+  /* The way back from a detour, where the arrows were: the same pill as Lessons,
+     44px tall for the same finger, and the lesson character's own place beside
+     its name so the learner can see where it returns to. */
+  .return {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 44px;
+    padding: 5px 12px 5px 9px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  .return:hover {
+    border-color: var(--accent);
+  }
+
+  .return-at {
     font-size: 0.78rem;
     font-variant-numeric: tabular-nums;
     color: var(--muted);

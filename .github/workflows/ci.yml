@@ -75,6 +75,19 @@ jobs:
       - name: Test the interface
         run: pnpm run test:web
 
+      # The shell scripts' own tests: the packaging scripts' bundle lookup and the
+      # fetch and signing scripts' failure paths, on stubbed commands and a
+      # throwaway directory tree. Offline, and a few seconds.
+      - name: Test the scripts
+        run: pnpm run test:scripts
+
+      # Again under the stock /bin/bash, which on macOS is 3.2 — what
+      # `/usr/bin/env bash` finds on a Mac with no Homebrew bash, and what the
+      # scripts claim to support. `/bin` first on PATH so that the scripts the
+      # tests start, which find bash through `env`, get the same one.
+      - name: Test the scripts under bash 3.2
+        run: PATH="/bin:$PATH" /bin/bash scripts/tests/test-scripts.sh
+
       - name: Lint the Rust
         run: pnpm run check:rust
 

@@ -65,14 +65,18 @@ java_bin="${java_bin:-$(command -v java || true)}"
 # ---- bundletool, from the Gradle cache, without downloading it --------------
 cache="$repo/.gradle-home/caches/modules-2/files-2.1"
 [ -d "$cache" ] || cache="$HOME/.gradle/caches/modules-2/files-2.1"
-classpath="$(find "$cache" -name '*.jar' ! -name '*-sources.jar' 2>/dev/null | tr '\n' ':')"
+# Each lookup below ends in `|| true`: `find` or `ls` on a directory that is not
+# there exits non-zero, `pipefail` makes that the substitution's status, and
+# `set -e` would end the script silently instead of printing the error (or the
+# "skipped") that follows each one.
+classpath="$(find "$cache" -name '*.jar' ! -name '*-sources.jar' 2>/dev/null | tr '\n' ':' || true)"
 [ -n "$classpath" ] || { echo "error: no jars under $cache; build once first" >&2; exit 1; }
 version_of() { printf '%s\n' "$1" | sed 's/.*bundletool-\([0-9.]*\)\.jar/\1/'; }
-bundletool_jar="$(find "$cache" -name 'bundletool-*.jar' ! -name '*-sources.jar' 2>/dev/null | sort -V | tail -1)"
+bundletool_jar="$(find "$cache" -name 'bundletool-*.jar' ! -name '*-sources.jar' 2>/dev/null | sort -V | tail -1 || true)"
 [ -n "$bundletool_jar" ] || { echo "error: bundletool is not in the Gradle cache" >&2; exit 1; }
 
 # `--aapt2` is required, and the newest build-tools is the sensible one.
-aapt2="$(find "${ANDROID_HOME:-$HOME/Library/Android/sdk}/build-tools" -maxdepth 2 -name aapt2 2>/dev/null | sort -V | tail -1)"
+aapt2="$(find "${ANDROID_HOME:-$HOME/Library/Android/sdk}/build-tools" -maxdepth 2 -name aapt2 2>/dev/null | sort -V | tail -1 || true)"
 [ -x "$aapt2" ] || { echo "error: no aapt2 under build-tools" >&2; exit 1; }
 
 bundletool() { "$java_bin" -cp "$classpath" com.android.tools.build.bundletool.BundleToolMain "$@"; }
@@ -133,9 +137,9 @@ trap 'rm -rf "$scratch"' EXIT
 # below silently skips. Globbing the path is both shorter and correct.
 ndk_root="${ANDROID_NDK_HOME:-}"
 if [ -z "$ndk_root" ]; then
-  ndk_root="$(ls -d "${ANDROID_HOME:-$HOME/Library/Android/sdk}/ndk/"* 2>/dev/null | sort -V | tail -1)"
+  ndk_root="$(ls -d "${ANDROID_HOME:-$HOME/Library/Android/sdk}/ndk/"* 2>/dev/null | sort -V | tail -1 || true)"
 fi
-readelf="$(ls "$ndk_root"/toolchains/llvm/prebuilt/*/bin/llvm-readelf 2>/dev/null | head -1)"
+readelf="$(ls "$ndk_root"/toolchains/llvm/prebuilt/*/bin/llvm-readelf 2>/dev/null | head -1 || true)"
 if [ -x "${readelf:-}" ]; then
   # What the platform provides. Anything else has to travel in the bundle.
   system_libs="libc.so libm.so libdl.so liblog.so libandroid.so libz.so libOpenSLES.so libaaudio.so libstdc++.so libjnigraphics.so libEGL.so libGLESv2.so libvulkan.so ld-android.so"

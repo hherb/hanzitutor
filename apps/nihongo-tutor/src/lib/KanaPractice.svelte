@@ -55,7 +55,8 @@
   import { scheduleNote } from "./review";
   import { canHear, isHearItKey, type VoiceStatus } from "./speech";
   import { joinedLabel, lessonLabel, lessonOf, neighbourIn, positionIn } from "./kana";
-  import { afterGrade } from "./board";
+  import { afterGrade, traceReason } from "./board";
+  import { readingShown } from "./words";
   import * as api from "./api";
   import type { GradeReport, Kana, LessonView, Point, ReadingCheck } from "./types";
 
@@ -109,8 +110,33 @@
    * while it is not. The board itself clears the attempt when this changes.
    */
   let guide = $state(true);
+  /**
+   * Whether the stroke animation has drawn this kana since it was opened. With
+   * the guide, it makes an attempt traced (`board.ts`'s `traceReason`): the learner
+   * has just watched the kana written, so writing it now is copying it.
+   */
+  let watched = $state(false);
   /** Whether the facts, the typing exercise and the confusions are folded out. */
   let showDetails = $state(false);
+  /**
+   * Whether the typing exercise is a quiz: the learner's own switch, beside the
+   * box, and kept from one kana to the next. Off, this is a learning stage and
+   * the sound is printed and spoken freely; on, it is held back.
+   */
+  let quiz = $state(false);
+  /** Whether the learner asked to see the sound during a quiz. */
+  let revealed = $state(false);
+
+  /**
+   * Whether the sound may be on screen. During a quiz the sound line, the voice
+   * and its shortcut keep it back until the learner has typed it correctly or
+   * asked to see it. A wrong answer does not reveal it: the verdict says "try
+   * again", not the answer. The rest of the fold — the stroke facts and the
+   * confusions — says nothing about the sound and is unaffected.
+   */
+  const soundShown = $derived(
+    readingShown({ asking: quiz, checked: check?.correct === true, revealed }),
+  );
 
   /**
    * The lesson the kana on the board belongs to, derived from the course rather
@@ -154,6 +180,8 @@
       check = null;
       typed = "";
       showDetails = false;
+      revealed = false;
+      watched = false;
       const found = await api.kana(target);
       // A response that a later step or tap has overtaken is dropped rather than
       // applied: the two can arrive in either order, and the board has to hold the
@@ -188,10 +216,11 @@
       error = null;
       // The command grades *and* offers the attempt to the review schedule, so
       // what comes back is the verdict plus the schedule's answer to it.
-      const graded = await api.gradeAttempt(ch, attempt);
+      const reason = traceReason({ guide, watched, answered: false });
+      const graded = await api.gradeAttempt(ch, attempt, reason !== null);
       report = graded.report;
       joined = graded.joined;
-      note = scheduleNote(graded, new Date().toISOString());
+      note = scheduleNote(graded, new Date().toISOString(), reason);
     } catch (e) {
       error = String(e);
     } finally {
@@ -217,7 +246,7 @@
    */
   function onKey(event: KeyboardEvent) {
     if (!isHearItKey(event)) return;
-    if (!kana || !canHear(voice)) return;
+    if (!kana || !canHear(voice) || !soundShown) return;
     event.preventDefault();
     void api.speak(kana.ch).catch((e) => {
       error = String(e);
@@ -310,7 +339,13 @@
             <div>
               <dt>sound</dt>
               <dd>
-                {#if kana.silent}
+                {#if !soundShown}
+                  <!-- A quiz is on: the typing box below asks for the sound, so it
+                       is not printed above it until the learner has answered. -->
+                  <button class="link" type="button" onclick={() => (revealed = true)}>
+                    Show the sound
+                  </button>
+                {:else if kana.silent}
                   <em>no sound of its own</em>
                 {:else}
                   {kana.hepburn}{#if kana.romaji.length > 1}<span class="aside">
@@ -321,7 +356,9 @@
           </dl>
 
           <div class="rows">
-            <SpeakButton text={kana.ch} {voice} label="Hear it (H)" />
+            {#if soundShown}
+              <SpeakButton text={kana.ch} {voice} label="Hear it (H)" />
+            {/if}
             <button
               class="fold"
               type="button"
@@ -346,13 +383,29 @@
               something other than a hand.
             -->
             <div class="typing">
-              <label for="typed">Type the reading</label>
+              <div class="typing-head">
+                <label for="typed">Type the reading</label>
+                <button
+                  class="link"
+                  type="button"
+                  aria-pressed={quiz}
+                  onclick={() => {
+                    quiz = !quiz;
+                    revealed = false;
+                  }}
+                  title={quiz
+                    ? "The sound is hidden until you type it. Press to show it again."
+                    : "Hide the sound above until you have typed it"}
+                >
+                  {quiz ? "Quiz on" : "Quiz me"}
+                </button>
+              </div>
               <div class="row">
                 <input
                   id="typed"
                   bind:value={typed}
                   onkeydown={(e) => e.key === "Enter" && checkTyped()}
-                  placeholder={kana.romaji[0] ?? ""}
+                  placeholder="in romaji"
                   autocomplete="off"
                   autocapitalize="off"
                   spellcheck="false"
@@ -400,7 +453,14 @@
       </div>
     </div>
 
-    <KanaCanvas bind:this={board} character={kana} {report} {guide} onchange={onStrokes} />
+    <KanaCanvas
+      bind:this={board}
+      character={kana}
+      {report}
+      {guide}
+      onchange={onStrokes}
+      onanimate={() => (watched = true)}
+    />
 
     <!--
       Below the board, only the tools: nothing that is a *fact* about the kana lives
@@ -420,7 +480,7 @@
               ? "Hint: a faint copy of the kana is on the board. Switch to recall, which hides it"
               : "Hint: the kana is hidden while you write it. Switch to tracing, where a faint copy is on the board"}
             title={guide
-              ? "The kana is on the board to follow. Press to hide it and write it from memory — either way the board is cleared."
+              ? "The kana is on the board to follow. Press to hide it and write it from memory — either way the board is cleared. A traced attempt is graded but not counted as a review."
               : "Write it from memory. Press to put a faint copy back on the board — either way the board is cleared."}
           >
             <span class="tool-glyph"><Icon name={guide ? "eye" : "eye-off"} /></span>
@@ -942,6 +1002,31 @@
     color: var(--muted);
     font-size: 0.8rem;
     margin: 8px 0 0;
+  }
+
+  .typing-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .link[aria-pressed="true"] {
+    border-color: var(--accent);
+  }
+
+  /* The "Show the sound" and "Quiz me" pills, KanjiPractice's `.link` look. */
+  .link {
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--ink);
+    cursor: pointer;
+    font-size: 0.78rem;
+  }
+
+  .link:hover {
+    border-color: var(--accent);
   }
 
   .note {

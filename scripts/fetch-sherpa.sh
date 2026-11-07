@@ -156,6 +156,18 @@ case "${1:-}" in
     ;;
 esac
 
+# Made before any branch below, because every one of them downloads into it:
+# `fetch_checked` writes `$DEST/<archive>.part`, and curl cannot create the
+# directory it is told to write into. Only the host branch used to make it, so a
+# fresh checkout's first `--android` or `--ios` failed at the download.
+#
+# And removed again if nothing usable ever lands in it: `with-cargo-env.sh` reads
+# what is in here to decide what to point the build at, and an empty directory
+# left by a refused or failed run is not something it should have to second-guess.
+# `rmdir` only removes an empty directory, so a successful run is untouched.
+mkdir -p "$DEST"
+trap 'rmdir "$DEST" 2>/dev/null || true' EXIT
+
 # What `uname` says, as the key the table is written in.
 host_key() {
   local os arch
@@ -274,7 +286,6 @@ if [ "$MODE" = "ios" ]; then
   XCFRAMEWORK="$DIR/SherpaOnnxC.xcframework"
 
   if [ ! -d "$XCFRAMEWORK" ]; then
-    mkdir -p "$DEST"
     unzip -q -o "$DEST/$IOS_ARCHIVE" -d "$DIR"
   fi
 
@@ -352,7 +363,6 @@ LIB_DIR="$DEST/$STEM/lib"
 if [ -d "$LIB_DIR" ]; then
   echo "  have  $STEM  ($(du -sh "$LIB_DIR" | cut -f1))"
 else
-  mkdir -p "$DEST"
   fetch_checked "$BASE_URL" "$ARCHIVE" "$DIGEST"
   tar xjf "$DEST/$ARCHIVE" -C "$DEST"
 fi

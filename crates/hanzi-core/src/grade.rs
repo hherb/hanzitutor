@@ -156,7 +156,7 @@ const EXTRA_STROKE_MIN_LEN: f32 = 40.0;
 /// "missing field `resampleK`" before any grading happens. That is exactly how
 /// Nihongo Tutor shipped a Grade button that could not grade anything: it sends
 /// pen width and nothing else. Sending every field is still fine.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GradeOptions {
     /// Points each polyline is resampled to before comparison.
@@ -196,6 +196,176 @@ impl GradeOptions {
         Self {
             global_fit: false,
             ..Self::default()
+        }
+    }
+
+    /// These options with every tunable brought inside the range the grader can
+    /// use (issue #40).
+    ///
+    /// The options arrive from the webview, and the webview is not trusted to
+    /// size an allocation: `{"resampleK": 1000000000000000}` reached
+    /// `Vec::with_capacity` in [`geom::resample`] and aborted the process. So the
+    /// grader applies this itself, on every run, rather than relying on each
+    /// command remembering to — whoever calls [`grade`] gets bounded work.
+    ///
+    /// The bounds are wide, and every value an interface sends today sits well
+    /// inside them, so nothing a learner can do changes grade; a unit test pins
+    /// that for the exact payloads both boards post:
+    ///
+    /// * `resample_k` to [`RESAMPLE_K_RANGE`]. Both interfaces use 16, the value
+    ///   the tolerance study was fitted at. Below 2 [`geom::resample`] already
+    ///   rounds up, so the floor changes nothing; past a few hundred points a
+    ///   1024-unit box has no more shape to resolve, and the cost is per pair of
+    ///   strokes.
+    /// * `min_stroke_len` to `0..=`[`geom::EM`] — a negative bar discards no more
+    ///   than zero does, and none longer than the box means anything. (The grader
+    ///   also lowers it to half the shortest reference stroke.)
+    /// * `ink_width` to `0..=`[`MAX_INK_WIDTH`]. Both interfaces send
+    ///   [`INK_WIDTH`], 36. The raster measure already reads a negative width as
+    ///   zero; the ceiling is what keeps the rasteriser's work per segment small,
+    ///   since the area painted grows with the square of the width.
+    ///
+    /// `NaN` — which no JSON can carry, but a Rust caller can — falls back to the
+    /// default for that field, since `f32::clamp` would pass it straight through.
+    /// Infinities clamp to the nearer bound like any other out-of-range value.
+    pub fn clamped(&self) -> Self {
+        let defaults = Self::default();
+        let bounded = |value: f32, low: f32, high: f32, default: f32| {
+            if value.is_nan() {
+                default
+            } else {
+                value.clamp(low, high)
+            }
+        };
+        Self {
+            resample_k: self
+                .resample_k
+                .clamp(*RESAMPLE_K_RANGE.start(), *RESAMPLE_K_RANGE.end()),
+            min_stroke_len: bounded(self.min_stroke_len, 0.0, geom::EM, defaults.min_stroke_len),
+            global_fit: self.global_fit,
+            ink_width: bounded(self.ink_width, 0.0, MAX_INK_WIDTH, defaults.ink_width),
+        }
+    }
+}
+
+/// The resampling resolutions [`GradeOptions::clamped`] allows.
+pub const RESAMPLE_K_RANGE: std::ops::RangeInclusive<usize> = 2..=256;
+
+/// The widest pen, in design units out of 1024, the ink measure is asked to
+/// rasterise; see [`GradeOptions::clamped`]. An eighth of the box, more than
+/// three times the canvas pen.
+///
+/// This bounds the *value*, not the work: each segment's rasterised box is
+/// already clipped to the grid, so what bounds the ink measure's time is how
+/// many segments there are — [`MAX_STROKE_POINTS`] and [`MAX_ATTEMPT_POINTS`].
+pub const MAX_INK_WIDTH: f32 = 128.0;
+
+/// The most strokes of one attempt the grader pairs (issue #40).
+///
+/// Pairing is an assignment problem over a square matrix as wide as the larger
+/// side, so its memory grows with the square of the stroke count and its time
+/// with the cube: a webview posting a hundred thousand two-point strokes asked
+/// for an 80 GB matrix. No character has more than a few dozen strokes, so
+/// strokes past this many are counted as strays — reported, as a tap is, and not
+/// paired — and an attempt with that many is never legible anyway, since its
+/// count cannot be right. Every attempt of up to this many real strokes is graded
+/// exactly as before.
+pub const MAX_ATTEMPT_STROKES: usize = 128;
+
+/// The most points of one stroke the grader looks at (issue #40).
+///
+/// Shape comparison walks every point of a stroke for every reference stroke,
+/// and the ink measure rasterises every segment, whose box can be the whole grid
+/// when consecutive points are far apart: one zig-zag stroke of 100,000 points
+/// took six seconds to grade against 一. A stroke with more points than this is
+/// thinned to exactly this many, evenly by index and keeping its first and last
+/// point (see `decimate`), which on samples that dense moves the geometry by
+/// less than the spacing of the samples it drops.
+///
+/// No pointer comes near it. Hanzi Tutor's board keeps samples at least 2 units
+/// apart and stops a stroke at 1,024 points; Nihongo Tutor's keeps one per
+/// pointer event, and a pen reporting at 240 Hz — coalesced events included —
+/// takes seventeen seconds of one stroke to reach 4,096.
+pub const MAX_STROKE_POINTS: usize = 4096;
+
+/// The most points of a whole attempt the grader looks at (issue #40).
+///
+/// The per-stroke bound alone still allows [`MAX_ATTEMPT_STROKES`] × 4,096 —
+/// half a million points, and seconds of rasterising for a many-stroke
+/// character. When the kept strokes hold more than this between them, each is
+/// thinned to an equal share of it (strokes already under their share are left
+/// alone), so the total never exceeds it. A real attempt is far below: a
+/// thirty-stroke kanji written at 240 Hz holds about six thousand points.
+pub const MAX_ATTEMPT_POINTS: usize = 16_384;
+
+// Every stroke's share of the budget must still be a stroke: two points at least.
+const _: () = assert!(MAX_ATTEMPT_POINTS / MAX_ATTEMPT_STROKES >= 2);
+
+/// `points` thinned to at most `limit`, evenly by index, keeping the first and
+/// last point. Returned unchanged when it is already within the limit.
+fn decimate(points: &[Point], limit: usize) -> Vec<Point> {
+    let limit = limit.max(2);
+    if points.len() <= limit {
+        return points.to_vec();
+    }
+    // In `u64`, so the product cannot overflow a 32-bit `usize`.
+    let last = (points.len() - 1) as u64;
+    let steps = (limit - 1) as u64;
+    (0..limit as u64)
+        .map(|i| points[(i * last / steps) as usize])
+        .collect()
+}
+
+/// Step 1 of grading: the strokes worth pairing, thinned to the point bounds,
+/// and how many marks were strays — non-finite, shorter than `stray_below`
+/// before or after thinning, or past [`MAX_ATTEMPT_STROKES`].
+fn keep_strokes(attempt: &[Vec<Point>], stray_below: f32) -> (Vec<Kept>, usize) {
+    let mut kept = Vec::new();
+    let mut stray = 0usize;
+    for (i, stroke) in attempt.iter().enumerate() {
+        // A stroke with no finite point is not a stroke. `NaN` and `±∞` cannot
+        // come from a pointer, and one of them in the geometry turns every
+        // comparison it touches into nonsense — the cost matrix, the fitted
+        // transform and the headline scores alike. Such a mark is counted as a
+        // stray, the same as a tap too short to be a stroke, so the report still
+        // says it was seen rather than dropping it in silence. The order matters
+        // as well as the answer: a non-finite stroke is refused before its length
+        // is measured, because that length would be `NaN` too.
+        let finite = stroke.iter().all(|p| p.x.is_finite() && p.y.is_finite());
+        // Past [`MAX_ATTEMPT_STROKES`] real strokes, the rest are strays too: the
+        // pairing below is quadratic in memory and cubic in time.
+        if !finite || geom::path_length(stroke) < stray_below || kept.len() >= MAX_ATTEMPT_STROKES {
+            stray += 1;
+        } else {
+            kept.push(Kept {
+                original_index: i,
+                points: decimate(stroke, MAX_STROKE_POINTS),
+            });
+        }
+    }
+    bound_attempt_points(&mut kept);
+    // Thinning can alias: a stroke that alternates between two points thins to
+    // one of them when the step lands on every other sample. What is left is
+    // judged as it will be graded, so a stroke thinned to less than a stroke's
+    // length is a stray too. A stroke that was not thinned measures as before.
+    let before = kept.len();
+    kept.retain(|k| geom::path_length(&k.points) >= stray_below);
+    stray += before - kept.len();
+    (kept, stray)
+}
+
+/// Hold the kept strokes to [`MAX_ATTEMPT_POINTS`] between them, each to an
+/// equal share, when they hold more. Each is already within
+/// [`MAX_STROKE_POINTS`].
+fn bound_attempt_points(kept: &mut [Kept]) {
+    let total: usize = kept.iter().map(|k| k.points.len()).sum();
+    if total <= MAX_ATTEMPT_POINTS {
+        return;
+    }
+    let share = MAX_ATTEMPT_POINTS / kept.len();
+    for k in kept.iter_mut() {
+        if k.points.len() > share {
+            k.points = decimate(&k.points, share);
         }
     }
 }
@@ -450,6 +620,8 @@ fn grade_inner(
     attempt: &[Vec<Point>],
     options: &GradeOptions,
 ) -> GradeReport {
+    // Bounded here, not at each command, so every caller gets bounded work.
+    let options = &options.clamped();
     let expected = reference_medians.len();
 
     // 1. Discard marks too short to be strokes, keeping original indices.
@@ -464,27 +636,7 @@ fn grade_inner(
         .fold(f32::INFINITY, f32::min);
     let stray_below = options.min_stroke_len.min(shortest_reference * 0.5);
 
-    let mut kept = Vec::new();
-    let mut stray = 0usize;
-    for (i, stroke) in attempt.iter().enumerate() {
-        // A stroke with no finite point is not a stroke. `NaN` and `±∞` cannot
-        // come from a pointer, and one of them in the geometry turns every
-        // comparison it touches into nonsense — the cost matrix, the fitted
-        // transform and the headline scores alike. Such a mark is counted as a
-        // stray, the same as a tap too short to be a stroke, so the report still
-        // says it was seen rather than dropping it in silence. The order matters
-        // as well as the answer: a non-finite stroke is refused before its length
-        // is measured, because that length would be `NaN` too.
-        let finite = stroke.iter().all(|p| p.x.is_finite() && p.y.is_finite());
-        if !finite || geom::path_length(stroke) < stray_below {
-            stray += 1;
-        } else {
-            kept.push(Kept {
-                original_index: i,
-                points: stroke.clone(),
-            });
-        }
-    }
+    let (mut kept, stray) = keep_strokes(attempt, stray_below);
 
     // 2. Score and pair the strokes.
     //
@@ -1116,6 +1268,318 @@ mod tests {
         let none: GradeOptions = serde_json::from_value(serde_json::json!({})).expect("{}");
         assert_eq!(none.ink_width, INK_WIDTH);
         assert_eq!(none.resample_k, GradeOptions::default().resample_k);
+    }
+
+    /// Clamping changes nothing an interface sends today (issue #40).
+    ///
+    /// These are the exact payloads the two boards post — Hanzi Tutor every
+    /// field, in both modes (`src/App.svelte`); Nihongo Tutor the pen width alone
+    /// (`apps/nihongo-tutor/src/lib/api.ts`) — plus the two presets. Each must come
+    /// out of [`GradeOptions::clamped`] exactly as it went in, so the bound cannot
+    /// move a grade a learner has ever been given.
+    #[test]
+    fn clamping_passes_the_options_the_interfaces_send_through_unchanged() {
+        let posted = [
+            serde_json::json!({
+                "resampleK": 16, "minStrokeLen": 12, "globalFit": true, "inkWidth": 36
+            }),
+            serde_json::json!({
+                "resampleK": 16, "minStrokeLen": 12, "globalFit": false, "inkWidth": 36
+            }),
+            serde_json::json!({ "inkWidth": 36 }),
+        ];
+        let mut all: Vec<GradeOptions> = posted
+            .into_iter()
+            .map(|json| serde_json::from_value(json).expect("deserialises"))
+            .collect();
+        all.extend([GradeOptions::default(), GradeOptions::tracing()]);
+        for options in all {
+            assert_eq!(options.clamped(), options);
+        }
+    }
+
+    /// Every tunable is brought inside the range the grader can use, `NaN`
+    /// included — `f32::clamp` would hand a `NaN` straight back.
+    #[test]
+    fn clamping_bounds_every_tunable() {
+        let defaults = GradeOptions::default();
+        let (k_low, k_high) = (*RESAMPLE_K_RANGE.start(), *RESAMPLE_K_RANGE.end());
+        for (k, expected) in [
+            (0, k_low),
+            (1, k_low),
+            (k_high + 1, k_high),
+            (1_000_000_000_000_000, k_high),
+            (usize::MAX, k_high),
+        ] {
+            let options = GradeOptions {
+                resample_k: k,
+                ..GradeOptions::default()
+            };
+            assert_eq!(options.clamped().resample_k, expected, "k = {k}");
+        }
+        for (value, stroke, ink) in [
+            (f32::NAN, defaults.min_stroke_len, defaults.ink_width),
+            (f32::INFINITY, geom::EM, MAX_INK_WIDTH),
+            (f32::NEG_INFINITY, 0.0, 0.0),
+            (-5.0, 0.0, 0.0),
+            (1e30, geom::EM, MAX_INK_WIDTH),
+        ] {
+            let options = GradeOptions {
+                min_stroke_len: value,
+                ink_width: value,
+                ..GradeOptions::default()
+            }
+            .clamped();
+            assert_eq!(options.min_stroke_len, stroke, "min_stroke_len {value}");
+            assert_eq!(options.ink_width, ink, "ink_width {value}");
+        }
+        // A posted number too large for an `f32` arrives as infinity.
+        let posted: GradeOptions =
+            serde_json::from_value(serde_json::json!({ "inkWidth": 1e300, "minStrokeLen": 1e300 }))
+                .expect("deserialises");
+        assert_eq!(posted.clamped().ink_width, MAX_INK_WIDTH);
+        assert_eq!(posted.clamped().min_stroke_len, geom::EM);
+    }
+
+    /// Options no interface sends are graded, not obeyed (issue #40).
+    ///
+    /// `resampleK: 1e15` went straight to `Vec::with_capacity` and took the whole
+    /// process down — an allocation failure aborts rather than panics, so not
+    /// even the command's error path ran. Grading itself applies the bound, so a
+    /// caller that forgot to is still safe.
+    #[test]
+    fn grading_with_absurd_options_finishes_with_real_numbers() {
+        let reference = shi_reference();
+        let hostile = [
+            GradeOptions {
+                resample_k: 1_000_000_000_000_000,
+                ..GradeOptions::default()
+            },
+            GradeOptions {
+                resample_k: usize::MAX,
+                ..GradeOptions::default()
+            },
+            GradeOptions {
+                min_stroke_len: f32::NAN,
+                ink_width: f32::NAN,
+                ..GradeOptions::default()
+            },
+            GradeOptions {
+                min_stroke_len: f32::INFINITY,
+                ink_width: f32::INFINITY,
+                ..GradeOptions::tracing()
+            },
+            GradeOptions {
+                min_stroke_len: f32::NEG_INFINITY,
+                ink_width: f32::NEG_INFINITY,
+                ..GradeOptions::default()
+            },
+        ];
+        for options in hostile {
+            let report = grade(&reference, &reference, &options);
+            assert_eq!(report.given_strokes, 2, "{options:?}");
+            for value in [
+                report.overall / 100.0,
+                report.shape_score,
+                report.position_score,
+                report.ink_score,
+                report.ink_coverage,
+                report.order_score,
+            ] {
+                assert!(
+                    value.is_finite() && (0.0..=1.0).contains(&value),
+                    "{options:?} reported {value}"
+                );
+            }
+            // The run is the clamped run, to the bit.
+            let clamped = grade(&reference, &reference, &options.clamped());
+            assert_eq!(report.overall, clamped.overall, "{options:?}");
+        }
+    }
+
+    /// An attempt of far more strokes than any character has is graded in
+    /// bounded memory and time (issue #40).
+    ///
+    /// Pairing builds a square matrix as wide as the larger side and solves it in
+    /// cubic time, so twenty thousand posted strokes asked for 3.2 GB and hours of
+    /// one core. Past [`MAX_ATTEMPT_STROKES`] real strokes the rest are strays.
+    #[test]
+    fn an_attempt_with_absurdly_many_strokes_is_graded_with_the_excess_as_strays() {
+        let reference = shi_reference();
+        let posted = 20_000;
+        let mut attempt = reference.clone();
+        attempt.extend((0..posted - reference.len()).map(|i| {
+            let y = 100.0 + (i % 800) as f32;
+            line((100.0, y), (300.0, y), 2)
+        }));
+        let report = grade(&reference, &attempt, &GradeOptions::default());
+        assert_eq!(report.given_strokes, MAX_ATTEMPT_STROKES);
+        assert_eq!(report.stray_strokes, posted - MAX_ATTEMPT_STROKES);
+        assert_eq!(report.assignment.len(), posted);
+        assert!(!report.legible && !report.count_ok);
+        assert!(report.overall.is_finite());
+
+        // At the cap itself nothing is set aside.
+        let at_cap = &attempt[..MAX_ATTEMPT_STROKES];
+        let report = grade(&reference, at_cap, &GradeOptions::default());
+        assert_eq!(report.given_strokes, MAX_ATTEMPT_STROKES);
+        assert_eq!(report.stray_strokes, 0);
+    }
+
+    /// A zig-zag from corner to corner of the box, drifting a little each time:
+    /// every segment's raster box is nearly the whole grid, the most work one
+    /// segment can ask of the ink measure.
+    fn zigzag(points: usize, x0: f32, x1: f32) -> Vec<Point> {
+        (0..points)
+            .map(|i| {
+                let drift = 100.0 * i as f32 / (points - 1) as f32;
+                match i % 2 {
+                    0 => Point::new(x0 + drift, 40.0 + drift),
+                    _ => Point::new(x1 - drift, 980.0 - drift),
+                }
+            })
+            .collect()
+    }
+
+    /// A stroke of far more points than any pointer produces is graded quickly,
+    /// and graded as the same stroke thinned to [`MAX_STROKE_POINTS`] (issue
+    /// #40).
+    ///
+    /// One such stroke of 100,000 points — about 2.5 MB of JSON — took six
+    /// seconds against 一, and minutes against a many-stroke character. The time
+    /// bound is loose on purpose: it fails the unbounded grader by a wide margin
+    /// and passes a loaded machine with one to spare.
+    #[test]
+    fn a_stroke_of_absurdly_many_points_is_graded_quickly() {
+        let reference = vec![line((120.0, 400.0), (900.0, 400.0), 5)];
+        let posted = zigzag(100_000, 120.0, 900.0);
+        let started = std::time::Instant::now();
+        let report = grade(
+            &reference,
+            std::slice::from_ref(&posted),
+            &GradeOptions::default(),
+        );
+        let elapsed = started.elapsed();
+        // What was graded, so a slow run points at its cause.
+        let (kept, _) = keep_strokes(std::slice::from_ref(&posted), 12.0);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].points.len(), MAX_STROKE_POINTS);
+        assert!(elapsed.as_secs_f32() < 3.0, "took {elapsed:?}");
+        assert_eq!(report.given_strokes, 1);
+        assert!((0.0..=100.0).contains(&report.overall));
+        for value in [report.shape_score, report.position_score, report.ink_score] {
+            assert!(value.is_finite() && (0.0..=1.0).contains(&value));
+        }
+
+        let thinned = decimate(&posted, MAX_STROKE_POINTS);
+        assert_eq!(thinned.len(), MAX_STROKE_POINTS);
+        assert_eq!(thinned.first(), posted.first());
+        assert_eq!(thinned.last(), posted.last());
+        let expected = grade(&reference, &[thinned], &GradeOptions::default());
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+    }
+
+    /// Thinning never touches a stroke or an attempt within the bounds, so every
+    /// real attempt is graded on exactly the points it was drawn with.
+    ///
+    /// A stroke at [`MAX_STROKE_POINTS`] passes whole, and so does an attempt of
+    /// thirty-six 400-point strokes — denser than either board produces for the
+    /// most strokes any character has.
+    #[test]
+    fn real_strokes_are_graded_on_every_point_they_were_drawn_with() {
+        let long = line((120.0, 400.0), (900.0, 400.0), MAX_STROKE_POINTS);
+        assert_eq!(decimate(&long, MAX_STROKE_POINTS), long);
+        assert_eq!(decimate(&long[..2], MAX_STROKE_POINTS), long[..2].to_vec());
+
+        let strokes: Vec<Vec<Point>> = (0..36)
+            .map(|i| {
+                let y = 60.0 + 25.0 * i as f32;
+                line((100.0, y), (900.0, y), 400)
+            })
+            .collect();
+        let mut kept: Vec<Kept> = strokes
+            .iter()
+            .enumerate()
+            .map(|(i, points)| Kept {
+                original_index: i,
+                points: decimate(points, MAX_STROKE_POINTS),
+            })
+            .collect();
+        bound_attempt_points(&mut kept);
+        for (k, drawn) in kept.iter().zip(&strokes) {
+            assert_eq!(&k.points, drawn);
+        }
+    }
+
+    /// Past [`MAX_ATTEMPT_POINTS`] every stroke gets an equal share of it, ends
+    /// kept, and a stroke under its share is left alone.
+    #[test]
+    fn an_attempt_past_the_point_budget_is_thinned_to_it() {
+        let mut kept: Vec<Kept> = (0..MAX_ATTEMPT_STROKES)
+            .map(|i| Kept {
+                original_index: i,
+                points: if i == 0 {
+                    line((0.0, 0.0), (10.0, 10.0), 3)
+                } else {
+                    zigzag(MAX_STROKE_POINTS, 100.0, 900.0)
+                },
+            })
+            .collect();
+        let before: Vec<Vec<Point>> = kept.iter().map(|k| k.points.clone()).collect();
+        bound_attempt_points(&mut kept);
+        let total: usize = kept.iter().map(|k| k.points.len()).sum();
+        assert!(total <= MAX_ATTEMPT_POINTS, "{total}");
+        assert_eq!(kept[0].points, before[0], "under its share, so untouched");
+        for (k, was) in kept.iter().zip(&before).skip(1) {
+            assert_eq!(k.points.len(), MAX_ATTEMPT_POINTS / MAX_ATTEMPT_STROKES);
+            assert_eq!(k.points.first(), was.first());
+            assert_eq!(k.points.last(), was.last());
+        }
+
+        // And through the grader, against a many-stroke character, in bounded time.
+        let reference: Vec<Vec<Point>> = (0..30)
+            .map(|i| {
+                let y = 60.0 + 30.0 * i as f32;
+                line((100.0, y), (900.0, y), 5)
+            })
+            .collect();
+        let attempt: Vec<Vec<Point>> = (0..30).map(|_| zigzag(100_000, 100.0, 900.0)).collect();
+        let started = std::time::Instant::now();
+        let report = grade(&reference, &attempt, &GradeOptions::default());
+        let elapsed = started.elapsed();
+        let (kept, _) = keep_strokes(&attempt, 12.0);
+        assert_eq!(kept.len(), 30);
+        for k in &kept {
+            assert_eq!(k.points.len(), MAX_ATTEMPT_POINTS / 30);
+        }
+        assert!(elapsed.as_secs_f32() < 10.0, "took {elapsed:?}");
+        assert!((0.0..=100.0).contains(&report.overall));
+    }
+
+    /// Thinning can alias, and what it leaves is judged as it will be graded.
+    ///
+    /// 8,191 points alternating between two corners thin, by every other index,
+    /// to 4,096 copies of one corner: no length at all. Graded on what is left,
+    /// that is a tap, so it is a stray — not a stroke with no shape.
+    #[test]
+    fn a_stroke_that_thins_to_a_point_is_a_stray() {
+        let (a, b) = (Point::new(100.0, 100.0), Point::new(900.0, 900.0));
+        let posted: Vec<Point> = (0..2 * MAX_STROKE_POINTS - 1)
+            .map(|i| if i % 2 == 0 { a } else { b })
+            .collect();
+        let thinned = decimate(&posted, MAX_STROKE_POINTS);
+        assert!(thinned.iter().all(|p| *p == a), "the thinning aliases");
+
+        let (kept, stray) = keep_strokes(std::slice::from_ref(&posted), 12.0);
+        assert!(kept.is_empty());
+        assert_eq!(stray, 1);
+        let report = grade(&shi_reference(), &[posted], &GradeOptions::default());
+        assert_eq!(report.given_strokes, 0);
+        assert_eq!(report.stray_strokes, 1);
+        assert_eq!(report.overall, 0.0);
     }
 
     // ---- assignment solver -------------------------------------------------

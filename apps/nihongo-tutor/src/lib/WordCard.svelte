@@ -19,12 +19,24 @@
    * dictionary's kana — おとな for 大人 — and never the written form, which is the
    * same rule the reading itself follows one step further out: a synthesiser handed
    * 大人 would choose a reading, and the app does not choose readings.
+   *
+   * **And the reading is held back while the card asks for it.** With the box
+   * open, the furigana, the reading line and the voice would each be the answer
+   * printed (or spoken) above the question, so they wait until a check has been
+   * made — the verdict names the reading, right or wrong — or the learner asks to
+   * see it (`words.ts`'s `readingShown`).
    */
   import * as api from "./api";
   import SpeakButton from "./SpeakButton.svelte";
   import type { ReadingCheck, Word } from "./types";
   import type { VoiceStatus } from "./speech";
-  import { furiganaCoversWord, furiganaSpellsReading, needsRuby, readingOf } from "./words";
+  import {
+    furiganaCoversWord,
+    furiganaSpellsReading,
+    needsRuby,
+    readingOf,
+    readingShown,
+  } from "./words";
 
   let {
     word,
@@ -44,6 +56,8 @@
   let typed = $state("");
   let check = $state<ReadingCheck | null>(null);
   let error = $state<string | null>(null);
+  /** Whether the learner asked to see the reading without typing it. */
+  let revealed = $state(false);
 
   // A new word is a new question: a verdict, a typed answer and an error all
   // belong to the word that was up when they were made.
@@ -52,7 +66,10 @@
     typed = "";
     check = null;
     error = null;
+    revealed = false;
   });
+
+  const shown = $derived(readingShown({ asking: askReading, checked: check !== null, revealed }));
 
   async function checkTyped() {
     if (!typed.trim()) return;
@@ -72,7 +89,7 @@
    * which is not — so in that case the reading is shown plainly instead.
    */
   const drawable = $derived(furiganaCoversWord(word) && furiganaSpellsReading(word));
-  const showRuby = $derived(word.furigana.length > 0 && drawable);
+  const showRuby = $derived(word.furigana.length > 0 && drawable && shown);
 </script>
 
 <article class="card">
@@ -88,12 +105,18 @@
         {/each}
       </p>
     {:else}
-      <p class="word" aria-label="{word.text} — {word.reading}">
+      <p class="word" aria-label={shown ? `${word.text} — ${word.reading}` : word.text}>
         <span class="plain">{word.text}</span>
       </p>
     {/if}
-    <p class="reading">{word.reading}</p>
-    <SpeakButton text={word.reading} {voice} />
+    {#if shown}
+      <p class="reading">{word.reading}</p>
+      <SpeakButton text={word.reading} {voice} />
+    {:else}
+      <button class="reveal" type="button" onclick={() => (revealed = true)}>
+        Show the reading
+      </button>
+    {/if}
   </div>
 
   <p class="meaning">{word.meaning}</p>
@@ -182,6 +205,13 @@
     margin: 0;
     color: var(--muted, #6b6b6b);
     font-size: 1.1rem;
+  }
+
+  /* Where the reading would be, while the box below asks for it. */
+  .reveal {
+    padding: 0.2rem 0.6rem;
+    font-size: 0.85rem;
+    color: var(--muted, #6b6b6b);
   }
 
   .meaning {
