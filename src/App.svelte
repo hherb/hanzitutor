@@ -12,6 +12,8 @@
   import LessonSidebar from "./lib/LessonSidebar.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
+  import { boardFractionOf } from "./lib/boardSize";
+  import { serialQueue } from "./lib/serialQueue";
   import ReadingList from "./lib/ReadingList.svelte";
   import PhrasesPanel from "./lib/PhrasesPanel.svelte";
   import RadicalsPanel from "./lib/RadicalsPanel.svelte";
@@ -23,12 +25,28 @@
   import TonedPinyin from "./lib/TonedPinyin.svelte";
   import TonedText from "./lib/TonedText.svelte";
   import { mnemonicFor, SOUND_NOTE } from "./lib/mnemonics";
+  import {
+    boardInUse,
+    courseCursorAfterSync,
+    drillGroup,
+    placeKeptBy,
+    syncNoticeLine,
+    takeDeferred,
+  } from "./lib/practiceCursor";
+  import type {
+    CourseBoard,
+    CursorDecision,
+    DeferredCursor,
+    DrillOptions,
+  } from "./lib/practiceCursor";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import WordsPanel from "./lib/WordsPanel.svelte";
   import { setCharacterTones } from "./lib/tones.svelte";
   import { INTRO_PAGES, notesFor } from "./lib/startupPages";
   import type { Page } from "./lib/startupPages";
   import { dueLabel } from "./lib/due";
+  import { PushToTalk } from "./lib/pushToTalk";
+  import type { Outcome, Phase } from "./lib/pushToTalk";
   import { shortcutFor } from "./lib/shortcuts";
   import type { ShortcutId } from "./lib/shortcuts";
   import { INK_WIDTH, polylineLength } from "./lib/render";
@@ -140,7 +158,12 @@
    * practice screen only needs to know *whether* there is a voice at all
    * ([`voice`]).
    */
-  let voices = $state<VoicesView>({ available: [], active: null });
+  let voices = $state<VoicesView>({
+    available: [],
+    active: null,
+    chosen: null,
+    elsewhere: null,
+  });
   /** True while the voice list is still being read. */
   let voicesLoading = $state(true);
 
@@ -239,20 +262,10 @@
 
   /**
    * How much of the room available the board takes, from the board-size
-   * preference.
-   *
-   * A share of the container rather than a pixel side: the board fits whatever
-   * window it is in, and the preference says how much of that fit to use, so a
-   * large board stays large on a big screen and a compact one stays usable on a
-   * small one.
-   *
-   * **This is the only place a board size becomes a number.** `BoardSize` in
-   * `hanzi-core` carries the name, not the fraction, precisely so that the value
-   * cannot exist in two places and drift; the same goes for the pace below.
+   * preference. The numbers live in `boardSize.ts`, the one place a board size
+   * becomes a number; the same rule holds for the pace below.
    */
-  const boardFraction = $derived(
-    settings.boardSize === "compact" ? 0.72 : 1,
-  );
+  const boardFraction = $derived(boardFractionOf(settings.boardSize));
 
   /**
    * The scale applied to the whole stroke-order timeline, from the pace
@@ -306,10 +319,24 @@
   let recognizeReady = $state(false);
   /** The last judgement, or `null` before anything has been said. */
   let toneResult = $state<ToneResult | null>(null);
-  /** True between pressing and releasing the button. */
-  let listening = $state(false);
-  /** True while the device is opening or the recording is being scored. */
-  let toneBusy = $state(false);
+  /**
+   * Where the one push-to-talk attempt is — see `lib/pushToTalk.ts`, which owns
+   * the rules (a release while the device opens, an answer for a board the learner
+   * has left). This is only its mirror, for the template.
+   */
+  let talkPhase = $state<Phase>("idle");
+  /** True between the device opening and the button coming up. */
+  const listening = $derived(talkPhase === "listening");
+  /**
+   * True while the recording is being scored.
+   *
+   * Its own flag so the button can say so: with the recognition model installed
+   * the first judgement loads the model before it decodes, which takes seconds, and
+   * a button that only goes grey for that long looks broken. The button is
+   * disabled for this and for the cancel of a recording, but **not** while the
+   * device opens — a release then has to reach the button, or it is lost.
+   */
+  const scoring = $derived(talkPhase === "scoring" || talkPhase === "stopping");
   /** Why the last attempt could not even be recorded. */
   let toneError = $state<string | null>(null);
   /** The text captured when the button went down, which is what gets judged. */
@@ -472,11 +499,15 @@
       );
       clearTimeout(workingTimer);
       switch (outcome.outcome) {
-        case "synced":
-          refreshAfterSync();
+        case "synced": {
+          // Waited for, so the line can say whether the board followed the
+          // course position or is waiting for the learner's next step.
+          const cursor = await refreshAfterSync();
           syncPulse += 1;
-          showSyncNotice(autoSyncLine(outcome.view));
+          const line = autoSyncLine(outcome.view);
+          showSyncNotice(line === null ? null : syncNoticeLine(line, cursor));
           break;
+        }
         case "offline":
           showSyncNotice(
             "No connection, so nothing was synced. Your practice is safe on this device.",
@@ -505,6 +536,14 @@
   let vocabSelection = $state<string | null>(null);
   let statusMessage = $state<string | null>(null);
   let vocabBusy = $state(false);
+  /**
+   * Every vocabulary command, one at a time and in the order asked for: the
+   * list's own commands, the import and the export, and the attempts the board
+   * records. A command asked for while another runs waits its turn rather than
+   * being dropped (issue #33), and `vocabBusy` is true for as long as any is
+   * running or waiting.
+   */
+  const vocabQueue = serialQueue((busy) => (vocabBusy = busy));
   /** The result of the last practice-log export, shown on the settings screen. */
   let logMessage = $state<string | null>(null);
   let logBusy = $state(false);
@@ -571,6 +610,20 @@
   /** The position last handed to the backend, so a redraw is not a save. */
   let cursorSaved = -1;
   let cursorTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * A course position a sync brought in that the board could not take yet —
+   * see `followSyncedCursor`. Plain, not state: nothing renders it.
+   */
+  let cursorDeferred: DeferredCursor | null = null;
+  /** Whether a course save is waiting for its timer, and how many are on their
+   * way to the backend — so a sync read can tell it raced one. */
+  let cursorPending = false;
+  let cursorWrites = 0;
+  /** The board's line about a deferred move, so the next step can clear it. */
+  let cursorNote: string | null = null;
+  /** Set when a sync finished before the start-up restore did, so the restore
+   * looks again once it has. */
+  let cursorResync = false;
 
   // ---- practising the list -------------------------------------------------
   /**
@@ -1250,6 +1303,9 @@
       speechText = text;
       toneResult = null;
       toneError = null;
+      // And what is still in flight for the old text: a recording is cancelled,
+      // and a judgement on its way back is dropped when it arrives.
+      void talk.retarget();
     }
     let current = true;
     void api
@@ -1282,6 +1338,40 @@
   });
 
   /**
+   * The attempt itself. `scoredText` is captured on press, so the judgement is
+   * against the text that was on screen when the learner started speaking; a
+   * change of text after that moves the attempt on (see the speech-target effect
+   * above), and its answer is dropped rather than shown against the new board.
+   */
+  const talk = new PushToTalk<ToneResult>(
+    {
+      start: () => api.listenStart(),
+      stop: () => api.listenStop(scoredText),
+      cancel: () => api.listenCancel(),
+    },
+    (phase) => (talkPhase = phase),
+  );
+
+  /** Show what an attempt came to. */
+  function showOutcome(outcome: Outcome<ToneResult>) {
+    switch (outcome.kind) {
+      case "scored":
+        toneResult = outcome.result;
+        break;
+      case "failed":
+        toneError = String(outcome.cause);
+        break;
+      case "released-early":
+        toneError =
+          "The button came up before the microphone was ready, so nothing was " +
+          "recorded. Hold it until the microphone is listening, then speak.";
+        break;
+      default:
+        break;
+    }
+  }
+
+  /**
    * Press to talk.
    *
    * The device is opened on press, before the learner has started speaking, so
@@ -1292,7 +1382,7 @@
     // The same reason the button is disabled, read again here: a pointer event
     // can still arrive on a control that has just become disabled, and opening
     // the device for a board nothing can judge is the failure this guards.
-    if (sayBlocked !== null || listening || toneBusy) return;
+    if (sayBlocked !== null || talk.phase !== "idle") return;
     toneError = null;
     // The previous judgement is deliberately *left on screen*. Clearing it here
     // removed the tone panel from the document, the page got shorter, and every
@@ -1300,39 +1390,12 @@
     // up. That is what made holding the button look like the interface jumping
     // and the recording stopping. The new judgement replaces it when it arrives.
     scoredText = toneText;
-    toneBusy = true;
-    try {
-      await api.listenStart();
-      listening = true;
-    } catch (cause) {
-      toneError = String(cause);
-    } finally {
-      toneBusy = false;
-    }
+    showOutcome(await talk.press());
   }
 
-  /**
-   * Release to be judged.
-   *
-   * `scoredText` is captured on press, so the judgement is against the text that
-   * was on screen when the learner started speaking rather than whatever the
-   * board has moved on to.
-   */
+  /** Release to be judged — or, while the device is still opening, to cancel. */
   async function stopListening() {
-    if (!listening) return;
-    listening = false;
-    toneBusy = true;
-    // The text is frozen for the duration of the attempt: the Rust side derives
-    // the tones from it, so what is scored is what was on screen when the learner
-    // pressed, even if the board advanced while they were speaking.
-    const text = scoredText;
-    try {
-      toneResult = await api.listenStop(text);
-    } catch (cause) {
-      toneError = String(cause);
-    } finally {
-      toneBusy = false;
-    }
+    showOutcome(await talk.release());
   }
 
   /**
@@ -1346,8 +1409,11 @@
     const position = index;
     if (!cursorRestored || position === cursorSaved) return;
     clearTimeout(cursorTimer);
+    cursorPending = true;
     cursorTimer = setTimeout(() => {
+      cursorPending = false;
       cursorSaved = position;
+      cursorWrites += 1;
       void api
         .setCourseCursor(position)
         .then((saved) => {
@@ -1355,9 +1421,15 @@
         })
         .catch((cause) => {
           cursorWarning = `Could not remember your place in the course: ${cause}`;
+        })
+        .finally(() => {
+          cursorWrites -= 1;
         });
     }, 400);
-    return () => clearTimeout(cursorTimer);
+    return () => {
+      clearTimeout(cursorTimer);
+      cursorPending = false;
+    };
   });
 
   /** Open where the reader left off, or at the beginning on a first run. */
@@ -1377,7 +1449,91 @@
       cursorWarning = `Could not restore your place in the course: ${cause}`;
     } finally {
       cursorRestored = true;
+      if (cursorResync) {
+        cursorResync = false;
+        void followSyncedCursor();
+      }
     }
+  }
+
+  /**
+   * Re-read the course position after a sync, which may have moved it.
+   *
+   * Without this the board stayed where it was while the notice said "moved to
+   * where you left off", and the next arrow saved the old place over the synced
+   * one on every device (issue #32). It runs after every sync rather than only
+   * when the summary says the position moved, because "Sync now" does not hand
+   * the summary over; when nothing moved this is one read and no change.
+   *
+   * `cursorSaved` is moved with `index`, so the save effect sees the position as
+   * already stored and does not write it back. When the board cannot follow yet —
+   * strokes on it, or another drill showing — the position waits in
+   * `cursorDeferred` for the learner's next step: see `takeDeferredCursor`.
+   *
+   * The board is looked at on both sides of the read, because a save can go out
+   * during it and the answer may then be older than the board. Answers what was
+   * decided, so the sync notice can say it, or `null` when nothing was read.
+   */
+  async function followSyncedCursor(): Promise<CursorDecision | null> {
+    if (!cursorRestored) {
+      cursorResync = true;
+      return null;
+    }
+    const board = (): CourseBoard => ({
+      current: index,
+      lastSaved: cursorSaved,
+      saving: cursorPending || cursorWrites > 0,
+      total: allCharacters.length,
+      onCourse: source === "course",
+      busy: boardInUse({
+        strokes: strokes.length,
+        playing,
+        revealed,
+        sweeping: sweep !== null,
+      }),
+    });
+    const before = board();
+    try {
+      const saved = await api.courseCursor();
+      // Only a warning of its own: a failed save's warning is still true.
+      if (saved.warning) cursorWarning = saved.warning;
+      const decision = courseCursorAfterSync(saved.index, board(), before);
+      cursorDeferred = decision.action === "defer" ? { index: decision.index, at: index } : null;
+      if (decision.action === "move") {
+        index = decision.index;
+        cursorSaved = decision.index;
+      }
+      if (decision.action !== "stay") {
+        void api.log(
+          `course cursor after sync: ${decision.action} to character ${decision.index + 1}`,
+        );
+      }
+      return decision;
+    } catch (cause) {
+      cursorWarning = `Could not re-read your place in the course: ${cause}`;
+      return null;
+    }
+  }
+
+  /**
+   * Move to a synced course position that was waiting, if it still applies.
+   *
+   * `step` is the direction of the learner's step, `1` for coming back from a
+   * drill: only a step on takes it, and any step drops it (see `takeDeferred`).
+   * Answers whether it moved, so an arrow that took the learner there does not
+   * also step on from it. The move is said on the board, because the learner
+   * pressed → and did not land on the next character.
+   */
+  function takeDeferredCursor(step = 1): boolean {
+    const target = takeDeferred(cursorDeferred, index, step);
+    cursorDeferred = null;
+    if (target === null) return false;
+    index = target;
+    cursorSaved = target;
+    cursorNote = `Moved to character ${target + 1}, where your other device left off.`;
+    statusMessage = cursorNote;
+    void api.log(`course cursor: moved to character ${target + 1}, where the sync left it`);
+    return true;
   }
 
   /**
@@ -1971,14 +2127,17 @@
    * went on showing what it had, which is what "the list only updates after a
    * restart" was: the restart was the next thing that called these.
    *
-   * All three, because one sync does all three: it rebuilds schedules, settles the
-   * vocabulary list, and moves the course position. Refreshing only the list would
-   * have replaced one half-fixed bug with another.
+   * All four, because one sync does all of them: it rebuilds schedules, settles
+   * the vocabulary list, and moves the course position. Refreshing only the list
+   * would have replaced one half-fixed bug with another. A group's place is not
+   * re-read because nothing here holds a copy of it: a drill reads it when it
+   * starts.
    */
-  function refreshAfterSync() {
+  function refreshAfterSync(): Promise<CursorDecision | null> {
     void refreshVocabulary();
     void refreshProgress();
     void refreshReview();
+    return followSyncedCursor();
   }
 
   async function refreshVocabulary() {
@@ -1999,25 +2158,30 @@
    * A failure is reported but never clears the list: the store refuses to save
    * over a file it could not read, and that must stay visible rather than
    * looking like the entries were lost.
+   *
+   * Resolves `true` once the command has been applied and `false` when it was
+   * refused or could not run, so that a form can keep what was typed into it
+   * (issue #33). Commands run one at a time through `vocabQueue`, so one asked
+   * for while another is running waits rather than being lost.
    */
-  async function withVocab(
+  function withVocab(
     action: () => Promise<VocabView>,
     note?: string,
     after?: (view: VocabView) => void,
-  ) {
-    if (vocabBusy) return;
-    vocabBusy = true;
-    error = null;
-    try {
-      const next = await action();
-      applyVocab(next);
-      if (note) statusMessage = note;
-      after?.(next);
-    } catch (cause) {
-      error = String(cause);
-    } finally {
-      vocabBusy = false;
-    }
+  ): Promise<boolean> {
+    return vocabQueue.run(async () => {
+      error = null;
+      try {
+        const next = await action();
+        applyVocab(next);
+        if (note) statusMessage = note;
+        after?.(next);
+        return true;
+      } catch (cause) {
+        error = String(cause);
+        return false;
+      }
+    });
   }
 
   function addToVocabulary(
@@ -2025,8 +2189,8 @@
     pinyin: string,
     meaning: string,
     group: string | null,
-  ) {
-    void withVocab(
+  ): Promise<boolean> {
+    return withVocab(
       () => api.vocabAdd(text, pinyin, meaning, group),
       `Added ${text} to your list`,
     );
@@ -2041,7 +2205,7 @@
   function addCurrentToVocabulary() {
     if (!character) return;
     const group = vocabSelection && vocabSelection !== "" ? vocabSelection : null;
-    addToVocabulary(
+    void addToVocabulary(
       character.ch,
       character.pinyin.join(" / "),
       character.definition,
@@ -2086,15 +2250,12 @@
       // The save dialog lives in the backend, so the command opens it and
       // writes the file in one step: a path never travels over IPC. `null`
       // means the learner closed the dialog, which is not a failure.
-      vocabBusy = true;
-      const message = await api.vocabExport(format);
+      const message = await vocabQueue.run(() => api.vocabExport(format));
       if (message === null) return;
       statusMessage = message;
       void api.log(message);
     } catch (cause) {
       error = `Export failed: ${cause}`;
-    } finally {
-      vocabBusy = false;
     }
   }
 
@@ -2124,17 +2285,18 @@
   async function importVocabulary(merge: boolean) {
     try {
       // Backend-owned open dialog: the import command both picks the file and
-      // reads it, so the frontend cannot name one.
-      vocabBusy = true;
-      const outcome = await api.vocabImport(merge);
+      // reads it, so the frontend cannot name one. The list is replaced inside
+      // the queue, so a command waiting behind the import sees the imported list.
+      const outcome = await vocabQueue.run(async () => {
+        const read = await api.vocabImport(merge);
+        if (read !== null) applyVocab(read.view);
+        return read;
+      });
       if (outcome === null) return;
-      applyVocab(outcome.view);
       statusMessage = outcome.message;
       void api.log(`vocabulary import: ${outcome.message}`);
     } catch (cause) {
       error = `Import failed: ${cause}`;
-    } finally {
-      vocabBusy = false;
     }
   }
 
@@ -2213,6 +2375,10 @@
     queue = items;
     queueCursor = 0;
     source = from;
+    // A new drill keeps no group's place until `practiseQueue` says it does: a
+    // group left over from the drill this replaces had its place erased when an
+    // entry of the new one was finished (issue #32).
+    queueGroup = null;
     mode = "recall";
     beginEntry();
     statusMessage = null;
@@ -2223,23 +2389,30 @@
    * Start drilling a snapshot of the given entries, from where the learner got to.
    *
    * `group` is the group the drill is of, or `null` when it is not one group —
-   * the whole list, the unfiled remainder, or a single entry from a row's own
-   * button. Only a group has a position: there is nowhere to remember a place in
-   * "everything", and a one-off drill of one entry must not overwrite the place
-   * the learner had reached in the group it came from.
+   * the whole list or the unfiled remainder. Only a group has a position: there
+   * is nowhere to remember a place in "everything".
    *
    * When the caller does not name a group but every entry agrees on one, that
    * group is used: a view that is one group's list *is* that group, and the
-   * position has to follow it whether or not the caller knew to say so.
+   * position has to follow it whether or not the caller knew to say so. That is
+   * why a row's own Practise button says `keepPlace: false` rather than passing
+   * `null`: a one-off drill of one entry must not read or overwrite the place the
+   * learner had reached in the group it came from, and its one entry always
+   * "agrees" on that group (issue #32). See `drillGroup`.
    *
    * The stored position wins when it names an entry still in the list, because
    * it is exactly where the learner stopped. Otherwise the drill starts at the
    * first entry they have not practised, and if they have practised them all it
    * starts at the top: such a list is due for review, not finished.
    */
-  async function practiseQueue(entries: VocabEntry[], group: string | null) {
+  async function practiseQueue(
+    entries: VocabEntry[],
+    group: string | null,
+    options: DrillOptions = {},
+  ) {
     if (entries.length === 0) return;
-    const scope = group ?? sharedGroup(entries);
+    const scope = drillGroup(entries, group, options);
+    const oneOff = options.keepPlace === false;
 
     // A stored position, when one names an entry that is still in the list.
     let resume: VocabEntry[] | null = null;
@@ -2289,14 +2462,15 @@
           : skipped > 0
             ? `resuming past ${skipped} already practised`
             : "";
-      if (fallback !== "") outcome = outcome === "" ? fallback : `${outcome}; ${fallback}`;
+      // A one-off is one entry the learner chose, so where it "resumes" says nothing.
+      if (oneOff) outcome = "";
+      else if (fallback !== "") outcome = outcome === "" ? fallback : `${outcome}; ${fallback}`;
       // And when there is nothing to say, say that: a group drill that starts at
       // the first entry with no explanation at all is the report this exists to
       // make answerable.
       else if (outcome === "" && scope !== null) outcome = "no place kept yet — starting at the first entry";
     }
 
-    queueGroup = scope;
     startPractice(
       resume.map((entry) => ({
         text: entry.text,
@@ -2308,31 +2482,22 @@
       })),
       "vocabulary",
     );
+    // After, because starting a drill clears whatever group the last one kept.
+    queueGroup = scope;
     const where = scope === null ? "" : `“${scope}”: `;
     void api.log(
-      `practising ${resume.length} vocabulary entries${outcome ? ` — ${where}${outcome}` : ""}`,
+      `practising ${resume.length} vocabulary entries` +
+        (oneOff ? " (one-off, no place kept)" : outcome ? ` — ${where}${outcome}` : ""),
     );
     // On the board, so "it started at the beginning again" arrives with its
     // reason attached instead of being a mystery to report.
     if (outcome !== "") statusMessage = `${where}${outcome}`;
-    else if (scope === null)
+    else if (scope === null && !oneOff)
       // And the case where there is no group at all is said too: a drill with
       // nowhere to keep a place is the one failure that looks exactly like a
       // lost place, and it is invisible unless it is named.
       statusMessage =
         "this drill is not one group, so no place is being kept — practise a group to resume";
-  }
-
-  /**
-   * The one group every entry belongs to, or `null` when they do not agree.
-   *
-   * Used only when the caller passed no group, so that a single group's list
-   * still keeps its place.
-   */
-  function sharedGroup(entries: VocabEntry[]): string | null {
-    const first = entries[0]?.group ?? null;
-    if (first === null) return null;
-    return entries.every((entry) => entry.group === first) ? first : null;
   }
 
   /** Start drilling what is due for review, most overdue first. */
@@ -2456,10 +2621,13 @@
    * does not move.
    */
   function showCharacterInCourse(ch: string) {
+    // A pick is a newer request than a synced position waiting for the board.
+    cursorDeferred = null;
     leavePractice();
     view = "course";
     goToCharacter(ch);
     characterMessage = null;
+    error = null;
   }
 
   /** One page of the character set; the panel owns the query and the debounce. */
@@ -2541,6 +2709,7 @@
     view = "radicals";
     statusMessage = null;
     characterMessage = null;
+    error = null;
   }
 
   /** Return to the course sequence. */
@@ -2550,6 +2719,8 @@
     queueCursor = 0;
     queueGroup = null;
     beginEntry();
+    // A course position synced in during the drill is taken now, on a clear board.
+    takeDeferredCursor();
   }
 
   /** Move within the practice queue, abandoning an unfinished entry. */
@@ -2608,21 +2779,25 @@
           : " — that was the last entry in this list"
         : "");
 
+    // Where the learner got to: the entry they are about to write, or nothing at
+    // all when that was the last one, so the next session opens at the top of a
+    // finished list rather than at its end. A position is the group's, so a drill
+    // that is not one group keeps none — and neither does a drill from another
+    // screen (see `placeKeptBy`). Worked out *before* recording the entry, because
+    // the learner can start another drill or leave this one while that is awaited.
+    const place = placeKeptBy(source, queueGroup);
+    const next = isLast ? null : (queue[queueCursor]?.entryId ?? null);
+
     if (entryId !== null) {
       await withVocab(() => api.vocabRecordAttempt(entryId, mean), note);
     } else {
       statusMessage = note;
     }
-    // Where the learner got to, written once the entry is recorded: the entry
-    // they are about to write, or nothing at all when that was the last one, so
-    // the next session opens at the top of a finished list rather than at its
-    // end. A position is the group's, so a drill that is not one group keeps
-    // none.
-    if (queueGroup !== null) {
-      const next = isLast ? null : (queue[queueCursor]?.entryId ?? null);
-      await api.setVocabCursor(queueGroup, next).catch((cause) => {
+    // Written once the entry is recorded.
+    if (place !== null) {
+      await api.setVocabCursor(place, next).catch((cause) => {
         // The drill itself succeeded; say only that the place was not kept.
-        void api.log(`could not remember the place in ${queueGroup}: ${cause}`);
+        void api.log(`could not remember the place in ${place}: ${cause}`);
       });
     }
     // Answering may have cleared the queue, so the badge is brought up to date.
@@ -2634,6 +2809,8 @@
   function switchView(next: View) {
     if (next === view) return;
     view = next;
+    // An error belongs to the screen it happened on (issue #33).
+    error = null;
     statusMessage = null;
     wordMessage = null;
     characterMessage = null;
@@ -2658,15 +2835,21 @@
   function move(delta: number) {
     const total = allCharacters.length;
     if (total === 0) return;
+    // A step on from the character the board was kept on goes where the sync left
+    // the course instead, rather than saving one past the old place over it.
+    if (takeDeferredCursor(delta)) return;
+    if (statusMessage !== null && statusMessage === cursorNote) statusMessage = null;
     index = Math.min(total - 1, Math.max(0, index + delta));
   }
 
   function goToLesson(lessonIndex: number) {
+    cursorDeferred = null;
     const start = lessonStarts[lessonIndex];
     if (start !== undefined) index = start;
   }
 
   function goToCharacter(ch: string) {
+    cursorDeferred = null;
     const found = allCharacters.indexOf(ch);
     if (found >= 0) index = found;
   }
@@ -2685,6 +2868,7 @@
               : "vocabulary";
     leavePractice();
     view = target;
+    error = null;
     statusMessage = null;
     wordMessage = null;
     characterMessage = null;
@@ -2787,7 +2971,9 @@
     />
   </div>
 
-  <main>
+  <!-- `tabindex="-1"`: focusable by the app but not a tab stop, so that focus has
+       somewhere to go when the error banner's × takes itself away. -->
+  <main tabindex="-1">
     <!-- Phone only: the way back to the navigation the sheet hides. -->
     <div class="topbar">
       <button
@@ -2810,7 +2996,25 @@
     </div>
 
     {#if error}
-      <p class="error">{error}</p>
+      <!-- Dismissable, and cleared on the way to another screen: a one-off such
+           as "Could not pronounce…" otherwise followed the learner everywhere,
+           because only Check and the vocabulary commands ever cleared it (issue
+           #33). Not on a timer — some of these have to be read to be acted on. -->
+      <p class="error">
+        <span role="alert">{error}</span>
+        <button
+          type="button"
+          class="dismiss"
+          aria-label="Dismiss this message"
+          title="Dismiss"
+          onclick={(event) => {
+            // The button is about to go, and focus with it would fall to the
+            // page itself; the screen it was on is the place to put it.
+            event.currentTarget.closest("main")?.focus({ preventScroll: true });
+            error = null;
+          }}><span aria-hidden="true">×</span></button
+        >
+      </p>
     {/if}
 
     {#if syncNotice}
@@ -2854,7 +3058,7 @@
         lookup={lookupText}
         onAdd={addToVocabulary}
         onUpdate={(id, pinyin, meaning, group) =>
-          void withVocab(() => api.vocabUpdate(id, pinyin, meaning, group), "Saved")}
+          withVocab(() => api.vocabUpdate(id, pinyin, meaning, group), "Saved")}
         onRemove={(id) =>
           void withVocab(() => api.vocabRemove(id), "Removed from your list")}
         onAddGroup={(name) =>
@@ -3230,7 +3434,8 @@
                   }}
                   onpointercancel={() => void stopListening()}
                   oncontextmenu={(event) => event.preventDefault()}
-                  disabled={sayBlocked !== null || toneBusy}
+                  disabled={sayBlocked !== null || scoring}
+                  aria-busy={talkPhase !== "idle" && talkPhase !== "listening"}
                   aria-label={listening
                     ? "Hold to speak — listening, release to hear what was read back"
                     : sayBlocked
@@ -3241,7 +3446,7 @@
                   title={sayBlocked ?? sayPrompt}
                 >
                   <span class="tool-glyph"><Icon name="mic" /></span>
-                  <span class="tool-word">(hold…)</span>
+                  <span class="tool-word">{scoring ? "Scoring…" : "(hold…)"}</span>
                 </button>
               </div>
 
@@ -3512,11 +3717,20 @@
     display: flex;
     height: 100vh;
     overflow: hidden;
+    /* Clear of the notch, the status bar, the home indicator and the rounded
+       corners on every side. The wide layout is what a landscape iPhone and an
+       iPad get, and with no inset here the sidebar sat under the notch (issue
+       #33). All four are zero on the desktop. The phone layout below pads its
+       own top and bottom, inside the scrolling column, so it keeps only the
+       sides from this. */
+    padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
   }
 
   main {
     flex: 1;
     min-width: 0;
+    /* Focused only from script (see `tabindex` on it), so no ring round the page. */
+    outline: none;
     display: flex;
     flex-direction: column;
     padding: 16px 20px 20px;
@@ -4104,6 +4318,38 @@
     background: #fef2f2;
     color: #991b1b;
     font-size: 0.84rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .error > span {
+    flex: 1;
+    min-width: 0;
+  }
+  /* A plain × at the end of the line, on a 32px target (44px on a phone, below). */
+  .error .dismiss {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    margin: -7px -8px -7px 0;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 1.15rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .error .dismiss:hover {
+    background: #fee2e2;
+  }
+  .error .dismiss:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: -2px;
   }
 
   /* What the app is doing rather than what is wrong: a sync that started by itself
@@ -4194,6 +4440,8 @@
   @media (max-width: 760px) {
     .app {
       display: block;
+      padding-top: 0;
+      padding-bottom: 0;
     }
 
     main {
@@ -4294,6 +4542,8 @@
       width: min(86vw, 320px);
       padding-top: var(--safe-top);
       padding-bottom: var(--safe-bottom);
+      /* The sheet is fixed to the screen's edge, not inside `.app`'s padding. */
+      padding-left: var(--safe-left);
       background: var(--surface);
       box-shadow: 0 10px 40px rgb(15 23 42 / 0.3);
       transform: translateX(-102%);
@@ -4331,6 +4581,12 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
+      /* Its own height, not the height `main` has left: `main` is the scroller
+         here, and a workspace pinned to the leftover height (the wide layout's
+         rule) spilt its content past its own box, so the end of the page lost
+         `main`'s bottom padding and the home-indicator inset with it. */
+      flex: none;
+      min-height: auto;
     }
     .stage {
       display: contents;
@@ -4349,18 +4605,30 @@
     }
     aside.feedback {
       order: 4;
+      /* Sticky is for the wide layout's side column. In one column, with the
+         workspace now as tall as its content, it would slide over the hint below
+         it on the way down. */
+      position: static;
     }
     .controls + .note,
     .hint {
       order: 5;
     }
-    /* The board is square and as wide as the phone: at this size it is the
-       screen's job to fit the board, not the board's to fit a column. */
-    :global(.board) {
+    /* The board is square and as wide as the phone's share of it: at this size
+       it is the screen's job to fit the board, not the board's to fit a column.
+       The frame itself is sized from the board-size preference, so a Compact or
+       Normal board gives the height it does not use to the controls below rather
+       than leaving it as an empty square (issue #33); `--board-presized` tells
+       the canvas the share is already taken. Scoped under `.workspace` so that it
+       outranks the canvas's own scoped `.board` rule — a bare `:global(.board)`
+       lost to it, and its `flex` and `min-height` never applied. */
+    .workspace :global(.board) {
       flex: none;
-      width: 100%;
+      align-self: center;
+      width: calc(100% * var(--board-fraction, 1));
       aspect-ratio: 1;
       min-height: 0;
+      --board-presized: 1;
     }
 
     /* Fingers, not a pointer: every control reaches a comfortable target, and
@@ -4408,6 +4676,11 @@
     .nav button {
       min-height: 44px;
       min-width: 44px;
+    }
+    .error .dismiss {
+      width: 44px;
+      height: 44px;
+      margin: -13px -12px -13px 0;
     }
     .slots :global(button) {
       min-width: 54px;

@@ -38,7 +38,7 @@ use nihongo_core::{
     band_name, composition, confusions_for, grade_kana, grade_name, spoken_form,
     grammar_drill as grammar_practice,
     kanji_lessons as build_kanji_lessons, key_of, lessons as build_lessons,
-    normalise_to_hiragana, now_iso8601, off_grid, parse_decomposition,
+    now_iso8601, off_grid, parse_decomposition,
     queue as build_review_queue, reading, split_key, to_kana, to_kana_in, yoon as build_yoon,
     Confusable, ConfusionLog, Decomposition, DrillKind, DrillPair, DueItem, GradeOptions,
     GradeReport, GrammarDataset, GrammarExample, GrammarPoint, KanaDataset, Kanji, KanjiDataset,
@@ -447,11 +447,17 @@ impl AppState {
     /// one stroke in it. Writing あ five times in one sitting
     /// must not multiply SM-2's interval five times, so a later attempt inside the
     /// interval is graded and not rescheduled — see [`store::ReviewStore`].
+    ///
+    /// `traced` is the screen's word that the attempt was helped: written over the
+    /// faint guide, or after the stroke animation had drawn it. A traced attempt
+    /// is graded and never scheduled, new or due, because the schedule is a record
+    /// of what the learner can write from memory.
     pub fn grade_and_schedule(
         &self,
         ch: char,
         strokes: &[Vec<Point>],
         options: &GradeOptions,
+        traced: bool,
     ) -> Result<GradedAttempt, String> {
         let GradedCharacter { report, joined } = self.grade(ch, strokes, options)?;
         let mut store = self
@@ -462,18 +468,26 @@ impl AppState {
         // per-attempt one; it is said once and repeated on every grade rather than
         // hidden, because the learner is losing work either way.
         let session = store.warning().map(str::to_string);
-        // Nothing the grader counted as a stroke — an empty board, or only taps,
-        // which the board keeps as coincident points since issue #30 and the
-        // grader counts as strays — is not an answer to schedule. It scores zero,
-        // and recording that zero would set the character back for a slip of the
-        // hand. The board does not offer Grade for such an attempt; this is the
-        // command not relying on that. A card that exists keeps its date, named.
-        if report.given_strokes == 0 {
+        // A traced attempt never reaches the scheduler, whether the character is
+        // new or due: copying the guide is not remembering the character, and a
+        // legible trace would otherwise lengthen the interval of something the
+        // learner may not be able to write.
+        //
+        // Nor does one the grader found no stroke in — an empty board, or only
+        // taps, which the board keeps as coincident points since issue #30 and the
+        // grader counts as strays. It scores zero, and recording that zero would
+        // set the character back for a slip of the hand. The board does not offer
+        // Grade for such an attempt; this is the command not relying on that.
+        //
+        // Either is answered like an attempt inside the interval, with the card's
+        // date when there is a card.
+        if traced || report.given_strokes == 0 {
             let next_due = store.store().card(ch).map(|card| card.due.clone());
             return Ok(GradedAttempt {
                 report,
                 joined,
                 scheduled: false,
+                traced,
                 next_due,
                 warning: session,
             });
@@ -493,6 +507,7 @@ impl AppState {
             report,
             joined,
             scheduled,
+            traced,
             next_due,
             warning,
         })
@@ -1330,22 +1345,21 @@ impl AppState {
     /// dictionary, and never assembled from its characters — which is the whole
     /// reason 大人 is おとな and not だいじん. Romaji is accepted, and so is kana
     /// typed directly, because a learner who can already read kana should not have
-    /// to transliterate to answer.
+    /// to transliterate to answer. The comparison is the production exercise's,
+    /// [`nihongo_core::check_kana_text_with`] with the word's own particle positions,
+    /// so Hepburn's `onna` and the IME's `onnna` are both おんな, `ti` is ティ in a
+    /// loanword, and 今日は is `konnichiwa` while 花 is never `wana`.
     pub fn check_word(&self, text: &str, reading: &str, typed: &str) -> Result<ReadingCheck, String> {
         let word = self
             .words
             .find(text, reading)
             .ok_or_else(|| format!("{text} ({reading}) is not in the vocabulary"))?;
 
-        let typed = typed.trim();
-        let produced = if typed.chars().any(is_kana) {
-            typed.to_string()
-        } else {
-            to_kana(typed).unwrap_or_default()
-        };
-        let correct = !produced.is_empty()
-            && normalise_to_hiragana(&produced) == normalise_to_hiragana(&word.reading);
-        Ok(ReadingCheck { correct, produced })
+        let check = nihongo_core::check_kana_text_with(&word.reading, typed, &word.particles());
+        Ok(ReadingCheck {
+            correct: check.correct,
+            produced: check.produced,
+        })
     }
 
     /// The passages, as a list a screen can offer.
@@ -2207,6 +2221,12 @@ pub struct GradedAttempt {
     /// due date had passed. A later attempt inside the interval is practice — it
     /// is still graded, and the schedule does not move.
     pub scheduled: bool,
+    /// True when the attempt was written over the guide, or after the stroke
+    /// animation had shown it. Such an attempt is graded and shown like any
+    /// other, and never reaches the schedule: copying a character is not
+    /// remembering it, so `scheduled` is always false beside it.
+    #[serde(default)]
+    pub traced: bool,
     /// When the character comes up next, ISO-8601 UTC. Present whenever a card
     /// exists for the character, whether or not this attempt changed it.
     #[serde(default)]
@@ -2284,14 +2304,18 @@ fn kana(state: State<'_, AppState>, ch: char) -> Result<KanaView, String> {
 /// that did. `scheduled` is false for a second attempt inside a character's
 /// interval, which is the rule that keeps one sitting from stretching an interval
 /// by months.
+///
+/// `traced` is required rather than defaulted: an interface that does not say
+/// whether the guide was on would otherwise have every trace counted as recall.
 #[tauri::command]
 fn grade_attempt(
     state: State<'_, AppState>,
     ch: char,
     strokes: Vec<Vec<Point>>,
     options: Option<GradeOptions>,
+    traced: bool,
 ) -> Result<GradedAttempt, String> {
-    state.grade_and_schedule(ch, &strokes, &options.unwrap_or_default())
+    state.grade_and_schedule(ch, &strokes, &options.unwrap_or_default(), traced)
 }
 
 /// The whole kana chart — the gojūon grid and the characters off it — for one
@@ -3572,6 +3596,9 @@ mod tests {
         // A wrong answer still reports what it produced.
         let wrong = check_reading('し', "chi".into());
         assert_eq!(wrong.produced, "ち");
+        // ん is typed `nn` in every IME, and that is one ん, not two.
+        assert!(check_reading('ん', "nn".into()).correct);
+        assert_eq!(check_reading('ん', "nn".into()).produced, "ん");
     }
 
     #[test]
@@ -3888,6 +3915,27 @@ mod tests {
     }
 
     #[test]
+    fn a_word_is_typed_the_way_a_textbook_or_an_ime_spells_it() {
+        // Issue #21: Hepburn's `onna` and the IME's `onnna` are both おんな.
+        let state = state();
+        let check = |text, reading, typed| state.check_word(text, reading, typed).expect("a word");
+        assert!(check("女", "おんな", "onna").correct);
+        assert!(check("女", "おんな", "onnna").correct);
+        assert_eq!(check("女", "おんな", "onna").produced, "おんな");
+        // 今日は ends in its particle, said `wa`; 花 begins with a は that is not one.
+        assert!(check("今日は", "こんにちは", "konnichiwa").correct);
+        assert!(!check("花", "はな", "wana").correct);
+        assert!(!check("禁煙", "きんえん", "kinen").correct);
+        assert!(check("禁煙", "きんえん", "kin'en").correct);
+        // を inside a word is said `o`, and a space between its parts is a word break.
+        for typed in ["kiotsukeru", "kiwotsukeru", "ki o tsukeru"] {
+            assert!(check("気をつける", "きをつける", typed).correct, "{typed}");
+        }
+        // Hepburn's `tch`.
+        assert!(check("発注", "はっちゅう", "hatchuu").correct);
+    }
+
+    #[test]
     fn a_kana_answer_is_accepted_as_well_as_romaji() {
         let state = state();
         assert!(state.check_word("学生", "がくせい", "gakusei").expect("a word").correct);
@@ -4061,7 +4109,7 @@ mod tests {
         let state = state();
         let said = state.kana('あ').expect("あ");
         let graded = state
-            .grade_and_schedule('あ', &said.medians, &GradeOptions::default())
+            .grade_and_schedule('あ', &said.medians, &GradeOptions::default(), false)
             .expect("grades");
         assert!(graded.scheduled, "score {:.0}", graded.report.overall);
         let due = graded.next_due.clone().expect("a new card has a due date");
@@ -4081,7 +4129,7 @@ mod tests {
         let state = state();
         let radical = state.radical(6).expect("亅 is radical 6");
         let graded = state
-            .grade_and_schedule(radical.ch, &radical.medians, &GradeOptions::default())
+            .grade_and_schedule(radical.ch, &radical.medians, &GradeOptions::default(), false)
             .expect("the board can write a head form the character course cannot");
         assert!(graded.scheduled);
         assert!(graded.next_due.is_some());
@@ -4103,7 +4151,7 @@ mod tests {
         let options = GradeOptions::default();
         for attempt in [vec![], vec![tap.clone()], vec![tap.clone(), tap.clone()]] {
             let graded = state
-                .grade_and_schedule('あ', &attempt, &options)
+                .grade_and_schedule('あ', &attempt, &options, false)
                 .expect("grades");
             assert_eq!(graded.report.given_strokes, 0);
             assert_eq!(graded.report.overall, 0.0);
@@ -4114,12 +4162,12 @@ mod tests {
 
         let said = state.kana('あ').expect("あ");
         let due = state
-            .grade_and_schedule('あ', &said.medians, &options)
+            .grade_and_schedule('あ', &said.medians, &options, false)
             .expect("grades")
             .next_due
             .expect("a new card has a due date");
         let tapped = state
-            .grade_and_schedule('あ', &[tap], &options)
+            .grade_and_schedule('あ', &[tap], &options, false)
             .expect("grades");
         assert!(!tapped.scheduled);
         assert_eq!(tapped.next_due.as_deref(), Some(due.as_str()));
@@ -4135,7 +4183,7 @@ mod tests {
         let state = state();
         let said = state.kana('あ').expect("あ");
         state
-            .grade_and_schedule('あ', &said.medians, &GradeOptions::default())
+            .grade_and_schedule('あ', &said.medians, &GradeOptions::default(), false)
             .expect("grades");
 
         let kana = state.review_queue(40, Some(Section::Kana));

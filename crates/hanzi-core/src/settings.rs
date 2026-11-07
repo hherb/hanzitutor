@@ -119,15 +119,15 @@ impl Default for Pace {
 /// so that it fits the window on any screen, and what a learner actually wants
 /// to change is how much of that space it takes. As with [`Pace`], the *name*
 /// travels and the fraction that implements it lives in the interface
-/// (`boardFraction` in `src/App.svelte`).
+/// (`BOARD_FRACTIONS` in `src/lib/boardSize.ts`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BoardSize {
     /// Smallest, for a window with little room to spare.
     Compact,
-    /// The size the board has always been.
+    /// The default: most of the room, with a margin round it.
     Normal,
-    /// Largest, for a big screen or a stylus.
+    /// Largest, for a big screen or a stylus: all the room there is.
     Large,
 }
 
@@ -160,19 +160,39 @@ pub struct Settings {
     /// How a stroke is drawn: `Some(true)` click to start and click to finish,
     /// `Some(false)` press and drag, `None` let the device decide.
     pub click_to_draw: Option<bool>,
-    /// The pronunciation voice to use, by name. Unknown names are matched
-    /// against the installed voices ignoring the locale qualifier macOS appends
-    /// — `Tingting (Chinese (China mainland))` is the same voice as `Tingting` —
-    /// and a name this machine does not have falls back to the automatic choice
+    /// The pronunciation voice to use: the platform's identifier for it on
+    /// macOS and iOS (`com.apple.eloquence.zh-CN.Eddy`), its name on Android.
+    ///
+    /// Identifiers rather than names since issue #39: AVFoundation's novelty
+    /// voices carry the same bare name in every language, so `Eddy` alone did
+    /// not say *which* Eddy. A name is still accepted — it is what every
+    /// earlier build stored — and means a voice of that name in the app's own
+    /// language. The locale qualifier the `say -v '?'` era (v0.3.0–v0.5.11)
+    /// put in names is ignored on both sides when matching, but it picks the
+    /// locale: a stored `Eddy (Chinese (Taiwan))` is the Taiwanese `Eddy`
+    /// AVFoundation now reports bare. With no qualifier the home locale comes
+    /// first (mainland China, Japan), then Taiwan for Chinese, then the rest.
+    /// A stored value is never rewritten on load, so a document carried back
+    /// to an older build keeps working there too; an identifier is a name that
+    /// build does not know, which falls back to its automatic choice rather
+    /// than failing. That is also why the format version did not change: the
+    /// field is still a string, and a bump would make an older build refuse
+    /// every setting rather than one voice.
+    ///
+    /// A value this machine does not have falls back to the automatic choice
     /// rather than failing, because a preference set on one machine must not
     /// break pronunciation on another. `None` is the automatic choice.
     pub voice: Option<String>,
     /// How fast the stroke-order animation runs when nobody has chosen
     /// differently. Stored as a value, not an absence — see [`Pace::default`].
-    #[serde(default)]
+    ///
+    /// A name this build does not know reads as the default rather than failing
+    /// the document — see [`default_if_unknown`].
+    #[serde(default, deserialize_with = "default_if_unknown")]
     pub animation_pace: Pace,
-    /// How large the board is drawn — see [`BoardSize::default`].
-    #[serde(default)]
+    /// How large the board is drawn — see [`BoardSize::default`]. An unknown
+    /// name reads as the default, as for the pace.
+    #[serde(default, deserialize_with = "default_if_unknown")]
     pub board_size: BoardSize,
     /// Whether characters are shown coloured by the tone they are read with.
     ///
@@ -269,8 +289,9 @@ pub trait SettingsSink: std::fmt::Debug + Send {
 pub struct SettingsPatch {
     /// Choose how a stroke is drawn. `None` leaves the choice as it is.
     pub click_to_draw: Option<bool>,
-    /// Choose the pronunciation voice by name; `""` goes back to the automatic
-    /// choice. `None` leaves the choice as it is.
+    /// Choose the pronunciation voice by identifier (or name — see
+    /// [`Settings::voice`]); `""` goes back to the automatic choice. `None`
+    /// leaves the choice as it is.
     pub voice: Option<String>,
     /// Choose how fast the stroke-order animation runs.
     pub animation_pace: Option<Pace>,
@@ -300,7 +321,9 @@ impl SettingsPatch {
 /// The version exists so a document written by a newer build is refused rather
 /// than read for fields this build does not know — the same rule the study
 /// documents follow, for the same reason: silently ignoring a setting someone
-/// changed is worse than saying the file is from a newer app.
+/// changed is worse than saying the file is from a newer app. A new *name* for a
+/// pace or a board size is not a new shape, and is read as the default instead —
+/// see [`default_if_unknown`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Document {
@@ -446,7 +469,8 @@ impl SettingsStore {
 
     /// Choose the voice to pronounce with, or `None` for the automatic choice.
     ///
-    /// An empty (or all-whitespace) name is stored as `None`, so a field the
+    /// The value is an identifier or a name, as [`Settings::voice`] describes.
+    /// An empty (or all-whitespace) one is stored as `None`, so a field the
     /// learner has cleared goes back to the automatic choice rather than being
     /// persisted as a voice called "".
     pub fn set_voice(&mut self, value: Option<&str>) -> bool {
@@ -557,6 +581,38 @@ impl SettingsStore {
         self.dirty = false;
         Ok(())
     }
+}
+
+/// Read a closed choice, or its default when the stored value is not one of the
+/// choices this build knows.
+///
+/// For [`Pace`] and [`BoardSize`] in a stored document (issue #41). A newer build
+/// that adds a pace writes a name this one has no variant for, and it does so
+/// without bumping [`FORMAT_VERSION`], because the field is still a name. Failing
+/// the whole document as [`SettingsError::Malformed`] for that would cost the
+/// learner every other preference over one value; falling back to the default
+/// costs them that one value, and only in this build. The version gate is still
+/// what refuses a document whose *shape* changed.
+///
+/// Only the stored document is lenient. [`SettingsPatch`] — what a screen sends —
+/// keeps the plain derive, so a screen and a binary that disagree about the names
+/// are still told so.
+fn default_if_unknown<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(T::deserialize(&value).unwrap_or_else(|error| {
+        eprintln!(
+            "[settings] {value} is not a {} this build knows ({error}); using the default",
+            std::any::type_name::<T>()
+                .rsplit("::")
+                .next()
+                .unwrap_or("value"),
+        );
+        T::default()
+    }))
 }
 
 /// Read and validate a document, treating absence as an unset first run.
@@ -871,6 +927,36 @@ mod tests {
     }
 
     #[test]
+    fn a_voice_identifier_and_a_legacy_bare_name_both_load_as_written() {
+        // Issue #39: a choice is stored as the platform's identifier from now
+        // on, while a document an older build wrote holds a bare name. Neither
+        // is rewritten on load and the format version stays where it was, so a
+        // document still opens in the build that wrote it.
+        let path = temp_path("voice-identifier");
+        fs::write(&path, r#"{"version":1,"voice":"Eddy"}"#).unwrap();
+        let legacy = SettingsStore::open(&path).unwrap();
+        assert_eq!(legacy.view().voice(), Some("Eddy"));
+        drop(legacy);
+
+        {
+            let mut store = SettingsStore::open(&path).unwrap();
+            assert!(store.set_voice(Some("com.apple.eloquence.zh-CN.Eddy")));
+            store.save().unwrap();
+        }
+        let reopened = SettingsStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.view().voice(),
+            Some("com.apple.eloquence.zh-CN.Eddy")
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed["version"], serde_json::json!(FORMAT_VERSION));
+        assert_eq!(FORMAT_VERSION, 1);
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn clearing_the_voice_goes_back_to_automatic_rather_than_an_empty_name() {
         let mut store = SettingsStore::in_memory();
         assert!(store.set_voice(Some("Meijia")));
@@ -973,5 +1059,50 @@ mod tests {
         let store = SettingsStore::open(&path).unwrap();
         assert_eq!(store.click_to_draw(), Some(true));
         fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_pace_or_board_size_a_newer_build_added_falls_back_to_the_default() {
+        // Issue #41. A newer build that adds a pace or a board size writes a name
+        // this one has no variant for, without bumping the format version — the
+        // field is still a name. Refusing the whole document for that would lose
+        // every other preference with it, so the one value falls back to its
+        // default and the rest are read as written.
+        let path = temp_path("unknown-variant");
+        fs::write(
+            &path,
+            format!(
+                r#"{{"version":{FORMAT_VERSION},"clickToDraw":true,"animationPace":"glacial","boardSize":"huge","toneColours":true}}"#
+            ),
+        )
+        .unwrap();
+        let store = SettingsStore::open(&path).unwrap();
+        let view = store.view();
+        assert_eq!(view.pace(), Pace::Normal);
+        assert_eq!(view.board_size(), BoardSize::Normal);
+        assert_eq!(
+            view.click_to_draw(),
+            Some(true),
+            "the rest of the document is kept"
+        );
+        assert!(view.tone_colours());
+        drop(store);
+
+        // A value of the wrong type is the same case, and a known name is still
+        // read as itself.
+        fs::write(
+            &path,
+            format!(r#"{{"version":{FORMAT_VERSION},"animationPace":7,"boardSize":"large"}}"#),
+        )
+        .unwrap();
+        let store = SettingsStore::open(&path).unwrap();
+        assert_eq!(store.view().pace(), Pace::Normal);
+        assert_eq!(store.view().board_size(), BoardSize::Large);
+        fs::remove_file(&path).ok();
+
+        // What a *screen* sends stays strict: a name the binary does not know is
+        // a disagreement to report, not a value to guess.
+        assert!(serde_json::from_str::<SettingsPatch>(r#"{"animationPace":"glacial"}"#).is_err());
+        assert!(serde_json::from_str::<SettingsPatch>(r#"{"boardSize":"huge"}"#).is_err());
     }
 }

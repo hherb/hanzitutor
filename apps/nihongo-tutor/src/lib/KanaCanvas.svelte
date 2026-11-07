@@ -15,7 +15,7 @@
    */
   import { untrack } from "svelte";
   import { drawScene, type Scene } from "./render";
-  import { isStroke, pointerToDisplay, sweepAt } from "./board";
+  import { ghostAfterAnimation, isStroke, pointerToDisplay, sweepAt } from "./board";
   import { StrokeInput, type PointerSample } from "./strokeInput";
   import type { Drawable, GradeReport, Point } from "./types";
 
@@ -164,6 +164,19 @@
     return pointerToDisplay(event, canvas!.getBoundingClientRect());
   }
 
+  /**
+   * Stop an animation that is still running, and put the guide back to the
+   * board's resting state rather than leaving the strokes it had reached: with
+   * the guide off, a half-drawn copy left on the board would be traced over.
+   */
+  function stopSweep() {
+    cancelAnimationFrame(raf);
+    if (sweep && character) {
+      ghostCount = ghostAfterAnimation(guide, character.medians.length);
+    }
+    sweep = null;
+  }
+
   /** The event as `strokeInput.ts` reads it: who it is, and where. */
   function sample(event: PointerEvent): PointerSample {
     return {
@@ -226,8 +239,7 @@
       show();
       return;
     }
-    cancelAnimationFrame(raf);
-    sweep = null;
+    stopSweep();
     show();
   }
 
@@ -269,6 +281,7 @@
 
   /** Undo the last stroke. */
   export function undo() {
+    stopSweep();
     strokes = strokes.slice(0, -1);
     onchange?.(strokes);
     paint();
@@ -276,6 +289,7 @@
 
   /** Clear the board. */
   export function clear() {
+    stopSweep();
     strokes = [];
     input.discard();
     current = null;
@@ -306,7 +320,10 @@
       if (elapsed < sweepMs) {
         raf = requestAnimationFrame(step);
       } else {
-        ghostCount = total;
+        // Back to the board's resting state: the whole guide when tracing, and a
+        // blank board in recall, where the animation was a demonstration and not
+        // a copy to write over.
+        ghostCount = ghostAfterAnimation(guide, total);
         sweep = null;
         paint();
       }

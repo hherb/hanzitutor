@@ -188,3 +188,44 @@ export function afterGradeInQueue(graded: boolean, hasNext: boolean): AfterQueue
   if (!graded) return "grade";
   return hasNext ? "next" : "nothing";
 }
+
+/**
+ * What helped an attempt, which makes it practice rather than a review, or null
+ * for an attempt written from memory.
+ *
+ * Three things can put the character in front of the learner before they write
+ * it: the faint **guide** on the board, the stroke-order **animation**, and a
+ * verdict already given on this character, which shows it as the answer
+ * (**answered**, the Review screen's case). Any one turns writing it into copying
+ * it, so the attempt is sent as traced and the schedule leaves the card alone
+ * (see the app's `grade_and_schedule`). The reason is kept, rather than a yes or
+ * no, because what the learner should do about it differs: turn the hint off, or
+ * come back to the character without watching it first.
+ *
+ * Practice stays traced by default because that is how a new character is
+ * learnt; it is the hint toggle that makes an attempt recall.
+ */
+export type TraceReason = "guide" | "animation" | "answered";
+
+export function traceReason(help: {
+  guide: boolean;
+  watched: boolean;
+  answered: boolean;
+}): TraceReason | null {
+  if (help.guide) return "guide";
+  if (help.watched) return "animation";
+  if (help.answered) return "answered";
+  return null;
+}
+
+/**
+ * How many reference strokes stay on the board once the stroke animation ends.
+ *
+ * With the guide on that is all of them, which is the board's resting state.
+ * With it off, the animation is a demonstration and the board goes back to blank:
+ * leaving the faint copy up afterwards would turn the attempt that follows into a
+ * trace without the hint toggle saying so.
+ */
+export function ghostAfterAnimation(guide: boolean, total: number): number {
+  return guide ? total : 0;
+}

@@ -635,7 +635,11 @@ imposes — its terms say that failing to keep the data updated "is a violation 
 the licence to use the data", so a pinned artifact with no path forward is the
 trap here rather than a safe default:
 
-1. Set `JMDICT_SIMPLIFIED` in `scripts/fetch-data.sh` to the new release tag.
+1. Set `JMDICT_SIMPLIFIED` in `scripts/fetch-data.sh` to the new release tag,
+   and replace the SHA-256 recorded beside each of its two downloads
+   (`kanjidic2-all-…` and `jmdict-eng-…`) with the new assets'. The fetch refuses
+   a tarball that does not match, and prints the digest it got — record that only
+   once you have looked at what arrived.
 2. Remove the cached document and re-run the fetch, which also re-fetches the
    KanjiVG cross-check for whatever the new snapshot calls jōyō:
 
@@ -680,7 +684,7 @@ Three sources, and the first two are the same dictionary twice:
 | Source | What is taken | Licence |
 | --- | --- | --- |
 | [JMdict](https://www.edrdg.org/jmdict/j_jmdict.html) via [`scriptin/jmdict-simplified`](https://github.com/scriptin/jmdict-simplified) (`jmdict-eng-…`) | The written form, the reading, and the English glosses. **Redistributed**, compacted into the artifact | **CC BY-SA 4.0** (EDRDG) |
-| [JMdict_e](http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz) — EDRDG's own XML | **One field**: the `nf01`–`nf48` priority rank. Nothing else is parsed, and no text from it is redistributed | **CC BY-SA 4.0** (EDRDG) |
+| [JMdict_e](https://www.edrdg.org/pub/Nihongo/JMdict_e.gz) — EDRDG's own XML | **One field**: the `nf01`–`nf48` priority rank. Nothing else is parsed, and no text from it is redistributed | **CC BY-SA 4.0** (EDRDG) |
 | [JmdictFurigana](https://github.com/Doublevil/JmdictFurigana) | The alignment of each reading to the characters it belongs to. **Redistributed**, compacted into the artifact | **MIT**, Copyright (c) 2025 Doublevil |
 
 EDRDG's licence statement names both dictionaries in its scope — it applies to

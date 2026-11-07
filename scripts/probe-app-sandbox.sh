@@ -33,8 +33,10 @@ cd "$WORK"
 # real certificate and say so when there is none.
 IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
 if [ -z "$IDENTITY" ]; then
+  # `|| true` so that a failing `security` reaches the error below rather than
+  # ending the script silently under `pipefail`.
   IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
-    | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
+    | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1 || true)"
 fi
 if [ -z "$IDENTITY" ]; then
   echo "error: no Developer ID certificate found; the sandbox will not apply and" >&2

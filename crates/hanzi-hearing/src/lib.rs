@@ -31,4 +31,4 @@
 
 pub mod asr;
 
-pub use asr::{Asr, AsrStatus, InstallState, ModelSpec, MODEL};
+pub use asr::{model_home, Asr, AsrStatus, InstallState, ModelSpec, MODEL};
