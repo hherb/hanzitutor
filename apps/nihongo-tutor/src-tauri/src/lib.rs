@@ -442,7 +442,8 @@ impl AppState {
     /// stays pure so a test can grade without a learner's file being involved.
     ///
     /// The schedule is only advanced when the attempt is a *review*: the character
-    /// is new, or its due date has passed. Writing あ five times in one sitting
+    /// is new, or its due date has passed — and only when the grader found at least
+    /// one stroke in it. Writing あ five times in one sitting
     /// must not multiply SM-2's interval five times, so a later attempt inside the
     /// interval is graded and not rescheduled — see [`store::ReviewStore`].
     ///
@@ -465,11 +466,18 @@ impl AppState {
         // A traced attempt never reaches the scheduler, whether the character is
         // new or due: copying the guide is not remembering the character, and a
         // legible trace would otherwise lengthen the interval of something the
-        // learner may not be able to write. It is answered like an attempt inside
-        // the interval, with the card's date when there is a card — and with the
-        // schedule file's notice by the same rule `record_attempt` follows, since
-        // it never reaches that call.
-        if traced {
+        // learner may not be able to write.
+        //
+        // Nor does one the grader found no stroke in — an empty board, or only
+        // taps, which the board keeps as coincident points since issue #30 and the
+        // grader counts as strays. It scores zero, and recording that zero would
+        // set the character back for a slip of the hand. The board does not offer
+        // Grade for such an attempt; this is the command not relying on that.
+        //
+        // Either is answered like an attempt inside the interval, with the card's
+        // date when there is a card — and with the schedule file's notice by the
+        // same rule `record_attempt` follows, since it never reaches that call.
+        if traced || report.given_strokes == 0 {
             let next_due = store.store().card(ch).map(|card| card.due.clone());
             return Ok(GradedAttempt {
                 report,
@@ -4115,10 +4123,48 @@ mod tests {
         let state = state();
         let radical = state.radical(6).expect("亅 is radical 6");
         let graded = state
-            .grade_and_schedule(radical.ch, &[], &GradeOptions::default(), false)
+            .grade_and_schedule(radical.ch, &radical.medians, &GradeOptions::default(), false)
             .expect("the board can write a head form the character course cannot");
         assert!(graded.scheduled);
         assert!(graded.next_due.is_some());
+        assert_eq!(state.review_queue(40, None).cards, 1);
+    }
+
+    /// An attempt the grader found no stroke in is graded and **not scheduled**.
+    ///
+    /// Since issue #30 the board keeps a tap as two coincident points rather than
+    /// dropping it, and the grader counts it as a stray. A lone tap graded on its
+    /// own scores zero, and recording that zero would set a character back in the
+    /// schedule for a slip of the hand. The board's Grade control is off for such
+    /// an attempt; this is the command not trusting that it was. A card that
+    /// already exists keeps its date, and the answer still names it.
+    #[test]
+    fn an_attempt_with_no_stroke_in_it_is_graded_but_not_scheduled() {
+        let state = state();
+        let tap = vec![Point::new(300.0, 300.0); 2];
+        let options = GradeOptions::default();
+        for attempt in [vec![], vec![tap.clone()], vec![tap.clone(), tap.clone()]] {
+            let graded = state
+                .grade_and_schedule('あ', &attempt, &options, false)
+                .expect("grades");
+            assert_eq!(graded.report.given_strokes, 0);
+            assert_eq!(graded.report.overall, 0.0);
+            assert!(!graded.scheduled, "{} marks were scheduled", attempt.len());
+            assert!(graded.next_due.is_none(), "there is no card to name");
+        }
+        assert_eq!(state.review_queue(40, None).cards, 0, "no card was made");
+
+        let said = state.kana('あ').expect("あ");
+        let due = state
+            .grade_and_schedule('あ', &said.medians, &options, false)
+            .expect("grades")
+            .next_due
+            .expect("a new card has a due date");
+        let tapped = state
+            .grade_and_schedule('あ', &[tap], &options, false)
+            .expect("grades");
+        assert!(!tapped.scheduled);
+        assert_eq!(tapped.next_due.as_deref(), Some(due.as_str()));
         assert_eq!(state.review_queue(40, None).cards, 1);
     }
 

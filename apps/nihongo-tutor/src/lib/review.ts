@@ -80,12 +80,18 @@ const TRACED_NOTE: Record<TraceReason | "unknown", string> = {
 /**
  * What to say about a graded attempt's schedule, or null when there is nothing.
  *
- * The four cases — counted, traced and so not counted, not counted because it
- * was not due, and an attempt that could not be saved — are a rule about the
+ * The cases — counted, traced and so not counted, not counted because it was
+ * not due, and an attempt that could not be saved — are a rule about the
  * schedule rather than about the drawing, so they are decided here and the panel
  * only gives them a colour. A traced attempt is worded by `reason`, what helped
  * it, because the way to make the next one count differs: the Review screen has
  * no hint to turn off, and after the animation the hint is already off.
+ *
+ * One more is about the drawing after all: an attempt the grader found **no
+ * stroke** in — only taps — is not offered to the schedule (a zero for a slip of
+ * the hand is not a review), and saying "already scheduled" or "traced" would
+ * give the wrong reason. The board's Grade control is off for such an attempt
+ * (`canGrade`), so this is the line for a mark between that rule and the grader's.
  */
 export function scheduleNote(
   graded: {
@@ -93,11 +99,18 @@ export function scheduleNote(
     traced?: boolean;
     nextDue: string | null;
     warning: string | null;
+    report?: { givenStrokes: number };
   },
   now: string,
   reason: TraceReason | null = null,
 ): { tone: "ok" | "plain" | "bad"; text: string } | null {
   if (graded.warning) return { tone: "bad", text: graded.warning };
+  if (graded.report?.givenStrokes === 0) {
+    return {
+      tone: "plain",
+      text: "Nothing on the board was big enough to be a stroke, so this was not saved for review.",
+    };
+  }
   if (graded.traced) return { tone: "plain", text: TRACED_NOTE[reason ?? "unknown"] };
   if (!graded.scheduled) {
     return {

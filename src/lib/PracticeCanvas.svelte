@@ -12,10 +12,15 @@
    * pointer moves with no button held, and ends it with a second click — because
    * a long stroke on a trackpad means holding the button down for a long time.
    * Both produce their points through the same conversion and the same filtering
-   * below, so a stroke's geometry does not depend on which one drew it.
+   * (`strokeInput.ts`), so a stroke's geometry does not depend on which one drew
+   * it. Only a drag belongs to one pointer: a palm or a second finger cannot take
+   * it over, a pen can take it from a touch, and a cancelled drag is thrown away
+   * (issue #30).
    */
   import { BOX, drawScene } from "./render";
   import type { Sweep } from "./render";
+  import { StrokeInput } from "./strokeInput";
+  import type { PointerSample } from "./strokeInput";
   import { targetKind } from "./shortcuts";
   import type { Character, GradeReport, Point } from "./types";
 
@@ -70,21 +75,23 @@
   let dpr = $state(1);
 
   /**
+   * Which pointer is drawing, and the stroke it is drawing (`strokeInput.ts`,
+   * shared with Nihongo Tutor's board).
+   *
    * The in-progress stroke is deliberately *not* `$state`: it changes on every
    * pointer move and only needs to schedule a repaint, so keeping it reactive
-   * would mean paying for deep proxying at pointer frequency.
+   * would mean paying for deep proxying at pointer frequency. `paint` reads it
+   * from here.
+   *
+   * Samples closer together than `minSpacing` (design units) are dropped, to cut
+   * jitter, and `maxPoints` bounds the payload per stroke.
    */
-  let current: Point[] | null = null;
+  const input = new StrokeInput({ minSpacing: 2, maxPoints: 1024 });
   /**
    * True while a click-to-draw stroke is open, between its two clicks. It is a
-   * plain variable for the same reason as `current`.
+   * plain variable for the same reason as the stroke itself.
    */
   let open = false;
-
-  /** Ignore samples closer together than this (design units), to cut jitter. */
-  const MIN_SPACING = 2;
-  /** Bound the payload per stroke. */
-  const MAX_POINTS = 1024;
 
   let scheduled = 0;
   function repaint() {
@@ -111,7 +118,7 @@
       ghostCount,
       ghostStyle,
       strokes,
-      current,
+      current: input.points as Point[] | null,
       report,
       showCorrections,
       sweep,
@@ -187,26 +194,52 @@
     };
   }
 
-  function push(point: Point) {
-    if (!current || current.length >= MAX_POINTS) return;
-    const last = current[current.length - 1];
-    if (last && Math.hypot(point.x - last.x, point.y - last.y) < MIN_SPACING) return;
-    current.push(point);
+  /** The event as `strokeInput.ts` reads it: who it is, and where. */
+  function sample(event: PointerEvent): PointerSample {
+    return {
+      pointerId: event.pointerId,
+      pointerType: event.pointerType,
+      isPrimary: event.isPrimary,
+      t: event.timeStamp,
+      ...toDisplay(event),
+    };
   }
 
-  /** Lift whatever has been drawn to the parent as a finished stroke. */
-  function commit() {
-    const finished = current;
-    current = null;
+  /**
+   * Capture the pointer that is now drawing. `strokeInput` has already given it
+   * the stroke, so a capture that throws — a pointer id the platform no longer
+   * knows, which is what a synthetic event carries — must take the stroke back
+   * rather than leave one open that no release will reach.
+   */
+  function capture(pointerId: number): boolean {
+    try {
+      canvas?.setPointerCapture(pointerId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function release(pointerId: number) {
+    if (canvas?.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
+  }
+
+  /** Lift a finished stroke to the parent. */
+  function lift(finished: Point[] | null) {
     open = false;
-    if (finished && finished.length > 0) onStroke(finished);
+    if (finished) onStroke(finished);
     repaint();
+  }
+
+  /** Lift whatever click-to-draw stroke is open to the parent, ending at `point`. */
+  function commit(point?: Point) {
+    lift(input.finish(point));
   }
 
   /** Throw away an open click-to-draw stroke that was never finished. */
   function cancelDraft() {
     if (!open) return;
-    current = null;
+    input.discard();
     open = false;
     repaint();
   }
@@ -224,33 +257,45 @@
     event.preventDefault();
 
     if (clickToDraw) {
+      // A second finger or a palm is not a click.
+      if (!event.isPrimary) return;
       // The second click ends the stroke where it lands. Nothing is captured:
-      // the stroke is extended by hover moves, which need no button.
+      // the stroke is extended by hover moves, which need no button — and the
+      // two clicks need not share a pointer id, since a touch gets a new one per
+      // contact.
       if (open) {
-        push(toDisplay(event));
-        commit();
+        commit(toDisplay(event));
       } else {
-        current = [toDisplay(event)];
+        input.begin(toDisplay(event));
         open = true;
         repaint();
       }
       return;
     }
 
-    canvas?.setPointerCapture(event.pointerId);
-    current = [toDisplay(event)];
+    const down = input.down(sample(event));
+    if (!down.accepted) return;
+    if (down.release !== null) release(down.release);
+    if (!capture(event.pointerId)) input.discard();
     repaint();
   }
 
   function handleMove(event: PointerEvent) {
-    if (!current) return;
-    event.preventDefault();
+    if (!input.points) return;
     // Coalesced events recover the full-rate samples that the browser batched
     // into a single pointermove, which matters for smooth handwriting.
     const samples = event.getCoalescedEvents?.() ?? [];
-    for (const sample of samples.length > 0 ? samples : [event]) {
-      push(toDisplay(sample));
+    if (clickToDraw) {
+      if (!open || !event.isPrimary) return;
+      event.preventDefault();
+      for (const one of samples.length > 0 ? samples : [event]) input.extend(toDisplay(one));
+      repaint();
+      return;
     }
+    // Another pointer's moves — a resting palm's — cost nothing to ignore.
+    if (event.pointerId !== input.pointerId) return;
+    if (!input.move(sample(event), samples.map((one) => toDisplay(one)))) return;
+    event.preventDefault();
     repaint();
   }
 
@@ -259,35 +304,51 @@
     // stroke stays open until the next press, so the pointer can be repositioned
     // as many times as it takes without the button held down.
     if (clickToDraw) {
-      if (current) event.preventDefault();
+      if (open) event.preventDefault();
       return;
-    }
-    if (!current) return;
-    event.preventDefault();
-    if (canvas?.hasPointerCapture(event.pointerId)) {
-      canvas.releasePointerCapture(event.pointerId);
     }
     // The release position is real input, and for a quick flick it can be the
-    // only sample after the press: a stroke that is never extended collapses to
-    // a single point and is then discarded as an accidental tap, which looks
-    // exactly like the app throwing the stroke away. `push` drops it when it
-    // merely repeats the last sample, so this costs nothing normally.
-    push(toDisplay(event));
-    commit();
+    // only sample after the press: `up` adds it (and drops it when it merely
+    // repeats the last sample), and a stroke that is still a single point comes
+    // back as a two-point dot rather than vanishing.
+    const finished = input.up(sample(event));
+    if (!finished) return;
+    event.preventDefault();
+    release(event.pointerId);
+    lift(finished);
   }
 
-  // A pointer that leaves the window mid-stroke should still commit the stroke.
+  /**
+   * The platform took the pointer back mid-stroke — an edge swipe, palm
+   * rejection, the notification shade. A dragged stroke it interrupted is thrown
+   * away rather than graded half-drawn (issue #30).
+   */
   function handleCancel(event: PointerEvent) {
-    if (!current) return;
     if (clickToDraw) {
+      if (!open || !event.isPrimary) return;
       // The pointer is gone, so there is no second click to wait for; keeping
       // the stroke open would leave ink on the board that nothing can finish.
+      // A click-to-draw stroke was built deliberately, click by click, so it is
+      // kept rather than thrown away.
       event.preventDefault();
-      push(toDisplay(event));
-      commit();
+      commit(toDisplay(event));
       return;
     }
-    handleUp(event);
+    if (!input.cancel(event.pointerId, event.timeStamp)) return;
+    event.preventDefault();
+    release(event.pointerId);
+    repaint();
+  }
+
+  /**
+   * The capture went before the release did. In the ordinary order this arrives
+   * after `pointerup` and finds no stroke; arriving first, the release will never
+   * come, so the stroke ends with what it has.
+   */
+  function handleLostCapture(event: PointerEvent) {
+    if (clickToDraw) return;
+    const finished = input.lost(event.pointerId, event.timeStamp);
+    if (finished) lift(finished);
   }
 
   /**
@@ -332,6 +393,7 @@
     onpointermove={handleMove}
     onpointerup={handleUp}
     onpointercancel={handleCancel}
+    onlostpointercapture={handleLostCapture}
     oncontextmenu={(event) => event.preventDefault()}
   ></canvas>
 </div>

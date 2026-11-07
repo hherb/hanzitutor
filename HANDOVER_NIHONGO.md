@@ -980,6 +980,11 @@ apps/nihongo-tutor/               the app
                                   (36)
   src/lib/board.test.ts   (150)   run by the ROOT project's vitest
   src/lib/render.ts      (547)    LIFTED FROM THE CHINESE APP, UNCHANGED (§4.6)
+  src/lib/strokeInput.ts          LIFTED FROM THE CHINESE APP, UNCHANGED: which
+                                  pointer draws — not a palm or a second finger, a
+                                  pen over a touch — a cancel discards, and a tap is
+                                  a two-point dot (issue #30). The root
+                                  `strokeInput.test.ts` runs both copies
   src/lib/types.ts      (1045)    the IPC shapes, `Character = Drawable`, the
                                   chart's slots as `(string | null)[]`, the
                                   `Prefs` the remembered course crosses in,
@@ -1166,6 +1171,25 @@ to check first when the two apps' interfaces are compared.
 `PracticeCanvas` carries tone-panel and verdict-display concerns this app does
 not have. `KanaCanvas` keeps its name after growing a second and third caller, and
 its prop is `character` rather than `kana` for the same reason.
+
+**The pointer rules are lifted, though.** `src/lib/strokeInput.ts` is
+byte-identical to Hanzi Tutor's (issue #30), so both boards agree on which pointer
+draws, what a cancel does and what a tap is — including the second's grace after a
+pen lifts, in which a touch is taken for the palm that held it. A tap now reaches
+the grader as a two-point dot rather than being dropped by `isStroke`, and four
+things follow from that:
+
+* `grade_kana` counts the strokes the grader *kept* when it decides whether to look
+  for a joined hand. A tap beside さ written in two strokes would otherwise have
+  read as three.
+* Grade is offered on `board.ts`'s `canGrade` — at least one stroke that is more
+  than a tap (`hasDrawnStroke`) — not on the stroke count, so a lone tap cannot be
+  graded.
+* `grade_and_schedule` does not schedule an attempt whose report has
+  `given_strokes == 0`, and `scheduleNote` says why, for a mark that gets past
+  `canGrade` but not the grader's stray filter.
+* The verdict says when marks were left out as too small (`strayNote`), with Hanzi
+  Tutor's caveat that they are not why anything above was marked.
 
 ### 7. **The board's geometry belongs to the stylesheet; the script only sets resolution.**
 

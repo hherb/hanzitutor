@@ -90,7 +90,12 @@ pub fn grade_kana(kana: &Kana, attempt: &[Vec<Point>], options: &GradeOptions) -
     let taught = grade_with_outlines(kana.reference_medians(), &kana.outlines, attempt, options);
 
     let taught_count = kana.medians.len();
-    let given = attempt.len();
+    // The strokes the grader kept, not the marks the board sent: a tap is a mark
+    // the shared grader counts as a stray, and counting it here would turn さ
+    // written in two strokes and a tap into "three strokes, the taught count", and
+    // refuse the join it is. The regroupings are graded against the same attempt,
+    // taps and all, and drop the same strays.
+    let given = taught.given_strokes;
     if given == 0 || given >= taught_count {
         return KanaGrade {
             report: taught,
@@ -463,6 +468,31 @@ mod tests {
         assert!(!graded.report.legible);
         assert!(graded.joined.is_empty());
         assert_eq!(graded.report.expected_strokes, 4, "four taught strokes expected");
+    }
+
+    #[test]
+    fn a_stray_tap_beside_a_joined_hand_is_not_counted_as_a_stroke() {
+        // Since issue #30 the board hands a tap over as its point doubled instead
+        // of dropping it, and the shared grader counts it as a stray. The count
+        // that decides whether to look for a join has to agree: さ written in two
+        // strokes with a tap beside it is three marks but two strokes, and it is
+        // still the hand that joined the first two.
+        let dataset = dataset();
+        let sa = dataset.get('さ').expect("さ");
+        let options = GradeOptions::default();
+        let joined = join(sa, 0, 1);
+        let clean = grade_kana(sa, &joined, &options);
+        assert!(clean.report.legible, "the join alone is legible");
+
+        for at in 0..=joined.len() {
+            let mut attempt = joined.clone();
+            attempt.insert(at, vec![Point::new(80.0, 80.0); 2]);
+            let graded = grade_kana(sa, &attempt, &options);
+            assert_eq!(graded.report.stray_strokes, 1);
+            assert!(graded.report.legible, "a tap at {at} hid the join");
+            assert_eq!(graded.joined, clean.joined);
+            assert_eq!(graded.report.overall, clean.report.overall);
+        }
     }
 
     #[test]

@@ -16,6 +16,7 @@
   import { untrack } from "svelte";
   import { drawScene, type Scene } from "./render";
   import { ghostAfterAnimation, isStroke, pointerToDisplay, sweepAt } from "./board";
+  import { StrokeInput, type PointerSample } from "./strokeInput";
   import type { Drawable, GradeReport, Point } from "./types";
 
   interface Props {
@@ -52,6 +53,12 @@
 
   /** Finished strokes, in display space. */
   let strokes = $state<Point[][]>([]);
+  /**
+   * Which pointer is drawing, and what it has drawn so far (`strokeInput.ts`,
+   * shared with Hanzi Tutor's board). `current` is a copy of its stroke for the
+   * repaint to read.
+   */
+  const input = new StrokeInput();
   /** The stroke under the pointer, if any. */
   let current = $state<Point[] | null>(null);
   let drawing = $state(false);
@@ -70,6 +77,7 @@
     void character?.ch;
     void guide;
     strokes = [];
+    input.discard();
     current = null;
     drawing = false;
     ghostCount = character && guide ? character.strokeCount : 0;
@@ -169,33 +177,106 @@
     sweep = null;
   }
 
+  /** The event as `strokeInput.ts` reads it: who it is, and where. */
+  function sample(event: PointerEvent): PointerSample {
+    return {
+      pointerId: event.pointerId,
+      pointerType: event.pointerType,
+      isPrimary: event.isPrimary,
+      t: event.timeStamp,
+      ...toDisplay(event),
+    };
+  }
+
+  /** Copy the stroke in progress into the state the board paints from. */
+  function show() {
+    const points = input.points;
+    current = points ? [...points] : null;
+    drawing = input.pointerId !== null;
+    paint();
+  }
+
+  /**
+   * Capture the pointer that is now drawing. `strokeInput` has already given it
+   * the stroke, so a capture that throws — a pointer id the platform no longer
+   * knows, which is what a synthetic event carries — must take the stroke back
+   * rather than leave one open that no release will reach.
+   */
+  function capture(pointerId: number): boolean {
+    try {
+      canvas?.setPointerCapture(pointerId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function release(pointerId: number) {
+    if (canvas?.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
+  }
+
+  /** A finished stroke joins the attempt. */
+  function keep(finished: Point[] | null) {
+    // `strokeInput` never hands back fewer than two points — a tap comes back as
+    // a two-point dot — so this is a guard, not the tap filter it once was: what
+    // is too small to be a stroke is the grader's stray-tap filter's call.
+    if (finished && isStroke(finished)) {
+      strokes = [...strokes, finished];
+      onchange?.(strokes);
+    }
+    show();
+  }
+
   function down(event: PointerEvent) {
     if (!character) return;
+    // Only the pointer `strokeInput` lets draw: not a second finger, and not a
+    // palm while the pencil writes (issue #30).
+    const result = input.down(sample(event));
+    if (!result.accepted) return;
+    if (result.release !== null) release(result.release);
+    if (!capture(event.pointerId)) {
+      input.discard();
+      show();
+      return;
+    }
     stopSweep();
-    drawing = true;
-    (event.target as HTMLElement).setPointerCapture(event.pointerId);
-    current = [toDisplay(event)];
-    paint();
+    show();
   }
 
   function move(event: PointerEvent) {
-    if (!drawing || !current) return;
-    current = [...current, toDisplay(event)];
-    paint();
+    if (event.pointerId !== input.pointerId) return;
+    if (input.move(sample(event))) show();
   }
 
   function up(event: PointerEvent) {
-    if (!drawing) return;
-    drawing = false;
-    (event.target as HTMLElement).releasePointerCapture?.(event.pointerId);
-    // A tap is not a stroke; submitting one would have the grader count a
-    // stroke the learner never meant to draw.
-    if (current && isStroke(current)) {
-      strokes = [...strokes, current];
-      onchange?.(strokes);
-    }
-    current = null;
-    paint();
+    // The lift's own position is part of the stroke: a quick dot can have no move
+    // between the press and the lift, and used to be a single point that the
+    // board dropped.
+    const finished = input.up(sample(event));
+    if (!finished) return;
+    release(event.pointerId);
+    keep(finished);
+  }
+
+  /**
+   * The platform took the pointer back mid-stroke — an edge swipe, palm
+   * rejection, the notification shade. The stroke it interrupted is thrown away
+   * rather than joining the attempt half-drawn (issue #30).
+   */
+  function cancel(event: PointerEvent) {
+    if (!input.cancel(event.pointerId, event.timeStamp)) return;
+    release(event.pointerId);
+    show();
+  }
+
+  /**
+   * The capture went before the release did. In the ordinary order this arrives
+   * after `pointerup` and finds no stroke; arriving first, the release will never
+   * come, so the stroke ends with what it has.
+   */
+  function lost(event: PointerEvent) {
+    const finished = input.lost(event.pointerId, event.timeStamp);
+    if (finished) keep(finished);
   }
 
   /** Undo the last stroke. */
@@ -210,6 +291,7 @@
   export function clear() {
     stopSweep();
     strokes = [];
+    input.discard();
     current = null;
     onchange?.(strokes);
     paint();
@@ -258,7 +340,8 @@
     onpointerdown={down}
     onpointermove={move}
     onpointerup={up}
-    onpointercancel={up}
+    onpointercancel={cancel}
+    onlostpointercapture={lost}
     class:drawing
   ></canvas>
 </div>

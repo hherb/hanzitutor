@@ -45,7 +45,7 @@
   import SpeakButton from "./SpeakButton.svelte";
   import WordCard from "./WordCard.svelte";
   import { untrack } from "svelte";
-  import { afterGrade, traceReason } from "./board";
+  import { afterGrade, canGrade, strayNote, traceReason } from "./board";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
   import { everyStrokeFine, strokeCountNote } from "./verdict";
   import { scheduleNote } from "./review";
@@ -325,7 +325,7 @@
   }
 
   async function askForAVerdict() {
-    if (!drawn) return;
+    if (!drawn || !canGrade(attempt, busy)) return;
     try {
       busy = true;
       error = null;
@@ -799,7 +799,7 @@
           {:else}
             <button
               class="primary"
-              disabled={busy || attempt.length === 0}
+              disabled={!canGrade(attempt, busy)}
               onclick={askForAVerdict}
               aria-label={busy ? "Grading…" : "Grade this attempt"}
               title="Grade what you have drawn"
@@ -831,6 +831,9 @@
               </li>
             {/each}
           </ul>
+          {#if report.strayStrokes > 0}
+            <p class="fine">{strayNote(report.strayStrokes)}</p>
+          {/if}
           {#if summary.countNote}
             <p class="fine">{summary.countNote}</p>
           {/if}

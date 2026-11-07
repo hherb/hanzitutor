@@ -58,7 +58,7 @@
   import { SvelteSet } from "svelte/reactivity";
   import KanaCanvas from "./KanaCanvas.svelte";
   import SpeakButton from "./SpeakButton.svelte";
-  import { afterGradeInQueue, traceReason } from "./board";
+  import { afterGradeInQueue, canGrade, strayNote, traceReason } from "./board";
   import { joinedLabel } from "./kana";
   import { courseOf, type Section } from "./nav";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
@@ -170,7 +170,7 @@
   }
 
   async function grade() {
-    if (!drawn || !chosen || !ready) return;
+    if (!drawn || !chosen || !ready || !canGrade(attempt, busy)) return;
     const item = chosen;
     try {
       busy = true;
@@ -406,11 +406,7 @@
               Nothing due
             </button>
           {:else}
-            <button
-              class="primary"
-              disabled={busy || !ready || attempt.length === 0}
-              onclick={grade}
-            >
+            <button class="primary" disabled={!ready || !canGrade(attempt, busy)} onclick={grade}>
               Grade
             </button>
           {/if}
@@ -443,6 +439,9 @@
                 </li>
               {/each}
             </ul>
+            {#if report.strayStrokes > 0}
+              <p class="fine">{strayNote(report.strayStrokes)}</p>
+            {/if}
             {#if drawnJoined}
               <p class="fine">Taught strokes {drawnJoined} were drawn as one.</p>
             {/if}
