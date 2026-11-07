@@ -79,6 +79,21 @@ fn a_devices_own_damaged_shard_is_written_again_and_its_peers_recover() {
     sync(&a, &remote).unwrap();
     practise(&a, '你', "2026-09-21T09:00:00Z");
     sync(&a, &remote).unwrap();
+    // Both publishes went into one open shard (#36). Split it as an earlier build
+    // would have written it, one shard per publish, so that a damaged *earlier*
+    // shard — one with a successor — is covered as well as the last.
+    let whole = own_shards(&remote, &a).remove(0);
+    let text = String::from_utf8(remote.get(&whole).unwrap()).unwrap();
+    let mut split = text.lines();
+    remote
+        .put(&whole, format!("{}\n", split.next().unwrap()).as_bytes())
+        .unwrap();
+    remote
+        .put(
+            &hanzi_sync::attempts_shard_name(a.device_id(), 2),
+            format!("{}\n", split.next().unwrap()).as_bytes(),
+        )
+        .unwrap();
     sync(&b, &remote).unwrap();
     let shards = own_shards(&remote, &a);
     assert_eq!(shards.len(), 2, "one shard per publish: {shards:?}");
