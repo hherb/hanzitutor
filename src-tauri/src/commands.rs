@@ -479,7 +479,13 @@ pub fn speech_status(state: State<'_, AppState>) -> Option<String> {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceOption {
-    /// The name as the system reports it, which is what a choice is stored as.
+    /// What a choice of this voice is stored as, and what the settings screen
+    /// keys its options on: the platform's identifier for it on macOS and iOS
+    /// (`com.apple.eloquence.zh-CN.Eddy`), the name on Android, whose names are
+    /// already unique. Not the name everywhere, because AVFoundation's novelty
+    /// voices share one bare name across every language — see issue #39.
+    pub id: String,
+    /// The name as the system reports it, for the label.
     pub name: String,
     /// The locale, e.g. `zh_CN`. Shown beside the name because it is the only
     /// thing that tells two similarly named Chinese voices apart.
@@ -491,6 +497,11 @@ pub struct VoiceOption {
     /// one that does not, which is worth saying before the learner picks it
     /// rather than after.
     pub network: bool,
+    /// How good the voice's data is — `standard`, `enhanced` or `premium` — or
+    /// `None` where the platform does not say. macOS and iOS list a downloaded
+    /// enhanced voice beside the compact one under the same name and locale,
+    /// and this is what tells the two rows apart.
+    pub quality: Option<String>,
 }
 
 /// The Chinese voices this machine offers, and the one actually in use.
@@ -510,6 +521,18 @@ pub struct VoicesView {
     /// The name of the voice in use, or `None` when nothing Chinese is
     /// installed and pronunciation is unavailable.
     pub active: Option<String>,
+    /// The [`VoiceOption::id`] the stored choice resolves to here, or `None`
+    /// when nothing is chosen or the chosen voice is not installed.
+    ///
+    /// Not the stored value itself: a bare name an older build stored (`Eddy`)
+    /// is one of several entries now, one per locale, and this says which of
+    /// them it means — so the screen selects the right one, and can tell a
+    /// choice that is missing here (this is `None`) from one in use.
+    pub chosen: Option<String>,
+    /// When the stored choice names no Chinese voice but does name one of
+    /// another language here, that voice as `name (locale)` — so the screen can
+    /// say it "isn't available as a Chinese voice" rather than "not installed".
+    pub elsewhere: Option<String>,
 }
 
 /// The voices a Chinese character can be spoken with, and the one in use.

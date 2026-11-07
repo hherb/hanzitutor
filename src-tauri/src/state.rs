@@ -1102,12 +1102,22 @@ impl AppState {
                 .learner_voices()
                 .into_iter()
                 .map(|voice| VoiceOption {
+                    id: voice.id().to_string(),
                     name: voice.name,
                     locale: voice.locale,
                     network: voice.network,
+                    quality: voice.quality,
                 })
                 .collect(),
             active: self.speech.voice().map(|voice| voice.name),
+            chosen: self
+                .speech
+                .chosen_voice()
+                .map(|voice| voice.id().to_string()),
+            elsewhere: self
+                .speech
+                .chosen_elsewhere()
+                .map(|voice| format!("{} ({})", voice.name, voice.locale)),
         }
     }
 

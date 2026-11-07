@@ -614,7 +614,10 @@ export type BoardSize = "compact" | "normal" | "large";
 export interface SettingsView {
   /** `true` click to start and click to finish; `false` press and drag; `null` let the device decide. */
   clickToDraw: boolean | null;
-  /** The pronunciation voice by name, or `null` for the automatic choice. */
+  /**
+   * The pronunciation voice — a `VoiceOption.id`, or the bare name an older
+   * build stored — or `null` for the automatic choice.
+   */
   voice: string | null;
   animationPace: Pace;
   boardSize: BoardSize;
@@ -714,7 +717,14 @@ export interface StartupView {
 
 /** One voice the settings screen can offer. */
 export interface VoiceOption {
-  /** The name as the system reports it, which is what a choice is stored as. */
+  /**
+   * What a choice of this voice is stored as, and what the list is keyed on:
+   * the platform's identifier on macOS and iOS (`com.apple.eloquence.zh-CN.Eddy`),
+   * the name on Android. Not the name everywhere, because Apple's novelty voices
+   * share one bare name across every language (issue #39).
+   */
+  id: string;
+  /** The name as the system reports it, for the label. */
   name: string;
   /** The locale, e.g. `zh_CN` — the only thing that tells similar voices apart. */
   locale: string;
@@ -727,6 +737,13 @@ export interface VoiceOption {
    * here, because the app is meant to work with no network at all.
    */
   network: boolean;
+  /**
+   * How good the voice's data is — `standard`, `enhanced` or `premium` — or
+   * `null` where the platform does not say. Shown only when two entries share
+   * a name and locale, which is what a downloaded enhanced voice beside the
+   * compact one looks like.
+   */
+  quality: string | null;
 }
 
 /**
@@ -740,6 +757,18 @@ export interface VoiceOption {
 export interface VoicesView {
   available: VoiceOption[];
   active: string | null;
+  /**
+   * The `id` of the entry the stored choice resolves to here, or `null` when
+   * nothing is chosen or the chosen voice is not installed. A bare name an
+   * older build stored (`Eddy`) is one of several entries now, and this is the
+   * one it means.
+   */
+  chosen: string | null;
+  /**
+   * When the stored choice names no Chinese voice but does name another
+   * language's voice here, that voice as `name (locale)`; otherwise `null`.
+   */
+  elsewhere: string | null;
 }
 
 /**

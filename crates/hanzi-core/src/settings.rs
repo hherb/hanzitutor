@@ -160,10 +160,26 @@ pub struct Settings {
     /// How a stroke is drawn: `Some(true)` click to start and click to finish,
     /// `Some(false)` press and drag, `None` let the device decide.
     pub click_to_draw: Option<bool>,
-    /// The pronunciation voice to use, by name. Unknown names are matched
-    /// against the installed voices ignoring the locale qualifier macOS appends
-    /// — `Tingting (Chinese (China mainland))` is the same voice as `Tingting` —
-    /// and a name this machine does not have falls back to the automatic choice
+    /// The pronunciation voice to use: the platform's identifier for it on
+    /// macOS and iOS (`com.apple.eloquence.zh-CN.Eddy`), its name on Android.
+    ///
+    /// Identifiers rather than names since issue #39: AVFoundation's novelty
+    /// voices carry the same bare name in every language, so `Eddy` alone did
+    /// not say *which* Eddy. A name is still accepted — it is what every
+    /// earlier build stored — and means a voice of that name in the app's own
+    /// language. The locale qualifier the `say -v '?'` era (v0.3.0–v0.5.11)
+    /// put in names is ignored on both sides when matching, but it picks the
+    /// locale: a stored `Eddy (Chinese (Taiwan))` is the Taiwanese `Eddy`
+    /// AVFoundation now reports bare. With no qualifier the home locale comes
+    /// first (mainland China, Japan), then Taiwan for Chinese, then the rest.
+    /// A stored value is never rewritten on load, so a document carried back
+    /// to an older build keeps working there too; an identifier is a name that
+    /// build does not know, which falls back to its automatic choice rather
+    /// than failing. That is also why the format version did not change: the
+    /// field is still a string, and a bump would make an older build refuse
+    /// every setting rather than one voice.
+    ///
+    /// A value this machine does not have falls back to the automatic choice
     /// rather than failing, because a preference set on one machine must not
     /// break pronunciation on another. `None` is the automatic choice.
     pub voice: Option<String>,
@@ -269,8 +285,9 @@ pub trait SettingsSink: std::fmt::Debug + Send {
 pub struct SettingsPatch {
     /// Choose how a stroke is drawn. `None` leaves the choice as it is.
     pub click_to_draw: Option<bool>,
-    /// Choose the pronunciation voice by name; `""` goes back to the automatic
-    /// choice. `None` leaves the choice as it is.
+    /// Choose the pronunciation voice by identifier (or name — see
+    /// [`Settings::voice`]); `""` goes back to the automatic choice. `None`
+    /// leaves the choice as it is.
     pub voice: Option<String>,
     /// Choose how fast the stroke-order animation runs.
     pub animation_pace: Option<Pace>,
@@ -446,7 +463,8 @@ impl SettingsStore {
 
     /// Choose the voice to pronounce with, or `None` for the automatic choice.
     ///
-    /// An empty (or all-whitespace) name is stored as `None`, so a field the
+    /// The value is an identifier or a name, as [`Settings::voice`] describes.
+    /// An empty (or all-whitespace) one is stored as `None`, so a field the
     /// learner has cleared goes back to the automatic choice rather than being
     /// persisted as a voice called "".
     pub fn set_voice(&mut self, value: Option<&str>) -> bool {
@@ -866,6 +884,36 @@ mod tests {
         assert_eq!(parsed["boardSize"], serde_json::json!("large"));
         assert_eq!(parsed["voice"], serde_json::json!("Meijia"));
         assert_eq!(parsed["toneColours"], serde_json::json!(true));
+
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_voice_identifier_and_a_legacy_bare_name_both_load_as_written() {
+        // Issue #39: a choice is stored as the platform's identifier from now
+        // on, while a document an older build wrote holds a bare name. Neither
+        // is rewritten on load and the format version stays where it was, so a
+        // document still opens in the build that wrote it.
+        let path = temp_path("voice-identifier");
+        fs::write(&path, r#"{"version":1,"voice":"Eddy"}"#).unwrap();
+        let legacy = SettingsStore::open(&path).unwrap();
+        assert_eq!(legacy.view().voice(), Some("Eddy"));
+        drop(legacy);
+
+        {
+            let mut store = SettingsStore::open(&path).unwrap();
+            assert!(store.set_voice(Some("com.apple.eloquence.zh-CN.Eddy")));
+            store.save().unwrap();
+        }
+        let reopened = SettingsStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.view().voice(),
+            Some("com.apple.eloquence.zh-CN.Eddy")
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed["version"], serde_json::json!(FORMAT_VERSION));
+        assert_eq!(FORMAT_VERSION, 1);
 
         fs::remove_file(&path).ok();
     }
