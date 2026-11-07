@@ -11,16 +11,25 @@
 //!   schedule, with no winner to pick and no clock to trust.
 //!
 //! So the database itself is never synced. It stays the local materialised view,
-//! and what travels is a set of small, immutable, append-only **shards** — one
-//! directory per device. Two consequences are worth stating plainly, because they
-//! are the reason for that layout rather than a side effect of it:
+//! and what travels is a set of small, append-only **shards** — one directory per
+//! device. Two consequences are worth stating plainly, because they are the reason
+//! for that layout rather than a side effect of it:
 //!
-//! - **A closed shard is never rewritten.** A filename is derived from the
-//!   sequence numbers inside it, so a device cannot overwrite a peer's work even
-//!   by accident, and a sync that runs twice writes the same bytes twice.
+//! - **A shard only ever grows.** A filename is derived from the sequence number
+//!   it starts at, and a device adds its newest attempts to the end of its last
+//!   shard until that holds [`CHUNK`], then starts the next. An attempt, once in a
+//!   shard, is never changed or taken out, so a device cannot overwrite a peer's
+//!   work even by accident, and a sync that runs twice writes the same bytes twice.
+//!   See [`shard`](crate::shard) for the exact rule.
 //! - **There is no file-level conflict to have.** Every writer owns its own
 //!   directory, so a transport that only understands "put this file" — a synced
-//!   folder, a cloud with no compare-and-swap — is still safe.
+//!   folder, a cloud with no compare-and-swap — is still safe. Where the transport
+//!   does have one (Dropbox's `rev`), the append uses it, so that two installs that
+//!   share a device's identity and write in the same moment fail rather than lose
+//!   a line. One that is already behind the store is given a name of its own
+//!   before it writes (`settle_identity`, #47), and an append that still finds
+//!   another install's attempt in the open shard is refused
+//!   ([`SyncError::SharedIdentity`]).
 //!
 //! ## What this crate is not
 //!
@@ -35,7 +44,9 @@ mod http;
 mod local;
 mod oauth;
 mod reach;
+mod seen;
 mod shard;
+mod skipped;
 mod store;
 
 pub use document::{
@@ -44,7 +55,7 @@ pub use document::{
     vocab_shard_name, write_baseline, write_cursor, write_vocab, write_vocab_cursors,
     Baseline, Baselines,
 };
-pub use dropbox::DropboxStore;
+pub use dropbox::{DropboxStore, RETRY_BUDGET, RETRY_TRIES};
 pub use http::{Http, UreqHttp};
 pub use local::{full_log, local_baselines, own_log, publish, pull, recompute, sync, Summary};
 pub use oauth::{authorize_url, exchange_code, refresh, revoke, Pkce, Tokens, SCOPES};
@@ -53,4 +64,5 @@ pub use shard::{
     attempts_shard_name, device_of_shard, fold_cards, merge_attempts, parse_attempts_shard,
     read_attempts, write_attempts, MergedAttempt, CHUNK,
 };
+pub use skipped::{ShardKind, SkippedShard};
 pub use store::{FolderStore, RemoteEntry, RemoteStore, SyncError};

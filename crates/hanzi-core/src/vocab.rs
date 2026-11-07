@@ -790,9 +790,12 @@ impl VocabStore {
     /// work. The entry already unfiled survives, and nothing it holds is
     /// overwritten: it takes the moved entry's pinyin and meaning only where its
     /// own are blank, and the practice counters add up — attempts summed, the
-    /// better best score and the later practice kept. That is the rule the sync
-    /// will apply when it collapses two copies of one word, once the merge fix
-    /// for issue #35 (PR #71, not yet on `main`) lands.
+    /// better best score and the later practice kept. The counters add up
+    /// exactly as the sync's collapse of two copies of one word adds them
+    /// (`collapse_counters` in `hanzi-store`, issue #35). The content does not
+    /// follow that collapse, on purpose: the collapse carries the newest copy's
+    /// pinyin and meaning by last-writer-wins, while removing a group is the
+    /// learner tidying their own list, and keeps what the survivor holds.
     ///
     /// That collapse keeps the copy with the lowest uuid, which this crate cannot
     /// see. Choosing by group instead is what keeps devices agreeing: which entry

@@ -470,17 +470,57 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<
 /// tables in it are not the tables this build understands, and guessing would be
 /// how study data gets mangled.
 pub(crate) fn version(conn: &Connection) -> rusqlite::Result<Option<i64>> {
+    // "No schema" has exactly two causes — no `meta` table, or no row in it — and
+    // each is asked about by name. Any other failure is returned: reading a busy
+    // or unreadable database as one with no schema would call it a first run and
+    // skip the newer-version guard, which is the one thing this read is for.
+    let has_meta: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_meta {
+        return Ok(None);
+    }
     let value: Option<String> = conn
         .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |row| {
             row.get(0)
         })
-        .ok();
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
     Ok(value.and_then(|text| text.parse().ok()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_schema_is_only_an_absent_table_or_row_and_any_other_failure_is_reported() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(
+            version(&conn).unwrap(),
+            None,
+            "no meta table: a new database"
+        );
+        conn.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .unwrap();
+        assert_eq!(version(&conn).unwrap(), None, "no schema row yet");
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema', '6')", [])
+            .unwrap();
+        assert_eq!(version(&conn).unwrap(), Some(6));
+
+        // A failure that is not "nothing there" — here a `meta` this build cannot
+        // read, standing in for a busy or damaged database — must not read as a
+        // database with no schema, which would skip the newer-version guard.
+        let odd = Connection::open_in_memory().unwrap();
+        odd.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, other TEXT);")
+            .unwrap();
+        assert!(version(&odd).is_err(), "an unreadable meta is an error");
+    }
 
     /// A schema-2 database: `meta`, the attempt log at its original shape, two
     /// rows, and nothing else. The tables this build adds are created by `apply`,

@@ -13,12 +13,48 @@
 //! without fetching — and because every writer owning its own directory is what
 //! makes a dumb transport safe.
 //!
-//! A shard is named by the sequence number it *starts* at, so a closed shard can
-//! never be confused with a rewritten one, and writing the same attempts twice
-//! produces the same names and the same bytes. There is no content hash in the
-//! name: a hash would make the name depend on the contents, which would mean a
-//! device that retried a partial write created a second shard instead of
+//! A shard is named by the sequence number it *starts* at, and writing the same
+//! attempts twice produces the same names and the same bytes. There is no content
+//! hash in the name: a hash would make the name depend on the contents, which would
+//! mean a device that retried a partial write created a second shard instead of
 //! finishing the first.
+//!
+//! ## A shard only grows
+//!
+//! A device's **last** shard is open: each publish adds its new attempts to the end
+//! of it until it holds [`CHUNK`], and only then starts a new file. (Starting a new
+//! file every publish, as earlier builds did, left a phone that syncs on every
+//! launch with hundreds of one-line shards a year, each one more download per
+//! sync.) The rule every writer keeps, and every reader relies on, is:
+//!
+//! - **A new version of a shard is the old one's bytes, unchanged, followed by
+//!   more lines** — this device's own attempts, numbered above every attempt the
+//!   shard already holds, never more than [`CHUNK`] lines in all. Nothing is reordered, edited or taken
+//!   out. Only the device whose directory it is appends, and only to its last
+//!   shard, and only when every attempt already in it is one its own log holds
+//!   identically ([`open_tail`]). A last shard holding an attempt that log does
+//!   not is another install's under the same name. A sync finds that first and
+//!   gives this device a new name (#47's `settle_identity` in [`crate::local`]),
+//!   so its appends go to a shard of its own; [`open_tail`] still refuses
+//!   ([`SyncError::SharedIdentity`]) rather than append or start a conflicting
+//!   shard if one turns up after that check — two installs racing.
+//! - **A reader treats a shard as a set of attempts, whatever version it reads.**
+//!   A longer version of a shard it has already folded adds the attempts it had
+//!   not seen; a version whose attempt `(device, seq)` differs from the one
+//!   already held is [`SyncError::Rewritten`], exactly as two shards disagreeing
+//!   always was. So "rewritten" is about an attempt, never about a file having
+//!   changed. A changed revision is what tells a reader to look again (see
+//!   [`crate::seen`]).
+//! - **The one other write to an existing attempt shard is a repair** of this
+//!   device's own *unreadable* one (`repair_own_shards`), which writes every
+//!   attempt the file can have held from this device's log. Nobody can have folded
+//!   the unreadable version, so it contradicts no reader; the attempts it writes
+//!   are the ones every reader already holds, so it contradicts no earlier
+//!   readable version either.
+//!
+//! Earlier builds read a shard the same way — every shard, every sync, merged
+//! attempt by attempt — so a grown shard is, to them, a shard with more attempts
+//! in it.
 //!
 //! ## The merge
 //!
@@ -55,11 +91,11 @@ use crate::store::{RemoteStore, SyncError};
 
 /// How many attempts go into one shard file.
 ///
-/// A shard is closed when it reaches this, and never reopened. The number trades
-/// a directory listing's worth of files against re-uploading a large one: an
-/// attempt log of a few thousand entries becomes a handful of small files, and a
-/// device that has been offline for a month uploads one new shard rather than the
-/// whole log.
+/// A shard is closed when it reaches this, and never reopened; until then it is
+/// this device's open shard, and each publish adds to it. The number trades a
+/// directory listing's worth of files against re-uploading a large one: an attempt
+/// log of a few thousand entries becomes a handful of files, and the most a publish
+/// re-uploads is one shard of this size.
 pub const CHUNK: usize = 500;
 
 /// The directory every device's shards live under.
@@ -68,6 +104,14 @@ const DEVICES: &str = "devices";
 const ATTEMPTS: &str = "attempts";
 
 /// One attempt as it travels.
+///
+/// **Changing this changes what a cached shard rebuilds to.** [`crate::seen`]
+/// does not keep a shard's bytes: it rebuilds a folded shard's text from the local
+/// log through this type, so a field added here that the log does not carry would
+/// be silently missing from every rebuilt shard. The record of folded shards is
+/// keyed on [`line_format`], which follows the field names automatically; any
+/// other change to the line — a field's meaning or encoding, a new rating — must
+/// bump [`LINE_VERSION`] so that every cached shard is downloaded again.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct ShardLine {
     seq: i64,
@@ -75,6 +119,32 @@ struct ShardLine {
     at: String,
     score: f32,
     rating: Rating,
+}
+
+/// The attempt line's format version: bump it with any change to [`ShardLine`]
+/// that its field names do not show.
+const LINE_VERSION: u32 = 1;
+
+/// The attempt line's format, as [`crate::seen`] keys its record on: the version
+/// and the field names, read off an encoded line so that adding or renaming a
+/// field changes it without anybody having to remember to.
+pub(crate) fn line_format() -> String {
+    let sample = ShardLine {
+        seq: 1,
+        ch: String::new(),
+        at: String::new(),
+        score: 0.0,
+        rating: Rating::Good,
+    };
+    // Sorted here rather than trusted to be: whether a JSON object keeps its
+    // insertion order depends on a `serde_json` feature another crate may turn on.
+    let mut fields: Vec<String> = match serde_json::to_value(&sample) {
+        Ok(serde_json::Value::Object(map)) => map.keys().cloned().collect(),
+        _ => Vec::new(),
+    };
+    fields.sort();
+    let fields = fields.join(",");
+    format!("{LINE_VERSION}:{fields}")
 }
 
 /// An attempt with the device that made it attached.
@@ -142,16 +212,81 @@ pub fn read_attempts(store: &dyn RemoteStore) -> Result<Vec<MergedAttempt>, Sync
             continue;
         };
         let bytes = store.get(&entry.name)?;
-        let text = String::from_utf8(bytes)
-            .map_err(|e| SyncError::Malformed(format!("{}: not UTF-8: {e}", entry.name)))?;
-        for (number, line) in text.lines().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let record: ShardLine = serde_json::from_str(line).map_err(|e| {
-                SyncError::Malformed(format!("{} line {}: {e}", entry.name, number + 1))
-            })?;
-            out.push(MergedAttempt {
+        out.extend(
+            parse_shard(&entry.name, device_id, &bytes)
+                .map_err(|fault| SyncError::Malformed(fault.reason))?,
+        );
+    }
+    out.sort_by(canonical);
+    Ok(out)
+}
+
+/// One attempt shard's lines, or what is wrong with it.
+///
+/// All or nothing, for the reason [`read_attempts`] gives: a shard that is
+/// partly readable must not pass for a shorter one.
+pub(crate) fn parse_shard(
+    name: &str,
+    device_id: &str,
+    bytes: &[u8],
+) -> Result<Vec<MergedAttempt>, ShardFault> {
+    let damaged = |reason: String| ShardFault {
+        newer_format: false,
+        reason,
+    };
+    let text =
+        std::str::from_utf8(bytes).map_err(|e| damaged(format!("{name}: not UTF-8: {e}")))?;
+    let mut out = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: ShardLine = serde_json::from_str(line).map_err(|e| ShardFault {
+            // A line that is sound JSON but not an attempt this build can read — a
+            // rating it has never heard of, a field changed shape — was written by
+            // a newer build, not broken by a transport. The difference decides
+            // whether this device may write the file again (it must not: it would
+            // drop what the newer build said) and what the learner is told.
+            newer_format: serde_json::from_str::<serde_json::Value>(line).is_ok(),
+            reason: format!("{name} line {}: {e}", number + 1),
+        })?;
+        out.push(MergedAttempt {
+            device_id: device_id.to_string(),
+            seq: record.seq,
+            ch: record.ch,
+            at: record.at,
+            score: record.score,
+            rating: record.rating,
+        });
+    }
+    Ok(out)
+}
+
+/// What can still be made out of an attempt shard that cannot be read whole.
+///
+/// Never folded — a partly readable shard must not pass for a shorter one, see
+/// [`parse_shard`] — only used as evidence about who wrote it: see
+/// `hidden_own` in [`crate::local`].
+pub(crate) struct Salvaged {
+    /// Every line that still reads as an attempt.
+    pub(crate) attempts: Vec<MergedAttempt>,
+    /// How many non-blank lines the file holds, a cut-off last one included: at
+    /// least as many attempts as it was written with less any a truncation took.
+    pub(crate) lines: usize,
+}
+
+/// Read what can be read of a damaged attempt shard of `device_id`'s.
+pub(crate) fn salvage_shard(device_id: &str, bytes: &[u8]) -> Salvaged {
+    let text = String::from_utf8_lossy(bytes);
+    let mut attempts = Vec::new();
+    let mut lines = 0usize;
+    for line in text.split('\n') {
+        if line.trim().is_empty() {
+            continue;
+        }
+        lines += 1;
+        if let Ok(record) = serde_json::from_str::<ShardLine>(line) {
+            attempts.push(MergedAttempt {
                 device_id: device_id.to_string(),
                 seq: record.seq,
                 ch: record.ch,
@@ -161,8 +296,14 @@ pub fn read_attempts(store: &dyn RemoteStore) -> Result<Vec<MergedAttempt>, Sync
             });
         }
     }
-    out.sort_by(canonical);
-    Ok(out)
+    Salvaged { attempts, lines }
+}
+
+/// Why an attempt shard could not be read.
+pub(crate) struct ShardFault {
+    /// Sound JSON this build cannot decode, rather than a damaged file.
+    pub(crate) newer_format: bool,
+    pub(crate) reason: String,
 }
 
 /// Write one device's attempts as shards, chunked, and return the names written.
@@ -178,32 +319,22 @@ pub fn write_attempts(
     let mut ordered: Vec<&MergedAttempt> = attempts.iter().collect();
     ordered.sort_by(|a, b| canonical(a, b));
 
+    write_new_shards(store, device_id, &ordered)
+}
+
+/// Attempts, already in canonical order, as new shards of [`CHUNK`] each.
+fn write_new_shards(
+    store: &dyn RemoteStore,
+    device_id: &str,
+    ordered: &[&MergedAttempt],
+) -> Result<Vec<String>, SyncError> {
     let mut names = Vec::new();
     for chunk in ordered.chunks(CHUNK) {
         let first = chunk
             .first()
             .expect("a chunk of a non-empty slice is non-empty")
             .seq;
-        let mut body = String::new();
-        for attempt in chunk {
-            if attempt.device_id != device_id {
-                return Err(SyncError::Malformed(format!(
-                    "an attempt of {} cannot be published as {device_id}'s",
-                    attempt.device_id
-                )));
-            }
-            let line = ShardLine {
-                seq: attempt.seq,
-                ch: attempt.ch.clone(),
-                at: attempt.at.clone(),
-                score: attempt.score,
-                rating: attempt.rating,
-            };
-            let encoded = serde_json::to_string(&line)
-                .map_err(|e| SyncError::Malformed(format!("an attempt could not be encoded: {e}")))?;
-            body.push_str(&encoded);
-            body.push('\n');
-        }
+        let body = shard_body(device_id, chunk)?;
         let name = attempts_shard_name(device_id, first);
         store.put(&name, body.as_bytes())?;
         names.push(name);
@@ -211,12 +342,183 @@ pub fn write_attempts(
     Ok(names)
 }
 
+/// A device's last attempt shard, as found open for appending.
+pub(crate) struct OpenTail {
+    name: String,
+    /// The revision it was listed with, for [`RemoteStore::replace`]; empty when
+    /// it is not known, and then the append is a plain write.
+    revision: String,
+    bytes: Vec<u8>,
+    seqs: std::collections::BTreeSet<i64>,
+}
+
+impl OpenTail {
+    /// The highest sequence number it holds: an append adds only attempts above it.
+    fn highest(&self) -> i64 {
+        self.seqs.last().copied().unwrap_or(i64::MIN)
+    }
+}
+
+/// The shard a publish may append to: this device's last one, if it can take more.
+///
+/// `last_start` is the number this device's last attempt shard is named after,
+/// counting ones that could not be read — so an unreadable last shard means no
+/// append, rather than an append to the one before it, which would put new
+/// attempts in a file whose successor's name says they are not there. `own` is this
+/// device's own log.
+///
+/// It is open when it is in the listing, reads, holds fewer than [`CHUNK`]
+/// attempts, and ends with a whole line; otherwise this is `None`, and the publish
+/// starts a new shard, as earlier builds always did.
+///
+/// Whether open or full, a readable last shard must hold nothing but attempts
+/// that `own` holds identically, and if it does not this is
+/// [`SyncError::SharedIdentity`]. A shard holding an attempt of this name that
+/// this log lacks, or holds differently, was written by another copy of this
+/// database (#12) that has published past where this log ends: appending would
+/// mix two histories in one file, and starting a new shard would publish
+/// different attempts under numbers the other already used — `Rewritten` on every
+/// device for good. Refusing is the most this can do; #12's `settle_identity`,
+/// which gives the copy a name of its own, is the fix.
+pub(crate) fn open_tail(
+    store: &dyn RemoteStore,
+    device_id: &str,
+    last_start: Option<i64>,
+    own: &[MergedAttempt],
+) -> Result<Option<OpenTail>, SyncError> {
+    let Some(last_start) = last_start else {
+        return Ok(None);
+    };
+    let Some(entry) = store
+        .list()?
+        .into_iter()
+        .find(|entry| parse_attempts_shard(&entry.name) == Some((device_id, last_start)))
+    else {
+        return Ok(None);
+    };
+    let bytes = store.get(&entry.name)?;
+    let Ok(held) = parse_shard(&entry.name, device_id, &bytes) else {
+        return Ok(None);
+    };
+    let mine: std::collections::HashMap<i64, &MergedAttempt> =
+        own.iter().map(|attempt| (attempt.seq, attempt)).collect();
+    if let Some(stranger) = held
+        .iter()
+        .find(|attempt| mine.get(&attempt.seq) != Some(attempt))
+    {
+        return Err(SyncError::SharedIdentity {
+            device_id: device_id.to_string(),
+            seq: stranger.seq,
+        });
+    }
+    let open = !held.is_empty() && held.len() < CHUNK && bytes.last() == Some(&b'\n');
+    Ok(open.then(|| OpenTail {
+        name: entry.name,
+        revision: entry.revision,
+        bytes,
+        seqs: held.iter().map(|attempt| attempt.seq).collect(),
+    }))
+}
+
+/// Write a device's newest attempts: onto its open shard first, until that holds
+/// [`CHUNK`], and the rest as new shards. Returns the names written, and how many
+/// attempts were written — which leaves out any the open shard already held.
+///
+/// Only attempts numbered **above** everything the open shard holds are appended:
+/// the rule is that a shard grows by newer attempts. Anything lower — which the
+/// caller should not normally pass, since it drops whatever a readable shard
+/// already holds, but which a store that lost an old shard can produce — goes into
+/// new shards of its own.
+///
+/// The open shard is written with [`RemoteStore::replace`] against the revision
+/// it was listed with, so a second writer in this directory makes this fail
+/// rather than lose what it wrote. Its existing bytes are kept exactly; see the
+/// module note for the rule.
+pub(crate) fn append_attempts(
+    store: &dyn RemoteStore,
+    device_id: &str,
+    attempts: &[MergedAttempt],
+    tail: Option<&OpenTail>,
+) -> Result<(Vec<String>, usize), SyncError> {
+    let mut ordered: Vec<&MergedAttempt> = attempts
+        .iter()
+        .filter(|attempt| !tail.is_some_and(|tail| tail.seqs.contains(&attempt.seq)))
+        .collect();
+    ordered.sort_by(|a, b| canonical(a, b));
+    let written = ordered.len();
+
+    let mut names = Vec::new();
+    let mut rest = ordered;
+    if let Some(tail) = tail {
+        let (newer, older): (Vec<&MergedAttempt>, Vec<&MergedAttempt>) = rest
+            .into_iter()
+            .partition(|attempt| attempt.seq > tail.highest());
+        let room = CHUNK.saturating_sub(tail.seqs.len()).min(newer.len());
+        if room > 0 {
+            let mut bytes = tail.bytes.clone();
+            bytes.extend_from_slice(shard_body(device_id, &newer[..room])?.as_bytes());
+            if tail.revision.is_empty() {
+                store.put(&tail.name, &bytes)?;
+            } else {
+                store.replace(&tail.name, &bytes, &tail.revision)?;
+            }
+            names.push(tail.name.clone());
+        }
+        // What did not fit, and anything older than the open shard, in canonical
+        // order as always.
+        rest = older.into_iter().chain(newer[room..].iter().copied()).collect();
+        rest.sort_by(|a, b| canonical(a, b));
+    }
+    names.extend(write_new_shards(store, device_id, &rest)?);
+    Ok((names, written))
+}
+
+/// The text of one attempt shard: one line per attempt, in the order given.
+///
+/// Every attempt must belong to `device_id`, for the reason [`write_attempts`]
+/// gives.
+///
+/// `device_id` is whatever `Db::device_id` hands back, borrowed or owned.
+pub(crate) fn shard_body(
+    device_id: impl AsRef<str>,
+    attempts: &[&MergedAttempt],
+) -> Result<String, SyncError> {
+    let device_id = device_id.as_ref();
+    let mut body = String::new();
+    for attempt in attempts {
+        if attempt.device_id != device_id {
+            return Err(SyncError::Malformed(format!(
+                "an attempt of {} cannot be published as {device_id}'s",
+                attempt.device_id
+            )));
+        }
+        let line = ShardLine {
+            seq: attempt.seq,
+            ch: attempt.ch.clone(),
+            at: attempt.at.clone(),
+            score: attempt.score,
+            rating: attempt.rating,
+        };
+        let encoded = serde_json::to_string(&line)
+            .map_err(|e| SyncError::Malformed(format!("an attempt could not be encoded: {e}")))?;
+        body.push_str(&encoded);
+        body.push('\n');
+    }
+    Ok(body)
+}
+
+/// Sort attempts into the order shards are written and folded in.
+pub(crate) fn sort_canonical(attempts: &mut [MergedAttempt]) {
+    attempts.sort_by(canonical);
+}
+
 /// Union two logs into one, in canonical order.
 ///
 /// The two sides are the local database's log and everything read back from the
 /// store. An attempt on both sides is one attempt; the same `(device_id, seq)`
-/// with different contents is [`SyncError::Rewritten`], because a shard is written
-/// once and never rewritten and a merge must not choose between two stories.
+/// with different contents is [`SyncError::Rewritten`], because an attempt is
+/// written once and never changed — a shard only grows — and a merge must not
+/// choose between two stories.
 pub fn merge_attempts(
     local: Vec<MergedAttempt>,
     remote: Vec<MergedAttempt>,
@@ -314,4 +616,57 @@ pub fn fold_cards(attempts: &[MergedAttempt], baselines: &Baselines) -> BTreeMap
     }
 
     folded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attempt(seq: i64) -> MergedAttempt {
+        MergedAttempt {
+            device_id: "me".into(),
+            seq,
+            ch: "好".into(),
+            at: format!("2026-09-20T09:00:{seq:02}Z"),
+            score: 80.0,
+            rating: Rating::Good,
+        }
+    }
+
+    #[test]
+    fn only_attempts_above_the_open_shard_are_appended_to_it() {
+        // A store that lost an old shard can leave this device with an attempt to
+        // write that is numbered below its open shard; it goes into a shard of its
+        // own, so the open one only ever grows by newer attempts.
+        let root = std::env::temp_dir().join(format!("hanzi-shard-tail-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let store = crate::FolderStore::open(&root).unwrap();
+        let own: Vec<MergedAttempt> = (1..=7).map(attempt).collect();
+        write_attempts(&store, "me", &own[4..6]).unwrap();
+        let tail = open_tail(&store, "me", Some(5), &own).unwrap().expect("open");
+
+        let (names, written) =
+            append_attempts(&store, "me", &[attempt(3), attempt(7)], Some(&tail)).unwrap();
+        assert_eq!(written, 2);
+        assert_eq!(
+            names,
+            [attempts_shard_name("me", 5), attempts_shard_name("me", 3)]
+        );
+        let seqs = |name: &str| -> Vec<i64> {
+            parse_shard(name, "me", &store.get(name).unwrap())
+                .ok()
+                .unwrap()
+                .into_iter()
+                .map(|a| a.seq)
+                .collect()
+        };
+        assert_eq!(seqs(&attempts_shard_name("me", 5)), [5, 6, 7]);
+        assert_eq!(seqs(&attempts_shard_name("me", 3)), [3]);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_line_format_follows_the_fields_of_a_line() {
+        assert_eq!(line_format(), "1:at,ch,rating,score,seq");
+    }
 }

@@ -29,7 +29,8 @@
 //!    attempts under this device's name that this log does not, this database is a
 //!    copy of another one, and it takes a new name before writing anything — see
 //!    [`settle_identity`].
-//! 2. **Publish** every attempt the log holds that no shard does.
+//! 2. **Publish** every attempt the log holds that no shard does — this device's
+//!    own onto the end of its open shard first, then into new ones.
 //! 3. **Pull** every shard back into the local log, adding only what is missing.
 //! 4. **Recompute** the schedule from the whole log, which is the step that makes
 //!    two devices agree: neither schedule is merged, both are rebuilt from the
@@ -70,10 +71,13 @@ use crate::document::{
     read_cursor, read_vocab, read_vocab_cursors, write_baseline, write_cursor, write_vocab,
     write_vocab_cursors, Baseline, Baselines,
 };
+use crate::seen::Seen;
 use crate::shard::{
-    attempts_shard_name, fold_cards, merge_attempts, parse_attempts_shard, read_attempts,
+    append_attempts, attempts_shard_name, fold_cards, merge_attempts, open_tail,
+    parse_attempts_shard, read_attempts, salvage_shard, shard_body, sort_canonical,
     write_attempts, MergedAttempt,
 };
+use crate::skipped::{Screened, ShardKind, SkippedShard};
 use crate::store::{RemoteStore, SyncError};
 
 /// Where this device records how far it has published its own log.
@@ -92,6 +96,41 @@ const PUBLISHED_THROUGH: &str = "sync:published_seq";
 /// never changes, because it describes history that has already happened — which is
 /// also why it is a document here rather than a table.
 const BASELINE_KEY: &str = "sync:baseline";
+
+/// Where a rename records the rows it held back under the old name because a
+/// damaged file of that name might hold them — see [`HeldBack`].
+const HELD_BACK_KEY: &str = "sync:held_back";
+
+/// A row a rename left under the old name because a hidden own shard could hold
+/// it (see [`HiddenOwn`]), and the file that could.
+///
+/// Recorded in `meta` at the rename, so that a restart does not forget it, and
+/// only these are ever moved to the new name later — once the store holds a
+/// different attempt at that number, or that file reads again and does not hold
+/// it. Nothing else under a former name is taken for this device's own just
+/// because the store shows none of it: the store can lose a file (a deletion, a
+/// rewind, a folder still syncing), and the attempts this device pulled from it
+/// are still the other device's.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct HeldBack {
+    device_id: String,
+    shard: String,
+    seq: i64,
+}
+
+fn held_back(db: &Db) -> Result<Vec<HeldBack>, SyncError> {
+    Ok(db
+        .meta_value(HELD_BACK_KEY)
+        .map_err(SyncError::Io)?
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default())
+}
+
+fn set_held_back(db: &Db, rows: &[HeldBack]) -> Result<(), SyncError> {
+    let text = serde_json::to_string(rows)
+        .map_err(|e| SyncError::Malformed(format!("the held-back rows could not be encoded: {e}")))?;
+    db.set_meta_value(HELD_BACK_KEY, &text).map_err(SyncError::Io)
+}
 
 /// What one sync did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -116,6 +155,17 @@ pub struct Summary {
     pub vocab_changed: usize,
     /// Whether the course position moved.
     pub cursor_moved: bool,
+    /// Files this sync left out because they could not be used — another device's
+    /// newer format, or a damaged file — while everything else synced. See
+    /// [`crate::skipped`]; [`Summary::notice`] says it in words.
+    pub skipped: Vec<SkippedShard>,
+    /// Files in this device's own directory that could not be read and that this
+    /// sync wrote again — see `repair_own_shards`.
+    pub repaired: Vec<SkippedShard>,
+    /// Writes this sync declined to make because they would have replaced a file
+    /// it could not read in another device's directory. Not counted in
+    /// [`Summary::published`]; see [`crate::skipped`].
+    pub withheld: Vec<String>,
 }
 
 impl Summary {
@@ -127,6 +177,12 @@ impl Summary {
             && self.recomputed == 0
             && self.vocab_changed == 0
             && !self.cursor_moved
+    }
+
+    /// What the learner should be told about files this sync left out, if any:
+    /// a sentence to put after the summary, never instead of it.
+    pub fn notice(&self) -> Option<String> {
+        crate::skipped::notice(&self.skipped, &self.repaired)
     }
 }
 
@@ -151,10 +207,33 @@ pub fn own_log(db: &Db) -> Result<Vec<MergedAttempt>, SyncError> {
 /// Publish every attempt the local log holds that no shard holds yet.
 ///
 /// Reads the store to find out what it holds; [`sync`] reads it once for this and
-/// the pull together. See `publish_against` for what is published, and why.
+/// the pull together. Settles this device's identity first — see
+/// [`settle_identity`] — and then see `publish_against` for what is published, and
+/// why.
 pub fn publish(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
     let remote = read_attempts(store)?;
-    Ok(publish_against(db, store, &remote)?.0)
+    // Unscreened: a shard this cannot read has already failed the read above.
+    settle_identity(db, store, &held_index(&remote), &HiddenOwn::default())?;
+    // Under the name it settled on, and counting every shard of it: the last one
+    // is the one this device's new attempts may be appended to.
+    let device = db.device_id();
+    let last_start = store
+        .list()?
+        .iter()
+        .filter_map(|entry| parse_attempts_shard(&entry.name))
+        .filter(|(owner, _)| *owner == device)
+        .map(|(_, first)| first)
+        .max();
+    Ok(publish_against(db, store, &remote, &BTreeSet::new(), last_start)?.0)
+}
+
+/// `remote` by `(device_id, seq)`, the way [`settle_identity`] and
+/// `publish_against` look an attempt up.
+fn held_index(remote: &[MergedAttempt]) -> HashMap<(&str, i64), &MergedAttempt> {
+    remote
+        .iter()
+        .map(|attempt| ((attempt.device_id.as_str(), attempt.seq), attempt))
+        .collect()
 }
 
 /// Publish against a reading of the store already in hand.
@@ -187,24 +266,52 @@ pub fn publish(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
 /// An attempt the store holds a *different* copy of is not published: that
 /// disagreement is for the pull to report, never for a publish to settle by
 /// overwriting. This device's own name is the exception that needs more than
-/// that, and gets it first — see [`settle_identity`].
+/// that, and the caller gives it first — see [`settle_identity`].
+///
+/// ## Where this device's own go
+///
+/// Onto the end of its last shard (`last_start`, counting any that could not be
+/// read) while that holds fewer than [`crate::CHUNK`], and only then into new
+/// ones — see [`crate::shard`] for the rule that keeps that safe for every reader.
+/// What the store lacks can include numbers *below* the open shard's (a store that
+/// lost an old shard); `append_attempts` appends only those above it and writes
+/// the rest as new shards. Every other device's go into new shards, as always:
+/// only the owner appends.
+///
+/// ## Devices the reading left out
+///
+/// `left_out` names the devices whose shards `remote` does not show at all,
+/// because one of them could not be read (see [`crate::skipped`]). The store holds
+/// their attempts — the reading just did not look — so none of them is published:
+/// "the store lacks it" would be false for every one, and writing them would put a
+/// second copy of a peer's log beside the file this sync could not read.
 fn publish_against(
     db: &Db,
     store: &dyn RemoteStore,
     remote: &[MergedAttempt],
+    left_out: &BTreeSet<String>,
+    last_start: Option<i64>,
 ) -> Result<(usize, usize), SyncError> {
-    let held: HashMap<(&str, i64), &MergedAttempt> = remote
-        .iter()
-        .map(|attempt| ((attempt.device_id.as_str(), attempt.seq), attempt))
-        .collect();
-
-    settle_identity(db, store, &held)?;
+    let held = held_index(remote);
     let device = db.device_id();
+    let held_back = held_back(db)?;
+    let waiting: HashSet<(&str, i64)> = held_back
+        .iter()
+        .map(|row| (row.device_id.as_str(), row.seq))
+        .collect();
 
     let mut fresh: BTreeMap<String, Vec<MergedAttempt>> = BTreeMap::new();
     let mut unpublishable = 0usize;
     for attempt in full_log(db)? {
         if held.contains_key(&(attempt.device_id.as_str(), attempt.seq)) {
+            continue;
+        }
+        if attempt.device_id != device && left_out.contains(&attempt.device_id) {
+            continue;
+        }
+        if waiting.contains(&(attempt.device_id.as_str(), attempt.seq)) {
+            // Held back by a rename until the file that may hold it reads: not
+            // this name's to publish, and not yet known to be this device's.
             continue;
         }
         if attempt.device_id != device && !publishable_name(&attempt.device_id) {
@@ -222,8 +329,16 @@ fn publish_against(
 
     let mut published = 0usize;
     for (owner, attempts) in &fresh {
-        write_attempts(store, owner, attempts)?;
-        published += attempts.len();
+        if *owner == device {
+            // After `settle_identity`, with the name it settled on: the open shard
+            // is also the check that no other install writes under this name, and
+            // a copy the rename has just dealt with would otherwise be refused.
+            let tail = open_tail(store, &device, last_start, &own_log(db)?)?;
+            published += append_attempts(store, owner, attempts, tail.as_ref())?.1;
+        } else {
+            write_attempts(store, owner, attempts)?;
+            published += attempts.len();
+        }
     }
 
     // Kept for an older build only — see `PUBLISHED_THROUGH`.
@@ -283,9 +398,12 @@ fn publish_against(
 /// holds a *different* attempt under that name and number, only this device can
 /// have made this one, so it is moved to the current name as well
 /// ([`Db::reclaim_attempts`]) rather than left to fail every pull with
-/// [`SyncError::Rewritten`]. A former name's attempts that the store does not hold
-/// at all are left alone: they are as likely to be the original's, pulled before a
-/// move to an empty store, and are published under that name like anyone else's.
+/// [`SyncError::Rewritten`]. So is a row a rename held back ([`HeldBack`]) once
+/// the file that might have held it reads again without it. Any other
+/// former-name attempt the store does not hold is left alone — even one numbered
+/// above all the store shows of that name: it is as likely to be the original's,
+/// pulled before a move to an empty store or before the store lost a file, and
+/// is published under that name like anyone else's.
 ///
 /// ## What it cannot do
 ///
@@ -320,28 +438,70 @@ fn publish_against(
 ///   none leaves a pre-M10 card stale on the copy — see `settle_baseline` — until
 ///   the original publishes a baseline, and for good if it never does.
 ///
+/// ## This device's own shards that cannot be read
+///
+/// A screened reading hides them (see [`crate::skipped`]), so `held` says nothing
+/// about what they hold, and `hidden` stands in for them — see [`HiddenOwn`]. What
+/// can still be read of one counts as evidence like any shard's, and so does a
+/// file holding more lines than this log has attempts for it. And a rename leaves
+/// under the old name every row the hidden files may hold: what is in them is
+/// published, whoever wrote it, and taking it for this device's unpublished work
+/// would publish shared history a second time under the new name, for every peer
+/// to fold twice. A row this device made that only *would* have gone in such a
+/// file stays behind with them, unpublished, until the file can be read again —
+/// then the store holds a different attempt at that number, or that file holds
+/// none there, and the reclaim below moves it. Those rows are recorded
+/// ([`HeldBack`]) so that nothing else is ever taken for them, and are not
+/// published under the old name meanwhile.
+///
 /// Returns the new name, if there is one.
 fn settle_identity(
     db: &Db,
     store: &dyn RemoteStore,
     held: &HashMap<(&str, i64), &MergedAttempt>,
+    hidden: &HiddenOwn,
 ) -> Result<Option<String>, SyncError> {
     let device = db.device_id();
     let own: HashMap<i64, MergedAttempt> = own_log(db)?
         .into_iter()
         .map(|attempt| (attempt.seq, attempt))
         .collect();
-    let someone_else = held
-        .iter()
-        .filter(|((owner, _), _)| *owner == device)
-        .any(|((_, seq), remote)| own.get(seq) != Some(*remote));
+    let someone_else = hidden.contradicts
+        || held
+            .iter()
+            .filter(|((owner, _), _)| *owner == device)
+            .any(|((_, seq), remote)| own.get(seq) != Some(*remote));
 
     // Before the name can change, because a baseline accounts for rows by name.
     settle_baseline(db, store, someone_else)?;
 
     let renamed = if someone_else {
-        let published = |row: &LoggedAttempt| held_as_is(held, row);
-        Some(db.rotate_device_id(&published).map_err(SyncError::Io)?)
+        let kept_back = std::cell::RefCell::new(Vec::new());
+        let published = |row: &LoggedAttempt| {
+            if held_as_is(held, row) {
+                return true;
+            }
+            match hidden.covering(row.seq) {
+                Some(shard) if row.device_id == device => {
+                    kept_back.borrow_mut().push(HeldBack {
+                        device_id: device.clone(),
+                        shard: shard.to_string(),
+                        seq: row.seq,
+                    });
+                    true
+                }
+                _ => false,
+            }
+        };
+        let new = db.rotate_device_id(&published).map_err(SyncError::Io)?;
+        let mut rows = held_back(db)?;
+        for row in kept_back.into_inner() {
+            if !rows.contains(&row) {
+                rows.push(row);
+            }
+        }
+        set_held_back(db, &rows)?;
+        Some(new)
     } else {
         None
     };
@@ -350,14 +510,173 @@ fn settle_identity(
     // from before the rename, restored by a build that let it in — goes first, so
     // that it is neither reclaimed below as a second attempt nor published again.
     db.forget_moved_copies().map_err(SyncError::Io)?;
+    let waiting = held_back(db)?;
+    let listed: HashSet<String> = if waiting.is_empty() {
+        HashSet::new()
+    } else {
+        store.list()?.into_iter().map(|entry| entry.name).collect()
+    };
     for former in db.former_device_ids().map_err(SyncError::Io)? {
-        let keep = |row: &LoggedAttempt| {
-            held.get(&(former.as_str(), row.seq))
-                .is_none_or(|remote| **remote == MergedAttempt::from(row.clone()))
+        // A row this device held back at a rename (see `HeldBack`) whose file now
+        // reads without it: the original never used that number, so the row is
+        // this device's, and left under the old name it would be published there
+        // and make the original rename in turn.
+        let unused: HashSet<i64> = waiting
+            .iter()
+            .filter(|row| row.device_id == former && listed.contains(&row.shard))
+            .map(|row| row.seq)
+            .collect();
+        let keep = |row: &LoggedAttempt| match held.get(&(former.as_str(), row.seq)) {
+            Some(remote) => **remote == MergedAttempt::from(row.clone()),
+            None => !unused.contains(&row.seq),
         };
         db.reclaim_attempts(&former, &keep).map_err(SyncError::Io)?;
     }
+    if !waiting.is_empty() {
+        // Settled once the store holds that number (the same attempt, which stays,
+        // or a different one, which the reclaim just moved) or the file reads; and
+        // forgotten if the row is gone.
+        let left: HashSet<(String, i64)> = full_log(db)?
+            .into_iter()
+            .map(|attempt| (attempt.device_id, attempt.seq))
+            .collect();
+        let still: Vec<HeldBack> = waiting
+            .iter()
+            .filter(|row| {
+                !held.contains_key(&(row.device_id.as_str(), row.seq))
+                    && !listed.contains(&row.shard)
+                    && left.contains(&(row.device_id.clone(), row.seq))
+            })
+            .cloned()
+            .collect();
+        if still != waiting {
+            set_held_back(db, &still)?;
+        }
+    }
     Ok(renamed)
+}
+
+/// This device's own attempt shards that a screened reading hid, for
+/// [`settle_identity`].
+#[derive(Default)]
+struct HiddenOwn {
+    /// This log's numbers a hidden file can hold, the way `repair_own_shards`
+    /// counts them: those from the number it is named after up to the next
+    /// shard's, and those below it, back to the previous shard's name, that no
+    /// readable shard holds. A shard is named after the attempt that sorts
+    /// first, which need not be the lowest number — a clock that stepped back,
+    /// or a repair that took in what a damaged neighbour held.
+    covered: BTreeMap<i64, String>,
+    /// The last shard's name, when it is hidden: an install may still be
+    /// appending to it, so every number from there up is covered, whether this
+    /// log holds it yet or not.
+    open_from: Option<(i64, String)>,
+    /// What could still be read of one contradicts this log: a line this log
+    /// lacks or holds differently, or more lines than this log has published
+    /// attempts for that file. A truncation only ever shortens a file, so a file
+    /// longer than anything this log wrote into it had another writer.
+    contradicts: bool,
+}
+
+impl HiddenOwn {
+    /// The hidden file that can hold `seq`, if one can.
+    fn covering(&self, seq: i64) -> Option<&str> {
+        match (self.covered.get(&seq), &self.open_from) {
+            (Some(shard), _) => Some(shard),
+            (None, Some((from, shard))) if seq >= *from => Some(shard),
+            _ => None,
+        }
+    }
+}
+
+/// This log's numbers that the hidden or damaged own shard named after `first`
+/// can hold, up to `bound`: see [`HiddenOwn::covered`]. `elsewhere` says
+/// whether a readable shard already holds a number below the name.
+fn could_hold(
+    own: impl Iterator<Item = i64>,
+    screened: &Screened,
+    first: i64,
+    bound: i64,
+    elsewhere: &dyn Fn(i64) -> bool,
+) -> BTreeSet<i64> {
+    let from = below_name(screened, first);
+    own.filter(|seq| {
+        (first..bound).contains(seq) || ((from..first).contains(seq) && !elsewhere(*seq))
+    })
+    .collect()
+}
+
+/// The lowest number a shard named after `first` can hold below its name: one
+/// past the previous shard's name, or the first number of all.
+fn below_name(screened: &Screened, first: i64) -> i64 {
+    screened
+        .previous_own_start(first)
+        .map_or(1, |previous| previous + 1)
+}
+
+/// Look at this device's own attempt shards that `screened` hid.
+///
+/// A file this build reads as a *newer format* is counted in the ranges but not
+/// judged: its lines are a newer build's, which this one cannot compare.
+fn hidden_own(db: &Db, screened: &Screened) -> Result<HiddenOwn, SyncError> {
+    let mut hidden = HiddenOwn::default();
+    let shards: Vec<SkippedShard> = screened
+        .skipped()
+        .into_iter()
+        .filter(|s| s.own && s.kind == ShardKind::Attempts)
+        .collect();
+    if shards.is_empty() {
+        return Ok(hidden);
+    }
+    let device = db.device_id();
+    let own: HashMap<i64, MergedAttempt> = own_log(db)?
+        .into_iter()
+        .map(|attempt| (attempt.seq, attempt))
+        .collect();
+    let published = published_through(db)?;
+    for shard in shards {
+        let Some((_, first)) = parse_attempts_shard(&shard.name) else {
+            continue;
+        };
+        let end = screened.next_own_start(first);
+        let elsewhere = |seq: i64| screened.holds_own(seq);
+        let reach = end.unwrap_or(i64::MAX);
+        let held_here = could_hold(own.keys().copied(), screened, first, reach, &elsewhere);
+        for seq in held_here {
+            hidden.covered.entry(seq).or_insert_with(|| shard.name.clone());
+        }
+        if end.is_none() && hidden.open_from.as_ref().is_none_or(|(from, _)| first < *from) {
+            hidden.open_from = Some((first, shard.name.clone()));
+        }
+        if shard.newer_format {
+            continue;
+        }
+        let salvaged = salvage_shard(&device, &screened.get(&shard.name)?);
+        let bound = end.unwrap_or(published + 1);
+        let wrote = could_hold(own.keys().copied(), screened, first, bound, &elsewhere).len();
+        if salvaged.lines > wrote
+            || salvaged
+                .attempts
+                .iter()
+                .any(|attempt| own.get(&attempt.seq) != Some(attempt))
+        {
+            hidden.contradicts = true;
+        }
+    }
+    Ok(hidden)
+}
+
+/// How far this device has published its log, as last written down.
+///
+/// Nothing decides what to publish from it any more (#47 reads that from the
+/// store), but it is still written, and it bounds what this device can have
+/// written into its last shard.
+fn published_through(db: &Db) -> Result<i64, SyncError> {
+    Ok(db
+        .meta_value(PUBLISHED_THROUGH)
+        .map_err(SyncError::Io)?
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(0))
 }
 
 /// Whether the store holds exactly this attempt, under its name and number.
@@ -683,13 +1002,61 @@ pub fn pull_vocab_cursors(db: &Db, store: &dyn RemoteStore) -> Result<bool, Sync
 /// publishing the attempts is where this device may take a new name — see
 /// `settle_identity` — and the documents must go out under the name it ends up
 /// with, not over the directory of the copy it turned out to be.
+///
+/// A file that cannot be used — another device's newer format, a damaged shard — is
+/// left out rather than stopping the sync, and reported in [`Summary::skipped`]: see
+/// [`crate::skipped`] for why leaving one out loses nothing.
+///
+/// The store is listed **once** — twice on the sync that renames this device — and
+/// an attempt shard this database has already folded at the same revision is not
+/// downloaded again: see [`crate::seen`].
 pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
     // Read once, for both halves: the publish decides from it what the store
-    // lacks, and the pull merges it.
-    let remote = read_attempts(store)?;
-    let (published, unpublishable) = publish_against(db, store, &remote)?;
+    // lacks, and the pull merges it. Screened under the name this database has
+    // now, whose own readable shards stay in view: they are what `settle_identity`
+    // must see to tell a copy of this database from the original.
+    let seen = Seen::load(db)?;
+    let first = Screened::read_with(store, db.device_id(), &seen)?;
+    let mut remote = read_attempts(&first)?;
+    let hidden = hidden_own(db, &first)?;
+    let renamed = settle_identity(db, &first, &held_index(&remote), &hidden)?;
+    // Which files are this device's own — to mend, to append to, to keep in view
+    // when damaged — depends on its name, so a device that has just taken a new
+    // one reads the store again under it: its former name is now a device like
+    // any other, left out whole if one of its shards cannot be read. Only a device
+    // that kept its name mends its damaged shards; a renamed copy is not the
+    // writer of the files under the name it gave up.
+    let screened = match renamed {
+        Some(_) => {
+            let screened = Screened::read_with(store, db.device_id(), &seen)?;
+            remote = read_attempts(&screened)?;
+            screened
+        }
+        None => {
+            repair_own_shards(db, &first)?;
+            if !first.repaired().is_empty() {
+                // From the view, which already holds what was just written: the
+                // mended attempts are in the store again, not still to publish.
+                remote = read_attempts(&first)?;
+            }
+            first
+        }
+    };
+    let store: &dyn RemoteStore = &screened;
+    let (published, unpublishable) = publish_against(
+        db,
+        store,
+        &remote,
+        &screened.left_out_logs(),
+        screened.last_own_start(),
+    )?;
+    // A write the screen refused was not made, so it is not counted as sent.
+    let published = published.saturating_sub(screened.withheld_attempts());
     publish_documents(db, store)?;
     let pulled = pull_from(db, remote)?;
+    // Only now, with every shard in view merged into the log without a
+    // disagreement, are they recorded as folded.
+    Seen::save(db, screened.folded_attempt_shards())?;
     let vocab_changed = pull_vocab(db, store)?;
     let cursor_moved = pull_cursor(db, store)?;
     // Whether a group position moved is not reported: unlike the course
@@ -703,7 +1070,14 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
     if let Some(own) = own_baseline(db)? {
         baselines.push(own);
     }
-    let (recomputed, left_alone) = recompute(db, &Baselines::resolve(baselines))?;
+    // Without every baseline the fold would rebuild a migrated card from the tail
+    // of its history, so a sync that could not read one leaves every schedule as it
+    // is: stale until the next sync, never wrong.
+    let (recomputed, left_alone) = if screened.baseline_skipped() {
+        (0, 0)
+    } else {
+        recompute(db, &Baselines::resolve(baselines))?
+    };
     Ok(Summary {
         published,
         pulled,
@@ -712,7 +1086,97 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
         unpublishable,
         vocab_changed,
         cursor_moved,
+        skipped: screened.skipped(),
+        repaired: screened.repaired(),
+        withheld: screened.withheld(),
     })
+}
+
+/// Write this device's own damaged attempt shards again, from its own log.
+///
+/// ## Why this device has to
+///
+/// A shard is named once and only ever grown — and only the last one, and only
+/// while it reads (see [`crate::shard`]) — and [`publish`] only ever writes
+/// attempts past the watermark, so a shard of this device's that a sync client
+/// truncated, or that was damaged some other way, would stay damaged for good. And
+/// every peer leaves a device with an unreadable shard out *whole*, so from then on
+/// none of this device's attempts, old or new, would reach anyone. Nobody else can
+/// mend it: only this device holds its whole log.
+///
+/// ## When it may not
+///
+/// Only when this log can be the file's writer. The damaged file is the one copy
+/// of what it held, and a database restored from an older backup, or copied from
+/// another device, holds fewer of this name's attempts than the file did: writing
+/// what it has would destroy the rest, and hand peers attempts under numbers the
+/// original also used. So a damaged file is mended only if this database has
+/// published that far (its watermark is at or past the number the file is named
+/// after) and its log holds **every** sequence number the file could have held —
+/// from that number up to the next shard's, or up to the watermark when it is the
+/// last shard — and never with an empty body. The watermark, rather than this
+/// log's last attempt, bounds the last shard because a copy that has lost the end
+/// of its log still has a last attempt, just an earlier one. A file this build
+/// reads as a *newer format* is never written either: it is not damaged, and
+/// rewriting it would drop what the newer build said. Anything left alone stays
+/// reported in [`Summary::skipped`].
+///
+/// ## What is written
+///
+/// The attempts of that range, and — because a shard is named after the earliest
+/// attempt it holds, which is not always the lowest number — any of this log's
+/// attempts below it, back to the previous shard's name (or to the first number
+/// of all, for the first shard), that no readable shard holds, counting the files
+/// this pass has already mended. Writing an attempt into two files is harmless: it
+/// is the same attempt in both, and every reader merges them as one.
+///
+/// Telling a copy of this database apart from the original is `settle_identity`'s
+/// job, so this runs after it, and only when it did not rename: a copy is not the
+/// writer of the files under the name it gave up.
+fn repair_own_shards(db: &Db, screened: &Screened) -> Result<(), SyncError> {
+    let damaged = screened.own_damaged_attempts();
+    if damaged.is_empty() {
+        return Ok(());
+    }
+    let mut log = own_log(db)?;
+    sort_canonical(&mut log);
+    let held: BTreeSet<i64> = log.iter().map(|attempt| attempt.seq).collect();
+    let published = published_through(db)?;
+    // What a readable shard holds now, the files this pass mends included: once
+    // one is written again, its attempts are not the next one's to take in. In
+    // order of name, so a file's own attempts are back in place before the file
+    // after it is written.
+    let mut mended: BTreeSet<i64> = BTreeSet::new();
+    let mut damaged = damaged;
+    damaged.sort_by_key(|(_, first)| *first);
+    for (name, first) in damaged {
+        let end = screened.next_own_start(first).unwrap_or(published + 1);
+        if first > published || end <= first || !(first..end).all(|seq| held.contains(&seq)) {
+            // This log cannot be the file's writer — see above. Left as it is.
+            continue;
+        }
+        let elsewhere = |seq: i64| screened.holds_own(seq) || mended.contains(&seq);
+        let seqs = log.iter().map(|attempt| attempt.seq);
+        let wanted = could_hold(seqs, screened, first, end, &elsewhere);
+        // Nor if the file holds more than this log would write into it: a
+        // truncation only shortens a file, so a longer one had another writer —
+        // an install under the same name that appended to it (#36) — and writing
+        // this log's part over it would destroy the rest. `hidden_own` counts
+        // the same as evidence for a rename, so a sync never gets here with one;
+        // this is the guard for anything that does.
+        let lines = salvage_shard(&db.device_id(), &screened.get(&name)?).lines;
+        if wanted.is_empty() || lines > wanted.len() {
+            continue;
+        }
+        let attempts: Vec<&MergedAttempt> = log
+            .iter()
+            .filter(|attempt| wanted.contains(&attempt.seq))
+            .collect();
+        let body = shard_body(db.device_id(), &attempts)?;
+        screened.mend(&name, body.as_bytes())?;
+        mended.extend(wanted);
+    }
+    Ok(())
 }
 
 /// This device's own baseline, if it has one.

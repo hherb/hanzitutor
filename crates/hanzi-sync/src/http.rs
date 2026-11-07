@@ -77,18 +77,28 @@ impl UreqHttp {
     /// `other/...`, which named neither the field nor the reason. A 401, 403, 409 or
     /// 429 is a situation with a sentence attached, and dumping JSON under it would
     /// only make the sentence harder to read.
+    ///
+    /// A 429 or a 5xx is [`SyncError::Unavailable`], with the wait Dropbox asked
+    /// for: the `Retry-After` header in seconds, or failing that the `retry_after`
+    /// its 429 body carries. Those are the failures worth trying again, and the
+    /// store does — see [`crate::DropboxStore`].
     fn failed(url: &str, error: ureq::Error) -> SyncError {
         match error {
             ureq::Error::Status(401, _) => SyncError::Unauthorized,
             ureq::Error::Status(400, response) => {
                 let body = response.into_string().unwrap_or_default();
-                // A 400 means this program built a request Dropbox would not accept.
-                // Dropbox usually explains it in `user_message`, and that explanation
-                // is worth preferring over the raw body: the missing-scope failure
-                // names the scope *and* says which tab of the App Console enables it,
-                // which is the whole of what somebody needs to fix it.
-                let explanation = user_message(&body).unwrap_or_else(|| body.trim().to_string());
-                SyncError::Io(format!("{url} refused the request (400): {explanation}"))
+                refused(url, &body)
+            }
+            ureq::Error::Status(code, response) if code == 429 || (500..600).contains(&code) => {
+                let header = response
+                    .header("Retry-After")
+                    .and_then(|value| value.trim().parse::<u64>().ok());
+                let body = response.into_string().unwrap_or_default();
+                SyncError::Unavailable {
+                    status: code,
+                    retry_after: header.or_else(|| retry_after_in(&body)),
+                    reason: format!("{url} answered {code}: {}", summarise(&body)),
+                }
             }
             ureq::Error::Status(code, response) => {
                 let body = response.into_string().unwrap_or_default();
@@ -103,6 +113,43 @@ impl Default for UreqHttp {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// A 400, as ours.
+///
+/// Almost always this program built a request Dropbox would not accept. Dropbox
+/// usually explains it in `user_message`, and that explanation is worth preferring
+/// over the raw body: the missing-scope failure names the scope *and* says which tab
+/// of the App Console enables it, which is the whole of what somebody needs to fix it.
+///
+/// The exception is the token endpoint's `invalid_grant`: the refresh token was
+/// revoked (the learner removed the app from their Dropbox account) or has expired.
+/// That is not a bug here but a sign-in that is gone, and it is reported as
+/// [`SyncError::Unauthorized`] so the learner is told to connect again rather than
+/// shown a JSON body on every sync from then on. It is matched on the OAuth `error`
+/// field, which is a fixed code, never on the prose beside it.
+fn refused(url: &str, body: &str) -> SyncError {
+    let error = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|json| {
+            json.get("error")
+                .and_then(|e| e.as_str())
+                .map(str::to_string)
+        });
+    if error.as_deref() == Some("invalid_grant") {
+        return SyncError::Unauthorized;
+    }
+    let explanation = user_message(body).unwrap_or_else(|| body.trim().to_string());
+    SyncError::Io(format!("{url} refused the request (400): {explanation}"))
+}
+
+/// The wait a Dropbox 429 body asks for, in seconds: `error.retry_after`.
+fn retry_after_in(body: &str) -> Option<u64> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("error")?
+        .get("retry_after")?
+        .as_u64()
 }
 
 /// Dropbox's `user_message`, the field it writes to be shown to a person.
@@ -223,6 +270,92 @@ mod tests {
     fn an_error_without_a_user_message_falls_back_to_its_summary() {
         let body = r#"{"error":{".tag":"path"},"error_summary":"path/conflict/file/..."}"#;
         assert_eq!(summarise(body), "path/conflict/file/...");
+    }
+
+    #[test]
+    fn a_revoked_or_expired_refresh_token_is_a_sign_in_to_renew() {
+        // What Dropbox's token endpoint answers, with a 400, once the learner has
+        // removed the app from their account. It used to reach the screen as raw
+        // JSON on every sync, with no hint that connecting again would fix it.
+        let body = r#"{"error": "invalid_grant", "error_description": "refresh token is invalid or revoked"}"#;
+        assert_eq!(
+            refused("https://api.dropboxapi.com/oauth2/token", body),
+            SyncError::Unauthorized
+        );
+
+        let through_ureq = UreqHttp::failed(
+            "https://api.dropboxapi.com/oauth2/token",
+            ureq::Error::Status(400, ureq::Response::new(400, "Bad Request", body).unwrap()),
+        );
+        assert_eq!(through_ureq, SyncError::Unauthorized);
+    }
+
+    #[test]
+    fn any_other_400_is_still_reported_with_dropboxs_explanation() {
+        // Only the fixed OAuth code counts: a 400 that merely *mentions* a grant,
+        // or names another error, is still a request this program got wrong.
+        for body in [
+            r#"{"error": "invalid_request", "error_description": "invalid_grant mentioned"}"#,
+            r#"{"error": {".tag": "invalid_grant"}}"#,
+            "invalid_grant",
+        ] {
+            let error = refused("https://example.test/", body);
+            assert!(
+                matches!(&error, SyncError::Io(why) if why.contains("(400)")),
+                "{body}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_429_or_a_5xx_is_a_failure_worth_trying_again_with_the_wait_asked_for() {
+        let url = "https://api.dropboxapi.com/2/files/list_folder";
+        let response = |text: &str| text.parse::<ureq::Response>().unwrap();
+
+        let header = UreqHttp::failed(
+            url,
+            ureq::Error::Status(
+                429,
+                response("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\n\r\n"),
+            ),
+        );
+        assert!(
+            matches!(header, SyncError::Unavailable { status: 429, retry_after: Some(7), .. }),
+            "{header:?}"
+        );
+
+        // Dropbox also says it in the body; the header wins when both are there.
+        let body = r#"{"error_summary": "too_many_requests/..", "error": {"reason": {".tag": "too_many_requests"}, "retry_after": 3}}"#;
+        let in_body = UreqHttp::failed(
+            url,
+            ureq::Error::Status(
+                429,
+                response(&format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )),
+            ),
+        );
+        assert!(
+            matches!(in_body, SyncError::Unavailable { retry_after: Some(3), .. }),
+            "{in_body:?}"
+        );
+
+        let unavailable = UreqHttp::failed(
+            url,
+            ureq::Error::Status(503, response("HTTP/1.1 503 Service Unavailable\r\n\r\n")),
+        );
+        assert!(
+            matches!(unavailable, SyncError::Unavailable { status: 503, retry_after: None, .. }),
+            "{unavailable:?}"
+        );
+
+        // A conflict is an answer, not a busy server, and is not tried again.
+        let conflict = UreqHttp::failed(
+            url,
+            ureq::Error::Status(409, response("HTTP/1.1 409 Conflict\r\n\r\n")),
+        );
+        assert!(matches!(conflict, SyncError::Io(_)), "{conflict:?}");
     }
 
     #[test]

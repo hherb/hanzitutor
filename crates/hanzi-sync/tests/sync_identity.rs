@@ -641,8 +641,8 @@ fn a_copy_that_has_to_rename_with_no_baseline_to_adopt_does_not_invent_one() {
 fn an_existing_database_with_a_watermark_publishes_only_what_is_new() {
     // The upgrade path: a database that has synced under the watermark, with its
     // shards where that build put them. Reading what is published from the store
-    // must agree with the watermark exactly — no rename, nothing republished, no
-    // shard touched.
+    // must agree with the watermark exactly — no rename, nothing republished, and
+    // no shard changed except the open one growing by the new attempt (#36).
     let dir_a = scratch("upgrade-a");
     let dir_c = scratch("upgrade-c");
     let shared = scratch("upgrade-store");
@@ -675,8 +675,11 @@ fn an_existing_database_with_a_watermark_publishes_only_what_is_new() {
     assert_eq!(upgraded.pulled, 0);
     assert_eq!(db_a.device_id(), id, "no rename");
     assert_eq!(shard_bytes(1), first);
-    assert_eq!(shard_bytes(4), fourth);
-    assert!(shared.join(attempts_shard_name(&id, 6)).exists());
+    // The new attempt tops up the open shard (#36) rather than starting one: the
+    // old bytes unchanged, followed by the new line, and no shard named after it.
+    let grown = shard_bytes(4);
+    assert!(grown.starts_with(&fourth) && grown.len() > fourth.len());
+    assert!(!shared.join(attempts_shard_name(&id, 6)).exists());
     assert_eq!(
         db_a.meta_value("sync:published_seq").unwrap().as_deref(),
         Some("6"),
