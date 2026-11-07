@@ -622,6 +622,21 @@ mod tests {
     }
 
     #[test]
+    fn a_hepburn_double_n_reads_back_as_the_sentence_the_learner_wrote() {
+        // A composed sentence has no answer to be read against, so it is read as
+        // written — and Hepburn writes んな as `nna`. This text is what is saved,
+        // spoken and checked, so reading `onna` as おんあ would call a right sentence
+        // wrong (issue #21's follow-up).
+        assert_eq!(read_back("watashi wa onna desu"), "わたしわおんなです");
+        assert_eq!(read_back("konnichiwa"), "こんにちわ");
+        assert_eq!(read_back("minna"), "みんな");
+        assert_eq!(read_back("onnanoko to konnyaku"), "おんなのことこんにゃく");
+        assert_eq!(spoken_form("minna").as_deref(), Some("みんな"));
+        // The IME's `nn` before a consonant or at the end is still one ん.
+        assert_eq!(read_back("honn"), "ほん");
+    }
+
+    #[test]
     fn a_latin_word_inside_a_japanese_sentence_is_not_read_and_says_so() {
         let p = point("wa", "〜は");
         let mixed = verdict_for(&p, &kanji(), "私はstudentです。");

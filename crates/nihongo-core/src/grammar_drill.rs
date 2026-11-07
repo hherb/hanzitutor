@@ -524,6 +524,61 @@ pub fn size(dataset: &GrammarDataset) -> DrillSize {
 }
 
 impl Askable<'_> {
+    /// Where the blank's は and へ are particles, said `wa` and `e`: the positions
+    /// [`check_kana_text_with`](crate::input::check_kana_text_with) takes, counted in
+    /// characters of [`Askable::blank_kana`].
+    ///
+    /// **Read off the corpus's own romaji**, never guessed from the kana: the point's
+    /// romaji spells the pattern, `wake de wa nai` for 〜わけではない, so the は it
+    /// spells `wa` is a particle and the は of `hazu da` is not. The pattern's kana is
+    /// its reading, or the pattern itself where it has no kanji, with the tildes, the
+    /// optional parts' brackets and the spaces taken out (〜場合（は） is ばあいは,
+    /// `baai wa`); a point listing variants with ` / ` is split into them, one
+    /// romanisation for each. The blank is a run of one of those, and the positions
+    /// are carried into it.
+    ///
+    /// None, which is the strict answer, where the romaji does not spell the pattern
+    /// or the blank is not inside it.
+    pub fn particles(&self) -> Vec<usize> {
+        let point = self.point;
+        let kana = self.blank_kana();
+        let pattern = point.reading.as_deref().unwrap_or(&point.pattern);
+        let variants: Vec<&str> = pattern.split('/').collect();
+        let romaji: Vec<&str> = point.romaji.split('/').collect();
+        if variants.len() != romaji.len() {
+            return Vec::new();
+        }
+        for (variant, romaji) in variants.iter().zip(&romaji) {
+            let variant: String = variant
+                .chars()
+                .filter(|ch| {
+                    !matches!(ch, '〜' | '～' | '(' | ')' | '（' | '）') && !ch.is_whitespace()
+                })
+                .collect();
+            let romaji: String = romaji
+                .chars()
+                .filter(|ch| ch.is_ascii_alphabetic() || matches!(ch, ' ' | '-' | '\''))
+                .collect();
+            let Some(offset) = variant.find(&kana) else {
+                continue;
+            };
+            let start = variant[..offset].chars().count();
+            let length = kana.chars().count();
+            return crate::input::particles_in(&variant, &romaji)
+                .into_iter()
+                .filter(|at| (start..start + length).contains(at))
+                .map(|at| at - start)
+                .collect();
+        }
+        Vec::new()
+    }
+
+    /// Grade a typed answer against this blank: its reading, with the particles its
+    /// romaji names.
+    pub fn check(&self, typed: &str) -> crate::input::KanaTextCheck {
+        crate::input::check_kana_text_with(&self.blank_kana(), typed, &self.particles())
+    }
+
     /// The reading of the blank, from the corpus's own furigana.
     ///
     /// **Never composed** (invariant 21, one dataset over): [`blank_for`] has already
@@ -670,7 +725,7 @@ pub struct ProductionVerdict {
     pub answer: String,
     /// What the learner's typing came to, in kana, for the screen to show back.
     pub produced: String,
-    /// Whether it says the same thing: [`matches_kana_text`](crate::input::matches_kana_text).
+    /// Whether it says the same thing: [`Askable::check`].
     pub correct: bool,
     /// The sentence whole again **in kana**, the corpus's own reading of every part:
     /// what `Hear it` says once the answer is in.
@@ -719,8 +774,8 @@ pub fn production_for(example: usize, answer: &Askable<'_>) -> Option<Production
 /// **Correctness is decided here**, on the data the question was drawn from, and by
 /// the same rule whether a screen or a test asks: the learner's typing is read by
 /// the input engine, the blank's reading is the corpus's, and
-/// [`matches_kana_text`](crate::input::matches_kana_text) compares them by sound.
-/// `None` means the sentence is not one this exercise asks — a caller that asked
+/// [`Askable::check`] compares them by sound, with the particles the point's own
+/// romaji names. `None` means the sentence is not one this exercise asks — a caller that asked
 /// about something else gets no verdict rather than a wrong one.
 pub fn verdict_for(
     point: &GrammarPoint,
@@ -728,6 +783,7 @@ pub fn verdict_for(
     typed: &str,
 ) -> Option<ProductionVerdict> {
     let answer = producible_of(point).into_iter().find(|(at, _)| *at == example)?.1;
+    let check = answer.check(typed);
     Some(ProductionVerdict {
         point: point.id.clone(),
         pattern: point.pattern.clone(),
@@ -737,8 +793,8 @@ pub fn verdict_for(
         notes: point.notes.clone(),
         written: answer.blank.text.clone(),
         answer: answer.blank_kana(),
-        produced: crate::input::produce_kana(typed),
-        correct: crate::input::matches_kana_text(&answer.blank_kana(), typed),
+        produced: check.produced,
+        correct: check.correct,
         kana: answer.example.kana(),
     })
 }
