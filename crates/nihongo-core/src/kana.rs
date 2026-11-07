@@ -248,7 +248,16 @@ pub fn segment_to_stroke(svg: &str, cp: u32) -> Vec<u8> {
                 out.push((n - 1).min(u8::MAX as u32) as u8);
             }
         }
-        rest = &after[digits.len().max(1)..];
+        // Step past the stroke number, or, when there is none, past the one
+        // character that follows the prefix. That character is measured rather
+        // than assumed to be a byte: a kana there is three, and slicing into it
+        // panics. An id that ends the text has nothing to step past at all.
+        let step = if digits.is_empty() {
+            after.chars().next().map_or(0, char::len_utf8)
+        } else {
+            digits.len()
+        };
+        rest = &after[step..];
     }
 
     out
@@ -359,6 +368,17 @@ mod tests {
     fn clip_paths_and_the_root_id_are_not_counted() {
         let svg = r#"<svg id="z12354"><clipPath id="z12354c1"/><clipPath id="z12354c2"/></svg>"#;
         assert_eq!(segment_to_stroke(svg, 12354), Vec::<u8>::new());
+    }
+
+    /// A malformed id with no stroke number after the prefix is skipped, whatever
+    /// character follows it. The scan used to step over that character by one
+    /// byte, which is not a character boundary when it is a kana, and so a single
+    /// `id="z12354dあ` in upstream data was enough to make `prepare-kana` panic. An
+    /// id that ends the file is the same case with nothing after it at all.
+    #[test]
+    fn an_id_with_no_stroke_number_is_skipped_whatever_follows_it() {
+        let svg = r#"<path id="z12354dあ"/><path id="z12354d1"/><path id="z12354d"#;
+        assert_eq!(segment_to_stroke(svg, 12354), vec![0]);
     }
 
     #[test]

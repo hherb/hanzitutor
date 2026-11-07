@@ -44,7 +44,7 @@
   } from "./types";
   import type { VoiceStatus } from "./speech";
   import { needsRuby } from "./words";
-  import { recordLine, sessionLine } from "./grammarDrill";
+  import { emptyNote, recordLine, sessionLine } from "./grammarDrill";
   import { canSubmit, outcomeLine, poolNote } from "./grammarProduction";
   import { isSubmitEnter, trackComposition } from "./ime";
 
@@ -65,6 +65,8 @@
   let right = $state(0);
   let error = $state<string | null>(null);
   let busy = $state(false);
+  /** Whether the draw came back empty: there is nothing to write, not something coming. */
+  let nothing = $state(false);
 
   /**
    * A ticket per ask, so an earlier request cannot land on top of a later one.
@@ -83,6 +85,7 @@
       const drawn = await api.nextGrammarProduction();
       if (mine !== ticket) return;
       question = drawn;
+      nothing = drawn === null;
       outcome = null;
       typed = "";
     } catch (e) {
@@ -250,6 +253,11 @@
         Which pattern does this sentence take? Write what is missing — romaji or kana.
       </p>
     {/if}
+  {:else if nothing && !error}
+    <p class="hint" role="status">{emptyNote(size, "write")}</p>
+    <div class="after">
+      <button class="next" onclick={onleave}>Back to the grammar course</button>
+    </div>
   {:else if !error}
     <p class="hint">{busy ? "Drawing a question…" : "Loading…"}</p>
   {/if}

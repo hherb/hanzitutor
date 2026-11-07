@@ -4,6 +4,7 @@ import {
   characterToneCount,
   characterTonesOf,
   setCharacterTones,
+  syllableGaps,
   syllableTonesOf,
   toneFromSyllable,
   toneOf,
@@ -164,5 +165,22 @@ describe("the tone of each syllable of pinyin", () => {
     expect(syllableTonesOf("xuéxí")).toEqual([null]);
     // A split Rust sent but did not tone falls back to the mark on the syllable.
     expect(syllableTonesOf("xuéxí", ["xué", "xí"], [])).toEqual([2, 2]);
+  });
+});
+
+describe("what a reading writes between its syllables", () => {
+  it("is read off the reading itself, not re-split", () => {
+    expect(syllableGaps("kě'ài", ["kě", "ài"])).toEqual(["", "'"]);
+    expect(syllableGaps("Tiān'ānmén", ["Tiān", "ān", "mén"])).toEqual(["", "'", ""]);
+    expect(syllableGaps("nǐ hǎo", ["nǐ", "hǎo"])).toEqual(["", " "]);
+    expect(syllableGaps("xuéxí", ["xué", "xí"])).toEqual(["", ""]);
+    // The same syllable twice is found in order, from where the last one ended.
+    expect(syllableGaps("xuéxué", ["xué", "xué"])).toEqual(["", ""]);
+  });
+
+  it("falls back to nothing when a syllable is not where it should be", () => {
+    expect(syllableGaps("abc", ["nǐ", "hǎo"])).toEqual(["", ""]);
+    expect(syllableGaps("hǎo'nǐ", ["nǐ", "hǎo"])).toEqual(["", ""]);
+    expect(syllableGaps("", [])).toEqual([]);
   });
 });

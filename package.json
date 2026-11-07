@@ -34,6 +34,7 @@
     "test:core": "./scripts/with-cargo-env.sh cargo test -p hanzi-core --features prepare",
     "test:kana": "./scripts/with-cargo-env.sh cargo test -p nihongo-core --features nihongo-core/prepare",
     "test:web": "vitest run",
+    "test:scripts": "./scripts/tests/test-scripts.sh",
     "selfcheck": "./scripts/with-cargo-env.sh cargo run --release -p hanzi-core --example selfcheck",
     "analyse-attempts": "./scripts/with-cargo-env.sh cargo run --release -p hanzi-store --example analyse-attempts",
     "check:rust": "./scripts/with-cargo-env.sh cargo clippy --workspace --all-targets --features hanzi-core/prepare --features nihongo-core/prepare -- -D warnings",

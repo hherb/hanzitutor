@@ -23,12 +23,17 @@
     /** True while a poll is in flight, so the progress line is not stale. */
     polling: boolean;
     onInstall: () => void;
+    /**
+     * Stop a download in flight; the backend removes what it had fetched.
+     * Resolves `false` when the request could not be made.
+     */
+    onCancel: () => Promise<boolean>;
     onRemove: () => void;
     /** A failure from the last call — distinct from `status.error`, which is Rust's. */
     failure: string | null;
   }
 
-  let { status, polling, onInstall, onRemove, failure }: Props = $props();
+  let { status, polling, onInstall, onCancel, onRemove, failure }: Props = $props();
 
   /** Bytes as something a person can judge, since this is a size decision. */
   function size(bytes: number): string {
@@ -38,6 +43,23 @@
 
   const downloading = $derived(status?.state === "downloading");
   const installed = $derived(status?.installed === true);
+
+  /**
+   * Cancel was pressed for the download still showing. The backend stops at its
+   * next chunk, which on a stalled link can be a while, so the button says so
+   * rather than inviting a second press. Cleared once the download has settled.
+   */
+  let cancelling = $state(false);
+  $effect(() => {
+    if (!downloading) cancelling = false;
+  });
+
+  async function cancel() {
+    cancelling = true;
+    // A request that never reached the backend leaves the download running, so
+    // the button comes back rather than saying "Cancelling…" for good.
+    if (!(await onCancel())) cancelling = false;
+  }
 
   /** How far along, 0..1, while a download runs. */
   const progress = $derived.by(() => {
@@ -107,14 +129,19 @@
   {/if}
 
   <div class="actions">
-    {#if installed}
+    {#if downloading}
+      <button onclick={cancel} disabled={cancelling} title="Stop the download">
+        {cancelling ? "Cancelling…" : "Cancel the download"}
+      </button>
+      <span class="hint">Nothing is kept: what was fetched so far is deleted.</span>
+    {:else if installed}
       <button onclick={onRemove} title="Delete the model from this device">
         Remove the model
       </button>
       <span class="hint">Recognising stops; tone practice is unaffected.</span>
     {:else}
-      <button class="primary" onclick={onInstall} disabled={downloading || status === null}>
-        {downloading ? "Downloading…" : "Download the model"}
+      <button class="primary" onclick={onInstall} disabled={status === null}>
+        Download the model
       </button>
       <span class="hint">
         The only thing in this app that uses the network, and it is never fetched

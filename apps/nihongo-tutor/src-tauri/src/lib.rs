@@ -38,7 +38,7 @@ use nihongo_core::{
     band_name, composition, confusions_for, grade_kana, grade_name, spoken_form,
     grammar_drill as grammar_practice,
     kanji_lessons as build_kanji_lessons, key_of, lessons as build_lessons,
-    normalise_to_hiragana, now_iso8601, off_grid, parse_decomposition,
+    now_iso8601, off_grid, parse_decomposition,
     queue as build_review_queue, reading, split_key, to_kana, to_kana_in, yoon as build_yoon,
     Confusable, ConfusionLog, Decomposition, DrillKind, DrillPair, DueItem, GradeOptions,
     GradeReport, GrammarDataset, GrammarExample, GrammarPoint, KanaDataset, Kanji, KanjiDataset,
@@ -1336,22 +1336,21 @@ impl AppState {
     /// dictionary, and never assembled from its characters — which is the whole
     /// reason 大人 is おとな and not だいじん. Romaji is accepted, and so is kana
     /// typed directly, because a learner who can already read kana should not have
-    /// to transliterate to answer.
+    /// to transliterate to answer. The comparison is the production exercise's,
+    /// [`nihongo_core::check_kana_text_with`] with the word's own particle positions,
+    /// so Hepburn's `onna` and the IME's `onnna` are both おんな, `ti` is ティ in a
+    /// loanword, and 今日は is `konnichiwa` while 花 is never `wana`.
     pub fn check_word(&self, text: &str, reading: &str, typed: &str) -> Result<ReadingCheck, String> {
         let word = self
             .words
             .find(text, reading)
             .ok_or_else(|| format!("{text} ({reading}) is not in the vocabulary"))?;
 
-        let typed = typed.trim();
-        let produced = if typed.chars().any(is_kana) {
-            typed.to_string()
-        } else {
-            to_kana(typed).unwrap_or_default()
-        };
-        let correct = !produced.is_empty()
-            && normalise_to_hiragana(&produced) == normalise_to_hiragana(&word.reading);
-        Ok(ReadingCheck { correct, produced })
+        let check = nihongo_core::check_kana_text_with(&word.reading, typed, &word.particles());
+        Ok(ReadingCheck {
+            correct: check.correct,
+            produced: check.produced,
+        })
     }
 
     /// The passages, as a list a screen can offer.
@@ -3588,6 +3587,9 @@ mod tests {
         // A wrong answer still reports what it produced.
         let wrong = check_reading('し', "chi".into());
         assert_eq!(wrong.produced, "ち");
+        // ん is typed `nn` in every IME, and that is one ん, not two.
+        assert!(check_reading('ん', "nn".into()).correct);
+        assert_eq!(check_reading('ん', "nn".into()).produced, "ん");
     }
 
     #[test]
@@ -3901,6 +3903,27 @@ mod tests {
         );
         // A word that is not one is an error rather than a silent `false`.
         assert!(state.check_word("大人", "だいじん", "otona").is_err());
+    }
+
+    #[test]
+    fn a_word_is_typed_the_way_a_textbook_or_an_ime_spells_it() {
+        // Issue #21: Hepburn's `onna` and the IME's `onnna` are both おんな.
+        let state = state();
+        let check = |text, reading, typed| state.check_word(text, reading, typed).expect("a word");
+        assert!(check("女", "おんな", "onna").correct);
+        assert!(check("女", "おんな", "onnna").correct);
+        assert_eq!(check("女", "おんな", "onna").produced, "おんな");
+        // 今日は ends in its particle, said `wa`; 花 begins with a は that is not one.
+        assert!(check("今日は", "こんにちは", "konnichiwa").correct);
+        assert!(!check("花", "はな", "wana").correct);
+        assert!(!check("禁煙", "きんえん", "kinen").correct);
+        assert!(check("禁煙", "きんえん", "kin'en").correct);
+        // を inside a word is said `o`, and a space between its parts is a word break.
+        for typed in ["kiotsukeru", "kiwotsukeru", "ki o tsukeru"] {
+            assert!(check("気をつける", "きをつける", typed).correct, "{typed}");
+        }
+        // Hepburn's `tch`.
+        assert!(check("発注", "はっちゅう", "hatchuu").correct);
     }
 
     #[test]

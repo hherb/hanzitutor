@@ -78,6 +78,19 @@ use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 /// A voice as the platform reports it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Voice {
+    /// The platform's own unique name for this voice, or empty where it has none.
+    ///
+    /// On macOS and iOS this is `AVSpeechSynthesisVoice.identifier` — e.g.
+    /// `com.apple.eloquence.zh-CN.Eddy` — and it is the only thing that tells
+    /// the voices apart: AVFoundation reports *bare* names, and the novelty
+    /// voices (Eddy, Flo, Reed, Sandy, Shelley, Grandma, Grandpa, Rocko) exist
+    /// under the same name in every language. Matching on the name alone is how
+    /// a learner who picked the mainland Eddy heard 妈 read by the English one
+    /// (issue #39). Android's voice names are already unique
+    /// (`zh-cn-x-ccc-local`), so its listing leaves this empty and [`Self::id`]
+    /// falls back to the name.
+    #[serde(default)]
+    pub identifier: String,
     pub name: String,
     pub locale: String,
     /// Whether speaking with this voice needs a network connection.
@@ -89,6 +102,15 @@ pub struct Voice {
     /// for — the field is only ever *set* from a platform that can tell.
     #[serde(default)]
     pub network: bool,
+    /// How good the voice's data is — `standard`, `enhanced` or `premium` — or
+    /// `None` where the platform does not say.
+    ///
+    /// Only macOS and iOS report it (`AVSpeechSynthesisVoice.quality`), and it
+    /// matters there because a downloaded enhanced voice is listed beside the
+    /// compact one under the same name and locale: without it the settings
+    /// screen shows two identical rows.
+    #[serde(default)]
+    pub quality: Option<String>,
 }
 
 impl Voice {
@@ -100,12 +122,44 @@ impl Voice {
     /// and it says so in the listing.
     pub fn local(name: impl Into<String>, locale: impl Into<String>) -> Self {
         Self {
+            identifier: String::new(),
             name: name.into(),
             locale: locale.into(),
             network: false,
+            quality: None,
+        }
+    }
+
+    /// The same voice, carrying how good its data is (see [`Self::quality`]).
+    pub fn with_quality(mut self, quality: Option<&str>) -> Self {
+        self.quality = quality.map(str::to_string);
+        self
+    }
+
+    /// The same voice, carrying the platform's identifier for it.
+    pub fn with_identifier(mut self, identifier: impl Into<String>) -> Self {
+        self.identifier = identifier.into();
+        self
+    }
+
+    /// What a choice of this voice is stored as: the platform's identifier, or
+    /// the name on a platform whose names are already unique.
+    ///
+    /// The settings screen sends this back as the learner's choice, and
+    /// [`Speaker::set_voice`] accepts it — as well as a bare name, which is what
+    /// every build before identifiers stored.
+    pub fn id(&self) -> &str {
+        if self.identifier.is_empty() {
+            &self.name
+        } else {
+            &self.identifier
         }
     }
 }
+
+/// The locale [`resolve_voice`] gives an override that names no installed voice
+/// of the speaker's language — a name handed to the synthesiser as it is.
+const OVERRIDE: &str = "override";
 
 /// Which language a [`Speaker`] pronounces.
 ///
@@ -148,6 +202,18 @@ impl Language {
         match self {
             Language::Chinese => "zh_cn",
             Language::Japanese => "ja_jp",
+        }
+    }
+
+    /// The locale whose voices come next after the home locale's, if one does.
+    ///
+    /// Taiwan for Chinese: its voices speak Mandarin, where Hong Kong's speak
+    /// Cantonese, so a Mandarin learner with no mainland voice is better served
+    /// by them. Japanese has no second choice worth naming.
+    fn second_locale(self) -> Option<&'static str> {
+        match self {
+            Language::Chinese => Some("zh_tw"),
+            Language::Japanese => None,
         }
     }
 
@@ -206,11 +272,12 @@ pub struct Speaker {
     /// accept, which override variable it obeys, and what it says when the machine
     /// has none of them.
     language: Language,
-    /// The voice the learner has asked for, by name, or `None` for the
-    /// automatic choice. Set from the settings screen at startup and on every
-    /// change; a name this machine does not have falls back to the automatic
-    /// choice rather than being an error, so a preference carried from another
-    /// machine cannot break pronunciation here.
+    /// The voice the learner has asked for — its [`Voice::id`], or the bare
+    /// name an older build stored — or `None` for the automatic choice. Set
+    /// from the settings screen at startup and on every change; a voice this
+    /// machine does not have falls back to the automatic choice rather than
+    /// being an error, so a preference carried from another machine cannot
+    /// break pronunciation here.
     preferred: Mutex<Option<String>>,
     /// Every voice the system offers, resolved once. Enumerating them takes
     /// about a second, which is why this is warmed in the background (see
@@ -268,6 +335,45 @@ impl Speaker {
         )
     }
 
+    /// The installed voice the learner's stored choice names, or `None` when
+    /// there is no choice or this machine does not have the voice it names.
+    ///
+    /// Not [`Self::voice`]: that is what will be *spoken with*, after the
+    /// override and the automatic fallback, while this is what the *choice*
+    /// resolves to. The settings screen needs both — this one to select the
+    /// right entry for a bare name an older build stored (`Eddy` is two
+    /// entries now, one per locale), and the difference between the two to say
+    /// honestly when the choice is not what is heard.
+    pub fn chosen_voice(&self) -> Option<Voice> {
+        let preferred = self
+            .preferred
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        find_voice(self.voices(), &preferred, self.language)
+    }
+
+    /// The installed voice of *another* language the stored choice names, when
+    /// it names none of this speaker's.
+    ///
+    /// So the settings screen can say "Eddy (en-US) isn't available as a
+    /// Chinese voice" rather than "not installed" about a voice the learner can
+    /// see in the system's own list. `None` when the choice resolves (see
+    /// [`Self::chosen_voice`]), when nothing is chosen, and when the machine
+    /// has no such voice at all.
+    pub fn chosen_elsewhere(&self) -> Option<Voice> {
+        if self.chosen_voice().is_some() {
+            return None;
+        }
+        let preferred = self
+            .preferred
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        let voices = self.voices();
+        position_named(voices, &preferred).map(|index| voices[index].clone())
+    }
+
     /// Every voice the system offers.
     fn voices(&self) -> &[Voice] {
         self.voices
@@ -285,7 +391,8 @@ impl Speaker {
         voices_for(self.voices(), self.language)
     }
 
-    /// Choose a voice by name, or `None` for the automatic choice.
+    /// Choose a voice by its [`Voice::id`] — or by name, which is what older
+    /// builds stored — or `None` for the automatic choice.
     ///
     /// Returns what will actually be spoken with, so the settings screen can say
     /// plainly when a name this machine does not have is not the one in use.
@@ -327,13 +434,14 @@ impl Speaker {
             // Stopping first, and after the voice is known, so a failed lookup
             // cannot silence what is already being said.
             self.stop();
-            speak_on_main(text, &voice.name)
+            speak_on_main(text, voice)
         }
 
         // Android's synthesiser belongs to the Kotlin side of the platform
         // bridge, so speaking is a command to it rather than something kept
-        // here. The voice is named, not identified, which is the same contract
-        // the other two backends have.
+        // here. The voice is named rather than identified, which is safe here
+        // and not on Apple: Android's voice names (`zh-cn-x-ccc-local`) are
+        // unique, while AVFoundation's bare `Eddy` is one in every language.
         #[cfg(target_os = "android")]
         {
             self.stop();
@@ -605,13 +713,12 @@ pub(crate) fn with_main<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'st
         .expect("the speech worker thread dropped the job without running it")
 }
 
-/// Speak `text` in the voice called `name`, on the main thread.
+/// Speak `text` in `voice`, on the main thread.
 #[cfg(any(target_os = "ios", target_os = "macos"))]
-fn speak_on_main(text: &str, name: &str) -> Result<(), String> {
+fn speak_on_main(text: &str, voice: Voice) -> Result<(), String> {
     let text = text.to_string();
-    let name = name.to_string();
     with_main(move || {
-        let utterance = utterance_for(&text, &name)?;
+        let utterance = utterance_for(&text, &voice)?;
         // The audio session is an iOS-only concept: macOS has no Ring/Silent
         // switch and nothing to duck, so there is nothing to take here.
         #[cfg(target_os = "ios")]
@@ -855,24 +962,95 @@ fn audio_ready() {
     })
 }
 
-/// An utterance for `text`, spoken in the voice called `name`.
+/// An utterance for `text`, spoken in `voice`.
 ///
-/// The voice is looked up by name each time rather than held as an object: the
-/// resolved [`Voice`] is platform-neutral — a name and a locale, so the status
-/// line reads the same on both systems — and the alternative, an identifier
-/// smuggled through `locale`, would make that field a lie.
+/// The voice is looked up afresh each time rather than held as an object — the
+/// resolved [`Voice`] is platform-neutral and crosses threads, an
+/// `AVSpeechSynthesisVoice` does neither. A voice with an identifier is asked
+/// for by it (`voiceWithIdentifier:`), which costs no listing; one without, or
+/// one the system no longer answers for, is found in a fresh `speechVoices()`
+/// list by [`installed_index`]. It used to be the first voice whose *name*
+/// matched, which on a system where `Eddy` exists in every language read
+/// Chinese with whichever Eddy came first (issue #39).
 #[cfg(any(target_os = "ios", target_os = "macos"))]
-fn utterance_for(text: &str, name: &str) -> Result<Retained<AVSpeechUtterance>, String> {
+fn utterance_for(text: &str, voice: &Voice) -> Result<Retained<AVSpeechUtterance>, String> {
     let string = NSString::from_str(text);
     // SAFETY: on the main thread (see `with_main`).
     let utterance = unsafe { AVSpeechUtterance::speechUtteranceWithString(&string) };
-    let voices = unsafe { AVSpeechSynthesisVoice::speechVoices() };
-    let wanted = voices
-        .iter()
-        .find(|voice| base_name(&unsafe { voice.name() }.to_string()).eq_ignore_ascii_case(name))
-        .ok_or_else(|| format!("the voice {name:?} is no longer available on this device"))?;
-    unsafe { utterance.setVoice(Some(&wanted)) };
+    if !voice.identifier.is_empty() {
+        let identifier = NSString::from_str(&voice.identifier);
+        // SAFETY: as above. `nil` — an unknown identifier, or a voice not on
+        // the device — falls through to the listing below.
+        if let Some(found) = unsafe { AVSpeechSynthesisVoice::voiceWithIdentifier(&identifier) } {
+            // SAFETY: as above.
+            unsafe { utterance.setVoice(Some(&found)) };
+            return Ok(utterance);
+        }
+    }
+    // SAFETY: as above.
+    let installed: Vec<Retained<AVSpeechSynthesisVoice>> =
+        unsafe { AVSpeechSynthesisVoice::speechVoices() }
+            .iter()
+            .collect();
+    let listed: Vec<Voice> = installed.iter().map(|v| voice_from(v)).collect();
+    let wanted = installed_index(&listed, voice)
+        .map(|index| &installed[index])
+        .ok_or_else(|| {
+            format!(
+                "the voice {} ({}) is no longer available on this device",
+                voice.name, voice.locale
+            )
+        })?;
+    // SAFETY: as above.
+    unsafe { utterance.setVoice(Some(wanted)) };
     Ok(utterance)
+}
+
+/// The platform-neutral description of an AVFoundation voice.
+///
+/// One function for both places a voice is read — the list the speaker
+/// resolves from, and the lookup [`utterance_for`] does — so the two can never
+/// disagree about what a voice is called or which identifier it carries.
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+fn voice_from(voice: &AVSpeechSynthesisVoice) -> Voice {
+    // SAFETY: only ever called on the thread `with_main` guarantees.
+    let (name, language, identifier, quality) = unsafe {
+        (
+            voice.name().to_string(),
+            voice.language().to_string(),
+            voice.identifier().to_string(),
+            voice.quality().0,
+        )
+    };
+    let quality = quality_name(quality).or_else(|| quality_from_identifier(&identifier));
+    Voice::local(name, language)
+        .with_identifier(identifier)
+        .with_quality(quality)
+}
+
+/// `AVSpeechSynthesisVoiceQuality`'s raw value, as the word the settings
+/// screen shows: 1 is `standard`, 2 `enhanced`, 3 `premium`.
+#[cfg_attr(not(any(target_os = "ios", target_os = "macos")), allow(dead_code))]
+fn quality_name(raw: isize) -> Option<&'static str> {
+    match raw {
+        1 => Some("standard"),
+        2 => Some("enhanced"),
+        3 => Some("premium"),
+        _ => None,
+    }
+}
+
+/// The quality an Apple identifier spells out —
+/// `com.apple.voice.compact.zh-CN.Tingting`, `….enhanced.…`, `….premium.…` —
+/// for a voice whose `quality` is a value this file does not know.
+#[cfg_attr(not(any(target_os = "ios", target_os = "macos")), allow(dead_code))]
+fn quality_from_identifier(identifier: &str) -> Option<&'static str> {
+    identifier.split('.').find_map(|segment| match segment {
+        "compact" => Some("standard"),
+        "enhanced" => Some("enhanced"),
+        "premium" => Some("premium"),
+        _ => None,
+    })
 }
 
 impl Drop for Speaker {
@@ -915,7 +1093,7 @@ fn override_voice(language: Language) -> Option<Voice> {
     if name.is_empty() {
         return None;
     }
-    Some(Voice::local(name, "override"))
+    Some(Voice::local(name, OVERRIDE))
 }
 
 /// The voice that will be used: the override, then the learner's choice, then
@@ -935,12 +1113,17 @@ fn resolve_voice(
 ) -> Option<Voice> {
     // An override is not "a preference that wins": it does not even have to name
     // an installed voice, because it exists to hand the synthesiser a name the
-    // list does not know about.
+    // list does not know about. When it *does* name one of this language's
+    // voices, it resolves to that voice — identifier and all — so
+    // `HANZI_TUTOR_VOICE=Eddy` means the Chinese Eddy, not the first Eddy the
+    // system happens to list.
     if let Some(name) = overridden {
-        return Some(Voice::local(name, "override"));
+        return Some(
+            find_voice(installed, name, language).unwrap_or_else(|| Voice::local(name, OVERRIDE)),
+        );
     }
     if let Some(wanted) = preferred {
-        if let Some(voice) = find_voice(installed, wanted) {
+        if let Some(voice) = find_voice(installed, wanted, language) {
             return Some(voice);
         }
         // The preference names a voice this machine does not have. Say so where
@@ -955,22 +1138,151 @@ fn resolve_voice(
     pick_voice(installed, language)
 }
 
-/// Find an installed voice by name, ignoring the locale qualifier macOS appends.
+/// Find one of `language`'s installed voices by identifier, or by name.
 ///
-/// The exact name wins over the base name, so a machine that has both
-/// `Meijia` and `Meijia (Chinese (China mainland))` uses the one that was named
-/// exactly, and a preference written on one of those machines still finds a
-/// voice on the other.
-fn find_voice(voices: &[Voice], wanted: &str) -> Option<Voice> {
+/// A stored choice is a [`Voice::id`] — the platform identifier — from this
+/// version on, and an exact identifier match is what it resolves to. A bare
+/// name is what every earlier build stored, and it still has to work, which is
+/// where the care is: AVFoundation's novelty voices (Eddy, Flo, Reed, Sandy,
+/// Shelley, Grandma, Grandpa, Rocko) carry the *same* bare name in every
+/// language, so a name is matched only among `language`'s voices, the home
+/// locale's first. A stored `Eddy` therefore means the mainland Eddy in the
+/// Chinese apps and the Japanese one in the kana tutor, never whichever Eddy the
+/// system lists first (issue #39), and a name no voice of the language carries
+/// finds nothing — the automatic choice is a better answer than an English
+/// voice guessing at 汉.
+///
+/// The exact name wins over the base name, so a machine that has both `Meijia`
+/// and `Meijia (Chinese (China mainland))` uses the one that was named exactly.
+/// Otherwise the locale qualifier is ignored on **both** sides: the `say -v '?'`
+/// era (v0.3.0–v0.5.11) stored names like `Eddy (Chinese (China mainland))`,
+/// while AVFoundation now reports a bare `Eddy`, and the reverse is just as
+/// possible. A stored qualifier is not thrown away, though — it names the
+/// locale ([`qualifier_locale`]), so `Eddy (Chinese (Taiwan))` is the Taiwanese
+/// Eddy. Where it names none, the order is [`locale_rank`]'s: the home locale,
+/// then the language's second one, then the rest as listed.
+fn find_voice(voices: &[Voice], wanted: &str, language: Language) -> Option<Voice> {
+    let wanted_locale = qualifier_locale(wanted);
+    let wanted_base = base_name(wanted);
+    let ours: Vec<&Voice> = voices
+        .iter()
+        .filter(|v| locale_key(v).starts_with(language.locale_prefix()))
+        .collect();
+    // Among the voices that match, the best-placed locale; the first listed of
+    // those, since `min_by_key` keeps the first of equal keys.
+    let best = |matches: &dyn Fn(&Voice) -> bool| {
+        ours.iter()
+            .copied()
+            .filter(|v| matches(v))
+            .min_by_key(|v| locale_rank(v, language, wanted_locale))
+    };
+
+    best(&|v| !v.identifier.is_empty() && v.identifier == wanted)
+        .or_else(|| best(&|v| v.name.eq_ignore_ascii_case(wanted)))
+        .or_else(|| best(&|v| base_name(&v.name).eq_ignore_ascii_case(wanted_base)))
+        .cloned()
+}
+
+/// Where `voice` stands in `language`'s order of locales: the locale a stored
+/// name's qualifier asked for (`wanted`), then the home locale, then the
+/// language's second locale, then everything else. Lower is better.
+fn locale_rank(voice: &Voice, language: Language, wanted: Option<&str>) -> u8 {
+    let key = locale_key(voice);
+    if wanted.is_some_and(|wanted| key.starts_with(wanted)) {
+        0
+    } else if key.starts_with(language.home_locale()) {
+        1
+    } else if language
+        .second_locale()
+        .is_some_and(|second| key.starts_with(second))
+    {
+        2
+    } else {
+        3
+    }
+}
+
+/// The locale a `say -v '?'`-style qualifier names, in [`locale_key`] form.
+///
+/// `Eddy (Chinese (China mainland))` is `zh_cn`, `(Chinese (Taiwan))` `zh_tw`,
+/// `(Chinese (Hong Kong))` `zh_hk` and `(Japanese (Japan))` `ja_jp`. Those are
+/// the qualifiers the voices this app offers carried; anything else names no
+/// locale and the voice is found by its base name alone.
+fn qualifier_locale(name: &str) -> Option<&'static str> {
+    // `base_name` is a prefix of `name`, so what follows it is the qualifier.
+    let qualifier = name[base_name(name).len()..].to_ascii_lowercase();
+    const KNOWN: [(&str, &str); 4] = [
+        ("china mainland", "zh_cn"),
+        ("taiwan", "zh_tw"),
+        ("hong kong", "zh_hk"),
+        ("japan", "ja_jp"),
+    ];
+    KNOWN
+        .into_iter()
+        .find(|(words, _)| qualifier.contains(words))
+        .map(|(_, locale)| locale)
+}
+
+/// The first of `voices` that `name` names, in any language: by identifier,
+/// then by exact name, then by base name, the qualifier ignored on both sides.
+///
+/// For the two places a name is *not* confined to a language: an override that
+/// named nothing of the speaker's language ([`installed_index`]), and telling a
+/// learner that their choice exists here, just not in the language this app
+/// speaks ([`Speaker::chosen_elsewhere`]).
+fn position_named(voices: &[Voice], name: &str) -> Option<usize> {
+    let base = base_name(name);
     voices
         .iter()
-        .find(|v| v.name.eq_ignore_ascii_case(wanted))
+        .position(|v| !v.identifier.is_empty() && v.identifier == name)
         .or_else(|| {
             voices
                 .iter()
-                .find(|v| base_name(&v.name).eq_ignore_ascii_case(wanted))
+                .position(|v| v.name.eq_ignore_ascii_case(name))
         })
-        .cloned()
+        .or_else(|| {
+            voices
+                .iter()
+                .position(|v| base_name(&v.name).eq_ignore_ascii_case(base))
+        })
+}
+
+/// Which of the system's voices, as listed now, is `wanted`.
+///
+/// The last step before speaking on macOS and iOS: [`resolve_voice`] has
+/// already decided *which* voice, and this finds that same voice in a fresh
+/// `speechVoices()` list so the utterance can be given it. By identifier where
+/// the voice carries one; by name **and locale** where it does not, because the
+/// name alone is ambiguous — matching on it is how the mainland Eddy came out in
+/// English (issue #39). Only an override that named no installed voice of the
+/// speaker's language (locale [`OVERRIDE`]) is matched in any language — by
+/// identifier or name, see [`position_named`] — since what it was given is all
+/// it ever was.
+///
+/// A function of plain lists, so the rule is tested on every platform even
+/// though only Apple's backend calls it.
+#[cfg_attr(not(any(target_os = "ios", target_os = "macos")), allow(dead_code))]
+fn installed_index(installed: &[Voice], wanted: &Voice) -> Option<usize> {
+    let exact = |v: &Voice| v.name.eq_ignore_ascii_case(&wanted.name);
+    let base = |v: &Voice| base_name(&v.name).eq_ignore_ascii_case(&wanted.name);
+    let same_locale = |v: &Voice| locale_key(v) == locale_key(wanted);
+
+    if !wanted.identifier.is_empty() {
+        if let Some(index) = installed
+            .iter()
+            .position(|v| v.identifier == wanted.identifier)
+        {
+            return Some(index);
+        }
+    }
+    let by_name_and_locale = installed
+        .iter()
+        .position(|v| same_locale(v) && exact(v))
+        .or_else(|| installed.iter().position(|v| same_locale(v) && base(v)));
+    if by_name_and_locale.is_some() || wanted.locale != OVERRIDE {
+        return by_name_and_locale;
+    }
+    position_named(installed, &wanted.name)
 }
 
 /// Enumerate the installed voices through `AVSpeechSynthesizer`.
@@ -989,20 +1301,14 @@ fn find_voice(voices: &[Voice], wanted: &str) -> Option<Voice> {
 /// indefinitely under `cargo test`.
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 fn list_voices() -> Result<Vec<Voice>, String> {
-    // Only `Voice` — two `String`s — crosses back out of the main thread; the
-    // `NSArray` of voices does not leave it.
+    // Only `Voice` — plain `String`s — crosses back out of the main thread;
+    // the `NSArray` of voices does not leave it.
     Ok(with_main(|| {
         // SAFETY: on the thread `with_main` guarantees.
         let voices = unsafe { AVSpeechSynthesisVoice::speechVoices() };
         voices
             .iter()
-            .map(|voice| {
-                // SAFETY: as above.
-                Voice::local(
-                    unsafe { voice.name() }.to_string(),
-                    unsafe { voice.language() }.to_string(),
-                )
-            })
+            .map(|voice| voice_from(&voice))
             .collect::<Vec<Voice>>()
     }))
 }
@@ -1075,26 +1381,41 @@ fn parse_voices(output: &str) -> Vec<Voice> {
 /// synthesiser, which is what keeps the *shape* of the offered list honest.
 ///
 /// **Deduplicated**, because `say -v '?'` lists every voice twice — a known
-/// quirk, see HANDOVER §6 — and a list with a repeated name is not merely
-/// untidy: the settings screen keys its options by name, so a duplicate is a
-/// rendering error that takes the screen down. The first entry for a name wins;
-/// the duplicates are the same voice. macOS lists Kyoko twice for the same
-/// reason, so this is not a Chinese-only repair.
+/// quirk, see HANDOVER §6 — and a list with a repeated entry is not merely
+/// untidy: the settings screen keys its options by [`Voice::id`], so a
+/// duplicate is a rendering error that takes the screen down. The first entry
+/// wins; the duplicates are the same voice. macOS lists Kyoko twice for the
+/// same reason, so this is not a Chinese-only repair.
+///
+/// A duplicate is the same *voice*, though, not the same name: the same
+/// identifier, or — where the platform reports none — the same name in the
+/// same locale. AVFoundation's `Eddy` exists in `zh-CN` and in `zh-TW`, and
+/// those are two voices a learner can tell apart by ear; merging them under one
+/// name is half of issue #39. Sorted by name and then locale, so the two sit
+/// together and in the same order on every launch.
 fn voices_for(all: &[Voice], language: Language) -> Vec<Voice> {
+    let same = |a: &Voice, b: &Voice| {
+        if !a.identifier.is_empty() || !b.identifier.is_empty() {
+            a.identifier == b.identifier
+        } else {
+            a.name.eq_ignore_ascii_case(&b.name) && locale_key(a) == locale_key(b)
+        }
+    };
     let mut voices: Vec<Voice> = Vec::new();
     for voice in all {
         if !locale_key(voice).starts_with(language.locale_prefix()) {
             continue;
         }
-        if voices
-            .iter()
-            .any(|seen: &Voice| seen.name.eq_ignore_ascii_case(&voice.name))
-        {
+        if voices.iter().any(|seen| same(seen, voice)) {
             continue;
         }
         voices.push(voice.clone());
     }
-    voices.sort_by(|a, b| a.name.cmp(&b.name));
+    voices.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| locale_key(a).cmp(&locale_key(b)))
+    });
     voices
 }
 
@@ -1123,8 +1444,9 @@ fn base_name(name: &str) -> &str {
 ///
 /// The language's home locale is preferred — mainland simplified Chinese
 /// (`zh_CN`) or Japanese as spoken in Japan (`ja_JP`) — then any locale of that
-/// language, which keeps a Taiwanese or Cantonese voice reachable for Chinese
-/// rather than refusing to speak.
+/// language in [`locale_rank`]'s order, which keeps a Taiwanese or Cantonese
+/// voice reachable for Chinese rather than refusing to speak, Taiwan's Mandarin
+/// first.
 fn pick_voice(voices: &[Voice], language: Language) -> Option<Voice> {
     let home = |v: &&Voice| locale_key(v).starts_with(language.home_locale());
     let preferred = |v: &&Voice| {
@@ -1138,8 +1460,12 @@ fn pick_voice(voices: &[Voice], language: Language) -> Option<Voice> {
     voices
         .iter()
         .find(|v| home(v) && preferred(v))
-        .or_else(|| voices.iter().find(home))
-        .or_else(|| voices.iter().find(any))
+        .or_else(|| {
+            voices
+                .iter()
+                .filter(any)
+                .min_by_key(|v| locale_rank(v, language, None))
+        })
         .cloned()
 }
 
@@ -1349,10 +1675,11 @@ Sinji               zh_HK    # 你好！我叫善怡。
         // what previously hid this mismatch.
         let voices = parse_voices(SAMPLE);
         for wanted in ["Tingting", "Tingting (Chinese (China mainland))", "tingting"] {
-            let found = find_voice(&voices, wanted).unwrap_or_else(|| panic!("{wanted}"));
+            let found = find_voice(&voices, wanted, Language::Chinese)
+                .unwrap_or_else(|| panic!("{wanted}"));
             assert_eq!(base_name(&found.name), "Tingting");
         }
-        assert!(find_voice(&voices, "Nobody").is_none());
+        assert!(find_voice(&voices, "Nobody", Language::Chinese).is_none());
     }
 
     #[test]
@@ -1361,11 +1688,20 @@ Sinji               zh_HK    # 你好！我叫善怡。
             Voice::local("Meijia (Chinese (China mainland))", "zh_CN"),
             Voice::local("Meijia", "zh_TW"),
         ];
-        assert_eq!(find_voice(&voices, "Meijia").unwrap().locale, "zh_TW");
         assert_eq!(
-            find_voice(&voices, "Meijia (Chinese (China mainland))")
+            find_voice(&voices, "Meijia", Language::Chinese)
                 .unwrap()
                 .locale,
+            "zh_TW"
+        );
+        assert_eq!(
+            find_voice(
+                &voices,
+                "Meijia (Chinese (China mainland))",
+                Language::Chinese
+            )
+            .unwrap()
+            .locale,
             "zh_CN"
         );
     }
@@ -1462,7 +1798,8 @@ Sinji               zh_HK    # 你好！我叫善怡。
     fn a_japanese_preference_matches_the_qualified_name() {
         let voices = parse_voices(SAMPLE_JA);
         for wanted in ["Kyoko", "Kyoko (Japanese (Japan))", "kyoko"] {
-            let found = find_voice(&voices, wanted).unwrap_or_else(|| panic!("{wanted}"));
+            let found = find_voice(&voices, wanted, Language::Japanese)
+                .unwrap_or_else(|| panic!("{wanted}"));
             assert_eq!(base_name(&found.name), "Kyoko");
         }
         let chosen = resolve_voice(&voices, Some("Kyoko"), None, Language::Japanese).expect("a voice");
@@ -1563,9 +1900,10 @@ Sinji               zh_HK    # 你好！我叫善怡。
     #[test]
     fn a_voice_listed_twice_is_offered_once() {
         // `say -v '?'` really does list every voice twice, and the settings
-        // screen keys its options by name — so a duplicate is not untidiness, it
-        // is a rendering error that takes the whole screen down. This fixture is
-        // the shape of the real command's output: the same lines, twice.
+        // screen keys its options by `Voice::id` — the name, for a voice with
+        // no identifier — so a duplicate is not untidiness, it is a rendering
+        // error that takes the whole screen down. This fixture is the shape of
+        // the real command's output: the same lines, twice.
         let real = "\
 Tingting (Chinese (China mainland)) zh_CN    # 你好！我叫婷婷。
 Meijia              zh_TW    # 你好，我叫美佳。
@@ -1586,7 +1924,8 @@ Daniel              en_GB    # Hello, my name is Daniel.
         assert_eq!(offered[0].name, "Meijia");
         assert_eq!(offered[1].name, "Tingting (Chinese (China mainland))");
 
-        // The names are what the screen keys on, so they have to be distinct.
+        // With no identifiers the names are the ids the screen keys on, so they
+        // have to be distinct.
         let mut names: Vec<&str> = offered.iter().map(|v| v.name.as_str()).collect();
         let offered_count = names.len();
         names.sort();
@@ -1621,6 +1960,475 @@ Daniel              en_GB    # Hello, my name is Daniel.
         let long = "一".repeat(MAX_UTTERANCE + 1);
         let error = speaker.speak(&long).unwrap_err();
         assert!(error.contains("limit"), "unexpected error: {error}");
+    }
+
+    /// The novelty voices AVFoundation reports under the same bare name in
+    /// every language (issue #39), in the order a real `speechVoices()` list
+    /// has them: English and German before Chinese.
+    fn novelty_voices() -> Vec<Voice> {
+        vec![
+            Voice::local("Eddy", "en-US"),
+            Voice::local("Eddy", "de-DE"),
+            Voice::local("Eddy", "ja-JP"),
+            Voice::local("Eddy", "zh-TW"),
+            Voice::local("Eddy", "zh-CN"),
+            Voice::local("Flo", "en-GB"),
+            Voice::local("Flo", "zh-CN"),
+        ]
+    }
+
+    #[test]
+    fn a_name_shared_across_languages_resolves_to_the_learners_language() {
+        let voices = novelty_voices();
+        let chosen =
+            resolve_voice(&voices, Some("Eddy"), None, Language::Chinese).expect("a voice");
+        assert_eq!(chosen.locale, "zh-CN", "{chosen:?}");
+        let chosen = resolve_voice(&voices, Some("Flo"), None, Language::Chinese).expect("a voice");
+        assert_eq!(chosen.locale, "zh-CN", "{chosen:?}");
+        let chosen =
+            resolve_voice(&voices, Some("Eddy"), None, Language::Japanese).expect("a voice");
+        assert_eq!(chosen.locale, "ja-JP", "{chosen:?}");
+    }
+
+    #[test]
+    fn the_same_name_in_two_chinese_locales_is_offered_twice() {
+        let offered = voices_for(&novelty_voices(), Language::Chinese);
+        let shown: Vec<(&str, &str)> = offered
+            .iter()
+            .map(|v| (v.name.as_str(), v.locale.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            vec![("Eddy", "zh-CN"), ("Eddy", "zh-TW"), ("Flo", "zh-CN")],
+            "{offered:?}"
+        );
+    }
+
+    /// The same novelty voices with the identifiers AVFoundation gives them —
+    /// the spelling the app sees on macOS and iOS from this version on.
+    fn identified_voices() -> Vec<Voice> {
+        novelty_voices()
+            .into_iter()
+            .map(|v| {
+                let identifier = format!("com.apple.eloquence.{}.{}", v.locale, v.name);
+                v.with_identifier(identifier)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_stored_identifier_names_exactly_one_voice() {
+        let voices = identified_voices();
+        // The Taiwanese Eddy, chosen explicitly: not the mainland one the bare
+        // name would prefer, and not the English one listed first.
+        let chosen = resolve_voice(
+            &voices,
+            Some("com.apple.eloquence.zh-TW.Eddy"),
+            None,
+            Language::Chinese,
+        )
+        .expect("a voice");
+        assert_eq!(
+            (chosen.name.as_str(), chosen.locale.as_str()),
+            ("Eddy", "zh-TW")
+        );
+        assert_eq!(chosen.id(), "com.apple.eloquence.zh-TW.Eddy");
+
+        // An identifier of another language's voice is not a Chinese voice to
+        // read 汉 with, even though the settings row could hold one: the
+        // automatic choice is used instead.
+        let english = find_voice(&voices, "com.apple.eloquence.en-US.Eddy", Language::Chinese);
+        assert_eq!(english, None);
+        let fallback = resolve_voice(
+            &voices,
+            Some("com.apple.eloquence.en-US.Eddy"),
+            None,
+            Language::Chinese,
+        )
+        .expect("a voice");
+        assert!(fallback.locale.starts_with("zh"), "{fallback:?}");
+    }
+
+    #[test]
+    fn an_identifier_match_beats_a_name_match() {
+        // A voice whose *name* is another voice's identifier is contrived, but
+        // it is the cleanest way to show which rule runs first.
+        let voices = vec![
+            Voice::local("com.apple.voice.compact.zh-CN.Tingting", "zh-CN"),
+            Voice::local("Tingting", "zh-TW")
+                .with_identifier("com.apple.voice.compact.zh-CN.Tingting"),
+        ];
+        let found = find_voice(
+            &voices,
+            "com.apple.voice.compact.zh-CN.Tingting",
+            Language::Chinese,
+        )
+        .expect("a voice");
+        assert_eq!(found.name, "Tingting");
+    }
+
+    #[test]
+    fn a_bare_name_from_an_older_build_still_resolves_to_the_learners_language() {
+        // What every build before identifiers stored: a bare `Eddy`. It keeps
+        // working, it means the home locale's Eddy, and it resolves to the voice
+        // *with* its identifier, so the utterance is given that voice and no other.
+        let voices = identified_voices();
+        let chinese =
+            resolve_voice(&voices, Some("Eddy"), None, Language::Chinese).expect("a voice");
+        assert_eq!(chinese.id(), "com.apple.eloquence.zh-CN.Eddy");
+        let japanese =
+            resolve_voice(&voices, Some("eddy"), None, Language::Japanese).expect("a voice");
+        assert_eq!(japanese.id(), "com.apple.eloquence.ja-JP.Eddy");
+
+        // With no mainland Eddy, the Taiwanese one is still a Chinese Eddy.
+        let no_mainland: Vec<Voice> = voices.into_iter().filter(|v| v.locale != "zh-CN").collect();
+        let taiwan =
+            resolve_voice(&no_mainland, Some("Eddy"), None, Language::Chinese).expect("a voice");
+        assert_eq!(taiwan.locale, "zh-TW");
+
+        // A name only another language's voice carries is not taken: Flo exists
+        // here in English only, so the Japanese app falls back to its own pick.
+        let only_english_flo = vec![
+            Voice::local("Flo", "en-GB").with_identifier("com.apple.eloquence.en-GB.Flo"),
+            Voice::local("Kyoko", "ja-JP").with_identifier("com.apple.voice.compact.ja-JP.Kyoko"),
+        ];
+        let picked = resolve_voice(&only_english_flo, Some("Flo"), None, Language::Japanese)
+            .expect("a voice");
+        assert_eq!(picked.name, "Kyoko");
+    }
+
+    #[test]
+    fn an_override_naming_a_shared_name_means_the_learners_language() {
+        let voices = identified_voices();
+        let chinese =
+            resolve_voice(&voices, None, Some("Eddy"), Language::Chinese).expect("a voice");
+        assert_eq!(chinese.id(), "com.apple.eloquence.zh-CN.Eddy");
+        // And one naming nothing of the language is still passed through as given.
+        let unlisted =
+            resolve_voice(&voices, None, Some("Albert"), Language::Chinese).expect("a voice");
+        assert_eq!(
+            (unlisted.name.as_str(), unlisted.locale.as_str()),
+            ("Albert", OVERRIDE)
+        );
+    }
+
+    #[test]
+    fn the_automatic_pick_carries_the_identifier_of_the_voice_it_chose() {
+        // The automatic choice hits #39 too when Tingting and Meijia are absent:
+        // it settles on the mainland Eddy, and the utterance must get *that* one.
+        let voices = identified_voices();
+        let picked = pick_voice(&voices, Language::Chinese).expect("a voice");
+        assert_eq!(picked.id(), "com.apple.eloquence.zh-CN.Eddy");
+        let picked = pick_voice(&voices, Language::Japanese).expect("a voice");
+        assert_eq!(picked.id(), "com.apple.eloquence.ja-JP.Eddy");
+    }
+
+    #[test]
+    fn the_voice_spoken_with_is_found_by_identifier_not_by_its_bare_name() {
+        // `utterance_for`'s lookup, on the list `speechVoices()` reports:
+        // English and German Eddy first, as on a real machine.
+        let listed = identified_voices();
+        for wanted in [
+            pick_voice(&listed, Language::Chinese).unwrap(),
+            pick_voice(&listed, Language::Japanese).unwrap(),
+            resolve_voice(
+                &listed,
+                Some("com.apple.eloquence.zh-TW.Eddy"),
+                None,
+                Language::Chinese,
+            )
+            .unwrap(),
+        ] {
+            let index = installed_index(&listed, &wanted).expect("the voice is listed");
+            assert_eq!(listed[index], wanted);
+        }
+    }
+
+    #[test]
+    fn without_an_identifier_the_voice_is_found_by_name_and_locale() {
+        // A voice from a listing with no identifiers — or an identifier this
+        // list no longer has — is still never matched on its name alone.
+        let listed = novelty_voices();
+        let wanted = Voice::local("Eddy", "zh_CN"); // either separator
+        assert_eq!(
+            listed[installed_index(&listed, &wanted).unwrap()].locale,
+            "zh-CN"
+        );
+        let stale = Voice::local("Eddy", "ja-JP").with_identifier("com.apple.gone.ja-JP.Eddy");
+        assert_eq!(
+            listed[installed_index(&listed, &stale).unwrap()].locale,
+            "ja-JP"
+        );
+
+        // A voice this list does not have is reported missing, not swapped for
+        // another language's voice of the same name.
+        let gone = Voice::local("Eddy", "fr-FR");
+        assert_eq!(installed_index(&listed, &gone), None);
+
+        // Only an override that matched no voice of the language is a bare name,
+        // and it is used as one: the first voice of that name, whatever it speaks.
+        let unlisted = Voice::local("Flo", OVERRIDE);
+        assert_eq!(
+            listed[installed_index(&listed, &unlisted).unwrap()].locale,
+            "en-GB"
+        );
+    }
+
+    #[test]
+    fn the_same_name_in_two_locales_is_two_entries_with_distinct_ids() {
+        let offered = voices_for(&identified_voices(), Language::Chinese);
+        let ids: Vec<&str> = offered.iter().map(Voice::id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "com.apple.eloquence.zh-CN.Eddy",
+                "com.apple.eloquence.zh-TW.Eddy",
+                "com.apple.eloquence.zh-CN.Flo",
+            ]
+        );
+        // The same voice listed twice is still one entry.
+        let mut twice = identified_voices();
+        twice.extend(identified_voices());
+        assert_eq!(voices_for(&twice, Language::Chinese), offered);
+
+        let japanese = voices_for(&identified_voices(), Language::Japanese);
+        assert_eq!(
+            japanese.iter().map(Voice::id).collect::<Vec<_>>(),
+            vec!["com.apple.eloquence.ja-JP.Eddy"]
+        );
+    }
+
+    #[test]
+    fn a_voice_with_no_identifier_is_stored_by_its_name() {
+        // Android's names are unique and its listing carries no identifier, so
+        // a choice there is stored exactly as it was before identifiers existed.
+        let android = Voice::local("zh-cn-x-ccc-local", "zh-CN");
+        assert_eq!(android.id(), "zh-cn-x-ccc-local");
+        let listing: Voice = serde_json::from_str(
+            r#"{"name":"zh-cn-x-ccc-local","locale":"zh-CN","network":false}"#,
+        )
+        .unwrap();
+        assert_eq!(listing, android);
+    }
+
+    /// A bare-named AVFoundation list in several Chinese locales and two other
+    /// languages, every voice identified — what a learner's Mac reports now.
+    fn bare_voices() -> Vec<Voice> {
+        [
+            ("Eddy", "en-US"),
+            ("Eddy", "zh-HK"),
+            ("Eddy", "zh-TW"),
+            ("Eddy", "zh-CN"),
+            ("Eddy", "ja-JP"),
+            ("Sinji", "zh-HK"),
+            ("Meijia", "zh-TW"),
+            ("Tingting", "zh-CN"),
+            ("Kyoko", "ja-JP"),
+        ]
+        .into_iter()
+        .map(|(name, locale)| {
+            Voice::local(name, locale)
+                .with_identifier(format!("com.apple.eloquence.{locale}.{name}"))
+        })
+        .collect()
+    }
+
+    #[test]
+    fn a_suffixed_name_from_the_say_era_finds_the_bare_voice_in_its_locale() {
+        // v0.3.0–v0.5.11 listed voices through `say -v '?'`, so their stored
+        // names carry the qualifier: `Eddy (Chinese (China mainland))`. Today's
+        // list says `Eddy`, and the qualifier is what says *which* Eddy.
+        let voices = bare_voices();
+        for (stored, locale) in [
+            ("Eddy (Chinese (China mainland))", "zh-CN"),
+            ("Eddy (Chinese (Taiwan))", "zh-TW"),
+            ("Eddy (Chinese (Hong Kong))", "zh-HK"),
+            ("Tingting (Chinese (China mainland))", "zh-CN"),
+        ] {
+            let found = find_voice(&voices, stored, Language::Chinese)
+                .unwrap_or_else(|| panic!("{stored}"));
+            assert_eq!(found.locale, locale, "{stored}");
+        }
+        let kyoko = find_voice(&voices, "Kyoko (Japanese (Japan))", Language::Japanese).unwrap();
+        assert_eq!(kyoko.id(), "com.apple.eloquence.ja-JP.Kyoko");
+        let eddy = find_voice(&voices, "Eddy (Japanese (Japan))", Language::Japanese).unwrap();
+        assert_eq!(eddy.locale, "ja-JP");
+
+        // A qualifier this file does not know is still the voice's name: the
+        // home locale first, then the language's other locales.
+        let odd = find_voice(&voices, "Eddy (Chinese (Somewhere))", Language::Chinese).unwrap();
+        assert_eq!(odd.locale, "zh-CN");
+        let without_mainland: Vec<Voice> = voices
+            .iter()
+            .filter(|v| v.locale != "zh-CN")
+            .cloned()
+            .collect();
+        let taiwan = find_voice(
+            &without_mainland,
+            "Eddy (Chinese (China mainland))",
+            Language::Chinese,
+        )
+        .unwrap();
+        assert_eq!(
+            taiwan.locale, "zh-TW",
+            "Taiwan before Hong Kong for Mandarin"
+        );
+
+        // A suffixed name never reaches across languages.
+        assert_eq!(
+            find_voice(&voices, "Eddy (English (US))", Language::Japanese)
+                .unwrap()
+                .locale,
+            "ja-JP"
+        );
+        assert!(find_voice(&voices, "Kyoko (Japanese (Japan))", Language::Chinese).is_none());
+    }
+
+    #[test]
+    fn mandarin_falls_back_to_taiwan_before_hong_kong() {
+        // Hong Kong's voices speak Cantonese; for a Mandarin learner with no
+        // mainland voice, Taiwan's Mandarin is the nearer answer.
+        let no_mainland: Vec<Voice> = bare_voices()
+            .into_iter()
+            .filter(|v| v.locale != "zh-CN")
+            .collect();
+        assert_eq!(
+            pick_voice(&no_mainland, Language::Chinese).unwrap().locale,
+            "zh-TW"
+        );
+    }
+
+    #[test]
+    fn an_override_may_name_another_languages_voice_by_identifier() {
+        let listed = bare_voices();
+        let english = resolve_voice(
+            &listed,
+            None,
+            Some("com.apple.eloquence.en-US.Eddy"),
+            Language::Chinese,
+        )
+        .expect("the override is used as given");
+        let index = installed_index(&listed, &english).expect("and found to speak with");
+        assert_eq!(listed[index].locale, "en-US");
+    }
+
+    #[test]
+    fn a_speaker_resolves_its_stored_choice_against_its_own_voice_list() {
+        let speaker = Speaker::new(Language::Chinese);
+        speaker
+            .voices
+            .set(bare_voices())
+            .expect("nothing has listed the voices yet");
+        assert_eq!(speaker.chosen_voice(), None, "nothing chosen");
+        for (stored, id) in [
+            ("Eddy", "com.apple.eloquence.zh-CN.Eddy"),
+            ("Eddy (Chinese (Taiwan))", "com.apple.eloquence.zh-TW.Eddy"),
+            (
+                "com.apple.eloquence.zh-HK.Eddy",
+                "com.apple.eloquence.zh-HK.Eddy",
+            ),
+        ] {
+            speaker.set_voice(Some(stored));
+            assert_eq!(
+                speaker
+                    .chosen_voice()
+                    .map(|v| v.id().to_string())
+                    .as_deref(),
+                Some(id),
+                "{stored}"
+            );
+            if std::env::var_os(Language::Chinese.override_var()).is_none() {
+                assert_eq!(
+                    speaker.voice().map(|v| v.id().to_string()).as_deref(),
+                    Some(id),
+                    "{stored}"
+                );
+            }
+        }
+        // Another language's voice is not a choice this speaker can honour.
+        speaker.set_voice(Some("com.apple.eloquence.en-US.Eddy"));
+        assert_eq!(speaker.chosen_voice(), None);
+    }
+
+    #[test]
+    fn a_choice_found_only_in_another_language_is_reported_as_such() {
+        let speaker = Speaker::new(Language::Japanese);
+        speaker.voices.set(bare_voices()).expect("fresh speaker");
+        assert_eq!(speaker.chosen_elsewhere(), None, "nothing chosen");
+        speaker.set_voice(Some("Kyoko"));
+        assert_eq!(speaker.chosen_elsewhere(), None, "the choice resolves");
+        speaker.set_voice(Some("Meijia"));
+        assert_eq!(
+            speaker.chosen_elsewhere().map(|v| v.locale).as_deref(),
+            Some("zh-TW")
+        );
+        speaker.set_voice(Some("com.apple.eloquence.en-US.Eddy"));
+        assert_eq!(
+            speaker.chosen_elsewhere().map(|v| v.locale).as_deref(),
+            Some("en-US")
+        );
+        speaker.set_voice(Some("Nobody At All"));
+        assert_eq!(speaker.chosen_elsewhere(), None, "nowhere on this machine");
+    }
+
+    #[test]
+    fn a_voices_quality_is_read_from_the_platform_or_its_identifier() {
+        assert_eq!(quality_name(1), Some("standard"));
+        assert_eq!(quality_name(2), Some("enhanced"));
+        assert_eq!(quality_name(3), Some("premium"));
+        assert_eq!(quality_name(0), None);
+        assert_eq!(
+            quality_from_identifier("com.apple.voice.compact.zh-CN.Tingting"),
+            Some("standard")
+        );
+        assert_eq!(
+            quality_from_identifier("com.apple.voice.enhanced.zh-CN.Tingting"),
+            Some("enhanced")
+        );
+        assert_eq!(
+            quality_from_identifier("com.apple.voice.premium.ja-JP.Kyoko"),
+            Some("premium")
+        );
+        assert_eq!(
+            quality_from_identifier("com.apple.eloquence.zh-CN.Eddy"),
+            None
+        );
+        assert_eq!(quality_from_identifier(""), None);
+    }
+
+    #[test]
+    fn a_compact_and_an_enhanced_voice_of_one_name_are_two_entries() {
+        let compact = Voice::local("Tingting", "zh-CN")
+            .with_identifier("com.apple.voice.compact.zh-CN.Tingting")
+            .with_quality(Some("standard"));
+        let enhanced = Voice::local("Tingting", "zh-CN")
+            .with_identifier("com.apple.voice.enhanced.zh-CN.Tingting")
+            .with_quality(Some("enhanced"));
+        let offered = voices_for(&[compact.clone(), enhanced.clone()], Language::Chinese);
+        assert_eq!(offered, vec![compact, enhanced]);
+    }
+
+    /// Every voice the settings screen would offer on this Mac is found again
+    /// by the lookup that speaks with it, and an utterance can be given it.
+    ///
+    /// The real `speechVoices()` list rather than a fixture, so a difference
+    /// between what `voice_from` reads and what `utterance_for` looks up fails
+    /// here and not in a learner's ear. It asserts nothing about which voices
+    /// exist: a runner with no Chinese or Japanese voice has nothing to check,
+    /// and passes. macOS only — iOS tests have no run loop to answer `with_main`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_offered_voice_is_found_again_on_this_mac() {
+        let listed = list_voices().expect("listing the voices");
+        for language in [Language::Chinese, Language::Japanese] {
+            for voice in voices_for(&listed, language) {
+                let index = installed_index(&listed, &voice)
+                    .unwrap_or_else(|| panic!("{voice:?} was not found again"));
+                assert_eq!(listed[index].id(), voice.id());
+                let made = with_main(move || utterance_for("汉", &voice).map(|_| ()));
+                assert_eq!(made, Ok(()));
+            }
+        }
     }
 
     // There is deliberately no test here that asserts *which* voices a machine
