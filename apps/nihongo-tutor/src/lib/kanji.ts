@@ -146,6 +146,25 @@ export function wayBack(
   return isHomePlace(lesson, start, anchor) ? anchor : null;
 }
 
+/** Where the board is, and where a detour from it comes back to. */
+export interface Trail {
+  here: KanjiPick;
+  anchor: KanjiPick;
+}
+
+/**
+ * The stage's `go()`: put `target` on the board, carrying the anchor forward
+ * (`anchorAfter`) from the place being left.
+ */
+export function moveTo(
+  lesson: KanjiLessonView | null,
+  start: KanjiPick,
+  trail: Trail,
+  target: KanjiPick,
+): Trail {
+  return { here: target, anchor: anchorAfter(lesson, start, trail.here, trail.anchor) };
+}
+
 /** Whether two picks name the same place on the board. */
 function samePick(a: KanjiPick, b: KanjiPick): boolean {
   if (a.kind === "kanji") return b.kind === "kanji" && a.ch === b.ch;

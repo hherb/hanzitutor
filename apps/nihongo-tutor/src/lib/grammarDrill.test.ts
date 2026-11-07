@@ -170,6 +170,21 @@ describe("emptyNote", () => {
     expect(line).toContain("another exercise");
   });
 
+  it("says exactly what each stage says over an empty course", () => {
+    expect(emptyNote({ points: 0, examples: 0, total: 0 }, "choose")).toBe(
+      "Nothing to ask here: the grammar course holds no patterns.",
+    );
+    expect(emptyNote({ points: 0, examples: 0, total: 0 }, "write")).toBe(
+      "Nothing to write here: the grammar course holds no patterns.",
+    );
+  });
+
+  it("words the drill's own reason, with its count", () => {
+    expect(emptyNote({ points: 0, examples: 0, total: 526 }, "choose")).toBe(
+      "Nothing to ask here: none of the course's 526 patterns has a sentence this drill can make a question of. Try another exercise from the grammar course.",
+    );
+  });
+
   it("says when the course itself is empty, with no other exercise to send to", () => {
     for (const exercise of ["choose", "write"] as const) {
       const line = emptyNote({ points: 0, examples: 0, total: 0 }, exercise);

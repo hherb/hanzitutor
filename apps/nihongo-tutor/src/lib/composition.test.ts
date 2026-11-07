@@ -4,6 +4,7 @@ import {
   COMPOSITION_MIN,
   answerBelongs,
   canSubmit,
+  checkButton,
   checks,
   emptyNote,
   instructionLine,
@@ -11,6 +12,7 @@ import {
   limitationNote,
   ownNote,
   poolNote,
+  verdictContext,
 } from "./composition";
 import type { CompositionVerdict } from "./types";
 
@@ -193,5 +195,49 @@ describe("emptyNote", () => {
     expect(line).toContain("Nothing to write about here");
     expect(line).toContain("no patterns");
     expect(line).not.toContain("Loading");
+  });
+});
+
+/**
+ * The review after #34: a delivered answer is kept while the learner edits, labelled
+ * as being about the sentence it was asked about, and the button waits for a request
+ * the screen has abandoned so that a paid endpoint is not asked twice.
+ */
+describe("verdictContext", () => {
+  it("says nothing while the answer is about the sentence in the box", () => {
+    expect(verdictContext("いぬがすきです", "いぬがすきです")).toBeNull();
+    // A space at either end is not a different sentence.
+    expect(verdictContext("いぬがすきです", " いぬがすきです ")).toBeNull();
+  });
+
+  it("names the earlier sentence once the box has moved on", () => {
+    expect(verdictContext("いぬがすきです", "いぬがすきでした")).toBe(
+      "About your earlier sentence 「いぬがすきです」",
+    );
+  });
+});
+
+describe("checkButton", () => {
+  const idle = { checking: false, inFlight: 0, canSubmit: true };
+
+  it("asks when nothing is in flight", () => {
+    expect(checkButton(idle)).toEqual({ label: "Check with the model", disabled: false });
+    expect(checkButton({ ...idle, canSubmit: false }).disabled).toBe(true);
+  });
+
+  it("says it is asking while the screen waits for its answer", () => {
+    expect(checkButton({ ...idle, checking: true, inFlight: 1 })).toEqual({
+      label: "Asking…",
+      disabled: true,
+    });
+  });
+
+  it("waits for an abandoned request instead of sending a second one", () => {
+    // The sentence was edited (or the pattern changed) mid-ask: the screen no longer
+    // wants that answer, but the endpoint is still working on it.
+    expect(checkButton({ ...idle, inFlight: 1 })).toEqual({
+      label: "Finishing the earlier question…",
+      disabled: true,
+    });
   });
 });

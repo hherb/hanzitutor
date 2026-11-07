@@ -18,6 +18,7 @@ import {
   isHomePlace,
   lessonHolding,
   lessonsIn,
+  moveTo,
   neighbour,
   positionIn,
   sortFamilies,
@@ -183,6 +184,33 @@ describe("a detour off the lesson", () => {
     expect(afterGrade(true, inLesson("木"), hasNext("木"))).toBe("grade");
     // Graded there, the way on is back, which only a detour has.
     expect(wayBack(lesson10, start, kanji("木"), kanji("林"))).toEqual(kanji("林"));
+  });
+
+  /** `go()`'s rule, folded over a sequence of taps from where the stage opened. */
+  const walk = (from: KanjiPick, ...taps: KanjiPick[]) =>
+    taps.reduce((trail, tap) => moveTo(lesson10, start, trail, tap), { here: from, anchor: start });
+
+  it("comes back into the lesson through a component that the lesson holds", () => {
+    // 林 → 木 (a component, off the lesson) → 十 (木's own component, and the
+    // lesson's tenth): 十 is home again, so the arrows and `10 / 10` are back,
+    // and grading it is the lesson's own Finish.
+    const trail = walk(kanji("林"), kanji("木"), kanji("十"));
+    expect(trail.here).toEqual(kanji("十"));
+    expect(wayBack(lesson10, start, trail.here, trail.anchor)).toBeNull();
+    expect(afterGrade(true, inLesson("十"), hasNext("十"))).toBe("finish");
+    // And leaving 十 now would come back to 十, not to 林.
+    expect(walk(kanji("林"), kanji("木"), kanji("十"), kanji("木")).anchor).toEqual(kanji("十"));
+  });
+
+  it("brings a chain of detours back to where it left the lesson", () => {
+    // 林 → 木 → 丨 → Back: back to 林, and nothing more to come back from.
+    const away = walk(kanji("林"), kanji("木"), kanji("丨"));
+    const back = wayBack(lesson10, start, away.here, away.anchor);
+    expect(back).toEqual(kanji("林"));
+    const home = moveTo(lesson10, start, away, back!);
+    expect(home.here).toEqual(kanji("林"));
+    expect(wayBack(lesson10, start, home.here, home.anchor)).toBeNull();
+    expect(positionIn(lesson10, "林")).toBe(3);
   });
 
   it("leaves the lesson's own Next and Finish alone", () => {

@@ -72,6 +72,7 @@
   import {
     answerBelongs,
     canSubmit,
+    checkButton,
     checks,
     emptyNote,
     instructionLine,
@@ -79,6 +80,7 @@
     limitationNote,
     ownNote,
     poolNote,
+    verdictContext,
   } from "./composition";
 
   interface Props {
@@ -118,6 +120,16 @@
   let checking = $state(false);
   let checkError = $state<string | null>(null);
   let verdict = $state<ModelVerdict | null>(null);
+  /** The sentence `verdict` is about, which the box may have moved on from. */
+  let verdictText = $state("");
+  /**
+   * How many `check_sentence` calls are still running, abandoned ones included: the
+   * button waits for them (`checkButton`) so the endpoint is never asked twice.
+   */
+  let inFlight = $state(0);
+  /** Set when the screen goes away, so a request that settles later writes nothing. */
+  let gone = false;
+  const askButton = $derived(checkButton({ checking, inFlight, canSubmit: canSubmit(typed) }));
   let showingSettings = $state(false);
   /**
    * Whether the "Ask a model" fold is open — its own state, and the learner's.
@@ -135,7 +147,8 @@
   /**
    * The model check's own ticket, moved on by every ask, by every edit of the
    * sentence, by a new pattern and by the screen going away — so an answer that
-   * arrives after any of them is dropped rather than drawn (`answerBelongs`).
+   * arrives after any of them is dropped rather than drawn (`answerBelongs`). An
+   * answer that has already been drawn is another matter: an edit keeps it.
    */
   let asking = 0;
 
@@ -234,34 +247,45 @@
   }
 
   /**
-   * Drop the model check: any answer still in flight and any answer on screen.
+   * Abandon the ask in flight, if there is one.
    *
-   * Moving the ticket on is what drops the one in flight — its result no longer
-   * belongs (`answerBelongs`) and its `finally` no longer owns `checking`.
+   * Moving the ticket on is what drops it — its result no longer belongs
+   * (`answerBelongs`) and its `finally` no longer owns `checking`. A delivered
+   * answer stays: the learner may be editing from it, and `verdictContext` says
+   * which sentence it was about once the box has moved on.
    */
-  function dropCheck() {
+  function abandonCheck() {
     asking += 1;
     checking = false;
-    verdict = null;
     checkError = null;
+  }
+
+  /** Drop the model check altogether — the ask in flight and the answer on screen. */
+  function dropCheck() {
+    abandonCheck();
+    verdict = null;
+    verdictText = "";
   }
 
   /** Ask the model about the sentence in the box. */
   async function check() {
     const askedPattern = prompt;
-    if (!askedPattern || !canSubmit(typed) || checking) return;
+    if (!askedPattern || askButton.disabled) return;
     // The text is captured with the request: an answer is about *this* sentence, and
     // a learner fixing a typo while the model thinks must not get it under the new one.
     const asked = { ask: ++asking, prompt: askedPattern, text: typed };
     try {
       checking = true;
       checkError = null;
+      inFlight += 1;
       const answered = await api.checkSentence(askedPattern.point, asked.text);
       if (!answerBelongs(asked, onScreen())) return;
       verdict = answered;
+      verdictText = asked.text;
     } catch (e) {
       if (answerBelongs(asked, onScreen())) checkError = failureLine(e);
     } finally {
+      if (!gone) inFlight -= 1;
       if (asked.ask === asking) checking = false;
     }
   }
@@ -273,7 +297,9 @@
         endpoint = model.endpoint;
         modelName = model.model;
         showingSettings = !model.configured;
-        foldOpen = !model.configured;
+        // Opened for a learner with nothing configured, and never closed from here:
+        // a learner who opened the fold before the status arrived keeps it open.
+        if (!model.configured) foldOpen = true;
       } catch {
         // The fold says nothing about a status it could not read; the check itself
         // reports the failure that matters.
@@ -281,16 +307,18 @@
     })();
   });
 
-  // An answer belongs to the sentence it was asked about: editing the sentence drops
-  // it, so a model's verdict for old text is never drawn under new text — and an ask
-  // still in flight is dropped with it, since its answer would be about the old text.
+  // An answer belongs to the sentence it was asked about: editing the sentence
+  // abandons an ask still in flight, whose answer would be about the old text. One
+  // already drawn stays, labelled with its own sentence (`verdictContext`), so the
+  // learner can edit while reading it; a new pattern is what clears it.
   $effect(() => {
     void typed;
-    dropCheck();
+    abandonCheck();
   });
 
   // Gone is gone: an answer that lands after the screen has been left is not drawn.
   onDestroy(() => {
+    gone = true;
     asking += 1;
     ticket += 1;
   });
@@ -513,8 +541,8 @@
       {:else}
         <p class="hint">{disclosureLine(model, prompt.pattern)}</p>
         <div class="row">
-          <button class="save" onclick={() => void check()} disabled={checking || !canSubmit(typed)}>
-            {checking ? "Asking…" : "Check with the model"}
+          <button class="save" onclick={() => void check()} disabled={askButton.disabled}>
+            {askButton.label}
           </button>
           <button class="forget" onclick={() => (showingSettings = true)}>Change it</button>
         </div>
@@ -523,6 +551,9 @@
         {/if}
         {#if verdict}
           <div class="answer">
+            {#if verdictContext(verdictText, typed)}
+              <p class="earlier">{verdictContext(verdictText, typed)}</p>
+            {/if}
             <p class="headline">{reviewHeadline(verdict.review)}</p>
             {#if correctedLine(verdict.review)}
               <p class="corrected" lang="ja">{correctedLine(verdict.review)}</p>
@@ -537,6 +568,9 @@
     </details>
   {:else if nothing && !error}
     <p class="hint" role="status">{emptyNote()}</p>
+    <div class="after">
+      <button class="next" onclick={onleave}>Back to the grammar course</button>
+    </div>
   {:else if !error}
     <p class="hint">{busy ? "Choosing a pattern…" : "Loading…"}</p>
   {/if}
@@ -951,6 +985,13 @@
 
   .model-check .attribution {
     margin: 0.5rem 0 0;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  /* Over an answer the box has moved on from: which sentence it is about. */
+  .model-check .earlier {
+    margin: 0 0 0.4rem;
     font-size: 0.8rem;
     color: var(--muted);
   }

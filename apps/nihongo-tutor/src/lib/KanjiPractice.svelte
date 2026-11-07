@@ -44,13 +44,13 @@
   import KanaCanvas from "./KanaCanvas.svelte";
   import SpeakButton from "./SpeakButton.svelte";
   import WordCard from "./WordCard.svelte";
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { afterGrade } from "./board";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
   import { scheduleNote } from "./review";
   import { canHear, voiceNote, type VoiceStatus } from "./speech";
   import {
-    anchorAfter,
+    moveTo,
     neighbour,
     positionIn,
     spokenReading,
@@ -188,20 +188,26 @@
       openedWord = null;
       const window_ = pageWindow(wordTotal, WORD_PAGE, page);
       const found = await api.wordsOfKanji(target, window_.offset, window_.limit);
+      // The board has moved on while this was asked: the list is another character's.
+      if (ch !== target) return;
       words = found.words;
       wordTotal = found.total;
       wordPage = window_.page;
     } catch (e) {
-      error = String(e);
+      if (ch === target) error = String(e);
     } finally {
-      wordsBusy = false;
+      if (ch === target) wordsBusy = false;
     }
   }
 
   async function openKanji(target: string) {
     try {
       error = null;
-      kanji = await api.kanji(target);
+      const opened = await api.kanji(target);
+      // Out of order: the board was sent elsewhere (an arrow, a chip, Back) before
+      // this arrived, and the later request owns the screen.
+      if (ch !== target) return;
+      kanji = opened;
       radical = null;
       radicalNumber = null;
       report = null;
@@ -210,7 +216,7 @@
       showDetails = false;
       await loadWords(target, 1);
     } catch (e) {
-      error = String(e);
+      if (ch === target) error = String(e);
     }
   }
 
@@ -218,7 +224,9 @@
   async function openRadical(number: number) {
     try {
       error = null;
-      radical = await api.radical(number);
+      const opened = await api.radical(number);
+      if (ch !== null || radicalNumber !== number) return;
+      radical = opened;
       kanji = null;
       report = null;
       note = null;
@@ -229,7 +237,7 @@
       wordPage = 1;
       openedWord = null;
     } catch (e) {
-      error = String(e);
+      if (ch === null && radicalNumber === number) error = String(e);
     }
   }
 
@@ -250,7 +258,21 @@
 
   function step(delta: number) {
     const target = neighbour(lesson, ch ?? "", delta);
-    if (target) ch = target;
+    if (!target) return;
+    leaveBoard();
+    ch = target;
+  }
+
+  /**
+   * The verdict and the attempt belong to the character being left, and they go at
+   * once rather than when the next one has loaded: until then `after` would still
+   * read the old verdict, and a second press on Back would land on its `Next`.
+   */
+  function leaveBoard() {
+    board?.clear();
+    report = null;
+    note = null;
+    attempt = [];
   }
 
   /**
@@ -258,7 +280,8 @@
    * back — remembering where to return to if it takes the board off the lesson.
    */
   function go(target: KanjiPick) {
-    anchor = anchorAfter(lesson, start, here, anchor);
+    anchor = moveTo(lesson, start, { here, anchor }, target).anchor;
+    leaveBoard();
     if (target.kind === "kanji") {
       radicalNumber = null;
       ch = target.ch;
@@ -268,8 +291,19 @@
     }
   }
 
-  function goBack() {
-    if (back) go(back);
+  /** The lesson's position, or — on a radical stage — the character's glyph. */
+  let positionEl = $state<HTMLElement | null>(null);
+  let glyphEl = $state<HTMLElement | null>(null);
+
+  /**
+   * Back from a detour. Both Back controls go away when pressed, so focus is put
+   * somewhere that says where the learner now is, rather than dropped on the page.
+   */
+  async function goBack() {
+    if (!back) return;
+    go(back);
+    await tick();
+    (positionEl ?? glyphEl)?.focus();
   }
 
   function onStrokes(strokes: Point[][]) {
@@ -355,6 +389,9 @@
         <button
           class="return"
           onclick={goBack}
+          aria-label={backAt > 0
+            ? `Back to ${backLabel}, character ${backAt} of ${of}`
+            : `Back to ${backLabel}`}
           title={backAt > 0
             ? `Back to ${backLabel}, character ${backAt} of ${of} in this lesson`
             : `Back to ${backLabel}`}
@@ -375,7 +412,12 @@
         >
           <span class="flip"><Icon name="next" /></span>
         </button>
-        <span class="position" title="{lesson.title} · lesson {at} of {of}">
+        <span
+          class="position"
+          bind:this={positionEl}
+          tabindex="-1"
+          title="{lesson.title} · lesson {at} of {of}"
+        >
           {at} / {of}
         </span>
         <button
@@ -404,7 +446,7 @@
     -->
     <div class="meta" class:open={showDetails}>
       <div class="who">
-        <span class="big" lang="ja">{drawn.ch}</span>
+        <span class="big" lang="ja" bind:this={glyphEl} tabindex="-1">{drawn.ch}</span>
         <div class="gloss">
           <!--
             Above the board: **the readings and nothing else**. The meaning, the

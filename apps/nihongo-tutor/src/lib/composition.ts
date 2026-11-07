@@ -166,6 +166,45 @@ export function answerBelongs<P>(asked: ModelAsk<P>, now: ModelAsk<P>): boolean 
   return asked.ask === now.ask && asked.prompt === now.prompt && asked.text === now.text;
 }
 
+/**
+ * The line over a delivered answer once the sentence in the box is no longer the one
+ * it was asked about, or `null` while it still is.
+ *
+ * An answer that has arrived is kept while the learner edits — it is what they are
+ * editing *from*, and wiping it on the first keystroke took "The model would write: …"
+ * away from the learner reading it — but it must not read as being about the new
+ * text. Ends are trimmed for the comparison: a stray space is not another sentence.
+ */
+export function verdictContext(askedText: string, typed: string): string | null {
+  if (askedText.trim() === typed.trim()) return null;
+  return `About your earlier sentence 「${askedText.trim()}」`;
+}
+
+/** What the model check's button says, and whether it can be pressed. */
+export interface CheckButton {
+  label: string;
+  disabled: boolean;
+}
+
+/**
+ * The model check's button.
+ *
+ * `checking` is the screen waiting for the answer to its current ask; `inFlight` is
+ * how many requests the endpoint is still working on, **including abandoned ones**
+ * (the sentence was edited, or the pattern changed, mid-ask). An abandoned answer is
+ * never drawn, but the request is not cancelled either — so the button waits for it
+ * rather than send a second request to an endpoint that may charge for each.
+ */
+export function checkButton(state: {
+  checking: boolean;
+  inFlight: number;
+  canSubmit: boolean;
+}): CheckButton {
+  if (state.checking) return { label: "Asking…", disabled: true };
+  if (state.inFlight > 0) return { label: "Finishing the earlier question…", disabled: true };
+  return { label: "Check with the model", disabled: !state.canSubmit };
+}
+
 /** How much of the course can be written about, in one sentence. */
 export function poolNote(size: CompositionSize): string {
   if (size.total <= 0 || size.points <= 0) {
