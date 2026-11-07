@@ -57,14 +57,14 @@ pub use pinyin::{
 pub use grade::{
     grade, grade_with_outlines, FitInfo, Grade, GradeOptions, GradeReport, StrokeVerdict,
     Verdict, HEADLINE_INK, HEADLINE_ORDER, HEADLINE_POSITION, HEADLINE_SHAPE, INK_OK,
-    POSITION_OK, SHAPE_OK,
+    MISCOUNTED_CEILING, POSITION_OK, SHAPE_OK,
 };
 pub use raster::INK_WIDTH;
 pub use progress::{
     build_queue, entry_standing, fold_attempts, fold_from, Attempt, AttemptMeasures,
     AttemptRecord, CardState, CardView, CursorDocument, CursorSink, CursorStore, CursorView,
-    ProgressError, ProgressSink, ProgressStore, ProgressView, Rating, ReviewItem, ReviewSource,
-    ReviewView, Scheduler, Sm2, KNOWN_INTERVAL_DAYS,
+    PracticeMode, ProgressError, ProgressSink, ProgressStore, ProgressView, Rating, ReviewItem,
+    ReviewSource, ReviewView, Scheduler, Sm2, KNOWN_INTERVAL_DAYS,
 };
 pub use settings::{
     BoardSize, Pace, Settings, SettingsError, SettingsPatch, SettingsSink, SettingsStore,

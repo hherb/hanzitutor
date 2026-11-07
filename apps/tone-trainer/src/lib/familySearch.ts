@@ -15,12 +15,20 @@
 
 import type { WordSet } from "./types";
 
-/** Fold a query for comparison: tone marks gone, `v` and `u` the same letter. */
+/**
+ * Fold a query for comparison: tone marks gone, `v` and `u` the same letter.
+ *
+ * A tone number goes the way a mark does, so `zhong1guo2` is `zhongguo`, and
+ * `u:` is read as the `ü` it stands for — the same readings `hanzi_core::pinyin`
+ * accepts (issue #20).
+ */
 export function fold(text: string): string {
   return text
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
+    .replace(/u:/g, "u")
+    .replace(/([a-z])[1-5]/g, "$1")
     .replace(/v/g, "u");
 }
 

@@ -550,10 +550,13 @@ either file.
    *exact set* of keys, because a mismatch fails **silently** — the UI just shows
    blanks. Change Rust and TypeScript together; let the test catch you.
 
-3. **All four scores are measured across the whole reference character**, with
-   unwritten strokes counting as zero (`grade.rs`, step 8). Do not "fix" this into
-   a mean over only the strokes that were written: that reintroduces a bug where a
-   blank canvas scored 30/100 and writing half a character scored 62.
+3. **All four scores are measured across the whole reference character and every
+   stroke written**, with unwritten strokes and unpaired extra ones counting as
+   zero (`grade.rs`, step 8; the denominator is the larger of the two counts). Do
+   not "fix" this into a mean over only the strokes that were written: that
+   reintroduces a bug where a blank canvas scored 30/100 and writing half a
+   character scored 62. Nor into a mean over only the reference strokes: that let
+   extra strokes cost nothing (#16).
 
 4. **Shape cannot discriminate similar strokes; placement does.** Shape distance is
    deliberately scale-invariant, so two 横 of different lengths are "the same
@@ -567,9 +570,26 @@ either file.
    stroke in 黧, making a correct attempt impossible to score.
 
 6. **Order scoring is the normalised inversion count, and per-stroke out-of-order
-   flags are exactly the strokes taking part in an inversion.** That makes the
-   flags and the score provably consistent. A longest-increasing-subsequence
-   metric was tried and scored a fully reversed three-stroke character at ⅓.
+   flags are the strokes some longest increasing subsequence leaves out.** A
+   longest-increasing-subsequence *score* was tried and scored a fully reversed
+   three-stroke character at ⅓, so the score stays Kendall tau. The flags were
+   once every stroke taking part in an inversion, which flagged all of 王 when
+   only its last stroke was drawn first (#16); flagging outside *some* longest
+   subsequence flags only that one, and still flags both halves of a swap.
+
+   **Extra strokes count against every measure too, and a missing stroke or a
+   full-length extra one caps the score at `MISCOUNTED_CEILING` (74, fair).**
+   Shape, placement, ink and order divide by the larger of the reference and
+   attempt stroke counts (invariant 3), and `overall` is held at the ceiling when a
+   reference stroke went unwritten or an unpaired stroke is at least
+   `EXTRA_STROKE_MIN_LEN` (40 design units, after the fit) long (#16: 太 for 大
+   scored 97.6, and scribbles over a correct 王 scored 100). The length bar is
+   there because the tap filter is low — 12 units, 2 for 黧 — and a slip of a few
+   pixels is not a different character; it still makes `count_ok` false and costs
+   its share. The tolerance table is unchanged by any of it, since every jittered
+   attempt has the right count. The ceiling is not in the
+   recorded measures, so `hanzi-store`'s analysis recognises a score sitting at it
+   rather than reporting it as a deviation.
 
 7. **The artifact is generated, not committed.** `src-tauri/src/state.rs` embeds
    it with `include_bytes!`, and `src-tauri/build.rs` panics early with
@@ -660,6 +680,42 @@ either file.
     policy, and the store takes `&dyn Scheduler` in `record_with`. FSRS is the
     obvious next step and should not require touching the store, the commands or
     the interface. The tests exercise a second implementation to keep that honest.
+
+    **Not every graded attempt is a review** (issue #15). `Sm2::review` ignores a
+    passing attempt made before the card is due — it stays in the history and
+    moves nothing — while a failure resets the card whenever it happens. Ease is
+    charged, and a lapse counted, only for the failure of a card that had been
+    learned: one review in, only if it was due (if early failures were charged
+    while early passes earn nothing, a sitting of drilling could only lower ease);
+    two or more reviews in — which no single sitting can reach — early or not.
+    A **trace** is not a recall at all: `check()` sends the board's mode,
+    `record_practice_at` keeps a trace out of the card, and `hanzi-store` writes
+    it to `trace_attempt` (schema 7) rather than to `attempt`, so it is never
+    published or folded. It is still the learner's handwriting, so the practice
+    log export carries it (a `mode` field, and a last CSV column so positional
+    readers do not shift; no device or sequence number),
+    the backup carries it (an optional `traces` array, no `BACKUP_VERSION` bump),
+    and `ProgressView.traced` counts it per character so a traced-only character
+    reads "traced N× · not yet written from memory" rather than untouched. Every
+    rule is a function of the card and the attempt, so a device folding the merged
+    log agrees with the one that recorded it, and the shard format is unchanged.
+
+    **Upgrading.** Cards built by an older build are rebuilt once: the upgrade to
+    schema 7 leaves a `refold:schema7` marker in `meta` (same transaction), as
+    does the import of a pre-database `progress.json` that holds any card, and
+    `AppState::assemble` folds the log through `hanzi_sync::recompute` from this
+    device's own baseline and removes it — so a device that never syncs is
+    corrected like one that does. **Until every device is upgraded, the older
+    builds still fold with the old rule and still publish traces as recall
+    reviews**: their attempts look like any other review in the shards, so a new
+    build folds them as reviews too (minus the early ones, which the new rule
+    drops). The schedules converge once the last device is on this build and has
+    stopped recording traces as reviews; the traces it already published stay
+    reviews in the log.
+    Due dates are still exact instants, not local days: a one-day card practised
+    at 21:00 is not due at 08:00 the next morning. Rounding to the learner's day
+    would need their time zone in the fold — the same on every device — and is
+    left for a deliberate change.
 
 15. **Placement is measured along the stroke, never from the sample mean.**
     Pointer samples arrive by *time*, not distance, so a stroke drawn slowly at
@@ -4051,6 +4107,25 @@ Three consequences of the same rule, each deliberate:
   `gān`. The tones are unchanged and still on the right characters; only which
   syllable the `g` is coloured with moves. Re-adding the word from the dictionary
   stores `píng'ān`.
+
+Issue #20 added three things on top:
+
+- **一 keeps its first tone when it is a number's name, not a count**: after 第,
+  beside another digit (〇–九 and 十, not 百/千/万/亿), before 月 or 号, and before 日
+  only after 月 — the word list's 日复一日 and 有朝一日 are "one day", `yírì`, which
+  the issue's plain "before 日" rule would have got wrong. A一A (看一看) is neutral.
+  Over the word list this changes exactly 一一, 第一手 and 第一线.
+- **Tone numbers are pinyin.** `ni3hao3`, `nv3` and `lu:4` split as `nǐ` + `hǎo`,
+  `nǚ` and `lǜ` — in the splitter itself, so every reader of `syllables` accepts them,
+  and a number is a boundary as an apostrophe is (`xi1an1` is two syllables).
+  `pinyin::marked_reading` rewrites a numbered reading with marks (inserting the
+  apostrophe a number stood for), and is what vocabulary add/update saves and what
+  word and character search fold. The tone key rewrites a numbered syllable too. The
+  frontend's own filters (tone pairs, radicals, the tone trainer's families) drop a
+  number the way they drop a mark.
+- **Capitals keep their case through a tone mark** (`Aomen` + tone 4 → `Àomen`), and
+  `base`, `fold_pinyin` and the frontend's `toneFromSyllable` fold case first, so
+  `Àomén` searches and compares as `aomen`.
 
 **Do not "simplify" this by scoring character by character.** Sandhi is a word-level
 phenomenon; a per-character loop cannot see it.

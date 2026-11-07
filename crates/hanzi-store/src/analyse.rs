@@ -20,10 +20,10 @@
 
 use hanzi_core::{
     AttemptMeasures, HEADLINE_INK, HEADLINE_ORDER, HEADLINE_POSITION, HEADLINE_SHAPE, INK_OK,
-    POSITION_OK, SHAPE_OK,
+    MISCOUNTED_CEILING, POSITION_OK, SHAPE_OK,
 };
 
-use crate::LoggedAttempt;
+use crate::{LoggedAttempt, TracedAttempt};
 
 /// The percentiles reported for each measure: the tails, the middle, and the
 /// quartiles around it.
@@ -161,14 +161,53 @@ pub struct AttemptAnalysis {
     pub score_deviation: Option<(f32, f32)>,
 }
 
+/// What the analysis reads of one attempt, whichever table it came from.
+struct Row<'a> {
+    ch: &'a str,
+    score: f32,
+    rating: &'a str,
+    measures: Option<AttemptMeasures>,
+}
+
 /// Read the log.
 ///
 /// `attempts` is expected in the log's own order; nothing here depends on it.
 pub fn analyse(attempts: &[LoggedAttempt]) -> AttemptAnalysis {
+    let rows: Vec<Row<'_>> = attempts
+        .iter()
+        .map(|a| Row {
+            ch: &a.ch,
+            score: a.score,
+            rating: &a.rating,
+            measures: a.measures,
+        })
+        .collect();
+    analyse_rows(&rows)
+}
+
+/// Read the traced attempts, which are analysed apart from the reviews.
+///
+/// Apart because they are graded differently: a trace is scored where the guide
+/// actually is, without the global fit a recall gets, so pooling the two would
+/// blur exactly the distributions the tolerances are tuned from.
+pub fn analyse_traces(traces: &[TracedAttempt]) -> AttemptAnalysis {
+    let rows: Vec<Row<'_>> = traces
+        .iter()
+        .map(|t| Row {
+            ch: &t.ch,
+            score: t.score,
+            rating: &t.rating,
+            measures: t.measures,
+        })
+        .collect();
+    analyse_rows(&rows)
+}
+
+fn analyse_rows(attempts: &[Row<'_>]) -> AttemptAnalysis {
     let rows: Vec<AttemptMeasures> = attempts.iter().filter_map(|a| a.measures).collect();
     let characters = attempts
         .iter()
-        .map(|a| a.ch.as_str())
+        .map(|a| a.ch)
         .collect::<std::collections::HashSet<_>>()
         .len();
 
@@ -181,11 +220,20 @@ pub fn analyse(attempts: &[LoggedAttempt]) -> AttemptAnalysis {
             continue;
         };
         // The grader's own rule, read from its constants rather than copied.
-        let rebuilt = 100.0
+        let weighted = 100.0
             * (HEADLINE_SHAPE * measures.shape
                 + HEADLINE_POSITION * measures.position
                 + HEADLINE_ORDER * measures.order
                 + HEADLINE_INK * measures.ink);
+        // An attempt with a missing or a full-length extra stroke is held at the
+        // grader's ceiling, and the measures do not record the strokes. A score exactly at the ceiling
+        // over measures that weigh more is that rule at work, not a deviation;
+        // anywhere else the weights alone must reproduce the score.
+        let rebuilt = if attempt.score == MISCOUNTED_CEILING {
+            weighted.min(MISCOUNTED_CEILING)
+        } else {
+            weighted
+        };
         deviations.push((attempt.score - rebuilt).abs());
         scores.push(attempt.score);
         if attempt.rating == "again" || attempt.rating == "hard" {
@@ -315,6 +363,27 @@ mod tests {
         let rows = vec![attempt("好", score + 10.0, "good", Some(measures))];
         let (_, max) = analyse(&rows).score_deviation.unwrap();
         assert!((max - 10.0).abs() < 0.001, "max deviation {max}");
+    }
+
+    #[test]
+    fn a_score_held_at_the_miscounted_ceiling_is_not_a_deviation() {
+        // 太 written for 大: every measure is high, but the stroke count is wrong,
+        // so the grader held the score at its ceiling. The measures do not
+        // record the count, and the check must still read the row as consistent.
+        let (_, measures) = consistent(0.95, 0.95, 0.95, 1.0);
+        let rows = vec![attempt("大", MISCOUNTED_CEILING, "hard", Some(measures))];
+        let (_, max) = analyse(&rows).score_deviation.unwrap();
+        assert!(max < 0.001, "max deviation {max}");
+
+        // The ceiling explains a score only from above: measures that weigh
+        // less than the ceiling cannot have produced a score at it.
+        let (_, measures) = consistent(0.5, 0.5, 0.5, 0.5);
+        let rows = vec![attempt("大", MISCOUNTED_CEILING, "hard", Some(measures))];
+        let (_, max) = analyse(&rows).score_deviation.unwrap();
+        assert!(
+            (max - (MISCOUNTED_CEILING - 50.0)).abs() < 0.001,
+            "max deviation {max}"
+        );
     }
 
     #[test]

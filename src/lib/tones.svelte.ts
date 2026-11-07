@@ -109,7 +109,9 @@ const VOWELS = "aeiouüvāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜńňǹ�
 export function toneFromSyllable(reading: string): Tone | null {
   const marks: Tone[] = [];
   let hasVowel = false;
-  for (const ch of reading) {
+  // Read in lower case, as Rust reads it: a capitalised proper noun (`Àomén`)
+  // carries its tone the way a lower-case reading does.
+  for (const ch of reading.toLowerCase()) {
     const marked = MARKED_TONE[ch];
     if (marked !== undefined) marks.push(marked);
     if (VOWELS.includes(ch)) hasVowel = true;

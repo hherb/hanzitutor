@@ -70,12 +70,15 @@
   let filter = $state<Filter>("all");
   let query = $state("");
 
-  /** Fold a query for comparison: tone marks gone, `v` and `u` the same letter. */
+  /** Fold a query for comparison: tone marks gone, `v` and `u` the same letter,
+   *  and a tone number gone as a mark is (`hao3`), with `u:` read as `ü`. */
   const fold = (text: string) =>
     text
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
       .toLowerCase()
+      .replace(/u:/g, "u")
+      .replace(/([a-z])[1-5]/g, "$1")
       .replace(/v/g, "u");
 
   const has = (set: ToneSet, tone: number) => set.members.some((m) => m.tone === tone);

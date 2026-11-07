@@ -43,7 +43,8 @@
 
   <p class="note">
     Backspace and the arrow keys in a text field are the field's own: the board's
-    keys are ignored while one has focus.
+    keys are ignored while one has focus. Enter on a focused button presses that
+    button.
   </p>
 </aside>
 

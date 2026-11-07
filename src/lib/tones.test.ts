@@ -48,6 +48,13 @@ describe("the tone a single syllable is written with", () => {
     expect(toneFromSyllable(" ")).toBeNull();
   });
 
+  it("reads a capitalised mark as the tone it marks", () => {
+    expect(toneFromSyllable("Ào")).toBe(4);
+    expect(toneFromSyllable("Ōu")).toBe(1);
+    expect(toneFromSyllable("É")).toBe(2);
+    expect(toneFromSyllable("ÀOMÉN")).toBeNull();
+  });
+
   it("understands every accented letter the Rust side does", () => {
     // The two tables have to agree: a mark written into a reading by Rust and
     // not read here would colour a character with a tone it is not read with.

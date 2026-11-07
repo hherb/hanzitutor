@@ -12,7 +12,13 @@
 //!
 //! ## What is in it, and what is not
 //!
-//! In: every vocabulary entry and group, and every attempt with its measures.
+//! In: every vocabulary entry and group, and every attempt with its measures —
+//! the reviews under `attempts`, and the attempts written over the faint guide
+//! under `traces`. Traces are a separate array because they are not reviews and
+//! have no device or sequence number; the field is optional, so a backup written
+//! before it existed still reads (with no traces), and a build that predates it
+//! reads a newer backup by ignoring the field — which is why it needed no
+//! [`BACKUP_VERSION`] bump.
 //! Out: the review schedule, the course position and the preferences. The
 //! schedule is **derived** — `hanzi_sync::recompute` folds it back out of the
 //! imported log — so storing it as well would be a second copy that can disagree
@@ -30,8 +36,8 @@
 use hanzi_core::Rating;
 use serde::{Deserialize, Serialize};
 
-use crate::export::ExportedAttempt;
-use crate::{IncomingAttempt, LoggedAttempt};
+use crate::export::{ExportedAttempt, ExportedTrace};
+use crate::{IncomingAttempt, IncomingTrace, LoggedAttempt, TracedAttempt};
 
 /// The `format` marker every backup carries. The first thing [`Backup::parse`]
 /// looks at, so that a vocabulary export or an unrelated JSON file is refused by
@@ -60,6 +66,10 @@ pub struct Backup {
     /// writes it. Opaque here by design — see the module note.
     vocabulary: serde_json::Value,
     attempts: Vec<ExportedAttempt>,
+    /// The traced attempts, with their measures. Absent from a backup written
+    /// before traces were kept apart, and left out of the file when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    traces: Vec<ExportedTrace>,
 }
 
 /// Why a file could not be read as a backup.
@@ -126,6 +136,7 @@ impl Backup {
         exported_at: &str,
         vocabulary_json: &str,
         attempts: &[LoggedAttempt],
+        traces: &[TracedAttempt],
     ) -> Result<Self, BackupError> {
         let vocabulary: serde_json::Value = serde_json::from_str(vocabulary_json)
             .map_err(|e| BackupError::Vocabulary(e.to_string()))?;
@@ -135,6 +146,7 @@ impl Backup {
             exported_at: exported_at.to_string(),
             vocabulary,
             attempts: attempts.iter().map(ExportedAttempt::from).collect(),
+            traces: traces.iter().map(ExportedTrace::from).collect(),
         })
     }
 
@@ -221,6 +233,27 @@ impl Backup {
             .iter()
             .filter(|attempt| attempt.measures.is_some())
             .count()
+    }
+
+    /// How many traced attempts the backup holds.
+    pub fn trace_count(&self) -> usize {
+        self.traces.len()
+    }
+
+    /// The traces in the shape [`crate::Db::merge_traces`] takes, read by the same
+    /// rule as [`Self::incoming_attempts`] for a rating this build does not know.
+    pub fn incoming_traces(&self) -> Vec<IncomingTrace> {
+        self.traces
+            .iter()
+            .map(|trace| IncomingTrace {
+                ch: trace.ch.clone(),
+                at: trace.at.clone(),
+                score: trace.score,
+                rating: Rating::from_name(&trace.rating)
+                    .unwrap_or_else(|| Rating::from_score(trace.score)),
+                measures: trace.measures,
+            })
+            .collect()
     }
 
     /// The attempts in the shape the log's merge takes.
@@ -325,6 +358,7 @@ mod tests {
             "2026-09-27T12:00:00Z",
             LIST,
             &[attempt("好", Some(measures())), attempt("学", None)],
+            &[],
         )
         .unwrap();
         let text = backup.to_json().unwrap();
@@ -402,7 +436,7 @@ mod tests {
 
         // And the other direction, which the vocabulary list's own importer
         // asks: a backup is not a list, and it should be able to say so.
-        let backup = Backup::build("2026-09-27T12:00:00Z", LIST, &[]).unwrap();
+        let backup = Backup::build("2026-09-27T12:00:00Z", LIST, &[], &[]).unwrap();
         assert!(is_a_backup(&backup.to_json().unwrap()));
         assert!(!is_a_backup(LIST), "a list export is not a backup");
         assert!(!is_a_backup("not json at all"));
@@ -435,6 +469,50 @@ mod tests {
         let incoming = Backup::parse(&text).unwrap().incoming_attempts();
         assert_eq!(incoming[0].rating, Rating::Easy);
         assert_eq!(incoming[0].measures, None);
+    }
+
+    #[test]
+    fn traces_round_trip_and_an_older_backup_has_none() {
+        // The backup promises every attempt with its measures, and the board starts
+        // in trace mode — so leaving traces out lost most of a beginner's measured
+        // handwriting.
+        let trace = TracedAttempt {
+            id: 4,
+            ch: "好".into(),
+            at: "2026-09-22T09:05:00Z".into(),
+            score: 97.0,
+            rating: "easy".into(),
+            measures: Some(measures()),
+        };
+        let backup = Backup::build(
+            "2026-09-27T12:00:00Z",
+            LIST,
+            &[attempt("学", None)],
+            &[trace],
+        )
+        .unwrap();
+        let text = backup.to_json().unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(raw["traces"][0]["ch"], "好");
+        assert!(raw["traces"][0].get("deviceId").is_none());
+
+        let read = Backup::parse(&text).unwrap();
+        assert_eq!(read.trace_count(), 1);
+        assert_eq!(
+            read.attempt_count(),
+            1,
+            "a trace is not counted as a review"
+        );
+        let incoming = read.incoming_traces();
+        assert_eq!(incoming[0].rating, Rating::Easy);
+        assert_eq!(incoming[0].measures, Some(measures()));
+
+        // No traces: no field, so the file is what an older build wrote.
+        let plain = Backup::build("2026-09-27T12:00:00Z", LIST, &[], &[]).unwrap();
+        let plain = plain.to_json().unwrap();
+        assert!(!plain.contains("traces"));
+        // And a backup without the field reads as one with no traces.
+        assert_eq!(Backup::parse(&plain).unwrap().trace_count(), 0);
     }
 
     #[test]

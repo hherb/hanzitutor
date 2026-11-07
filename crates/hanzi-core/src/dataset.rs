@@ -194,7 +194,9 @@ struct CharacterQuery {
 impl CharacterQuery {
     fn new(query: &str) -> Self {
         let text = query.trim().to_string();
-        let folded = fold_pinyin(&text);
+        // A reading typed with tone numbers (`hao3`) is searched as the marks it
+        // stands for, which fold away like any other.
+        let folded = fold_pinyin(&crate::pinyin::marked_reading(&text));
         // Only a query that is more than one syllable gains anything from being
         // taken apart: one syllable is already asked as a reading, and the exact
         // and prefix rules answer it.
@@ -210,14 +212,22 @@ impl CharacterQuery {
             // + vowel — `pin` + `gan` — is right by the orthography and wrong
             // for what a learner typing `pingan` usually means. Where that is
             // the boundary, the other reading's two syllables (`ping` + `an`)
-            // are searched as well. A boundary the learner marked is left alone.
+            // are searched as well. A boundary the learner marked is left alone,
+            // with an apostrophe or with a tone number (`pin3gan3`).
+            let typed: Vec<char> = text.chars().collect();
             for pair in split.windows(2) {
                 let [(left, left_span), (right, right_span)] = pair else {
                     continue;
                 };
                 let left_folded = fold_pinyin(&left.text);
                 let right_folded = fold_pinyin(&right.text);
+                let numbered = left_span
+                    .end
+                    .checked_sub(1)
+                    .and_then(|last| typed.get(last))
+                    .is_some_and(char::is_ascii_digit);
                 if left_span.end == right_span.start
+                    && !numbered
                     && left_folded.ends_with('n')
                     && right_folded.len() > 1
                     && right_folded.starts_with('g')
@@ -441,7 +451,7 @@ impl Dataset {
     /// the caller is told the true total separately by counting matches itself.
     pub fn search_words(&self, query: &str, level: Option<u8>, limit: usize) -> Vec<&Word> {
         let query = query.trim();
-        let folded = fold_pinyin(query);
+        let folded = fold_pinyin(&crate::pinyin::marked_reading(query));
         let lowered = query.to_lowercase();
 
         let mut matches: Vec<(u8, usize)> = Vec::new();
@@ -469,7 +479,7 @@ impl Dataset {
     /// never disagree about what counts as a match.
     pub fn count_words(&self, query: &str, level: Option<u8>) -> usize {
         let query = query.trim();
-        let folded = fold_pinyin(query);
+        let folded = fold_pinyin(&crate::pinyin::marked_reading(query));
         let lowered = query.to_lowercase();
 
         self.words
@@ -1050,7 +1060,8 @@ pub struct RadicalGroup {
 /// spellings of the same reading compare equal.
 pub fn fold_pinyin(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
+    // Lower case first, so a capitalised mark (`Àomén`) folds with the rest.
+    for ch in input.chars().flat_map(char::to_lowercase) {
         let folded = match ch {
             'ā' | 'á' | 'ǎ' | 'à' | 'a' | 'A' => 'a',
             'ē' | 'é' | 'ě' | 'è' | 'e' | 'E' | 'ê' | 'Ê' => 'e',
@@ -1645,6 +1656,62 @@ mod tests {
         );
         // A boundary the learner marked is not second-guessed.
         assert!(!found("pin'gan").contains(&'平'));
+    }
+
+    #[test]
+    fn a_reading_typed_with_tone_numbers_is_searched_as_its_marks() {
+        // `hao3` is how a keyboard without a pinyin input method writes `hǎo`,
+        // and it has to find what `hǎo` and `hao` find (issue #20).
+        let dataset = Dataset::from_parts(
+            vec![
+                lexeme('你', &["nǐ"], "you", 1, 10),
+                lexeme('好', &["hǎo", "hào"], "good", 1, 20),
+                lexeme('平', &["píng"], "flat", 1, 30),
+                lexeme('安', &["ān"], "peaceful", 1, 40),
+                lexeme('品', &["pǐn"], "article", 2, 50),
+                lexeme('感', &["gǎn"], "to feel", 2, 60),
+                lexeme('绿', &["lǜ"], "green", 2, 70),
+            ],
+            vec![
+                word("你好", "nǐhǎo", "hello", 1, 10),
+                word("平安", "píng'ān", "safe", 2, 20),
+                word("澳门", "Àomén", "Macao", 3, 30),
+            ],
+        );
+        let characters = |query: &str| -> Vec<char> {
+            dataset
+                .search_characters(query, None, 20)
+                .iter()
+                .map(|c| c.ch)
+                .collect()
+        };
+        let words = |query: &str| -> Vec<String> {
+            dataset
+                .search_words(query, None, 20)
+                .iter()
+                .map(|w| w.text.clone())
+                .collect()
+        };
+
+        assert_eq!(characters("hao3").first(), Some(&'好'));
+        assert_eq!(characters("lv4").first(), Some(&'绿'));
+        assert_eq!(characters("lu:4").first(), Some(&'绿'));
+        let hello = characters("ni3hao3");
+        assert!(hello.contains(&'你') && hello.contains(&'好'), "{hello:?}");
+        assert_eq!(words("ni3hao3"), ["你好"]);
+        assert_eq!(words("ping2an1"), ["平安"]);
+        assert_eq!(dataset.count_words("ni3hao3", None), 1);
+        // A number marks the boundary as an apostrophe does, so `ping2an1` is
+        // not second-guessed as pin + gan.
+        let safe = characters("ping2an1");
+        assert!(safe.contains(&'平') && safe.contains(&'安'), "{safe:?}");
+        assert!(!safe.contains(&'品'), "{safe:?}");
+        // A capitalised reading folds to the same letters as a lower-case one.
+        assert_eq!(fold_pinyin("Àomén"), "aomen");
+        assert_eq!(words("aomen"), ["澳门"]);
+        // Toneless search is unchanged.
+        assert_eq!(characters("hao").first(), Some(&'好'));
+        assert_eq!(words("nihao"), ["你好"]);
     }
 
     #[test]

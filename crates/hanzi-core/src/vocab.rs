@@ -250,7 +250,13 @@ pub struct VocabEntryView {
 impl VocabEntryView {
     /// The entry on its own, with no standing: what [`VocabStore::view`] can
     /// answer on its own.
-    fn untagged(entry: Entry) -> Self {
+    ///
+    /// A reading saved with tone numbers by an older build, or imported that
+    /// way, is shown with the marks its syllables are aligned as
+    /// ([`crate::pinyin::marked_reading`]), so the interface can find each one
+    /// in the text. The document on disk is left as it is.
+    fn untagged(mut entry: Entry) -> Self {
+        entry.pinyin = crate::pinyin::marked_reading(&entry.pinyin);
         let (tones, syllables) = crate::pinyin::aligned_reading(&entry.text, &entry.pinyin)
             .map(|list| {
                 (
@@ -640,6 +646,10 @@ impl VocabStore {
     }
 
     /// Add an entry, filling in group creation and pinyin as needed.
+    ///
+    /// A reading typed with tone numbers (`ni3hao3`) is saved with the marks
+    /// they stand for (`nǐhǎo`) — see [`crate::pinyin::marked_reading`]; anything
+    /// else is saved as typed.
     pub fn add_entry(
         &mut self,
         text: &str,
@@ -665,7 +675,7 @@ impl VocabStore {
         let entry = Entry {
             id: self.document.next_id,
             text,
-            pinyin: pinyin.trim().to_string(),
+            pinyin: crate::pinyin::marked_reading(pinyin.trim()),
             meaning: meaning.trim().to_string(),
             group,
             added_at: now_iso8601(),
@@ -714,7 +724,7 @@ impl VocabStore {
             self.ensure_group(name);
         }
         let entry = &mut self.document.entries[index];
-        entry.pinyin = pinyin.trim().to_string();
+        entry.pinyin = crate::pinyin::marked_reading(pinyin.trim());
         entry.meaning = meaning.trim().to_string();
         entry.group = group;
         let updated = entry.clone();
@@ -1167,6 +1177,66 @@ mod tests {
         let words = &view.entries[1];
         assert_eq!(words.tones, vec![5, 4]);
         assert_eq!(words.syllables, vec!["de".to_string(), "huà".to_string()]);
+    }
+
+    #[test]
+    fn a_reading_typed_with_tone_numbers_is_kept_with_marks() {
+        // `ni3hao3` is what a learner without a pinyin keyboard types; it is
+        // saved the way the dataset writes it, so the list shows `nǐhǎo` and the
+        // reading colours like any other (issue #20).
+        let mut store = VocabStore::in_memory();
+        let added = store.add_entry("你好", "ni3hao3", "hello", None).unwrap();
+        assert_eq!(added.pinyin, "nǐhǎo");
+        let view = store.view();
+        assert_eq!(view.entries[0].tones, vec![3, 3]);
+        assert_eq!(
+            view.entries[0].syllables,
+            vec!["nǐ".to_string(), "hǎo".to_string()]
+        );
+
+        let updated = store
+            .update_entry(added.id, "xi1an1", "Xi'an", None)
+            .unwrap();
+        assert_eq!(updated.pinyin, "xī'ān");
+        // Anything that is not pinyin is kept exactly as typed.
+        let kept = store
+            .update_entry(added.id, "  ni hao? ", "hello", None)
+            .unwrap();
+        assert_eq!(kept.pinyin, "ni hao?");
+    }
+
+    #[test]
+    fn a_numbered_reading_saved_by_an_older_build_is_shown_with_marks() {
+        // An entry already on disk as `xi1'an1` (or imported so) is shown with
+        // the marks its syllables are aligned as, so the interface finds each
+        // syllable in the text and keeps the separator between them.
+        let json = r#"{"version":1,"nextId":3,"groups":[],"entries":[
+            {"id":1,"text":"西安","pinyin":"xi1'an1","meaning":"Xi'an","group":null,
+             "addedAt":"2026-01-01T00:00:00Z","attempts":0,"bestScore":null,"lastPractised":null},
+            {"id":2,"text":"你好","pinyin":"ni3 hao3","meaning":"hello","group":null,
+             "addedAt":"2026-01-01T00:00:00Z","attempts":0,"bestScore":null,"lastPractised":null}
+        ]}"#;
+        let mut store = VocabStore::in_memory();
+        store.import_json(json, false).unwrap();
+        let view = store.view();
+        let shown = |text: &str| {
+            view.entries
+                .iter()
+                .find(|e| e.entry.text == text)
+                .unwrap_or_else(|| panic!("{text} was imported"))
+        };
+        let xian = shown("西安");
+        assert_eq!(xian.entry.pinyin, "xī'ān");
+        assert_eq!(xian.syllables, vec!["xī".to_string(), "ān".to_string()]);
+        let hello = shown("你好");
+        assert_eq!(hello.entry.pinyin, "nǐ hǎo");
+        assert_eq!(hello.tones, vec![3, 3]);
+        // Each syllable is found in the text as shown.
+        for entry in [xian, hello] {
+            for syllable in &entry.syllables {
+                assert!(entry.entry.pinyin.contains(syllable.as_str()), "{syllable}");
+            }
+        }
     }
 
     #[test]

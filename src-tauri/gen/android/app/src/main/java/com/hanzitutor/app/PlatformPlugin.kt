@@ -39,10 +39,12 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.security.keystore.UserNotAuthenticatedException
 import android.speech.tts.TextToSpeech
@@ -63,11 +65,14 @@ import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.io.File
 import java.io.FileOutputStream
+import java.security.InvalidKeyException
 import java.security.KeyStore
 import java.security.UnrecoverableEntryException
 import java.util.Locale
 import java.util.UUID
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
+import javax.crypto.IllegalBlockSizeException
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
@@ -79,6 +84,13 @@ class SpeakArgs {
     var voice: String? = null
 }
 
+/**
+ * One caller waiting to hear that its utterance began, and which utterance that
+ * is. One object rather than two fields, so that the caller and the id can never
+ * be read from different requests.
+ */
+private class Speaking(val invoke: Invoke, val utterance: String)
+
 /** The arguments of `saveSecret`. */
 @InvokeArg
 class SaveSecretArgs {
@@ -86,8 +98,8 @@ class SaveSecretArgs {
 
     /**
      * Whether the learner wants to be asked for a fingerprint before the sign-in
-     * is read back. Writing it does not ask for anything either way — see
-     * `saveSecret` — so this chooses the mode of the key, not of this call.
+     * is read back. Writing with it on asks once as well, because keystore will
+     * not encrypt under such a key unasked either — see `saveSecret`.
      */
     var requireAuth: Boolean = false
 }
@@ -103,11 +115,11 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
     /** Work held back until the synthesiser is ready, in arrival order. */
     private val waiting = mutableListOf<() -> Unit>()
 
-    /** The caller waiting to hear that an utterance began, if any. */
-    private var speaking: Invoke? = null
-
-    /** Which utterance that caller is waiting on, so stale callbacks are ignored. */
-    private var speakingUtterance: String? = null
+    /**
+     * The caller waiting to hear that an utterance began, if any, with the id of
+     * that utterance so that stale callbacks are ignored. Main thread only.
+     */
+    private var speaking: Speaking? = null
 
     /** The guard that answers a caller whose utterance never reported anything. */
     private var speakTimeout: Runnable? = null
@@ -121,6 +133,23 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
 
     /** The focus this app is currently holding, if any. */
     private var focus: AudioFocusRequest? = null
+
+    /**
+     * The utterance [focus] was taken for, so that a late callback for an earlier
+     * one does not hand back the focus a newer one is using. Main thread only.
+     */
+    private var audibleUtterance: String? = null
+
+    /**
+     * Whether a fingerprint prompt is showing. Main thread only.
+     *
+     * androidx.biometric 1.1.0 keeps a prompt's state in one `ViewModel` per
+     * activity, so a second `BiometricPrompt` built while the first is up takes
+     * over its callback: the first caller would never be answered, and a read
+     * could be handed the cipher of a write. So there is one at a time, and a
+     * second asks again later instead. See [askFor].
+     */
+    private var prompting = false
 
     /** The recorder while it is running. */
     private var recordDevice: AudioRecord? = null
@@ -242,14 +271,25 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
                 return@withEngine
             }
 
+            // A caller still waiting on the previous utterance is answered now,
+            // because nothing else ever will: `QUEUE_FLUSH` is about to cut that
+            // utterance off, and its callbacks no longer match what is waited
+            // on. Two taps inside the engine's start latency are exactly this,
+            // and an unanswered `Invoke` is a Rust thread blocked for good and a
+            // promise on the page that never settles. It is resolved rather than
+            // rejected: being interrupted by the learner's own next tap is not
+            // a failure worth showing them.
+            takeSpeaking()?.resolve()
+
             lastProblem = null
-            speaking = invoke
             makeAudible(tts)
-            val utterance = UUID.randomUUID().toString()
-            speakingUtterance = utterance
-            if (tts.speak(args.text, TextToSpeech.QUEUE_FLUSH, null, utterance) == TextToSpeech.ERROR) {
-                speaking = null
-                speakingUtterance = null
+            val waiter = Speaking(invoke, UUID.randomUUID().toString())
+            audibleUtterance = waiter.utterance
+            speaking = waiter
+            val accepted = tts.speak(args.text, TextToSpeech.QUEUE_FLUSH, null, waiter.utterance)
+            if (accepted == TextToSpeech.ERROR) {
+                takeSpeaking()
+                giveBackAudio()
                 invoke.reject("the speech engine refused to start on that text")
                 return@withEngine
             }
@@ -257,14 +297,12 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
             // An engine that reports neither start nor failure would leave the
             // caller waiting for ever, and a learner staring at a button that
             // never answers. Three seconds is far longer than starting takes.
-            val held = invoke
             val guard = Runnable {
-                if (speaking === held) {
-                    speaking = null
-                    speakingUtterance = null
+                if (speaking === waiter) {
+                    takeSpeaking()
                     lastProblem = "the speech engine never reported starting"
                     giveBackAudio()
-                    held.resolve()
+                    invoke.resolve()
                 }
             }
             speakTimeout = guard
@@ -278,8 +316,28 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
         // Not routed through `withEngine`: if the engine never started there is
         // nothing to stop, and starting one in order to stop it would be absurd.
         engine?.stop()
+        // Whoever was waiting for the stopped utterance to begin will now never
+        // hear that it did, so they are answered here — and their guard goes
+        // with them, so it cannot fire later against a different request.
+        takeSpeaking()?.resolve()
         giveBackAudio()
         invoke.resolve()
+    }
+
+    /**
+     * Take the caller waiting on an utterance, and cancel its guard.
+     *
+     * Whoever calls this is the one answering that caller — or, for a request
+     * that never got going, deciding it needs no answer from here. Returns null
+     * when nobody is waiting. Main thread only, like everything that touches
+     * [speaking].
+     */
+    private fun takeSpeaking(): Invoke? {
+        val waiter = speaking ?: return null
+        speaking = null
+        speakTimeout?.let(main::removeCallbacks)
+        speakTimeout = null
+        return waiter.invoke
     }
 
     /**
@@ -311,8 +369,25 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
         manager.requestAudioFocus(request)
     }
 
-    /** Give the audio back, so anything that was ducked returns to volume. */
+    /**
+     * Give the audio back once [utteranceId] is over, unless a newer utterance has
+     * taken the focus since. Called from the engine's binder thread, so it only
+     * posts; an id of null is taken at face value, as in [finishSpeaking].
+     */
+    private fun giveBackAudioAfter(utteranceId: String?) {
+        main.post {
+            if (utteranceId == null || utteranceId == audibleUtterance) {
+                giveBackAudio()
+            }
+        }
+    }
+
+    /**
+     * Give the audio back, so anything that was ducked returns to volume. Main
+     * thread only.
+     */
     private fun giveBackAudio() {
+        audibleUtterance = null
         val manager = audio ?: return
         val request = focus ?: return
         focus = null
@@ -431,22 +506,33 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
      * thread has closed it, and Rust reads it the moment this resolves. Nothing
      * here blocks — the thread notices the flag within one buffer, which is a
      * tenth of a second.
+     *
+     * A recording that **ended by itself** is answered first, before the check
+     * for a running device: hitting [MAX_RECORD_SECONDS], or a microphone taken
+     * away mid-recording by a phone call, ends the thread, and [finishRecording]
+     * has already let go of the device by the time the learner lets go of the
+     * button. Checking the device first answered every such recording with "not
+     * recording", which hid both the recording and the real reason it stopped,
+     * and left the file behind in the cache directory.
      */
     @Command
     fun recordStop(invoke: Invoke) {
-        if (recordDevice == null || recordThread == null) {
-            invoke.reject("not recording")
-            return
-        }
-        recording = false
-        // A thread that has already posted its result: answer from that rather
-        // than waiting for a callback that has been and gone.
         val done = finished
         if (done != null) {
             finished = null
             resolveRecording(invoke, done.first, done.second)
             return
         }
+        if (recordDevice == null || recordThread == null) {
+            invoke.reject("not recording")
+            return
+        }
+        if (pendingStop != null) {
+            // Replacing the first stop would leave it waiting for good.
+            invoke.reject("already stopping")
+            return
+        }
+        recording = false
         pendingStop = invoke
     }
 
@@ -542,8 +628,16 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
         resolveRecording(held, rate, problem)
     }
 
+    /**
+     * Answer with the file, or with why there is none.
+     *
+     * A recording that failed is deleted here, because nothing else will read
+     * it: Rust deletes the file once it has read it, and is only told where it
+     * is on success. See [RECORDING_FILE] for why none of it is kept.
+     */
     private fun resolveRecording(invoke: Invoke, rate: Int, problem: String?) {
         if (problem != null) {
+            File(activity.cacheDir, RECORDING_FILE).delete()
             invoke.reject(problem)
             return
         }
@@ -568,53 +662,58 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
      * the device's secure hardware where there is any, and the file on disk is
      * useless without this device.
      *
-     * **Asking for the learner.** [SaveSecretArgs.requireAuth] has the key made
-     * with `setUserAuthenticationRequired`, which is what puts the sign-in behind
-     * a fingerprint, a face or the device PIN. That is a property of the key,
-     * fixed when the key is made, so the mode the blob was written in is recorded
-     * beside it and a change of mode rebuilds the key — see [store]. Writing asks
-     * for nothing even then: keystore permits encryption with such a key and
-     * refuses only decryption, which is why the prompt lives in [loadSecret] and
-     * can never appear while the learner is connecting.
+     * **Asking for the learner.** [SaveSecretArgs.requireAuth] keeps the sign-in
+     * under a second key, filed under its own alias and made with
+     * `setUserAuthenticationRequired`, which is what puts it behind a fingerprint
+     * or — from Android 11 — the device PIN. That is a property of the key, fixed
+     * when the key is made, so the mode the blob was written in is recorded beside
+     * it. Such a key asks on **every** operation, and for an AES key that means
+     * encrypting as well as decrypting: keystore lets only *public*-key operations
+     * through unasked, and a symmetric key has none. So locking the sign-in shows
+     * the same prompt that reading it does, with the encrypting cipher as its
+     * `CryptoObject` — see [sealBehindPrompt]. The learner is asked once when they
+     * connect or turn the switch on, which is a moment they chose; nothing is ever
+     * asked to draw a screen. An earlier version assumed encryption was free,
+     * failed on every locked write, and kept the token unlocked instead.
      *
-     * A request for authentication that the device cannot honour — a phone with
-     * no screen lock at all, where keystore will not make such a key — degrades
-     * to a key that asks nothing rather than refusing to connect, and the answer
-     * says which of the two the token actually got. That is the same honesty as
-     * the Rust side's `Protection`, and the reason this command answers at all
-     * rather than resolving an empty object.
+     * **When the lock cannot be had,** the write is **refused**, not downgraded: a
+     * prompt the learner cancels, a key keystore will not make, an encryption that
+     * fails — each is reported, and nothing is written or deleted, so whatever was
+     * stored before stays exactly as it was under its own key. Keeping the token
+     * unlocked would tell the learner one thing and do another. The one downgrade
+     * left is a device that **cannot ask at all** — [canAsk] says no, because its
+     * screen lock or its fingerprints were removed since the switch was turned on.
+     * The switch is not offered there, so refusing would leave the learner unable
+     * to connect and unable to turn it off; the token is kept the unlocked way and
+     * the answer says so, which Rust labels `keychainOnly` and explains.
      *
-     * **Why the ciphertext is what is written.** `apply()` rather than `commit()`:
-     * the write is to this app's own preferences and a lost race with process
-     * death costs one reconnect, while blocking the main thread — which is where
-     * mobile plugin commands run — costs the frame the learner is looking at.
+     * **Why the write is `commit()`.** The blob is written synchronously, on the
+     * main thread where mobile plugin commands run, because the other mode's key
+     * is deleted straight afterwards — see [keep]. With `apply()` a process death
+     * between the two could leave the old blob on disk and its key gone, which
+     * is a sign-in lost for nothing. A few hundred bytes to this app's own
+     * preferences is not a write the learner can see.
      */
     @Command
     fun saveSecret(invoke: Invoke) {
         val args = invoke.parseArgs(SaveSecretArgs::class.java)
-        var asksForAuth = false
-        try {
-            store(args.secret, args.requireAuth)
-            asksForAuth = args.requireAuth
-        } catch (problem: Exception) {
-            if (!args.requireAuth) {
-                invoke.reject(notStored(problem))
-                return
-            }
-            // A device with no screen lock cannot make a key that asks for
-            // authentication at all. Refusing to connect there would trade a
-            // working sign-in for a principle, so the request falls back to the
-            // mode every earlier build used — and the answer admits that it did.
-            forgetSecret()
-            try {
-                store(args.secret, false)
-            } catch (fallback: Exception) {
-                invoke.reject(notStored(fallback))
-                return
-            }
+        if (args.requireAuth && canAsk()) {
+            sealBehindPrompt(invoke, args.secret)
+            return
         }
+        try {
+            storeUnlocked(args.secret)
+        } catch (problem: Exception) {
+            invoke.reject(notStored(problem))
+            return
+        }
+        resolveSaved(invoke, false)
+    }
+
+    /** Answer a write with whether the learner will be asked before it is read. */
+    private fun resolveSaved(invoke: Invoke, guarded: Boolean) {
         val result = JSObject()
-        result.put("protected", asksForAuth)
+        result.put("protected", guarded)
         invoke.resolve(result)
     }
 
@@ -623,29 +722,127 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
         "the Android keystore would not store the Dropbox sign-in: ${problem.message}"
 
     /**
-     * Encrypt [secret] under a keystore key in the mode [requireAuth] names.
+     * Encrypt [secret] under the key that asks for nothing, and keep it.
      *
-     * The mode cannot be changed on a key that already exists, so a request that
-     * differs from the mode the stored blob is in cannot be met by re-encrypting:
-     * the key has to go and be made again. The blob goes with it rather than
-     * being left encrypted under a key nothing will use again, which is also what
-     * keeps the recorded mode and the key from ever disagreeing.
+     * A blob in the locked mode is left where it is until [keep] has written this
+     * one over it and then lets the locked key go: its key is under an alias of
+     * its own, so nothing here needs it gone first, and forgetting it first (as
+     * this once did) meant an encryption that then failed lost the sign-in while
+     * Rust's record still said connected. A key under this alias that keystore
+     * will not encrypt with — one an earlier build made in the locked mode before
+     * it filed that mode under an alias of its own — is replaced once rather than
+     * reported, because the blob it guarded is being replaced anyway. Only
+     * keystore's refusals count as that: an `InvalidKeyException` from `init`
+     * (which covers an invalidated key and one waiting for authentication), or
+     * the `IllegalBlockSizeException` that `doFinal` wraps a refused operation in
+     * — GCM without padding has no block size to get wrong. Anything else is
+     * reported, and nothing is forgotten.
      */
-    private fun store(secret: String, requireAuth: Boolean) {
-        val prefs = preferences()
-        if (prefs.getBoolean(SECRET_AUTH_ENTRY, false) != requireAuth) {
-            forgetSecret()
-        }
+    private fun storeUnlocked(secret: String) {
+        val plain = secret.toByteArray(Charsets.UTF_8)
         val cipher = Cipher.getInstance(SECRET_TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey(requireAuth))
-        val encrypted = cipher.doFinal(secret.toByteArray(Charsets.UTF_8))
-        // The IV is generated per encryption and is not secret; it has to be
-        // kept, because GCM cannot decrypt without it.
+        val encrypted = try {
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey(false))
+            cipher.doFinal(plain)
+        } catch (stale: InvalidKeyException) {
+            replaceUnlockedKey(cipher, plain)
+        } catch (stale: IllegalBlockSizeException) {
+            replaceUnlockedKey(cipher, plain)
+        }
+        keep(cipher, encrypted, false)
+    }
+
+    /**
+     * Replace the unlocked key, then encrypt [plain] under the new one.
+     *
+     * Only that key: a blob in the locked mode is under the other alias and still
+     * readable, and stays so until [keep] has replaced it. A blob in this mode was
+     * written under the key keystore has just refused, so it is unreadable already.
+     */
+    private fun replaceUnlockedKey(cipher: Cipher, plain: ByteArray): ByteArray {
+        deleteKey(SECRET_KEY_ALIAS)
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey(false))
+        return cipher.doFinal(plain)
+    }
+
+    /**
+     * Encrypt [secret] under the locked key, with the cipher a prompt authorises.
+     *
+     * Nothing is written or deleted until the learner has answered and the
+     * encryption has worked. The key that asks for nothing is filed under another
+     * alias, so a sign-in stored that way survives a cancelled prompt untouched,
+     * and only [keep] lets it go — once the locked blob has replaced it.
+     */
+    private fun sealBehindPrompt(invoke: Invoke, secret: String) {
+        val cipher = try {
+            lockingCipher()
+        } catch (problem: Exception) {
+            invoke.reject(
+                "this device would not make a key that asks for your fingerprint, so " +
+                    "$SAVE_REFUSED: ${problem.message}"
+            )
+            return
+        }
+        askFor(
+            invoke,
+            cipher,
+            "Lock your Dropbox sign-in",
+            "Confirm it is you to keep the sign-in behind your fingerprint.",
+            SAVE_REFUSED
+        ) { unlocked ->
+            try {
+                keep(unlocked, unlocked.doFinal(secret.toByteArray(Charsets.UTF_8)), true)
+            } catch (problem: Exception) {
+                invoke.reject(notStored(problem))
+                return@askFor
+            }
+            resolveSaved(invoke, true)
+        }
+    }
+
+    /**
+     * A cipher ready to encrypt under the locked key, making the key if need be.
+     *
+     * A key that a newly enrolled fingerprint invalidated refuses to begin an
+     * operation at all. Whatever it encrypted is unreadable by anybody now, and the
+     * sign-in about to be written is a fresh one, so the key is replaced rather
+     * than reported.
+     */
+    private fun lockingCipher(): Cipher {
+        val cipher = Cipher.getInstance(SECRET_TRANSFORMATION)
+        try {
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey(true))
+        } catch (invalidated: KeyPermanentlyInvalidatedException) {
+            deleteKey(SECRET_LOCKED_KEY_ALIAS)
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey(true))
+        }
+        return cipher
+    }
+
+    /**
+     * Write the blob and the mode it is in, then let the other mode's key go.
+     *
+     * The IV is generated per encryption and is not secret; it has to be kept,
+     * because GCM cannot decrypt without it. Only one of the two keys ever guards
+     * a blob, and the one that does not is deleted here rather than left behind —
+     * which is also what keeps the recorded mode and the key in use from ever
+     * disagreeing.
+     *
+     * The other key goes only once `commit()` says the new blob is on disk. A
+     * write that did not happen throws instead, and leaves the old blob and its
+     * key exactly as they were, so the caller reports it rather than claiming a
+     * sign-in that is not there.
+     */
+    private fun keep(cipher: Cipher, encrypted: ByteArray, requireAuth: Boolean) {
         val blob = encode(cipher.iv) + ":" + encode(encrypted)
-        prefs.edit()
+        val written = preferences().edit()
             .putString(SECRET_ENTRY, blob)
             .putBoolean(SECRET_AUTH_ENTRY, requireAuth)
-            .apply()
+            .commit()
+        if (!written) {
+            throw IllegalStateException("this app's preferences could not be written")
+        }
+        deleteKey(if (requireAuth) SECRET_KEY_ALIAS else SECRET_LOCKED_KEY_ALIAS)
     }
 
     /**
@@ -667,12 +864,12 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
      * A blob that cannot be decrypted is **forgotten rather than reported**, and
      * that is a decision rather than laziness. It is what a restored backup looks
      * like: the preferences came back and the keystore key did not, because the
-     * key is bound to the device. It is also what a fingerprint enrolled after
-     * the key was made looks like, because keystore invalidates the key instead
-     * of letting it decrypt. An undecryptable token is worth nothing to anybody,
-     * and failing here would leave a learner looking at an error they cannot act
-     * on, when the useful thing is to be told they are not connected and offered
-     * Connect.
+     * key is bound to the device. Before Android 11 it is also what a fingerprint
+     * enrolled after the key was made looks like, because keystore invalidates a
+     * fingerprint-only key instead of letting it decrypt. An undecryptable token
+     * is worth nothing to anybody, and failing here would leave a learner looking
+     * at an error they cannot act on, when the useful thing is to be told they are
+     * not connected and offered Connect.
      */
     @Command
     fun loadSecret(invoke: Invoke) {
@@ -703,18 +900,23 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
      * Whether the learner can be asked to identify themselves at all.
      *
      * Rust asks this before it offers the switch, so a device that cannot ask is
-     * told so rather than offered a setting that would do nothing. The device
-     * credential is part of the question because a phone whose only lock is a PIN
-     * can still satisfy a keystore key made with `setUserAuthenticationRequired`,
-     * so "no fingerprint reader" is not the same as "cannot ask".
+     * told so rather than offered a setting that would do nothing. It asks about
+     * [ASKABLE], the same set the prompts allow, so a yes here is a lock that
+     * [saveSecret] can really make: from Android 11 a phone whose only lock is a
+     * PIN can authorise the locked key, so "no fingerprint reader" is not the same
+     * as "cannot ask" there; before it, only a fingerprint can.
      */
     @Command
     fun canLock(invoke: Invoke) {
-        val status = BiometricManager.from(activity).canAuthenticate(ASKABLE)
         val result = JSObject()
-        result.put("available", status == BiometricManager.BIOMETRIC_SUCCESS)
+        result.put("available", canAsk())
         invoke.resolve(result)
     }
+
+    /** Whether the prompt could be answered on this device right now. */
+    private fun canAsk(): Boolean =
+        BiometricManager.from(activity).canAuthenticate(ASKABLE) ==
+            BiometricManager.BIOMETRIC_SUCCESS
 
     /** Forget the sign-in, the mode it was kept in, and the key that encrypted it. */
     @Command
@@ -728,16 +930,22 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
         activity.getSharedPreferences(SECRET_PREFERENCES, Context.MODE_PRIVATE)
 
     /**
-     * Forget the blob, the mode it was in, and the key that encrypted it.
+     * Forget the blob, the mode it was in, and both keys.
      *
-     * All three together: a blob whose key is gone is readable by nobody, and a
+     * All of them together: a blob whose key is gone is readable by nobody, and a
      * mode left behind after its blob would have the next write keep a key from
-     * the other mode — the one thing [store] must not do.
+     * the other mode — the one thing the two aliases exist to prevent.
      */
     private fun forgetSecret() {
         preferences().edit().remove(SECRET_ENTRY).remove(SECRET_AUTH_ENTRY).apply()
+        deleteKey(SECRET_KEY_ALIAS)
+        deleteKey(SECRET_LOCKED_KEY_ALIAS)
+    }
+
+    /** Delete the key filed under [alias], if there is one. */
+    private fun deleteKey(alias: String) {
         try {
-            KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.deleteEntry(SECRET_KEY_ALIAS)
+            KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.deleteEntry(alias)
         } catch (problem: Exception) {
             // A keystore with no key in it is the ordinary case for a device that
             // never stored one, and not a failure worth reporting.
@@ -748,30 +956,21 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
      * Ask the learner to identify themselves, then decrypt with the cipher the
      * prompt authorises.
      *
-     * The cipher is built and initialised first because `CryptoObject` is how the
-     * system ties one successful authentication to one keystore operation:
-     * keystore gives the operation a challenge at init and refuses to finish it
-     * until that challenge has been answered. Nothing here blocks — `authenticate`
-     * returns at once and the learner's answer arrives in the callback, which is
-     * where the invoke is resolved. That is the note at the top of this file,
-     * applied to a prompt instead of to the synthesiser.
+     * Only the locked key is tried. A locked blob with no locked key was written
+     * by a build that kept both modes under one alias — which could never have
+     * locked anything — or its key is gone; either way it is unreadable, and goes
+     * the way of a restored backup.
      */
     private fun askForFingerprint(invoke: Invoke, iv: ByteArray, encrypted: ByteArray) {
-        val host = activity as? FragmentActivity
-        if (host == null) {
-            invoke.reject(
-                "this app cannot show a fingerprint prompt on this device, so the stored " +
-                    "Dropbox sign-in cannot be read"
-            )
+        val key = existingKey(SECRET_LOCKED_KEY_ALIAS)
+        if (key == null) {
+            forgetSecret()
+            invoke.resolve(JSObject())
             return
         }
         val cipher = try {
             val prepared = Cipher.getInstance(SECRET_TRANSFORMATION)
-            prepared.init(
-                Cipher.DECRYPT_MODE,
-                secretKey(true),
-                GCMParameterSpec(SECRET_TAG_BITS, iv)
-            )
+            prepared.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(SECRET_TAG_BITS, iv))
             prepared
         } catch (problem: UserNotAuthenticatedException) {
             // Keystore wants the learner authenticated before it will even prepare
@@ -792,6 +991,75 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
             invoke.resolve(JSObject())
             return
         }
+        askFor(
+            invoke,
+            cipher,
+            "Unlock your Dropbox sign-in",
+            "Confirm it is you to read the sign-in saved on this device.",
+            READ_REFUSED
+        ) { unlocked ->
+            val secret = try {
+                String(unlocked.doFinal(encrypted), Charsets.UTF_8)
+            } catch (unreadable: AEADBadTagException) {
+                // The blob does not match its key: a restored backup, or a key
+                // made again since. Nobody can read it, so it is forgotten.
+                forgetSecret()
+                null
+            } catch (unreadable: KeyPermanentlyInvalidatedException) {
+                forgetSecret()
+                null
+            } catch (problem: Exception) {
+                // Anything else is not evidence that the blob is bad — keystore
+                // may simply have refused this one operation — so it is reported
+                // and the sign-in kept for the next attempt.
+                invoke.reject("the Dropbox sign-in could not be read: ${problem.message}")
+                return@askFor
+            }
+            resolveSecret(invoke, secret, true)
+        }
+    }
+
+    /**
+     * Show the prompt for one keystore operation, and hand [granted] the cipher
+     * it authorised.
+     *
+     * The cipher is built and initialised first because `CryptoObject` is how the
+     * system ties one successful authentication to one keystore operation:
+     * keystore gives the operation a challenge at init and refuses to finish it
+     * until that challenge has been answered. Nothing here blocks — `authenticate`
+     * returns at once and the learner's answer arrives in the callback, which is
+     * where the invoke is answered. That is the note at the top of this file,
+     * applied to a prompt instead of to the synthesiser.
+     *
+     * Every way out answers [invoke] exactly once: through [granted] on success,
+     * or with a rejection that ends in [refused] — what did not happen because of
+     * it — otherwise. Reading and locking the sign-in both come through here, so
+     * the two prompts cannot drift apart in what they allow.
+     */
+    private fun askFor(
+        invoke: Invoke,
+        cipher: Cipher,
+        title: String,
+        subtitle: String,
+        refused: String,
+        granted: (Cipher) -> Unit
+    ) {
+        val host = activity as? FragmentActivity
+        if (host == null) {
+            invoke.reject("this app cannot show a fingerprint prompt on this device, so $refused")
+            return
+        }
+        if (prompting) {
+            invoke.reject("another fingerprint prompt is already showing, so $refused")
+            return
+        }
+        if (host.supportFragmentManager.isStateSaved) {
+            // androidx logs and does nothing at all in this state — no prompt and
+            // no callback — which would leave the caller waiting for good.
+            invoke.reject("the app is not in the foreground to ask for a fingerprint, so $refused")
+            return
+        }
+        prompting = true
         var answered = false
         val prompt = BiometricPrompt(
             host,
@@ -802,30 +1070,26 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
                 ) {
                     if (answered) return
                     answered = true
+                    prompting = false
                     val unlocked = result.cryptoObject?.cipher
                     if (unlocked == null) {
                         // The prompt hands back the cipher it was given. Without it
-                        // there is nothing that can decrypt, and a blob that may
+                        // there is nothing that can use the key, and a blob that may
                         // still be good is not worth throwing away over that.
                         invoke.reject(
-                            "the fingerprint prompt did not return the key it was given, so " +
-                                "the Dropbox sign-in could not be read"
+                            "the fingerprint prompt did not return the key it was given, " +
+                                "so $refused"
                         )
                         return
                     }
-                    val secret = try {
-                        String(unlocked.doFinal(encrypted), Charsets.UTF_8)
-                    } catch (problem: Exception) {
-                        forgetSecret()
-                        null
-                    }
-                    resolveSecret(invoke, secret, true)
+                    granted(unlocked)
                 }
 
                 override fun onAuthenticationError(errorCode: Int, message: CharSequence) {
                     if (answered) return
                     answered = true
-                    invoke.reject(reasonForPrompt(errorCode, message))
+                    prompting = false
+                    invoke.reject(reasonForPrompt(errorCode, message, refused))
                 }
 
                 override fun onAuthenticationFailed() {
@@ -842,14 +1106,29 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
             }
         )
         val info = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Unlock your Dropbox sign-in")
-            .setSubtitle("Confirm it is you to read the sign-in saved on this device.")
-            // No negative button: with the device credential allowed the system
-            // draws its own cancel, and adding a second one is refused outright
-            // rather than being a belt and braces.
+            .setTitle(title)
+            .setSubtitle(subtitle)
             .setAllowedAuthenticators(ASKABLE)
-            .build()
-        prompt.authenticate(info, BiometricPrompt.CryptoObject(cipher))
+        if (!PIN_ANSWERS) {
+            // Without the device credential the system draws no cancel of its own,
+            // and androidx refuses to build a prompt the learner cannot dismiss.
+            // With it, a second cancel is refused instead — hence only here.
+            info.setNegativeButtonText("Cancel")
+        }
+        try {
+            prompt.authenticate(info.build(), BiometricPrompt.CryptoObject(cipher))
+        } catch (problem: IllegalArgumentException) {
+            // androidx checks the authenticators against the CryptoObject before
+            // showing anything, and refuses outright what cannot authorise a
+            // keystore operation. [ASKABLE] is chosen so that this never happens,
+            // but an exception escaping here would leave the caller unanswered.
+            if (answered) return
+            answered = true
+            prompting = false
+            invoke.reject(
+                "this device cannot show the fingerprint prompt, so $refused: ${problem.message}"
+            )
+        }
     }
 
     /**
@@ -877,59 +1156,80 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
      * The system's `message` is a last resort: it is localised and can be as
      * uninformative as "Authenticate error", while these codes each ask something
      * different of the learner — to try again, to enrol a fingerprint, or to stop
-     * trying and use the PIN.
+     * trying and use the PIN. Each ends in [outcome], what did not happen
+     * because of it, so the same reasons serve reading and locking the sign-in.
      */
-    private fun reasonForPrompt(errorCode: Int, message: CharSequence): String = when (errorCode) {
-        BiometricPrompt.ERROR_USER_CANCELED,
-        BiometricPrompt.ERROR_NEGATIVE_BUTTON,
-        BiometricPrompt.ERROR_CANCELED ->
-            "the request to read the Dropbox sign-in was cancelled"
-        BiometricPrompt.ERROR_NO_BIOMETRICS ->
-            "no fingerprint or face is set up on this device, so the Dropbox sign-in cannot be read"
-        BiometricPrompt.ERROR_HW_NOT_PRESENT,
-        BiometricPrompt.ERROR_HW_UNAVAILABLE ->
-            "this device has no fingerprint reader available, so the Dropbox sign-in cannot be read"
-        BiometricPrompt.ERROR_NO_DEVICE_CREDENTIAL ->
-            "this device has no screen lock set up, so the Dropbox sign-in cannot be read"
-        BiometricPrompt.ERROR_LOCKOUT,
-        BiometricPrompt.ERROR_LOCKOUT_PERMANENT ->
-            "the fingerprint reader has had too many unrecognised attempts, so the Dropbox " +
-                "sign-in was not read"
-        BiometricPrompt.ERROR_TIMEOUT ->
-            "the fingerprint prompt timed out, so the Dropbox sign-in was not read"
-        BiometricPrompt.ERROR_SECURITY_UPDATE_REQUIRED ->
-            "this device needs a security update before it can read the Dropbox sign-in"
-        BiometricPrompt.ERROR_UNABLE_TO_PROCESS ->
-            "the fingerprint reader could not read that, so the Dropbox sign-in was not read"
-        else -> "the Dropbox sign-in could not be read: $message"
+    private fun reasonForPrompt(errorCode: Int, message: CharSequence, outcome: String): String =
+        when (errorCode) {
+            BiometricPrompt.ERROR_USER_CANCELED,
+            BiometricPrompt.ERROR_NEGATIVE_BUTTON,
+            BiometricPrompt.ERROR_CANCELED ->
+                "the fingerprint prompt was cancelled, so $outcome"
+            BiometricPrompt.ERROR_NO_BIOMETRICS ->
+                "no fingerprint or face is set up on this device, so $outcome"
+            BiometricPrompt.ERROR_HW_NOT_PRESENT,
+            BiometricPrompt.ERROR_HW_UNAVAILABLE ->
+                "this device has no fingerprint reader available, so $outcome"
+            BiometricPrompt.ERROR_NO_DEVICE_CREDENTIAL ->
+                "this device has no screen lock set up, so $outcome"
+            BiometricPrompt.ERROR_LOCKOUT,
+            BiometricPrompt.ERROR_LOCKOUT_PERMANENT ->
+                "the fingerprint reader has had too many unrecognised attempts, so $outcome"
+            BiometricPrompt.ERROR_TIMEOUT ->
+                "the fingerprint prompt timed out, so $outcome"
+            BiometricPrompt.ERROR_SECURITY_UPDATE_REQUIRED ->
+                "this device needs a security update first, so $outcome"
+            BiometricPrompt.ERROR_UNABLE_TO_PROCESS ->
+                "the fingerprint reader could not read that, so $outcome"
+            else -> "the fingerprint prompt failed ($message), so $outcome"
+        }
+
+    /**
+     * The key filed under [alias], or null when there is none that reads back.
+     */
+    private fun existingKey(alias: String): SecretKey? {
+        val store = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        return try {
+            (store.getEntry(alias, null) as? KeyStore.SecretKeyEntry)?.secretKey
+        } catch (problem: UnrecoverableEntryException) {
+            null
+        }
     }
 
     /**
-     * The AES key used for the sign-in, created inside the keystore on first use.
+     * The AES key for the mode [requireAuth] names, created inside the keystore
+     * on first use.
      *
      * `AndroidKeyStore` is a *provider*, not a file: `KeyStore.getInstance` and
      * `load(null)` reach the hardware-backed store, and the private material never
      * leaves it. The key is generated once and kept — regenerating it would make
-     * every stored token undecryptable — so [requireAuth] decides something only
-     * when there is no key to keep, and a caller that wants the other mode has to
-     * delete this one first. [store] does exactly that.
+     * every stored token undecryptable.
      *
-     * A key a newly enrolled fingerprint invalidated does not read back as a key
-     * at all. It can decrypt nothing, and the sign-in being written here is a
-     * fresh one, so it is replaced rather than reported.
+     * **Each mode has a key of its own,** under its own alias, because the mode is
+     * fixed when a key is made and cannot be changed afterwards. Two aliases are
+     * what let a locked write wait for its prompt without first destroying the
+     * sign-in it is replacing: [keep] deletes the other mode's key only once the
+     * new blob is written. The key that asks for nothing keeps the alias every
+     * earlier build used, so a sign-in stored by one of them still reads.
+     *
+     * **The locked key asks on every use** — a timeout of zero — because a key
+     * that stayed open for some seconds after any unlock would also be open to
+     * whatever else this process did in those seconds; the prompt's `CryptoObject`
+     * ties one answer to one operation instead. From Android 11 the device PIN may
+     * answer as well as a strong biometric, which is how [ASKABLE] can include the
+     * device credential; keystore then binds the key to the lock screen itself,
+     * so a newly enrolled fingerprint does not invalidate it — enrolling one needs
+     * that same PIN. Before Android 11 only a strong biometric can authorise such
+     * a key, keystore will not make one until a fingerprint is enrolled, and a
+     * fingerprint enrolled later invalidates it: the token then goes the way of a
+     * restored backup, forgotten rather than reported as an error nobody can act
+     * on.
      */
     private fun secretKey(requireAuth: Boolean): SecretKey {
-        val store = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        val existing = try {
-            store.getEntry(SECRET_KEY_ALIAS, null) as? KeyStore.SecretKeyEntry
-        } catch (problem: UnrecoverableEntryException) {
-            null
-        }
-        if (existing != null) {
-            return existing.secretKey
-        }
+        val alias = if (requireAuth) SECRET_LOCKED_KEY_ALIAS else SECRET_KEY_ALIAS
+        existingKey(alias)?.let { return it }
         val spec = KeyGenParameterSpec.Builder(
-            SECRET_KEY_ALIAS,
+            alias,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
         )
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
@@ -937,10 +1237,12 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
             .setKeySize(256)
         if (requireAuth) {
             spec.setUserAuthenticationRequired(true)
-            // A fingerprint enrolled after this key was made must not be able to
-            // read what the old one encrypted. Keystore invalidates the key
-            // instead, and the token then goes the way of a restored backup:
-            // forgotten, rather than reported as an error nobody can act on.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                spec.setUserAuthenticationParameters(
+                    0,
+                    KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL
+                )
+            }
             spec.setInvalidatedByBiometricEnrollment(true)
         }
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
@@ -1018,9 +1320,9 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
     /**
      * Watch one utterance from acceptance to its first sound, or to its failure.
      *
-     * The callbacks arrive on a binder thread, not this one, so they only record
-     * what happened and hand the answering back to the main thread — which is
-     * where `Invoke` belongs.
+     * The callbacks arrive on a binder thread, not this one, so they hand what
+     * happened back to the main thread — which is where `Invoke`, [speaking] and
+     * the audio focus belong — and match nothing themselves.
      */
     private fun listen(tts: TextToSpeech?) {
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -1031,17 +1333,17 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
             override fun onDone(utteranceId: String?) {
                 // The word is over, so hand the audio back and let anything that
                 // was ducked return to volume.
-                giveBackAudio()
+                giveBackAudioAfter(utteranceId)
             }
 
             override fun onError(utteranceId: String?) {
                 finishSpeaking(utteranceId, "the speech engine reported that it could not speak")
-                giveBackAudio()
+                giveBackAudioAfter(utteranceId)
             }
 
             override fun onError(utteranceId: String?, errorCode: Int) {
                 finishSpeaking(utteranceId, reasonFor(errorCode))
-                giveBackAudio()
+                giveBackAudioAfter(utteranceId)
             }
         })
     }
@@ -1055,18 +1357,21 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
      * time. Without the match, an old failure would be reported against a new
      * request, which is a lie about which call failed. An id of null is the
      * engine telling us it does not know, and is taken at face value.
+     *
+     * The match is made **on the main thread**, against the caller and id read
+     * there together, rather than on the binder thread the callback arrives on.
+     * Checking the id there and reading the caller later left a window in which
+     * a new `speak` could replace both, and an old utterance's error would then
+     * reject the new call.
      */
     private fun finishSpeaking(utteranceId: String?, problem: String?) {
-        if (utteranceId != null && utteranceId != speakingUtterance) {
-            return
-        }
-        lastProblem = problem
         main.post {
-            val held = speaking ?: return@post
-            speaking = null
-            speakingUtterance = null
-            speakTimeout?.let(main::removeCallbacks)
-            speakTimeout = null
+            val waiter = speaking ?: return@post
+            if (utteranceId != null && utteranceId != waiter.utterance) {
+                return@post
+            }
+            val held = takeSpeaking() ?: return@post
+            lastProblem = problem
             if (problem == null) {
                 held.resolve()
             } else {
@@ -1214,31 +1519,57 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
          *
          * The mode belongs to the keystore key and cannot be read back from it,
          * so this is what says whether reading the blob is silent or has to ask
-         * somebody — and what [store] compares a new request against before it
-         * decides whether the key has to be replaced.
+         * somebody, and which of the two keys it is under.
          */
         const val SECRET_AUTH_ENTRY = "dropbox-auth"
 
         /**
-         * Who may answer the sign-in's prompt, and who counts as askable.
-         *
-         * A weak biometric rather than a strong one, together with the device
-         * credential, because a phone whose only lock is a PIN is still a phone
-         * that can be asked — and refusing it would make the switch mean
-         * "fingerprint or nothing" on a device that cannot have a fingerprint.
-         * [canLock] asks about this same set, so the switch is never offered for
-         * something the prompt would turn down.
+         * Whether the device PIN may authorise a key that asks on every use,
+         * which keystore and `BiometricPrompt` both allow from Android 11.
          */
-        val ASKABLE = BiometricManager.Authenticators.BIOMETRIC_WEAK or
-            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        val PIN_ANSWERS = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
 
         /**
-         * The keystore the AES key is generated in, and the alias it is filed
-         * under. `AndroidKeyStore` is a provider name, spelled the same on every
-         * device.
+         * Who may answer the sign-in's prompt, and who counts as askable.
+         *
+         * A **strong** biometric, because the prompt carries a `CryptoObject` and
+         * only a Class 3 biometric can authorise a keystore operation: androidx
+         * refuses a weak one outright ("Crypto-based authentication is not
+         * supported for Class 2 (Weak) biometrics"), which is what an earlier
+         * `BIOMETRIC_WEAK` here would have done to every locked read. Together
+         * with the device credential from Android 11, because a phone whose only
+         * lock is a PIN is still a phone that can be asked; before Android 11
+         * androidx refuses the device credential beside a `CryptoObject` for the
+         * same reason, so it is a fingerprint there. [canLock] asks about this
+         * same set, so the switch is never offered for something the prompt would
+         * turn down.
+         */
+        val ASKABLE = if (PIN_ANSWERS) {
+            BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        } else {
+            BiometricManager.Authenticators.BIOMETRIC_STRONG
+        }
+
+        /**
+         * How a refused prompt ends, for reading the sign-in and for locking it.
+         * Neither says what that means for the learner, because that depends on
+         * why it was asked — connecting, or turning the switch on — and Rust,
+         * which knows, says it.
+         */
+        const val READ_REFUSED = "the Dropbox sign-in was not read"
+        const val SAVE_REFUSED = "the Dropbox sign-in was not saved"
+
+        /**
+         * The keystore the AES keys are generated in, and the aliases they are
+         * filed under: one for the key that asks for nothing — the alias every
+         * earlier build used — and one for the key that asks on every use. See
+         * [secretKey]. `AndroidKeyStore` is a provider name, spelled the same on
+         * every device.
          */
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val SECRET_KEY_ALIAS = "hanzi-tutor-sync"
+        const val SECRET_LOCKED_KEY_ALIAS = "hanzi-tutor-sync-locked"
 
         /** AES-GCM, which authenticates as well as encrypts. */
         const val SECRET_TRANSFORMATION = "AES/GCM/NoPadding"

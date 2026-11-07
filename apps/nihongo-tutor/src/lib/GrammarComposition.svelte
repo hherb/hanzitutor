@@ -67,6 +67,7 @@
     failureLine,
     reviewHeadline,
     settingsNote,
+    settingsStayOpen,
   } from "./model";
   import { needsRuby, spokenRuby } from "./words";
   import {
@@ -100,6 +101,13 @@
   let kept = $state(0);
   let error = $state<string | null>(null);
   let busy = $state(false);
+
+  /**
+   * Safari's `autocorrect="off"`, which iOS honours on a textarea as well and which
+   * keeps it from "correcting" romaji such as `inu` into English. Spread rather than
+   * written as an attribute because Svelte's types declare it for `<input>` only.
+   */
+  const TEXTAREA_NO_AUTOCORRECT = { autocorrect: "off" };
 
   /**
    * The learner's own sentence, read back.
@@ -184,7 +192,9 @@
 
   async function submit() {
     const askedPattern = prompt;
-    if (!askedPattern || outcome !== null || !canSubmit(typed)) return;
+    // `busy` too, so a second press inside the round trip cannot keep the sentence
+    // twice — the same guard the written-cloze screen needs for its Enter.
+    if (busy || !askedPattern || outcome !== null || !canSubmit(typed)) return;
     try {
       busy = true;
       error = null;
@@ -218,7 +228,7 @@
     endpoint = status.endpoint;
     modelName = status.model;
     key = "";
-    showingSettings = !status.configured;
+    showingSettings = settingsStayOpen(status);
   }
 
   /** Save the address, the model name and — when one was typed — the key. */
@@ -426,6 +436,7 @@
           autocomplete="off"
           autocapitalize="off"
           spellcheck="false"
+          {...TEXTAREA_NO_AUTOCORRECT}
           placeholder="いぬのほうがねこよりすきです。 ・ inu no houga neko yori suki desu."
           bind:value={typed}
           disabled={outcome !== null}
@@ -490,6 +501,11 @@
       off until the learner names an endpoint. The corpus's model sentences above carry a
       `Hear it`; this asks a model about the learner's own.
     -->
+    <!-- Outside the fold, so that a closed fold cannot hide it: the settings were
+         kept for this session either way, and this says what was not remembered. -->
+    {#if model?.warning}
+      <p class="warn" role="status">{model.warning}</p>
+    {/if}
     <details class="model-check" bind:open={foldOpen}>
       <summary>Ask a model about this sentence</summary>
       {#if !model}
@@ -525,6 +541,9 @@
             placeholder={model.keySet ? "a key is saved — leave empty to keep it" : "sk-…"}
             bind:value={key}
           />
+          {#if model.keyNotice}
+            <p class="warn" role="status">{model.keyNotice}</p>
+          {/if}
           <div class="row">
             <button class="save" onclick={() => void save()} disabled={checking}>Save</button>
             {#if model.keySet}

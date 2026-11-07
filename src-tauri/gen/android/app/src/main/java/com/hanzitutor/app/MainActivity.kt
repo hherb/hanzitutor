@@ -67,7 +67,13 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     onBackPressedDispatcher.addCallback(this, backPress)
-    askForTheMicrophoneOnce()
+    // Only on a fresh start. A saved state means the process was killed in the
+    // background and is being restored, and the learner was already asked when
+    // this task first started. A rotation never gets here at all: the manifest's
+    // `configChanges` keeps the activity rather than recreating it.
+    if (savedInstanceState == null) {
+      askForTheMicrophoneOnce()
+    }
   }
 
   override fun onWebViewCreate(webView: WebView) {
@@ -97,9 +103,10 @@ class MainActivity : TauriActivity() {
   /**
    * Ask for the microphone, once.
    *
-   * `savedInstanceState == null` is what makes it once per launch rather than
-   * once per rotation, and Android's own "don't ask again" is what makes it once
-   * per install after the learner has answered.
+   * Called only when `savedInstanceState == null` (see `onCreate`), which is
+   * what makes it once per launch rather than once per restore, and Android's
+   * own "don't ask again" is what makes it once per install after the learner
+   * has answered.
    */
   private fun askForTheMicrophoneOnce() {
     val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==

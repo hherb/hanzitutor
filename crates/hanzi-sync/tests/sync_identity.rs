@@ -320,10 +320,12 @@ fn restore_backup(from: &Db, into: &Db) -> usize {
 /// The backup file the app would write for `db`, as it stands now.
 fn backup_of(db: &Db) -> String {
     let attempts = db.attempts(None).unwrap();
+    let traces = db.traced_attempts().unwrap();
     Backup::build(
         "2026-10-01T00:00:00Z",
         r#"{"nextId":1,"entries":[]}"#,
         &attempts,
+        &traces,
     )
     .unwrap()
     .to_json()
@@ -334,6 +336,7 @@ fn backup_of(db: &Db) -> String {
 fn import_backup(into: &Db, text: &str) -> usize {
     let backup = Backup::parse(text).unwrap();
     let added = into.merge_attempts(&backup.incoming_attempts()).unwrap();
+    into.merge_traces(&backup.incoming_traces()).unwrap();
     recompute(into, &local_baselines(into).unwrap()).unwrap();
     added
 }

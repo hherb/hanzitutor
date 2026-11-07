@@ -34,7 +34,11 @@ use rusqlite::{Connection, TransactionBehavior};
 /// 6 — `vocab_cursor`, where the learner got to inside one of their own groups.
 ///     A new table rather than a column, so an older database gains it empty on
 ///     the next open and nothing has to be rewritten.
-pub const SCHEMA_VERSION: i64 = 6;
+/// 7 — `trace_attempt`, the attempts written over the faint guide. A trace is not
+///     a review, so it is kept out of `attempt` — the log the schedule is folded
+///     from, which sync publishes — and in a table of its own with its measures.
+///     Additive like 6: an older database gains it empty, and no row moves.
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// Everything the database needs, in one idempotent script.
 ///
@@ -129,6 +133,36 @@ CREATE TABLE IF NOT EXISTS vocab_cursor (
     device_id  TEXT NOT NULL,
     revision   INTEGER NOT NULL DEFAULT 0
 );
+
+-- Attempts written over the faint guide in trace mode, with their measures.
+--
+-- Not rows in `attempt`, and that is the whole design. `attempt` is the log
+-- every schedule is folded from, on this device and on every device it syncs
+-- with; a trace is not a review and moves no card, so a fold that met one would
+-- schedule what the store never scheduled. A table of its own keeps every reader
+-- of `attempt` — the fold, the publish, the history, the export — correct
+-- without a filter each of them would have to remember, and takes no sequence
+-- number from the device's published numbering. It never leaves this device:
+-- the measures are what it is kept for, and a shard carries none.
+CREATE TABLE IF NOT EXISTS trace_attempt (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ch            TEXT NOT NULL,
+    at            TEXT NOT NULL,
+    score         REAL NOT NULL,
+    rating        TEXT NOT NULL,
+    shape         REAL,
+    position      REAL,
+    ink           REAL,
+    ink_coverage  REAL,
+    order_score   REAL,
+    legible       INTEGER,
+    order_correct INTEGER
+);
+-- What `Db::merge_traces` asks to tell a restored trace it already has from a
+-- new one. Without it every restored row scanned the whole table, under the
+-- database lock. Added here rather than by a version bump: it is idempotent, and
+-- a schema-7 database that lacks it gains it on the next open.
+CREATE INDEX IF NOT EXISTS trace_attempt_identity ON trace_attempt (ch, at);
 ";
 
 /// Create anything missing, add any column this build needs, and record the
@@ -153,8 +187,20 @@ CREATE TABLE IF NOT EXISTS vocab_cursor (
 /// write lock at `BEGIN` makes that ordinary waiting instead.
 pub(crate) fn apply(conn: &mut Connection) -> rusqlite::Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Read inside the transaction, so the marker below is written by the same
+    // commit that moves the version past 7 — never one without the other.
+    let before = version(&tx)?;
     tx.execute_batch(SCHEMA)?;
     upgrade(&tx)?;
+    if matches!(before, Some(found) if found < 7) {
+        // A database an older build scheduled: rebuild it once under the rules
+        // schema 7 arrived with. See `Db::schedule_refold_pending`.
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, 'pending')
+             ON CONFLICT(key) DO NOTHING",
+            [REFOLD_KEY],
+        )?;
+    }
     tx.execute(
         "INSERT INTO meta (key, value) VALUES ('schema', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -163,6 +209,10 @@ pub(crate) fn apply(conn: &mut Connection) -> rusqlite::Result<()> {
     tx.commit()?;
     Ok(())
 }
+
+/// The `meta` key that asks for the schedule to be rebuilt once after the upgrade
+/// to schema 7. Present means pending; the app removes it when it is done.
+pub(crate) const REFOLD_KEY: &str = "refold:schema7";
 
 /// The key this device's identity is stored under in `meta`.
 pub(crate) const DEVICE_ID_KEY: &str = "device_id";

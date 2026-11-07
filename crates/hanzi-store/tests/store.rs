@@ -16,7 +16,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hanzi_core::progress::{build_queue, ReviewSource, MAX_HISTORY};
-use hanzi_core::{AttemptMeasures, BoardSize, CursorStore, Pace, ProgressStore, Rating, SettingsStore, VocabStore};
+use hanzi_core::{
+    AttemptMeasures, BoardSize, CursorStore, Pace, PracticeMode, ProgressStore, Rating,
+    SettingsStore, VocabStore,
+};
 use hanzi_store::{Db, SCHEMA_VERSION};
 
 /// A private directory per test, cleaned up by the caller's `finish`.
@@ -1704,5 +1707,279 @@ fn a_position_can_be_cleared() {
     assert_eq!(rows.len(), 1, "cleared, not removed");
     assert_eq!(rows[0].entry_uuid, None);
 
+    finish(&dir);
+}
+
+#[test]
+fn a_traced_attempt_is_kept_with_its_measures_but_out_of_the_review_log() {
+    // A trace is not a review (issue #15): it must not reach the log the schedule
+    // is folded from — that log travels to every device, and each of them would
+    // schedule it — but its measures are still the learner's handwriting and are
+    // kept beside it.
+    let dir = dir("traced");
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+
+    let measures = some_measures();
+    store
+        .record_practice_at(
+            '好',
+            97.0,
+            "2026-09-19T09:00:00Z",
+            PracticeMode::Trace,
+            Some(measures),
+        )
+        .unwrap();
+    store.save().unwrap();
+
+    assert!(
+        db.attempts(None).unwrap().is_empty(),
+        "not in the review log"
+    );
+    assert!(
+        db.own_attempts().unwrap().is_empty(),
+        "so nothing to publish"
+    );
+    let reopened = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(reopened.is_new('好'), "and no card was written for it");
+
+    let conn = rusqlite::Connection::open(db.path()).unwrap();
+    let (ch, at, score, rating, shape, legible): (String, String, f32, String, f32, bool) = conn
+        .query_row(
+            "SELECT ch, at, score, rating, shape, legible FROM trace_attempt",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .expect("the trace is in its own table");
+    assert_eq!(
+        (
+            ch.as_str(),
+            at.as_str(),
+            score,
+            rating.as_str(),
+            shape,
+            legible
+        ),
+        (
+            "好",
+            "2026-09-19T09:00:00Z",
+            97.0,
+            "easy",
+            measures.shape,
+            measures.legible
+        )
+    );
+    drop(conn);
+
+    // A recall afterwards is the device's first logged attempt: the trace took no
+    // sequence number, so the published numbering has no hole in it.
+    let mut store = reopened;
+    store.record_at('好', 80.0, "2026-09-19T09:05:00Z").unwrap();
+    store.save().unwrap();
+    let own = db.own_attempts().unwrap();
+    assert_eq!(own.len(), 1);
+    assert_eq!(own[0].seq, 1);
+
+    finish(&dir);
+}
+
+#[test]
+fn traces_read_back_in_order_with_their_measures() {
+    let dir = dir("traced-read");
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    let measures = some_measures();
+    for (ch, score, at, measured) in [
+        ('学', 40.0, "2026-09-19T09:02:00Z", None),
+        ('好', 97.0, "2026-09-19T09:00:00Z", Some(measures)),
+    ] {
+        store
+            .record_practice_at(ch, score, at, PracticeMode::Trace, measured)
+            .unwrap();
+    }
+    // A review in the same save goes to the review log and nowhere else.
+    store.record_at('好', 80.0, "2026-09-19T09:01:00Z").unwrap();
+    store.save().unwrap();
+
+    let traces = db.traced_attempts().unwrap();
+    assert_eq!(traces.len(), 2);
+    assert_eq!((traces[0].ch.as_str(), traces[0].score), ("好", 97.0));
+    assert_eq!(traces[0].measures, Some(measures));
+    assert_eq!(
+        (traces[1].ch.as_str(), traces[1].rating.as_str()),
+        ("学", "again")
+    );
+    assert_eq!(traces[1].measures, None, "unmeasured stays unmeasured");
+    assert_eq!(db.attempts(None).unwrap().len(), 1);
+
+    finish(&dir);
+}
+
+#[test]
+fn a_schema_six_database_gains_the_trace_table_and_keeps_its_attempts() {
+    let dir = dir("older-traces");
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    store.record_at('好', 80.0, "2026-09-19T09:00:00Z").unwrap();
+    store.save().unwrap();
+    drop(store);
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        conn.execute("DROP TABLE trace_attempt", []).unwrap();
+        conn.execute("UPDATE meta SET value = '6' WHERE key = 'schema'", [])
+            .unwrap();
+    }
+
+    let db = Db::open(&dir).unwrap();
+    assert_eq!(
+        db.attempts(None).unwrap().len(),
+        1,
+        "the review log is untouched"
+    );
+    // A database an older build scheduled asks, once, for its schedule to be
+    // rebuilt under the new rules — and only until the app says it has been.
+    assert!(db.schedule_refold_pending().unwrap());
+    db.finish_schedule_refold().unwrap();
+    assert!(!Db::open(&dir).unwrap().schedule_refold_pending().unwrap());
+    assert!(db.traced_attempts().unwrap().is_empty());
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    store
+        .record_practice_at(
+            '好',
+            90.0,
+            "2026-09-19T09:05:00Z",
+            PracticeMode::Trace,
+            None,
+        )
+        .unwrap();
+    store.save().unwrap();
+    assert_eq!(db.traced_attempts().unwrap().len(), 1, "and usable at once");
+
+    finish(&dir);
+}
+
+#[test]
+fn a_new_database_has_no_schedule_to_rebuild() {
+    let dir = dir("refold-fresh");
+    let db = Db::open(&dir).unwrap();
+    assert!(!db.schedule_refold_pending().unwrap());
+    assert!(!Db::open(&dir).unwrap().schedule_refold_pending().unwrap());
+    finish(&dir);
+}
+
+#[test]
+fn restored_traces_are_kept_once_and_counted_for_the_view() {
+    use hanzi_store::IncomingTrace;
+
+    let dir = dir("traces-restore");
+    let db = Db::open(&dir).unwrap();
+    let incoming = vec![
+        IncomingTrace {
+            ch: "好".into(),
+            at: "2026-09-19T09:00:00Z".into(),
+            score: 97.0,
+            rating: Rating::Easy,
+            measures: Some(some_measures()),
+        },
+        IncomingTrace {
+            ch: "好".into(),
+            at: "2026-09-19T09:01:00Z".into(),
+            score: 40.0,
+            rating: Rating::Again,
+            measures: None,
+        },
+    ];
+    assert_eq!(db.merge_traces(&incoming).unwrap(), 2);
+    assert_eq!(
+        db.merge_traces(&incoming).unwrap(),
+        0,
+        "restoring twice adds nothing"
+    );
+    let traces = db.traced_attempts().unwrap();
+    assert_eq!(traces.len(), 2);
+    assert_eq!(traces[0].measures, Some(some_measures()));
+    assert!(
+        db.attempts(None).unwrap().is_empty(),
+        "and none of it is a review"
+    );
+
+    // The schedule store sees how often each character was traced, for the view.
+    let store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(store.is_new('好'));
+    assert_eq!(store.view().traced.get("好"), Some(&2));
+
+    finish(&dir);
+}
+
+#[test]
+fn an_imported_json_schedule_asks_to_be_rebuilt_once() {
+    // An install from before the database had its cards scheduled by a build that
+    // advanced one on every Check. Its database is new, so the schema upgrade has
+    // nothing to say about it; the import is what has to ask.
+    let dir = dir("refold-import");
+    write_legacy_documents(&dir);
+    let db = Db::open(&dir).unwrap();
+    assert!(
+        !db.schedule_refold_pending().unwrap(),
+        "nothing imported yet"
+    );
+    let _progress = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(db.schedule_refold_pending().unwrap(), "the import asked");
+    db.finish_schedule_refold().unwrap();
+
+    // Opened again, the import is already done and does not ask again.
+    let db = Db::open(&dir).unwrap();
+    let _progress = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(!db.schedule_refold_pending().unwrap());
+
+    finish(&dir);
+}
+
+#[test]
+fn an_empty_json_schedule_asks_for_nothing() {
+    let dir = dir("refold-import-empty");
+    ProgressStore::open(dir.join("progress.json"))
+        .unwrap()
+        .save()
+        .unwrap();
+    let db = Db::open(&dir).unwrap();
+    let _progress = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    assert!(!db.schedule_refold_pending().unwrap());
+    finish(&dir);
+}
+
+#[test]
+fn restoring_traces_looks_them_up_by_index() {
+    // `merge_traces` asks "do I already have this one?" once per restored row. On
+    // a table scan that is O(rows × table) under the database lock — seconds for a
+    // year of traces — so the lookup has to be an index search.
+    let dir = dir("traces-index");
+    let db = Db::open(&dir).unwrap();
+    let conn = rusqlite::Connection::open(db.path()).unwrap();
+    let plan: Vec<String> = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN SELECT 1 FROM trace_attempt
+             WHERE ch = 'a' AND at = 'b' AND score = 1.0 AND rating = 'good'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        plan.iter()
+            .any(|step| step.contains("USING INDEX trace_attempt_identity")),
+        "the duplicate check scans the table: {plan:?}"
+    );
+    drop(conn);
     finish(&dir);
 }
