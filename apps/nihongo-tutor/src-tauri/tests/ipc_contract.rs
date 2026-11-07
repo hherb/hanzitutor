@@ -284,7 +284,7 @@ fn grade_attempt_grades_a_hostile_payload_rather_than_obeying_it() {
     for ch in ['ー', 'さ', '一'] {
         for strokes in [vec![stroke.clone()], vec![stroke.clone(); 20_000]] {
             let graded = state
-                .grade_and_schedule(ch, &strokes, &options)
+                .grade_and_schedule(ch, &strokes, &options, false)
                 .expect("grades");
             assert!(
                 (0.0..=100.0).contains(&graded.report.overall),
