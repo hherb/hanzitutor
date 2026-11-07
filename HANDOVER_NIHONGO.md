@@ -4181,7 +4181,7 @@ nothing recorded.
 byte-identical inside `assets/showcase/` — 10 MB carried twice. Plausibly
 deliberate (a flat set is easier to upload from). Decide whether it stays a copy.
 
-### The dependency advisories, and the two warnings that stand
+### The dependency advisories, and the warnings that stand
 
 **Cleared on 15 October 2026, and both were real rather than argued away.**
 
@@ -4224,12 +4224,40 @@ is the Windows-only build dependency `tauri-build` now uses in place of the
 **And the graph is audited on every push now, rather than noticed in a push message.**
 `.github/workflows/ci.yml` gained an `audit` job: `pnpm run audit:rust` — `cargo audit
 --deny warnings` against [`.cargo/audit.toml`](.cargo/audit.toml), which ignores exactly
-the two above by id and therefore **fails on any new advisory or warning** — and
+the advisories accepted here by id (the two above, and the groups below) and therefore **fails on any new advisory or warning** — and
 `pnpm run audit:web`, which runs `pnpm audit` in the root and in both apps. That is the
 gate the four `rustls` advisories of 14 October 2026 argue for: they were published on a
 Tuesday, `cargo audit` found them on the Wednesday, and Dependabot had still not
 reported them. It is a separate job so that a failure names itself and an unreachable
 advisory database cannot fail the tests.
+
+**The advisories of 13-16 October 2026, cleared or accepted on 7 November.** They turned
+the `audit` job red on `main` and on every pull request. What a lockfile update within
+the manifests' ranges could clear, it cleared: `rustls-webpki` 0.103.15 → 0.103.16
+(RUSTSEC-2026-0382) and `webpki-roots` 1.0.9 → 1.0.11 (RUSTSEC-2026-0381), both in the
+shipped apps through `ureq`; `tokio` 1.53.1 → 1.54.1 (RUSTSEC-2026-0386); `zstd` 0.13.4,
+`zstd-safe` 7.4.0, `zstd-sys` 2.1.2 (RUSTSEC-2026-0391 and -0395 to -0406, -0410),
+build-time only under `sherpa-onnx-sys`; `async-executor` 1.14.0 → 1.14.1 (1.14.0 was
+yanked); and on the npm side `vite` 8.3.0 → 8.3.6 and `vitest` 5.0.1 → 5.1.0 (six `vite`
+advisories through `launch-editor`, two in `@vitest/mocker`), all dev tooling.
+
+Three groups could not move, and each is accepted by id with its reason beside it:
+
+* **`zbus_names`, `zvariant`, `zvariant_derive`** (unmaintained, RUSTSEC-2026-0370 to
+  -0372) — the same shape as `glib`: `zbus 5 ← tauri-plugin-opener`, Linux only, and
+  `cargo tree -i zbus_names` prints nothing for macOS, iOS, Android or Windows. Every
+  released `tauri-plugin-opener` still requires `zbus ^5.9`.
+* **`zip` 2.4.2** (RUSTSEC-2026-0367 to -0369, -0429; extraction of a hostile archive)
+  — a build-dependency of `sherpa-onnx-sys` 1.13.8 whose build script uses it only to
+  unpack an iOS archive it has just downloaded. `scripts/with-cargo-env.sh` always sets
+  `SHERPA_ONNX_LIB_DIR`, and `resolve_lib_dir` returns before any download when it is
+  set, so that code never runs here. **The real fix is `sherpa-onnx` 2.x** (its `-sys`
+  builds with `zip ^9`), which means re-recording every digest in
+  `scripts/fetch-sherpa.sh` on a trusted machine per platform — a maintainer's step.
+* **`deepmerge` ≤4.3.1** (GHSA-gcqx-w48m-w2h4, low) — in all three npm graphs, only as
+  `deepmerge ← @sveltejs/vite-plugin-svelte` merging the project's own config at build
+  time. There is no fixed release. Accepted in `auditConfig.ignoreGhsas` in the
+  `pnpm-workspace.yaml` beside each lockfile (root and both apps).
 
 ---
 

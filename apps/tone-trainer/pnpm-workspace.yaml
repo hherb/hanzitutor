@@ -1,0 +1,16 @@
+# pnpm's settings for this lockfile. No `packages:` list — this directory is one
+# project with its own lockfile, not a workspace of several (the root and the two
+# apps under apps/ are each audited where they live; see `audit:web`).
+#
+# One advisory is accepted by id, the same one in all three graphs:
+#
+#   GHSA-gcqx-w48m-w2h4 — deepmerge <=4.3.1, prototype poisoning in mergeObject()
+#   (low). It arrives only as `deepmerge ← @sveltejs/vite-plugin-svelte`, which
+#   merges the project's own Svelte config at build time; nothing shipped contains
+#   it and no untrusted object is ever merged. There is no fixed release (the
+#   advisory covers every version, and 4.3.1 is the last, from 2023), and every
+#   vite-plugin-svelte through 7.3.1 depends on `deepmerge ^4.3.1`. Recorded in
+#   HANDOVER_NIHONGO.md §7. Revisit when either of those moves.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-gcqx-w48m-w2h4
