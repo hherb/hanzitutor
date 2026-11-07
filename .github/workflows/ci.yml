@@ -89,12 +89,13 @@ jobs:
   # database that is briefly unreachable is not a reason to fail the tests.
   #
   # `cargo audit` runs with `-D warnings` against `.cargo/audit.toml`, which
-  # ignores exactly two advisories — `glib` and `proc-macro-error`, one Linux-GTK
-  # chain that no Apple, Android or Windows build contains — and therefore fails
+  # ignores a short list of advisories by id — each with its reason beside it, and
+  # none reaching a shipped Apple, Android or Windows binary — and therefore fails
   # on everything else, **including a new unmaintained or unsound warning**,
-  # which is how those two arrived. The npm side is three lockfiles (the root and
-  # the two apps), each audited where it lives; `pnpm audit` reads the lockfile,
-  # so this job needs no install.
+  # which is how every one on that list arrived. The npm side is three lockfiles
+  # (the root and the two apps), each audited where it lives against the
+  # `pnpm-workspace.yaml` beside it; `pnpm audit` reads the lockfile, so this job
+  # needs no install.
   audit:
     runs-on: macos-latest
     timeout-minutes: 20
