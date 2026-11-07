@@ -185,10 +185,14 @@ pub struct Settings {
     pub voice: Option<String>,
     /// How fast the stroke-order animation runs when nobody has chosen
     /// differently. Stored as a value, not an absence — see [`Pace::default`].
-    #[serde(default)]
+    ///
+    /// A name this build does not know reads as the default rather than failing
+    /// the document — see [`default_if_unknown`].
+    #[serde(default, deserialize_with = "default_if_unknown")]
     pub animation_pace: Pace,
-    /// How large the board is drawn — see [`BoardSize::default`].
-    #[serde(default)]
+    /// How large the board is drawn — see [`BoardSize::default`]. An unknown
+    /// name reads as the default, as for the pace.
+    #[serde(default, deserialize_with = "default_if_unknown")]
     pub board_size: BoardSize,
     /// Whether characters are shown coloured by the tone they are read with.
     ///
@@ -317,7 +321,9 @@ impl SettingsPatch {
 /// The version exists so a document written by a newer build is refused rather
 /// than read for fields this build does not know — the same rule the study
 /// documents follow, for the same reason: silently ignoring a setting someone
-/// changed is worse than saying the file is from a newer app.
+/// changed is worse than saying the file is from a newer app. A new *name* for a
+/// pace or a board size is not a new shape, and is read as the default instead —
+/// see [`default_if_unknown`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Document {
@@ -575,6 +581,38 @@ impl SettingsStore {
         self.dirty = false;
         Ok(())
     }
+}
+
+/// Read a closed choice, or its default when the stored value is not one of the
+/// choices this build knows.
+///
+/// For [`Pace`] and [`BoardSize`] in a stored document (issue #41). A newer build
+/// that adds a pace writes a name this one has no variant for, and it does so
+/// without bumping [`FORMAT_VERSION`], because the field is still a name. Failing
+/// the whole document as [`SettingsError::Malformed`] for that would cost the
+/// learner every other preference over one value; falling back to the default
+/// costs them that one value, and only in this build. The version gate is still
+/// what refuses a document whose *shape* changed.
+///
+/// Only the stored document is lenient. [`SettingsPatch`] — what a screen sends —
+/// keeps the plain derive, so a screen and a binary that disagree about the names
+/// are still told so.
+fn default_if_unknown<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(T::deserialize(&value).unwrap_or_else(|error| {
+        eprintln!(
+            "[settings] {value} is not a {} this build knows ({error}); using the default",
+            std::any::type_name::<T>()
+                .rsplit("::")
+                .next()
+                .unwrap_or("value"),
+        );
+        T::default()
+    }))
 }
 
 /// Read and validate a document, treating absence as an unset first run.
@@ -1021,5 +1059,50 @@ mod tests {
         let store = SettingsStore::open(&path).unwrap();
         assert_eq!(store.click_to_draw(), Some(true));
         fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_pace_or_board_size_a_newer_build_added_falls_back_to_the_default() {
+        // Issue #41. A newer build that adds a pace or a board size writes a name
+        // this one has no variant for, without bumping the format version — the
+        // field is still a name. Refusing the whole document for that would lose
+        // every other preference with it, so the one value falls back to its
+        // default and the rest are read as written.
+        let path = temp_path("unknown-variant");
+        fs::write(
+            &path,
+            format!(
+                r#"{{"version":{FORMAT_VERSION},"clickToDraw":true,"animationPace":"glacial","boardSize":"huge","toneColours":true}}"#
+            ),
+        )
+        .unwrap();
+        let store = SettingsStore::open(&path).unwrap();
+        let view = store.view();
+        assert_eq!(view.pace(), Pace::Normal);
+        assert_eq!(view.board_size(), BoardSize::Normal);
+        assert_eq!(
+            view.click_to_draw(),
+            Some(true),
+            "the rest of the document is kept"
+        );
+        assert!(view.tone_colours());
+        drop(store);
+
+        // A value of the wrong type is the same case, and a known name is still
+        // read as itself.
+        fs::write(
+            &path,
+            format!(r#"{{"version":{FORMAT_VERSION},"animationPace":7,"boardSize":"large"}}"#),
+        )
+        .unwrap();
+        let store = SettingsStore::open(&path).unwrap();
+        assert_eq!(store.view().pace(), Pace::Normal);
+        assert_eq!(store.view().board_size(), BoardSize::Large);
+        fs::remove_file(&path).ok();
+
+        // What a *screen* sends stays strict: a name the binary does not know is
+        // a disagreement to report, not a value to guess.
+        assert!(serde_json::from_str::<SettingsPatch>(r#"{"animationPace":"glacial"}"#).is_err());
+        assert!(serde_json::from_str::<SettingsPatch>(r#"{"boardSize":"huge"}"#).is_err());
     }
 }

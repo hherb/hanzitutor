@@ -1594,35 +1594,27 @@ impl SettingsSink for Db {
             let name = text.trim();
             settings.voice = (!name.is_empty()).then(|| name.to_string());
         }
+        // A name this build does not know reads as the default rather than
+        // failing the table (issue #41): a newer build that adds a pace or a size
+        // writes one without a schema bump, and refusing every preference over it
+        // would be the worse loss. The next save writes what this build shows —
+        // the default — so a learner who keeps it here is not overruled by a row
+        // they cannot see.
         if let Some(text) =
             setting_get(&conn, ANIMATION_PACE).map_err(|e| settings_error(&path, e))?
         {
-            settings.animation_pace = match text.as_str() {
-                "slow" => Pace::Slow,
-                "normal" => Pace::Normal,
-                "fast" => Pace::Fast,
-                other => {
-                    return Err(SettingsError::Malformed(format!(
-                        "{}: the stored setting {ANIMATION_PACE:?} is {other:?}, which is                              not one of slow, normal or fast",
-                        path.display()
-                    )))
-                }
-            };
+            settings.animation_pace = parse_pace(&text).unwrap_or_else(|| {
+                unknown_setting(&path, ANIMATION_PACE, &text);
+                Pace::default()
+            });
         }
         if let Some(text) =
             setting_get(&conn, BOARD_SIZE).map_err(|e| settings_error(&path, e))?
         {
-            settings.board_size = match text.as_str() {
-                "compact" => BoardSize::Compact,
-                "normal" => BoardSize::Normal,
-                "large" => BoardSize::Large,
-                other => {
-                    return Err(SettingsError::Malformed(format!(
-                        "{}: the stored setting {BOARD_SIZE:?} is {other:?}, which is                              not one of compact, normal or large",
-                        path.display()
-                    )))
-                }
-            };
+            settings.board_size = parse_board_size(&text).unwrap_or_else(|| {
+                unknown_setting(&path, BOARD_SIZE, &text);
+                BoardSize::default()
+            });
         }
         if let Some(value) = setting_get_bool(&conn, TONE_COLOURS, &path)? {
             settings.tone_colours = value;
@@ -1707,6 +1699,29 @@ fn board_size_key(size: BoardSize) -> &'static str {
         BoardSize::Normal => "normal",
         BoardSize::Large => "large",
     }
+}
+
+/// The pace a stored name means, or `None` for a name this build does not know.
+fn parse_pace(text: &str) -> Option<Pace> {
+    Pace::ALL.into_iter().find(|&pace| pace_key(pace) == text)
+}
+
+/// The board size a stored name means, or `None` for a name this build does not
+/// know.
+fn parse_board_size(text: &str) -> Option<BoardSize> {
+    BoardSize::ALL
+        .into_iter()
+        .find(|&size| board_size_key(size) == text)
+}
+
+/// Say that a stored name was not one this build knows, and is read as the
+/// default.
+fn unknown_setting(path: &Path, key: &str, value: &str) {
+    eprintln!(
+        "[settings] {}: the stored setting {key:?} is {value:?}, which this build does not \
+         know (a newer build may have written it); using the default",
+        path.display()
+    );
 }
 
 /// Whether any of the pre-database study documents sits beside the database file.

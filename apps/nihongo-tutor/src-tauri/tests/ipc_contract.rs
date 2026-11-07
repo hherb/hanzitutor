@@ -2504,3 +2504,26 @@ fn the_sentence_the_voice_is_handed_is_the_one_rust_read_back() {
         serde_json::from_value(json!({ "typed": "私はstudentです。" })).expect("deserialises");
     assert!(state.speak_sentence(&args.typed).is_err());
 }
+
+#[test]
+fn the_signed_bundle_does_not_ask_for_the_microphone() {
+    // Issue #41. This app never records: `hanzi-voice` is built without its
+    // capture half (`default-features = false`, so `cpal` is not linked), and
+    // `Info.ios.plist` carries no microphone string. The macOS entitlement was
+    // copied from the full app all the same, and an entitlement the binary has no
+    // use for is one a reviewer asks about.
+    let entitlements = include_str!("../Entitlements.plist");
+    assert!(
+        !entitlements
+            .lines()
+            .any(|line| line.trim() == "<key>com.apple.security.device.audio-input</key>"),
+        "Entitlements.plist asks for the microphone, which this app never opens"
+    );
+    let manifest = include_str!("../Cargo.toml");
+    assert!(
+        manifest.lines().any(
+            |line| line.starts_with("hanzi-voice") && line.contains("default-features = false")
+        ),
+        "if hanzi-voice is linked with its capture half again, the entitlement has to come back"
+    );
+}

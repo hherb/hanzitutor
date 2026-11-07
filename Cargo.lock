@@ -1762,6 +1762,7 @@ version = "0.7.0"
 dependencies = [
  "bzip2 0.5.2",
  "hanzi-core",
+ "libc",
  "serde",
  "sha2",
  "sherpa-onnx",
