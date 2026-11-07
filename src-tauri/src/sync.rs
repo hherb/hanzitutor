@@ -385,15 +385,18 @@ impl SyncService {
     /// device whose sign-in predates the record and only once.
     pub fn view(&self) -> SyncView {
         let record = self.record();
+        let can_lock = self.tokens.can_lock();
+        let locked = self.locked();
+        let message = self.status_message(record.as_ref(), can_lock, locked);
         SyncView {
             connected: record.is_some(),
             account_id: record.as_ref().and_then(|r| r.account_id.clone()),
             can_connect: self.tokens.available(),
-            can_lock: self.tokens.can_lock(),
-            locked: self.locked(),
+            can_lock,
+            locked,
             protection: record.map(|r| r.protection).unwrap_or_default(),
             last: self.last.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-            message: self.status_message(),
+            message,
         }
     }
 
@@ -437,7 +440,18 @@ impl SyncService {
         let _switching = self.take_switch();
         // The preference, not the default: a learner who asked for a fingerprint
         // gets one from the first read, not from the second connection.
-        let protection = self.tokens.save(&account, self.locked())?;
+        let protection = match self.tokens.save(&account, self.locked()) {
+            Ok(protection) => protection,
+            Err(why) => {
+                // The code was single-use and is spent, so this sign-in can never be
+                // stored now — on Android, locking it asks for the fingerprint, and a
+                // learner may cancel. A refresh token kept nowhere is one nobody can
+                // revoke later, so Dropbox is told to forget it now, as far as it
+                // can be; a failure to tell it changes nothing the learner can do.
+                let _ = revoke(self.http.as_ref(), &tokens.access_token);
+                return Err(format!("Not connected: {why}. Press Connect to try again."));
+            }
+        };
         self.remember(Some((account.clone(), protection)));
         // Whichever account was connected before, this is not it: a token fetched
         // for a publish under the old one must not be used under the new one.
@@ -457,6 +471,14 @@ impl SyncService {
                  again rather than left where nothing could reach it: {why}"
             ));
         }
+        // A learner who asked for a fingerprint and did not get one is told so here
+        // as well as on the switch. The store only does that when the device cannot
+        // ask at all — a screen lock removed since the switch was turned on — and
+        // the switch is not offered then, so this sentence is the only place the
+        // learner would find out.
+        if self.locked() && protection == Protection::KeychainOnly {
+            return Ok(self.after(&format!("Connected to Dropbox. {}", lock_unavailable())));
+        }
         Ok(self.after("Connected to Dropbox."))
     }
 
@@ -471,31 +493,34 @@ impl SyncService {
         if locked && !self.tokens.can_lock() {
             return Err(no_biometric());
         }
-        self.write_lock(locked)?;
 
         // Reading it is the point rather than a side effect: turning the prompt off
         // has to read the item it is about to rewrite, and that read is the last
         // time the learner is asked for anything.
         if let Some((account, _)) = self.sign_in()? {
-            let protection = self.tokens.save(&account, locked)?;
-            // The cache as well as the record. The cache is what decides whether a
-            // launch may read the sign-in, and a switch flipped to *on* that left it
-            // saying "nothing to unlock" would be a prompt at the next launch — which
-            // is the one thing this whole arrangement exists to prevent.
+            // A rewrite can be refused — on Android, locking asks for the fingerprint,
+            // and a learner may cancel — and the store then keeps the item as it was.
+            let protection = self.tokens.save(&account, locked).map_err(|why| {
+                format!("{why}. The sign-in is kept as it was, and the switch is unchanged.")
+            })?;
+            // The cache as well as the record, before anything else can fail: they
+            // describe the item, which has already changed. The cache is what decides
+            // whether a launch may read the sign-in, and a switch flipped to *on* that
+            // left it saying "nothing to unlock" would be a prompt at the next launch —
+            // which is the one thing this whole arrangement exists to prevent.
             self.remember(Some((account.clone(), protection)));
-            self.write_record(&Stored {
+            let recorded = self.write_record(&Stored {
                 account_id: account.account_id,
                 protection,
-            })?;
+            });
+            // The preference only once the item agrees with it, so a refused rewrite
+            // leaves the switch where it was rather than claiming a lock the sign-in
+            // does not have.
+            self.write_lock(locked)?;
+            recorded?;
             let misplaced = locked && protection == Protection::KeychainOnly;
             let message = if misplaced {
-                // Which of the two it is differs by platform — an unsigned build on
-                // Apple, a phone with no screen lock on Android — and both are the
-                // same thing to the learner: the ask was not available, and the
-                // sign-in is still kept encrypted on this device.
-                "This build or this device cannot ask for your fingerprint, so the sign-in is \
-                 kept in the device's own store instead. Your study data is unaffected."
-                    .to_string()
+                lock_unavailable()
             } else if locked {
                 "The sign-in will now ask for your fingerprint before it is used.".to_string()
             } else {
@@ -506,6 +531,7 @@ impl SyncService {
             return Ok(self.after(&message));
         }
 
+        self.write_lock(locked)?;
         let message = if locked {
             "The next account you connect will ask for your fingerprint before the sign-in is used."
         } else {
@@ -927,11 +953,27 @@ impl SyncService {
     /// is the whole reason the record exists. A keychain that cannot be read at all
     /// is not reported here either: nothing was asked of it, and the failure is
     /// reported when something is.
-    fn status_message(&self) -> String {
+    ///
+    /// The one thing said beyond "connected" is a switch that is on over a sign-in
+    /// that does not ask. Every Android build before #28 left exactly that — it
+    /// could not lock the sign-in, and kept it unlocked instead — so a learner who
+    /// turned the switch on then has been told nothing since. Where the device can
+    /// ask, turning the switch off and on again rewrites the item behind the prompt;
+    /// where it cannot, the switch is not offered, and the sentence says why.
+    fn status_message(&self, record: Option<&Stored>, can_lock: bool, locked: bool) -> String {
         if !self.tokens.available() {
             return no_secure_store();
         }
-        match self.record() {
+        match record {
+            Some(stored) if locked && stored.protection == Protection::KeychainOnly => {
+                if can_lock {
+                    "Connected to Dropbox. The switch is on, but the stored sign-in does not ask \
+                     for your fingerprint yet: turn the switch off and on again to lock it."
+                        .to_string()
+                } else {
+                    format!("Connected to Dropbox. {}", lock_unavailable())
+                }
+            }
             Some(_) => "Connected to Dropbox.".to_string(),
             None => "Not connected. Your study data stays on this device until you connect."
                 .to_string(),
@@ -1116,6 +1158,17 @@ fn no_secure_store() -> String {
     )
 }
 
+/// A fingerprint was asked for, and the store kept the sign-in without one.
+///
+/// Which of the two it is differs by platform — an unsigned build on Apple, a phone
+/// with no screen lock on Android — and both are the same thing to the learner: the
+/// ask was not available, and the sign-in is still kept encrypted on this device.
+fn lock_unavailable() -> String {
+    "This build or this device cannot ask for your fingerprint, so the sign-in is kept in the \
+     device's own store instead. Your study data is unaffected."
+        .to_string()
+}
+
 /// This device has nothing to ask the learner with.
 fn no_biometric() -> String {
     "This device cannot ask for a fingerprint or a screen lock, so the sign-in is protected by \
@@ -1140,7 +1193,9 @@ fn no_biometric() -> String {
 ///   available: a build the system cannot identify lands in the login keychain
 ///   instead, and an Android phone with no screen lock cannot make a key that asks
 ///   at all. A store that could not honour the request says so rather than letting
-///   the screen claim a prompt that will never appear.
+///   the screen claim a prompt that will never appear. A store that *could* but
+///   did not — a prompt the learner cancelled — returns an error and leaves the
+///   stored item as it was.
 trait TokenStore: Send + Sync {
     /// Whether this platform can keep a secret at all.
     fn available(&self) -> bool;
@@ -1188,19 +1243,25 @@ fn platform_store() -> Box<dyn TokenStore> {
 /// useless without it.
 ///
 /// **Asking for the learner.** A key made with `setUserAuthenticationRequired`
-/// will not decrypt until the learner has identified themselves, and the Kotlin
-/// side shows a `BiometricPrompt` carrying the cipher as its `CryptoObject` to get
-/// that. It is a per-*operation* constraint rather than a per-read one, which is
-/// what keeps it compatible with the module note: the prompt happens when the
-/// token is about to be used and never to draw a screen. A key made without it
-/// decrypts silently, which is what [`Self::load`] reports as
-/// [`Protection::KeychainOnly`].
+/// will neither decrypt *nor encrypt* until the learner has identified themselves
+/// — an AES key has no public half that keystore would let through unasked — so
+/// the Kotlin side shows a `BiometricPrompt` carrying the cipher as its
+/// `CryptoObject` both when the token is read and when it is locked. It is a
+/// per-*operation* constraint rather than a per-read one, which is what keeps it
+/// compatible with the module note: the prompt happens when the token is about to
+/// be used, or when the learner connects or turns the switch on, and never to draw
+/// a screen. A key made without it decrypts silently, which is what
+/// [`Self::load`] reports as [`Protection::KeychainOnly`].
 ///
 /// The mode belongs to the key and cannot be changed afterwards, so the Kotlin
-/// side records it beside the blob and rebuilds the key when the learner switches.
-/// A phone with no screen lock cannot make an auth-required key at all, so
+/// side keeps one key per mode and records the mode beside the blob. A locked
+/// write that does not happen — the learner cancels the prompt, or keystore will
+/// not make the key — is an **error** from [`Self::save`], and the item stored
+/// before is left exactly as it was; it is never quietly kept unlocked instead.
+/// The one exception is a device that cannot ask at all (its screen lock removed
+/// since the switch was turned on, where the switch is no longer offered): there
 /// [`Self::save`] reports the mode the item *actually* got — the unprotected one —
-/// rather than refusing to connect.
+/// rather than refusing to connect, and the screen says so.
 #[cfg(target_os = "android")]
 struct AndroidKeystore;
 
@@ -1230,9 +1291,9 @@ struct Askable {
 /// What `saveSecret` answers: how well the sign-in actually ended up protected.
 ///
 /// A separate answer from [`StoredSecret`] because it says what the write did,
-/// not what a read found, and the two can disagree: a device that cannot make a
-/// key which asks for authentication keeps the token the way an earlier build did,
-/// and says so here rather than failing.
+/// not what a read found, and the two can disagree: a device that cannot ask for
+/// authentication at all keeps the token the way an earlier build did, and says so
+/// here rather than failing. Any other failure to lock is a rejection instead.
 #[cfg(target_os = "android")]
 #[derive(serde::Deserialize)]
 struct SavedSecret {
@@ -1247,11 +1308,15 @@ impl TokenStore for AndroidKeystore {
 
     fn can_lock(&self) -> bool {
         // The plugin answers on Android's main thread and this blocks until it
-        // does — see `crate::platform::call`. That is safe here because every
-        // caller is a `#[tauri::command(async)]`, which Tauri runs on its runtime
-        // rather than on that thread. A bridge that is not up yet, or a device
-        // whose answer cannot be read, means no rather than a claim: the switch is
-        // then not offered, which is the same answer as a device that cannot ask.
+        // does — see `crate::platform::call` — so it is only safe off that thread,
+        // and so are `load` and `save`, which can wait on a fingerprint prompt.
+        // Every command that reaches this store has to run on Tauri's runtime or
+        // its blocking pool rather than on the main thread; a plain
+        // `#[tauri::command]` runs there, and would wait on itself (issue #26,
+        // which is what moves `sync_set_lock` off it). A bridge that is not up
+        // yet, or a device whose answer cannot be read, means no rather than a
+        // claim: the switch is then not offered, which is the same answer as a
+        // device that cannot ask.
         crate::platform::call::<Askable>("canLock", ())
             .map(|answer| answer.available)
             .unwrap_or(false)
@@ -1609,6 +1674,10 @@ mod tests {
         reports: Mutex<Option<Protection>>,
         /// A store that fails every read, to prove that some paths do not read.
         refuse: bool,
+        /// Why every write fails, when one should: what Android answers when the
+        /// learner cancels the fingerprint prompt that locking the sign-in shows.
+        /// The item already stored is left as it was, as the real store leaves it.
+        refuse_saves: Mutex<Option<String>>,
         /// What a read reports, whatever the write stored.
         ///
         /// `None` — the truth — is what a store that round-trips faithfully does, and
@@ -1631,6 +1700,7 @@ mod tests {
                 reads: Mutex::new(0),
                 reports: Mutex::new(None),
                 refuse: false,
+                refuse_saves: Mutex::new(None),
                 read_reports: None,
             }
         }
@@ -1709,6 +1779,9 @@ mod tests {
                 }))
         }
         fn save(&self, account: &Account, locked: bool) -> Result<Protection, String> {
+            if let Some(why) = self.refuse_saves.lock().unwrap().clone() {
+                return Err(why);
+            }
             // A store that can honour the request does, which is what the real one
             // does wherever the system lets it. `reports` overrides that, and is how
             // the tests drive the case where it cannot — the login-keychain fallback,
@@ -2458,6 +2531,99 @@ mod tests {
             drop(switching);
         });
         assert!(service.view().connected);
+    }
+
+    #[test]
+    fn a_lock_the_store_refuses_leaves_the_switch_and_the_sign_in_as_they_were() {
+        let db = database("lock-refused");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let service = with_store(Some(db.clone()), &store, connecting());
+        connect(&service);
+
+        // Locking the sign-in on Android asks for the fingerprint, because keystore
+        // will not encrypt under a key that asks without one — and the learner may
+        // cancel. The store then keeps the item as it was and says why.
+        store.refuse_saves.lock().unwrap().replace(
+            "the fingerprint prompt was cancelled, so the Dropbox sign-in was not locked, and \
+             nothing was changed"
+                .to_string(),
+        );
+        let refusal = service.set_lock(true).unwrap_err();
+        assert!(refusal.contains("cancelled"), "the store's reason is passed on: {refusal}");
+        assert!(refusal.contains("kept as it was"), "and says what it means: {refusal}");
+
+        let view = service.view();
+        assert!(!view.locked, "the switch must not claim a lock the sign-in does not have");
+        assert_ne!(db.meta_value(LOCK_KEY).unwrap().as_deref(), Some("on"));
+        assert!(view.connected, "and the sign-in is still there");
+        assert_eq!(view.protection, Protection::DeviceOnly);
+    }
+
+    #[test]
+    fn a_connection_the_store_refuses_is_not_connected_and_is_revoked() {
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let http = connecting_http();
+        let service = with_http(Some(database("finish-refused")), &store, &http, true);
+        service.set_lock(true).unwrap();
+
+        // With the switch on, storing the new sign-in asks for the fingerprint on
+        // Android, after the single-use code has already been exchanged.
+        store.refuse_saves.lock().unwrap().replace(
+            "the fingerprint prompt was cancelled, so the Dropbox sign-in was not saved".to_string(),
+        );
+        service.begin().unwrap();
+        let refusal = service.finish("the-code").unwrap_err();
+        assert!(refusal.starts_with("Not connected"), "{refusal}");
+        assert!(refusal.contains("cancelled"), "{refusal}");
+        assert!(refusal.contains("Press Connect"), "and says what to do: {refusal}");
+
+        assert!(!service.view().connected);
+        assert!(store.account.lock().unwrap().is_none(), "nothing was stored");
+        assert!(
+            http.inner.revocations.lock().unwrap().iter().any(|bearer| bearer == "sl.access"),
+            "the token nobody kept is revoked rather than left standing"
+        );
+        assert!(
+            http.inner.calls.lock().unwrap().iter().any(|url| url.contains("revoke")),
+            "through the revoke endpoint"
+        );
+    }
+
+    #[test]
+    fn a_switch_left_on_over_a_sign_in_that_does_not_ask_is_pointed_out() {
+        // What every Android build before #28 left behind: the switch on, and the
+        // sign-in kept unlocked because locking it always failed.
+        let db = database("lock-stale");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let service = with_store(Some(db.clone()), &store, connecting());
+        service.set_lock(true).unwrap();
+        store.reports.lock().unwrap().replace(Protection::KeychainOnly);
+        connect(&service);
+
+        let later = with_store(Some(db), &store, Box::new(FakeHttp::default()));
+        let view = later.view();
+        assert!(view.locked && view.can_lock);
+        assert_eq!(view.protection, Protection::KeychainOnly);
+        assert!(view.message.contains("turn the switch off and on again"), "{}", view.message);
+    }
+
+    #[test]
+    fn connecting_without_the_fingerprint_that_was_asked_for_says_so() {
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let service = with_store(Some(database("lock-unavailable")), &store, connecting());
+        // Asked for while the device could ask, with nothing connected yet.
+        service.set_lock(true).unwrap();
+
+        // Since then the screen lock was removed, so the store cannot make a key that
+        // asks, keeps the sign-in the unlocked way, and says so. The switch is not
+        // offered on such a device, which makes this sentence the only place the
+        // learner finds out.
+        store.reports.lock().unwrap().replace(Protection::KeychainOnly);
+        service.begin().unwrap();
+        let view = service.finish("the-code").unwrap();
+        assert!(view.connected);
+        assert_eq!(view.protection, Protection::KeychainOnly);
+        assert!(view.message.contains("cannot ask for your fingerprint"), "{}", view.message);
     }
 
     #[test]
