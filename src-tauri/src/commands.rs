@@ -1365,18 +1365,26 @@ pub async fn vocab_import(
     let view = committed(&state, vocab);
 
     let mut message = if summary.replaced {
-        format!("Replaced your list with {} entries", summary.added)
+        format!(
+            "Replaced your list with {}",
+            crate::state::plural(summary.added, "entry", "entries")
+        )
     } else {
-        format!("Added {} entries", summary.added)
+        format!(
+            "Added {}",
+            crate::state::plural(summary.added, "entry", "entries")
+        )
     };
-    if summary.skipped_duplicates > 0 {
+    if summary.groups_added > 0 {
         message.push_str(&format!(
-            ", skipped {} already in the list",
-            summary.skipped_duplicates
+            ", {}",
+            crate::state::plural(summary.groups_added, "new group", "new groups")
         ));
     }
-    if summary.groups_added > 0 {
-        message.push_str(&format!(", {} new groups", summary.groups_added));
+    for note in crate::state::import_notes(&summary, hanzi_core::vocab::ImportRules::Typed, "file")
+    {
+        message.push_str(", ");
+        message.push_str(&note);
     }
 
     Ok(Some(VocabOutcome { view, message }))

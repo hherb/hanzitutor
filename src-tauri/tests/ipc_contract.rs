@@ -357,6 +357,48 @@ fn a_json_null_option_is_the_same_as_omitting_it() {
     assert!(parsed.is_none());
 }
 
+/// What a webview can post to `grade_attempt` cannot size the grader's work
+/// (issue #40).
+///
+/// `resampleK: 1e15` used to reach `Vec::with_capacity` and abort the whole app,
+/// and a strokes array tens of thousands long asked the stroke pairing for a
+/// matrix of gigabytes. Both are now graded: the options are clamped and the
+/// strokes past `MAX_ATTEMPT_STROKES` are strays. The payload goes through serde
+/// as the command receives it, since a number too large for an `f32` arrives as
+/// infinity rather than as an error.
+#[test]
+fn grade_attempt_grades_a_hostile_payload_rather_than_obeying_it() {
+    let state = state();
+    let options: GradeOptions = serde_json::from_value(serde_json::json!({
+        "resampleK": 1_000_000_000_000_000u64,
+        "minStrokeLen": 1e300,
+        "globalFit": true,
+        "inkWidth": 1e300,
+    }))
+    .expect("deserialises");
+    let stroke = vec![Point::new(120.0, 400.0), Point::new(900.0, 400.0)];
+    let report = state
+        .grade('一', std::slice::from_ref(&stroke), &options)
+        .expect("grades");
+    assert_eq!(report.given_strokes, 1);
+    assert!(
+        (0.0..=100.0).contains(&report.overall),
+        "{}",
+        report.overall
+    );
+
+    let many = vec![stroke; 20_000];
+    let report = state
+        .grade('一', &many, &GradeOptions::default())
+        .expect("grades");
+    assert_eq!(report.given_strokes, hanzi_core::grade::MAX_ATTEMPT_STROKES);
+    assert_eq!(
+        report.stray_strokes,
+        many.len() - hanzi_core::grade::MAX_ATTEMPT_STROKES
+    );
+    assert!(!report.legible);
+}
+
 // ---- vocabulary list ------------------------------------------------------
 
 /// A list with one entry, as the interface would receive it.
@@ -1431,7 +1473,7 @@ fn an_entry_practised_on_another_device_is_written_through_here() {
 fn vocab_outcome_serialises_for_the_status_line() {
     let outcome = hanzi_tutor_lib::VocabOutcome {
         view: vocab_fixture(),
-        message: "Added 1 entries".to_string(),
+        message: "Added 1 entry".to_string(),
     };
     let json = serde_json::to_value(outcome).unwrap();
     expect_keys(&json, &["view", "message"]);
@@ -3341,7 +3383,13 @@ fn a_backup_carries_the_list_and_the_log_and_restores_both() {
         .import_backup(&LocalFile(file.clone()), true)
         .unwrap();
     assert_eq!(again.view.entries.len(), 2, "no duplicate entries");
-    assert!(again.message.contains("left 2 already there"), "{}", again.message);
+    assert!(
+        again
+            .message
+            .contains("skipped 2 entries already in your list or repeated in the backup"),
+        "{}",
+        again.message
+    );
     assert!(
         again.message.contains("every attempt in it was already in your log"),
         "{}",
@@ -3413,6 +3461,84 @@ fn replacing_from_a_backup_replaces_the_list_and_never_the_log() {
         .import_backup(&LocalFile(list_file.clone()), true)
         .expect_err("a list export is not a backup");
     assert!(error.contains("vocabulary-list export"), "{error}");
+
+    std::fs::remove_dir_all(&source_dir).ok();
+    std::fs::remove_dir_all(&target_dir).ok();
+}
+
+#[test]
+fn a_refused_restore_changes_nothing_at_all() {
+    // Issue #40: a replace whose list holds nothing usable is refused — and the
+    // log merge and the schedule rebuild come after the list is checked, so
+    // the refusal leaves the attempt log and the schedules as they were too, not
+    // half a restore.
+    let source_dir = data_dir("backup-refused-source");
+    let source = AppState::load(Some(source_dir.clone())).unwrap();
+    {
+        let mut vocab = source.lock_vocab();
+        vocab.store.add_entry("老师", "", "", None).unwrap();
+        vocab.store.add_entry("学生", "", "", None).unwrap();
+        assert!(vocab.save().is_none());
+    }
+    {
+        let mut progress = source.lock_progress();
+        progress
+            .store
+            .record_at('学', 88.0, "2026-09-22T10:00:00Z")
+            .unwrap();
+        assert!(progress.save().is_none());
+    }
+    let file = source_dir.join("backup.json");
+    source.export_backup(&file).unwrap();
+    // Every entry made unusable: text with a control character in it.
+    let mut backup: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    for entry in backup["vocabulary"]["entries"].as_array_mut().unwrap() {
+        entry["text"] = serde_json::json!("bad\u{7}");
+    }
+    std::fs::write(&file, backup.to_string()).unwrap();
+
+    let target_dir = data_dir("backup-refused-target");
+    let target = AppState::load(Some(target_dir.clone())).unwrap();
+    {
+        let mut vocab = target.lock_vocab();
+        vocab.store.add_entry("朋友", "", "", None).unwrap();
+        assert!(vocab.save().is_none());
+    }
+    {
+        let mut progress = target.lock_progress();
+        progress
+            .store
+            .record_at('好', 70.0, "2026-09-25T10:00:00Z")
+            .unwrap();
+        assert!(progress.save().is_none());
+    }
+
+    let error = target
+        .import_backup(&file, false)
+        .expect_err("a replace with nothing usable is refused");
+    assert!(error.contains("none of the 2 entries"), "{error}");
+    assert!(
+        !error.contains("too long"),
+        "a restore keeps long rows: {error}"
+    );
+
+    let attempts = target.db.as_ref().unwrap().attempts(None).unwrap();
+    assert_eq!(attempts.len(), 1, "the backup's attempt was not merged");
+    assert_eq!(attempts[0].ch, "好");
+    assert!(
+        target.lock_progress().store.card('学').is_none(),
+        "no schedule was rebuilt from it"
+    );
+    assert!(target.lock_progress().store.card('好').is_some());
+    let texts: Vec<String> = target
+        .lock_vocab()
+        .store
+        .entries()
+        .iter()
+        .map(|entry| entry.text.clone())
+        .collect();
+    assert_eq!(texts, ["朋友"], "the list is as it was");
 
     std::fs::remove_dir_all(&source_dir).ok();
     std::fs::remove_dir_all(&target_dir).ok();
