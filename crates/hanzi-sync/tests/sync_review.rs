@@ -90,7 +90,7 @@ fn a_devices_own_damaged_shard_is_written_again_and_its_peers_recover() {
         .unwrap();
     remote
         .put(
-            &hanzi_sync::attempts_shard_name(a.device_id(), 2),
+            &hanzi_sync::attempts_shard_name(&a.device_id(), 2),
             format!("{}\n", split.next().unwrap()).as_bytes(),
         )
         .unwrap();

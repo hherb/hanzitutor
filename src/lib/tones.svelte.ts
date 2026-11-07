@@ -233,3 +233,30 @@ export function syllableTonesOf(
   }
   return [toneFromSyllable(text)];
 }
+
+/**
+ * What the reading itself writes between each syllable and the one before it.
+ *
+ * Rust's split hands back the syllables without the marks that separated them,
+ * so a component that wrote them back to back showed 女儿's `nǚ'ér` as `nǚér`
+ * and 可爱's `kě'ài` as `kěài` — readings pinyin spells with an apostrophe,
+ * shown without one wherever they were coloured (issue #19). This **does not
+ * split anything**: it walks `text` from where the last syllable ended, finds
+ * the next syllable as Rust gave it, and returns what lay between.
+ *
+ * One entry per syllable, the first always empty. An entry is empty, too, when
+ * the syllable cannot be found from there, or when what lies between is anything
+ * but the separators Rust's splitter reads as a boundary (`'`, space, `-`, `·`,
+ * `/`, `,`) — a split that does not match its text is written run together, as
+ * it always was, rather than with whatever text happened to be in the way.
+ */
+export function syllableGaps(text: string, syllables: readonly string[]): string[] {
+  let cursor = 0;
+  return syllables.map((syllable, index) => {
+    const at = text.indexOf(syllable, cursor);
+    if (at < 0) return "";
+    const gap = text.slice(cursor, at);
+    cursor = at + syllable.length;
+    return index > 0 && /^['’ \-·/,]*$/.test(gap) ? gap : "";
+  });
+}

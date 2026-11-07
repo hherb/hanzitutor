@@ -53,7 +53,7 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -190,6 +190,22 @@ struct Install {
     state: InstallState,
     downloaded: u64,
     error: Option<String>,
+    /// The learner asked for the download in flight to stop. Read by the
+    /// download thread between chunks — see [`Asr::cancel`] — and kept after it
+    /// stops, so the attempt it ends reads as "not installed" rather than
+    /// "failed".
+    cancelled: bool,
+}
+
+/// A slot, taken whether or not a thread that held it panicked.
+///
+/// A panic while a slot is held poisons it, and `expect` on a poisoned slot panics
+/// again — on every later call, for the life of the process, which on a command
+/// the interface awaits is a button that never comes back. What each slot holds is
+/// a loaded model or a progress record, which a panic leaves no less usable than it
+/// found them, so the lock is simply recovered.
+fn hold<T>(slot: &Mutex<T>) -> MutexGuard<'_, T> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Asr {
@@ -223,20 +239,28 @@ impl Asr {
 
     /// Everything the settings screen needs, in one call.
     pub fn status(&self) -> AsrStatus {
-        let install = self.install.lock().expect("asr install slot");
+        let install = hold(&self.install);
         let installed = self.is_installed();
 
         // A failure is reported as a failure even if an older install is still
         // on disk — the learner asked for something and it did not happen, and
         // saying "installed" would hide that.
+        //
+        // A *cancelled* attempt is not a failure, though: the learner asked for
+        // it to stop, and it did.
         let state = match install.state {
             InstallState::Downloading => InstallState::Downloading,
-            InstallState::Failed => InstallState::Failed,
+            InstallState::Failed if !install.cancelled => InstallState::Failed,
             _ if installed => InstallState::Installed,
             _ => InstallState::Absent,
         };
 
         let detail = match state {
+            InstallState::Downloading if install.cancelled => format!(
+                "Cancelling the download of {} — it stops at the next chunk, and nothing \
+                 is installed.",
+                MODEL.name,
+            ),
             InstallState::Downloading => format!(
                 "Downloading {} — {} of {} so far. Nothing is installed until the \
                  checksum passes.",
@@ -254,8 +278,8 @@ impl Asr {
                 .clone()
                 .unwrap_or_else(|| "The last attempt to fetch the model failed.".to_string()),
             InstallState::Absent if self.root.is_none() => "There is nowhere to keep the model: \
-                 the platform did not give this app a data directory, so study data is not \
-                 being saved either. Tone practice is unaffected."
+                 the platform did not give this app a directory to store it in, so it cannot \
+                 be installed. Tone practice is unaffected."
                 .to_string(),
             InstallState::Absent => format!(
                 "Not installed. Recognising what was said needs {} ({} to download, {} on \
@@ -282,7 +306,11 @@ impl Asr {
                 .model_dir()
                 .filter(|dir| dir.is_dir())
                 .map(|dir| dir.display().to_string()),
-            error: install.error.clone(),
+            error: if install.cancelled {
+                None
+            } else {
+                install.error.clone()
+            },
             detail,
         }
     }
@@ -296,13 +324,13 @@ impl Asr {
     /// network access, and it happens only because a learner pressed this.
     pub fn install(&self) -> Result<(), String> {
         let Some(root) = self.root.clone() else {
-            return Err("There is nowhere to keep the model: this app was not given a data \
-                        directory, so nothing can be saved."
+            return Err("There is nowhere to keep the model: this app was not given a \
+                        directory to store it in, so it cannot be installed."
                 .to_string());
         };
 
         {
-            let mut install = self.install.lock().expect("asr install slot");
+            let mut install = hold(&self.install);
             if install.state == InstallState::Downloading {
                 return Err("The model is already being downloaded.".to_string());
             }
@@ -313,16 +341,17 @@ impl Asr {
                 state: InstallState::Downloading,
                 downloaded: 0,
                 error: None,
+                cancelled: false,
             };
         }
 
         // Anything half-loaded belongs to a model that is about to be replaced.
-        *self.engine.lock().expect("asr engine slot") = None;
+        *hold(&self.engine) = None;
 
         let progress = Arc::clone(&self.install);
         std::thread::spawn(move || {
             let outcome = fetch_and_unpack(&root, &progress);
-            let mut install = progress.lock().expect("asr install slot");
+            let mut install = hold(&progress);
             match outcome {
                 Ok(()) => {
                     install.state = InstallState::Installed;
@@ -338,39 +367,105 @@ impl Asr {
         Ok(())
     }
 
+    /// Ask a running download to stop, and report the resulting state.
+    ///
+    /// Returns at once. The download thread reads the request between two chunks
+    /// of the transfer, and between downloading, checking and unpacking; it then
+    /// removes the staging directory exactly as a failed attempt does, and the
+    /// status goes back to "not installed". Until it has noticed, the status
+    /// still says downloading, with a detail that says it is stopping — so the
+    /// screen keeps polling until it settles. A request that arrives after the
+    /// model has been moved into place is too late, and the install stands.
+    ///
+    /// Asking with nothing running changes nothing.
+    pub fn cancel(&self) -> AsrStatus {
+        {
+            let mut install = self
+                .install
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if install.state == InstallState::Downloading {
+                install.cancelled = true;
+            }
+        }
+        self.status()
+    }
+
+    /// True while a download thread is running.
+    fn is_downloading(&self) -> bool {
+        let install = self
+            .install
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        install.state == InstallState::Downloading
+    }
+
     /// Delete the model, and anything a failed attempt left behind.
     ///
     /// The loaded recogniser goes with it: leaving a 228 MB model resident after
     /// the learner has asked for it to be removed would be both a lie in the
     /// status line and the largest thing this process holds.
+    ///
+    /// The slot is held **for the whole delete**, not just while it is emptied.
+    /// The commands that reach this run off the main thread (issue #26), so a
+    /// recognition can be waiting on the slot while this runs; holding it means a
+    /// model is never loaded from a directory that is half gone, and
+    /// [`Asr::engine`] looks at the files again once it has the slot. A
+    /// recognition that already holds the loaded model keeps it until it
+    /// finishes: the model is in memory, and the files are not read again.
     pub fn remove(&self) -> Result<(), String> {
-        *self.engine.lock().expect("asr engine slot") = None;
+        self.remove_with(|root| fs::remove_dir_all(root))
+    }
+
+    /// [`Asr::remove`], with the delete handed in, so a test can see what is held
+    /// while it runs.
+    fn remove_with(&self, delete: impl FnOnce(&Path) -> std::io::Result<()>) -> Result<(), String> {
+        let mut engine = hold(&self.engine);
+        *engine = None;
 
         let Some(root) = self.root.as_ref() else {
             return Ok(());
         };
+        // Not from under a download: the thread would go on writing into a
+        // directory that had just been deleted, and then report an install.
+        if self.is_downloading() {
+            return Err(
+                "The model is still being downloaded. Cancel the download first, or let it \
+                 finish, and then remove it."
+                    .to_string(),
+            );
+        }
         if root.is_dir() {
-            fs::remove_dir_all(root)
+            delete(root)
                 .map_err(|error| format!("could not remove {}: {error}", root.display()))?;
         }
+        drop(engine);
 
-        let mut install = self.install.lock().expect("asr install slot");
+        let mut install = hold(&self.install);
         *install = Install::default();
         Ok(())
     }
 
-    /// The loaded recogniser, building it if this is the first use.
-    fn engine(&self) -> Result<Arc<Engine>, String> {
-        let mut slot = self.engine.lock().expect("asr engine slot");
+    /// The loaded recogniser, building it if this is the first use, or `None`
+    /// when there is no model to build it from.
+    ///
+    /// Installed is asked again **under the slot**: the caller's own check was
+    /// made before it queued for it, and an uninstall that held the slot in
+    /// between has deleted the files since — see [`Asr::remove`].
+    fn engine(&self) -> Result<Option<Arc<Engine>>, String> {
+        let mut slot = hold(&self.engine);
         if let Some(engine) = slot.as_ref() {
-            return Ok(Arc::clone(engine));
+            return Ok(Some(Arc::clone(engine)));
+        }
+        if !self.is_installed() {
+            return Ok(None);
         }
         let dir = self
             .model_dir()
             .ok_or("There is nowhere the model could be: no data directory.")?;
         let engine = Arc::new(Engine::load(&dir)?);
         *slot = Some(Arc::clone(&engine));
-        Ok(engine)
+        Ok(Some(engine))
     }
 
     /// Transcribe one recording, or `Ok(None)` when no model is installed.
@@ -382,7 +477,9 @@ impl Asr {
         if !self.is_installed() {
             return Ok(None);
         }
-        let engine = self.engine()?;
+        let Some(engine) = self.engine()? else {
+            return Ok(None);
+        };
         engine.transcribe(samples, sample_rate).map(Some)
     }
 }
@@ -395,7 +492,28 @@ impl Asr {
 /// ONNX error. It is also why the work goes to a staging directory and is moved
 /// into place at the end — an interrupted install leaves the previous state
 /// exactly as it was.
+///
+/// The free space is checked first (issue #41): staging holds the archive and
+/// the unpacked model at once, and a device without room for both used to find
+/// out by failing a write part-way through 163 MB. On Apple platforms the check
+/// only advises — see [`ROOM_IS_ADVISORY`].
 fn fetch_and_unpack(root: &Path, progress: &Arc<Mutex<Install>>) -> Result<(), String> {
+    fs::create_dir_all(root)
+        .map_err(|error| format!("could not create {}: {error}", root.display()))?;
+    // The wreckage of an attempt that never got to clean up is space this one
+    // is about to reclaim, so it goes before the space is counted.
+    let _ = fs::remove_dir_all(root.join(".staging"));
+    enforce_room(free_bytes(root), ROOM_IS_ADVISORY)?;
+    fetch_and_unpack_from(root, progress, &open_release)
+}
+
+/// [`fetch_and_unpack`] from whatever `open` returns rather than the release, so
+/// a test can drive the staging and the cancellation without a network.
+fn fetch_and_unpack_from(
+    root: &Path,
+    progress: &Arc<Mutex<Install>>,
+    open: &dyn Fn() -> Result<Box<dyn Read>, String>,
+) -> Result<(), String> {
     fs::create_dir_all(root)
         .map_err(|error| format!("could not create {}: {error}", root.display()))?;
 
@@ -409,8 +527,22 @@ fn fetch_and_unpack(root: &Path, progress: &Arc<Mutex<Install>>) -> Result<(), S
     // Every failure from here takes the staging directory with it. A failed
     // attempt must not leave 163 MB of partial archive — or a half-unpacked
     // model — where the next one would have to notice it, and the learner asked
-    // for a thing that did not happen rather than for a cache.
-    let unpacked = match stage(&staging, progress) {
+    // for a thing that did not happen rather than for a cache. A cancelled one is
+    // cleaned up the same way; `Asr::status` is what tells the two apart.
+    //
+    // A panic is a failure too (a decoder bug, a corrupt stream): left to unwind
+    // it would skip the code that records the outcome, and the state would read
+    // "downloading" for the life of the process, with the screen polling it.
+    let staged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        stage(&staging, progress, open)
+    }))
+    .unwrap_or_else(|panic| {
+        Err(format!(
+            "the install stopped unexpectedly ({}). Nothing was installed.",
+            panic_message(panic.as_ref())
+        ))
+    });
+    let unpacked = match staged {
         Ok(unpacked) => unpacked,
         Err(message) => {
             let _ = fs::remove_dir_all(&staging);
@@ -444,16 +576,50 @@ fn fetch_and_unpack(root: &Path, progress: &Arc<Mutex<Install>>) -> Result<(), S
     Ok(())
 }
 
+/// The text a panic carried, when it carried any.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("no message")
+}
+
+/// What a cancelled attempt returns. Never shown: [`Asr::status`] reads the flag,
+/// not the message.
+const CANCELLED: &str = "The download was cancelled. Nothing was installed.";
+
+/// True when the learner has asked for the download in flight to stop.
+fn cancelled(progress: &Arc<Mutex<Install>>) -> bool {
+    progress.lock().is_ok_and(|install| install.cancelled)
+}
+
 /// Download, verify and unpack into `staging`, returning the unpacked directory.
 ///
 /// Split out of [`fetch_and_unpack`] so that cleanup happens on *every* failure
-/// rather than on the ones somebody remembered to write.
-fn stage(staging: &Path, progress: &Arc<Mutex<Install>>) -> Result<PathBuf, String> {
+/// rather than on the ones somebody remembered to write. A cancel is looked for
+/// between the steps as well as inside the download, because the check and the
+/// unpack are seconds each on a phone.
+fn stage(
+    staging: &Path,
+    progress: &Arc<Mutex<Install>>,
+    open: &dyn Fn() -> Result<Box<dyn Read>, String>,
+) -> Result<PathBuf, String> {
     let archive = staging.join("model.tar.bz2");
+    let stop_if_cancelled = || {
+        if cancelled(progress) {
+            Err(CANCELLED.to_string())
+        } else {
+            Ok(())
+        }
+    };
 
-    download(&archive, progress)?;
+    download(&archive, progress, open()?)?;
+    stop_if_cancelled()?;
     verify(&archive)?;
+    stop_if_cancelled()?;
     unpack(&archive, staging)?;
+    stop_if_cancelled()?;
 
     let unpacked = staging.join(MODEL.stem);
     for required in [MODEL_FILE, TOKENS_FILE] {
@@ -467,11 +633,8 @@ fn stage(staging: &Path, progress: &Arc<Mutex<Install>>) -> Result<PathBuf, Stri
     Ok(unpacked)
 }
 
-/// Stream the archive to disk, counting bytes for the progress bar.
-///
-/// The digest is computed while writing rather than by reading the file back, so
-/// verifying a 163 MB download costs no second pass over it.
-fn download(destination: &Path, progress: &Arc<Mutex<Install>>) -> Result<(), String> {
+/// Open the release asset for reading. This is the network access.
+fn open_release() -> Result<Box<dyn Read>, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(30))
         // Per read, not overall: a 163 MB download legitimately takes minutes,
@@ -485,8 +648,19 @@ fn download(destination: &Path, progress: &Arc<Mutex<Install>>) -> Result<(), St
         .get(MODEL.url)
         .call()
         .map_err(|error| format!("could not download {}: {error}", MODEL.url))?;
-    let mut reader = response.into_reader();
+    Ok(Box::new(response.into_reader()))
+}
 
+/// Stream the archive to disk, counting bytes for the progress bar.
+///
+/// The digest is computed while writing rather than by reading the file back, so
+/// verifying a 163 MB download costs no second pass over it. A cancel is read
+/// with each chunk's progress, under the same lock.
+fn download(
+    destination: &Path,
+    progress: &Arc<Mutex<Install>>,
+    mut reader: Box<dyn Read>,
+) -> Result<(), String> {
     let file = File::create(destination)
         .map_err(|error| format!("could not write {}: {error}", destination.display()))?;
     let mut file = std::io::BufWriter::new(file);
@@ -505,8 +679,15 @@ fn download(destination: &Path, progress: &Arc<Mutex<Install>>) -> Result<(), St
             .map_err(|error| format!("could not write to disk after {written} bytes: {error}"))?;
         hasher.update(&buffer[..read]);
         written += read as u64;
-        if let Ok(mut install) = progress.lock() {
-            install.downloaded = written;
+        let stop = match progress.lock() {
+            Ok(mut install) => {
+                install.downloaded = written;
+                install.cancelled
+            }
+            Err(_) => false,
+        };
+        if stop {
+            return Err(CANCELLED.to_string());
         }
     }
     file.flush()
@@ -592,6 +773,198 @@ fn hex(bytes: &[u8]) -> String {
 /// is deciding whether to make is the wrong direction to be wrong in.
 fn megabytes(bytes: u64) -> String {
     format!("{} MB", bytes.div_ceil(1_000_000))
+}
+
+/// The most an install has on disk at once: the archive and the model unpacked
+/// beside it in staging, plus a margin so that installing it does not leave the
+/// device with no room at all.
+///
+/// The older copy an install replaces is not counted — it is removed before the
+/// new one is moved into place, and the screen offers the download only when
+/// there is none.
+const INSTALL_NEEDS_BYTES: u64 = MODEL.archive_bytes + MODEL.unpacked_bytes + 50_000_000;
+
+/// Refuse an install there is no room for, before any of it is fetched.
+///
+/// `available` is `None` when the platform cannot say, which is not a reason to
+/// refuse: the download then fails at the write that does not fit, as it always
+/// did, and leaves nothing behind.
+fn room_for_install(available: Option<u64>) -> Result<(), String> {
+    match available {
+        Some(free) if free < INSTALL_NEEDS_BYTES => Err(format!(
+            "There is not enough free space for {}: installing it needs {} at once (the \
+             download and the unpacked model side by side), and this device has {} free. \
+             Nothing was downloaded.",
+            MODEL.name,
+            megabytes(INSTALL_NEEDS_BYTES),
+            megabytes(free),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// True where the free-space count leaves out what the system would purge.
+///
+/// On Apple platforms `f_bavail` does not include purgeable space — caches and
+/// offloadable content the system clears on demand — so a phone that could fit
+/// the model can look full. The count that does include it is a Foundation
+/// resource key (`volumeAvailableCapacityForImportantUsage`), which needs
+/// Objective-C glue this crate does not have; so there the check advises.
+const ROOM_IS_ADVISORY: bool = cfg!(any(target_os = "ios", target_os = "macos"));
+
+/// [`room_for_install`], refusing only where the count can be trusted: where it
+/// is `advisory`, a shortfall is logged and the install goes ahead, and a write
+/// that really does not fit fails and is cleaned up as any failure is.
+fn enforce_room(available: Option<u64>, advisory: bool) -> Result<(), String> {
+    match room_for_install(available) {
+        Err(message) if advisory => {
+            eprintln!(
+                "[asr] {message} Going ahead anyway: this platform's count leaves out \
+                 space it would free on demand."
+            );
+            Ok(())
+        }
+        other => other,
+    }
+}
+
+/// The bytes an unprivileged process can still write on the filesystem holding
+/// `path`, or `None` when that cannot be asked.
+///
+/// `statvfs` is the one call that answers this on every Unix the apps ship to —
+/// macOS, iOS, Linux and Android — and `f_bavail` rather than `f_bfree` is the
+/// count that excludes the blocks reserved for root.
+#[cfg(unix)]
+fn free_bytes(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is a NUL-terminated string that outlives the call, and
+    // `stats` is written in full by a call that returns 0; it is read only then.
+    let stats = unsafe {
+        if libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) != 0 {
+            return None;
+        }
+        stats.assume_init()
+    };
+    // The field widths differ between platforms, so both go through `u64`.
+    #[allow(clippy::unnecessary_cast)]
+    let free = (stats.f_bavail as u64).saturating_mul(stats.f_frsize as u64);
+    Some(free)
+}
+
+/// No portable way to ask without a new dependency, so the install goes ahead
+/// as it always did — see [`room_for_install`].
+#[cfg(not(unix))]
+fn free_bytes(_path: &Path) -> Option<u64> {
+    None
+}
+
+/// Where to keep the model: the platform's cache directory when it gives one,
+/// and the data directory otherwise. Pass the result to [`Asr::new`].
+///
+/// The weights are 240 MB of something fetched only on request and re-verified
+/// by digest, so they are a cache, not the learner's data. On iOS the data
+/// directory is `Library/Application Support`, which iCloud backs up, and Apple's
+/// data-storage rules for App Review keep re-downloadable content out of a backup;
+/// `Library/Caches` is excluded from one, and the cache directories elsewhere are
+/// the platform's own place for exactly this (issue #41). The full app made the
+/// same move in its `relocate_model_cache`. The price is that iOS and Android may
+/// empty a cache when storage runs low; [`Asr::status`] looks at the files every
+/// time, so a purged model reads as not installed and can be fetched again.
+///
+/// A model an earlier build put under `data_dir` is moved across rather than
+/// fetched again — copied, when the two are on different filesystems — unless the
+/// cache already holds one; when that one is a complete install, the old copy is
+/// deleted. If the move fails the old location is kept for this session, so an
+/// installed model keeps working and stays removable from the screen; the next
+/// launch tries again.
+pub fn model_home(data_dir: Option<&Path>, cache_dir: Option<&Path>) -> Option<PathBuf> {
+    let Some(cache_dir) = cache_dir else {
+        return data_dir.map(Path::to_path_buf);
+    };
+    let Some(data_dir) = data_dir else {
+        return Some(cache_dir.to_path_buf());
+    };
+    let (old, new) = (data_dir.join("asr"), cache_dir.join("asr"));
+    if !old.is_dir() {
+        return Some(cache_dir.to_path_buf());
+    }
+    if new.exists() {
+        // A complete install in the cache makes the old copy up to 240 MB of
+        // the same thing in the backup. Anything less and the old copy may be
+        // the only one that works, so it stays.
+        if Asr::new(Some(cache_dir)).is_installed() {
+            if let Err(error) = fs::remove_dir_all(&old) {
+                eprintln!(
+                    "[asr] could not remove the older copy {}: {error}",
+                    old.display()
+                );
+            }
+        }
+        return Some(cache_dir.to_path_buf());
+    }
+    let moved = fs::create_dir_all(cache_dir)
+        .and_then(|()| move_model(&old, &new, &|a, b| fs::rename(a, b)));
+    match moved {
+        Ok(()) => Some(cache_dir.to_path_buf()),
+        Err(error) => {
+            eprintln!(
+                "[asr] could not move {} to {}: {error}; keeping it where it is",
+                old.display(),
+                new.display()
+            );
+            Some(data_dir.to_path_buf())
+        }
+    }
+}
+
+/// Move the model directory `old` to `new`, through `rename`.
+///
+/// A rename cannot cross filesystems, and a cache directory on another volume
+/// is not unusual on a desktop. Then the tree is copied to a sibling of `new`
+/// and renamed into place, so a copy cut short is never where [`Asr::status`]
+/// would read it as an install; the old copy is deleted only once the new one
+/// is in place, and failing to delete it is logged rather than undoing the move
+/// — the next launch removes it (see [`model_home`]).
+fn move_model(
+    old: &Path,
+    new: &Path,
+    rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match rename(old, new) {
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+            let temporary = new.with_file_name(".asr-moving");
+            let _ = fs::remove_dir_all(&temporary);
+            if let Err(error) = copy_tree(old, &temporary).and_then(|()| rename(&temporary, new)) {
+                let _ = fs::remove_dir_all(&temporary);
+                return Err(error);
+            }
+            if let Err(error) = fs::remove_dir_all(old) {
+                eprintln!(
+                    "[asr] moved, but could not remove {}: {error}",
+                    old.display()
+                );
+            }
+            Ok(())
+        }
+        other => other,
+    }
+}
+
+/// Copy a directory tree. The model archive holds only directories and files.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 /// The recogniser, once the model has been loaded.
@@ -818,6 +1191,100 @@ mod tests {
     }
 
     #[test]
+    fn a_recognition_waiting_on_an_uninstall_does_not_load_what_it_deleted() {
+        // The recognition commands run off the main thread (issue #26), so an
+        // uninstall can now land while a release is being judged. A recognition
+        // that had already seen the files, and was waiting for the slot, must not
+        // go on to load a model from a directory that has been deleted underneath
+        // it: the native loader reads files it checked a moment earlier, and a
+        // file gone in between is a failure at best. Holding the slot here stands
+        // in for `remove`, which deletes under it.
+        let directory = std::env::temp_dir().join("hanzi-asr-remove-race");
+        let _ = fs::remove_dir_all(&directory);
+        let stem = directory.join("asr").join(MODEL.stem);
+        fs::create_dir_all(&stem).unwrap();
+        fs::write(stem.join(MODEL_FILE), b"model").unwrap();
+        fs::write(stem.join(TOKENS_FILE), b"tokens").unwrap();
+        let asr = Asr::new(Some(&directory));
+        assert!(asr.status().installed);
+
+        let heard = std::thread::scope(|scope| {
+            let slot = asr.engine.lock().unwrap();
+            let waiting = scope.spawn(|| asr.recognize(&[0.0; 160], 16_000));
+            // Long enough for the recognition to have checked the files and be
+            // queued on the slot.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            fs::remove_dir_all(directory.join("asr")).unwrap();
+            drop(slot);
+            waiting.join().unwrap()
+        });
+        assert_eq!(
+            heard,
+            Ok(None),
+            "a model removed while the recognition waited is a model that is not installed"
+        );
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn an_uninstall_holds_the_slot_until_the_files_are_gone() {
+        // The race above driven through `remove` itself. A recognition that starts
+        // while the delete is under way has seen the files, and must queue on the
+        // slot until they are gone — then find no model — rather than get the slot
+        // between the model being dropped and the delete, and load a model whose
+        // files are disappearing underneath it.
+        let directory = std::env::temp_dir().join("hanzi-asr-remove-holds");
+        let _ = fs::remove_dir_all(&directory);
+        let stem = directory.join("asr").join(MODEL.stem);
+        fs::create_dir_all(&stem).unwrap();
+        fs::write(stem.join(MODEL_FILE), b"model").unwrap();
+        fs::write(stem.join(TOKENS_FILE), b"tokens").unwrap();
+        let asr = Asr::new(Some(&directory));
+        assert!(asr.status().installed);
+
+        let heard = std::thread::scope(|scope| {
+            let mut waiting = None;
+            asr.remove_with(|root| {
+                let recognition = scope.spawn(|| asr.recognize(&[0.0; 160], 16_000));
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                assert!(
+                    !recognition.is_finished(),
+                    "a recognition got the slot while the model was being deleted"
+                );
+                waiting = Some(recognition);
+                fs::remove_dir_all(root)
+            })
+            .unwrap();
+            waiting.expect("the delete ran").join().unwrap()
+        });
+        assert_eq!(heard, Ok(None));
+        assert!(!asr.status().installed);
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_slot_left_poisoned_by_a_panic_still_answers() {
+        // A panic while a slot was held would otherwise make every later call panic
+        // too — the status line, the next recognition — for the life of the app.
+        let asr = Asr::new(None);
+        std::thread::scope(|scope| {
+            let _ = scope
+                .spawn(|| {
+                    let _held = asr.engine.lock().unwrap();
+                    let _also = asr.install.lock().unwrap();
+                    panic!("poison both slots");
+                })
+                .join();
+        });
+        assert!(asr.engine.is_poisoned() && asr.install.is_poisoned());
+        assert_eq!(asr.status().state, InstallState::Absent);
+        assert_eq!(asr.recognize(&[0.0; 160], 16_000), Ok(None));
+        asr.remove().unwrap();
+    }
+
+    #[test]
     fn sense_voice_tags_are_not_mistaken_for_syllables() {
         // What the model actually returns, tags and all.
         assert_eq!(clean("<|zh|><|NEUTRAL|><|Speech|><|woitn|>开饭时间"), "开饭时间");
@@ -1015,5 +1482,325 @@ mod tests {
         assert!(!directory.join("asr").join(MODEL.stem).exists());
 
         let _ = fs::remove_dir_all(&directory);
+    }
+
+    /// A source that never ends, and that asks for the download to be cancelled
+    /// once it has been read from — as a learner pressing Cancel part-way does.
+    struct CancelledPartWay {
+        reads: usize,
+        progress: Arc<Mutex<Install>>,
+    }
+
+    impl Read for CancelledPartWay {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            if self.reads == 2 {
+                self.progress.lock().unwrap().cancelled = true;
+            }
+            buffer.fill(0);
+            Ok(buffer.len())
+        }
+    }
+
+    #[test]
+    fn a_cancelled_download_stops_and_leaves_nothing_behind() {
+        // Issue #41: a Cancel button, so a learner on a slow link is not left
+        // waiting out a 163 MB download they no longer want. The flag is read
+        // between chunks, the partial archive goes with the staging directory,
+        // and the screen goes back to "not installed" rather than "failed".
+        let directory = std::env::temp_dir().join("hanzi-asr-cancel");
+        let _ = fs::remove_dir_all(&directory);
+        let asr = Asr::new(Some(&directory));
+        let root = asr.root.clone().unwrap();
+        hold_install(&asr).state = InstallState::Downloading;
+
+        let progress = Arc::clone(&asr.install);
+        let source = || -> Result<Box<dyn Read>, String> {
+            Ok(Box::new(CancelledPartWay {
+                reads: 0,
+                progress: Arc::clone(&progress),
+            }))
+        };
+        let outcome = fetch_and_unpack_from(&root, &asr.install, &source);
+        assert!(outcome.is_err(), "a cancelled download is not an install");
+        let downloaded = hold_install(&asr).downloaded;
+        assert!(
+            downloaded > 0 && downloaded < MODEL.archive_bytes,
+            "it stopped part-way, after {downloaded} bytes"
+        );
+        assert!(
+            !root.join(".staging").exists(),
+            "the partial archive is removed"
+        );
+        assert!(!root.join(MODEL.stem).exists());
+
+        // What the install thread does with any error, and then what the screen
+        // is told.
+        {
+            let mut install = hold_install(&asr);
+            install.state = InstallState::Failed;
+            install.error = outcome.err();
+        }
+        let status = asr.status();
+        assert_eq!(status.state, InstallState::Absent);
+        assert!(status.error.is_none(), "{:?}", status.error);
+        assert!(!status.installed);
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn cancel_is_only_for_a_download_that_is_running() {
+        let directory = std::env::temp_dir().join("hanzi-asr-cancel-idle");
+        let _ = fs::remove_dir_all(&directory);
+        let asr = Asr::new(Some(&directory));
+
+        // Nothing running: nothing to cancel, and nothing changes.
+        assert_eq!(asr.cancel().state, InstallState::Absent);
+        assert!(!hold_install(&asr).cancelled);
+
+        // Running: the request is recorded, and the screen says it is stopping
+        // until the download thread notices, between two chunks.
+        hold_install(&asr).state = InstallState::Downloading;
+        let status = asr.cancel();
+        assert_eq!(status.state, InstallState::Downloading);
+        assert!(hold_install(&asr).cancelled);
+        assert!(status.detail.contains("Cancelling"), "{}", status.detail);
+
+        // A real failure is still a failure.
+        let fresh = Asr::new(Some(&directory));
+        {
+            let mut install = hold_install(&fresh);
+            install.state = InstallState::Failed;
+            install.error = Some("the network went away".to_string());
+        }
+        assert_eq!(fresh.status().state, InstallState::Failed);
+    }
+
+    fn hold_install(asr: &Asr) -> std::sync::MutexGuard<'_, Install> {
+        asr.install.lock().unwrap()
+    }
+
+    #[test]
+    fn an_install_needs_room_for_the_archive_and_the_model_at_once() {
+        // Issue #41: staging holds the archive and the unpacked model together, so
+        // the peak is their sum — and a device without it used to find out by
+        // failing a write part-way through 163 MB.
+        const { assert!(INSTALL_NEEDS_BYTES >= MODEL.archive_bytes + MODEL.unpacked_bytes) };
+        assert!(room_for_install(Some(INSTALL_NEEDS_BYTES)).is_ok());
+        assert!(room_for_install(Some(u64::MAX)).is_ok());
+        let refused = room_for_install(Some(100_000_000)).unwrap_err();
+        assert!(
+            refused.contains("100 MB"),
+            "it says what is free: {refused}"
+        );
+        assert!(
+            refused.contains(&megabytes(INSTALL_NEEDS_BYTES)),
+            "and what is needed: {refused}"
+        );
+        // A platform that cannot say is not a reason to refuse.
+        assert!(room_for_install(None).is_ok());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn free_space_is_read_from_the_filesystem() {
+        let free = free_bytes(&std::env::temp_dir()).expect("statvfs answers for a real directory");
+        assert!(free > 0);
+        assert_eq!(free_bytes(Path::new("/no/such/directory/anywhere")), None);
+    }
+
+    #[test]
+    fn the_model_lives_in_the_cache_directory_when_there_is_one() {
+        // Issue #41: on iOS the data directory is Library/Application Support,
+        // which iCloud backs up, and 240 MB of re-downloadable weights do not
+        // belong in a backup (App Review 2.23). The cache directory is excluded.
+        let base = std::env::temp_dir().join("hanzi-asr-home");
+        let _ = fs::remove_dir_all(&base);
+        let data = base.join("data");
+        let cache = base.join("cache");
+
+        assert_eq!(model_home(None, None), None);
+        assert_eq!(
+            model_home(Some(&data), None),
+            Some(data.clone()),
+            "no cache: as before"
+        );
+        assert_eq!(model_home(None, Some(&cache)), Some(cache.clone()));
+        assert_eq!(model_home(Some(&data), Some(&cache)), Some(cache.clone()));
+
+        // A model an earlier build put in the data directory is moved, not
+        // fetched again.
+        let old = data.join("asr").join(MODEL.stem);
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join(MODEL_FILE), b"model").unwrap();
+        fs::write(old.join(TOKENS_FILE), b"tokens").unwrap();
+        let _ = fs::remove_dir_all(&cache);
+        assert_eq!(model_home(Some(&data), Some(&cache)), Some(cache.clone()));
+        assert!(
+            !data.join("asr").exists(),
+            "moved out of the backed-up directory"
+        );
+        assert!(Asr::new(Some(&cache)).status().installed);
+
+        // One already in the cache is not overwritten by an older copy — and the
+        // older copy goes, since it is up to 240 MB of the same thing in the backup.
+        fs::create_dir_all(data.join("asr")).unwrap();
+        fs::write(data.join("asr").join("stale"), b"old").unwrap();
+        assert_eq!(model_home(Some(&data), Some(&cache)), Some(cache.clone()));
+        assert!(Asr::new(Some(&cache)).status().installed);
+        assert!(
+            !data.join("asr").exists(),
+            "a complete install in the cache makes the backed-up copy redundant"
+        );
+
+        // But not when what the cache holds is not an install: then the old copy
+        // may be the only working one, and it stays.
+        fs::remove_file(cache.join("asr").join(MODEL.stem).join(MODEL_FILE)).unwrap();
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join(MODEL_FILE), b"model").unwrap();
+        assert_eq!(model_home(Some(&data), Some(&cache)), Some(cache.clone()));
+        assert!(old.join(MODEL_FILE).is_file());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_model_on_another_filesystem_is_copied_then_moved_into_place() {
+        // Issue #41: `rename` cannot cross filesystems, and a cache directory on
+        // another volume would otherwise leave the model in the backed-up data
+        // directory for good, with the move retried on every launch. The copy goes
+        // to a sibling first, so a copy cut short is never read as an install.
+        let base = std::env::temp_dir().join("hanzi-asr-exdev");
+        let _ = fs::remove_dir_all(&base);
+        let old = base.join("data").join("asr");
+        let new = base.join("cache").join("asr");
+        fs::create_dir_all(old.join(MODEL.stem)).unwrap();
+        fs::write(old.join(MODEL.stem).join(MODEL_FILE), b"model").unwrap();
+        fs::write(old.join(MODEL.stem).join(TOKENS_FILE), b"tokens").unwrap();
+        fs::create_dir_all(new.parent().unwrap()).unwrap();
+
+        let across_devices = |from: &Path, to: &Path| {
+            if from == old {
+                Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices))
+            } else {
+                fs::rename(from, to)
+            }
+        };
+        move_model(&old, &new, &across_devices).unwrap();
+        assert!(!old.exists(), "the backed-up copy is gone");
+        assert_eq!(
+            fs::read(new.join(MODEL.stem).join(MODEL_FILE)).unwrap(),
+            b"model"
+        );
+        assert_eq!(
+            fs::read(new.join(MODEL.stem).join(TOKENS_FILE)).unwrap(),
+            b"tokens"
+        );
+        let leftovers: Vec<_> = fs::read_dir(new.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            leftovers,
+            vec![std::ffi::OsString::from("asr")],
+            "no temporary left"
+        );
+
+        // Any other failure is reported and leaves both sides as they were.
+        fs::create_dir_all(&old).unwrap();
+        let refused = |_: &Path, _: &Path| Err(std::io::Error::other("no"));
+        let _ = fs::remove_dir_all(&new);
+        assert!(move_model(&old, &new, &refused).is_err());
+        assert!(old.is_dir() && !new.exists());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// A source that fails the way a library bug or a corrupt stream can: by
+    /// panicking on the install thread.
+    struct Panics;
+
+    impl Read for Panics {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            panic!("the decoder fell over");
+        }
+    }
+
+    #[test]
+    fn a_panic_on_the_install_thread_ends_the_download_as_a_failure() {
+        // Without this the panic unwound past the code that records the outcome,
+        // the state stayed "downloading" for the life of the process, and the
+        // screen polled — and showed Cancelling… — forever.
+        let directory = std::env::temp_dir().join("hanzi-asr-panic");
+        let _ = fs::remove_dir_all(&directory);
+        let asr = Asr::new(Some(&directory));
+        let root = asr.root.clone().unwrap();
+        let source = || -> Result<Box<dyn Read>, String> { Ok(Box::new(Panics)) };
+        let outcome = fetch_and_unpack_from(&root, &asr.install, &source);
+        let message = outcome.expect_err("a panic is a failed install");
+        assert!(message.contains("the decoder fell over"), "{message}");
+        assert!(
+            !root.join(".staging").exists(),
+            "and it is cleaned up like one"
+        );
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn the_free_space_check_only_advises_where_the_count_leaves_out_purgeable_space() {
+        // On Apple platforms `f_bavail` does not count what the system would purge
+        // to make room, so a phone that could fit the model can look full. There the
+        // shortfall is logged and the install goes ahead; elsewhere it is refused.
+        assert!(enforce_room(Some(1), false).is_err());
+        assert!(enforce_room(Some(1), true).is_ok());
+        assert!(enforce_room(Some(u64::MAX), false).is_ok());
+        assert!(enforce_room(None, false).is_ok());
+        assert_eq!(
+            ROOM_IS_ADVISORY,
+            cfg!(any(target_os = "ios", target_os = "macos"))
+        );
+    }
+
+    #[test]
+    fn the_model_is_not_removed_from_under_a_download() {
+        let directory = std::env::temp_dir().join("hanzi-asr-remove-busy");
+        let _ = fs::remove_dir_all(&directory);
+        let stem = directory.join("asr").join(MODEL.stem);
+        fs::create_dir_all(&stem).unwrap();
+        fs::write(stem.join(MODEL_FILE), b"model").unwrap();
+        fs::write(stem.join(TOKENS_FILE), b"tokens").unwrap();
+        let asr = Asr::new(Some(&directory));
+        hold_install(&asr).state = InstallState::Downloading;
+
+        let refused = asr.remove().expect_err("a download is running");
+        assert!(
+            refused.contains("Cancel"),
+            "it says what to do instead: {refused}"
+        );
+        assert!(stem.join(MODEL_FILE).is_file(), "nothing was deleted");
+        assert_eq!(hold_install(&asr).state, InstallState::Downloading);
+
+        hold_install(&asr).state = InstallState::Absent;
+        asr.remove().unwrap();
+        assert!(!stem.exists());
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn having_nowhere_to_keep_the_model_is_worded_for_either_app() {
+        // Tone Trainer keeps no study data, and its model lives in the cache
+        // directory, so a sentence about study data not being saved was wrong
+        // there.
+        let asr = Asr::new(None);
+        let detail = asr.status().detail;
+        let refused = asr.install().unwrap_err();
+        for text in [&detail, &refused] {
+            assert!(!text.contains("study data"), "{text}");
+            assert!(!text.contains("data directory"), "{text}");
+            assert!(text.contains("nowhere to keep the model"), "{text}");
+        }
     }
 }

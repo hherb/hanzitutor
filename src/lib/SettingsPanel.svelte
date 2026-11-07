@@ -37,6 +37,12 @@
   import { onMount } from "svelte";
   import { TONE_NAME } from "./transcript";
   import type { Tone } from "./tones.svelte";
+  import {
+    selectedVoice,
+    storedVoiceLabel,
+    voiceFellBack as fellBack,
+    voiceLabel,
+  } from "./voiceChoice";
 
   /**
    * The legend beside the switch: one character for each tone.
@@ -174,26 +180,20 @@
   }: Props = $props();
 
   /**
-   * The voice the dropdown shows.
-   *
-   * The stored name, which is what a choice *is* — so a name this machine does
-   * not have stays selected and the status line below explains why another voice
-   * is being heard. Showing `active` instead would silently rewrite the
-   * learner's choice to the fallback.
+   * The voice the dropdown shows: the stored choice — or, for a bare name an
+   * older build stored, the one entry it resolves to — so a voice this machine
+   * does not have stays selected and the status line below explains why
+   * another voice is being heard. See `selectedVoice`.
    */
-  const selected = $derived(settings.voice ?? "");
+  const selected = $derived(selectedVoice(settings.voice, voices));
 
   /**
-   * What will actually be spoken with.
+   * Whether the stored choice is not installed here, so another voice is heard.
    *
-   * `active` comes from the backend's resolution, so it accounts for the
-   * environment override and for a stored name that is not installed. When the
-   * two disagree the screen says so, because otherwise the learner would hear a
-   * voice other than the one named.
+   * Not `active !== settings.voice`: a choice is an identifier now, and
+   * `active` stayed a name to read. See `voiceFellBack`.
    */
-  const voiceFellBack = $derived(
-    settings.voice !== null && voices.active !== null && voices.active !== settings.voice,
-  );
+  const voiceFellBack = $derived(fellBack(settings.voice, voices));
 
   /** True while a test utterance is in flight. */
   let speaking = $state(false);
@@ -605,8 +605,10 @@
       <div class="what">
         <span class="name" id="set-board">Board size</span>
         <span class="why">
-          How much of the space beside the feedback the board takes. It is always
-          square, and it always fits the window whatever this is set to.
+          How much of the space beside the feedback the board takes: Large fills
+          it, Normal leaves a margin, and Compact leaves the most room for
+          everything else. It is always square, and it always fits the window
+          whatever this is set to.
         </span>
       </div>
       <div class="how">
@@ -702,17 +704,15 @@
               aria-labelledby="set-voice"
               value={selected}
               onchange={(event) => {
-                const name = event.currentTarget.value;
+                const id = event.currentTarget.value;
                 // The empty option is the automatic choice, and the backend
                 // takes `""` for exactly that.
-                onChange({ voice: name });
+                onChange({ voice: id });
               }}
             >
               <option value="">Automatic</option>
-              {#each voices.available as voice (voice.name)}
-                <option value={voice.name}>
-                  {voice.name} — {voice.locale}{voice.network ? " · needs internet" : ""}
-                </option>
+              {#each voices.available as voice (voice.id)}
+                <option value={voice.id}>{voiceLabel(voice, voices.available)}</option>
               {/each}
             </select>
             <button
@@ -727,11 +727,16 @@
             </button>
           </div>
           <span class="status">
-            {#if voiceFellBack}
-              <strong>{settings.voice}</strong> is not installed on this machine,
-              so <strong>{voices.active}</strong> is being used instead rather
-              than leaving pronunciation silent. Turning the app off and on does
-              not change that — it is what the name resolves to here.
+            {#if voiceFellBack && voices.elsewhere !== null}
+              <strong>{voices.elsewhere}</strong> isn't available as a Chinese
+              voice, so <strong>{voices.active}</strong> is being used instead
+              rather than reading Chinese in another language.
+            {:else if voiceFellBack}
+              <strong>{storedVoiceLabel(settings.voice ?? "")}</strong> is not
+              installed on this machine, so <strong>{voices.active}</strong> is
+              being used instead rather than leaving pronunciation silent.
+              Turning the app off and on does not change that — it is what the
+              name resolves to here.
             {:else if settings.voice === null && voices.active !== null}
               Automatic: <strong>{voices.active}</strong> is the best mainland
               Mandarin voice installed here.

@@ -83,10 +83,12 @@ pub struct SkippedShard {
 ///
 /// One guard, because a view that leaves files out must never be the reason one is
 /// overwritten: a write to a file that was left out is **not made**, unless it is
-/// one of this device's own documents (or a repair, through [`Screened::mend`]). Nothing in a sync writes into another device's
-/// directory today, so this costs nothing; it is here so that a later change that
-/// does — publishing attempts on a peer's behalf, say — cannot replace a file it
-/// could not read with the part of it this device happens to know. A write it
+/// one of this device's own documents (or a repair, through [`Screened::mend`]). A sync does write into another device's
+/// directory — `publish_against` in [`crate::local`] publishes attempts the store
+/// lacks under the device that made them — and this is what keeps such a write
+/// from replacing a file it could not read with the part of it this device happens
+/// to know. (That publish also skips every device this view left out whole: see
+/// [`Screened::left_out_logs`].) A write it
 /// refuses is recorded ([`Screened::withheld`]) rather than passed off as done.
 ///
 /// A file in this device's **own** directory that was left out is the opposite
@@ -318,6 +320,18 @@ impl<'a> Screened<'a> {
             .iter()
             .filter(|s| left_out.contains(&s.name))
             .cloned()
+            .collect()
+    }
+
+    /// The other devices whose attempt shards were all left out, because one of
+    /// them could not be read — see [`Screened::read_with`]. The store holds their
+    /// attempts; this view just does not show them, so a publish must not take
+    /// their absence for the store lacking them.
+    pub(crate) fn left_out_logs(&self) -> BTreeSet<String> {
+        self.skipped
+            .iter()
+            .filter(|s| s.kind == ShardKind::Attempts && !s.own)
+            .map(|s| s.device_id.clone())
             .collect()
     }
 

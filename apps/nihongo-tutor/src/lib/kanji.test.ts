@@ -10,17 +10,22 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { afterGrade } from "./board";
 import {
+  anchorAfter,
   findFamilies,
   gradeTabs,
+  isHomePlace,
   lessonHolding,
   lessonsIn,
+  moveTo,
   neighbour,
   positionIn,
   sortFamilies,
   spokenReading,
+  wayBack,
 } from "./kanji";
-import type { KanjiLessonView, RadicalFamilyView } from "./types";
+import type { KanjiLessonView, KanjiPick, RadicalFamilyView } from "./types";
 
 function lesson(
   key: string,
@@ -114,6 +119,104 @@ describe("stepping through a lesson", () => {
     expect(positionIn(ten, "中")).toBe(0);
     // And a caller that asks for no movement gets none.
     expect(neighbour(ten, "月", 0)).toBeNull();
+  });
+});
+
+/**
+ * Issue #34: a component chip or a radical-family member puts a character on the
+ * board that the lesson does not hold. 林 is 3 of 10 here and 木 is not in the
+ * lesson at all — the shape of the bug report, where the board then said `0 / 10`
+ * with both arrows dead and grading 木 offered `Finish` and left the lesson.
+ */
+describe("a detour off the lesson", () => {
+  const lesson10 = lesson("g1-2", 1, "一二林四五六七八九十");
+  const kanji = (ch: string): KanjiPick => ({ kind: "kanji", ch });
+  const radical = (number: number): KanjiPick => ({ kind: "radical", number });
+  const start = kanji("一");
+
+  it("counts only the lesson's own characters as the lesson", () => {
+    expect(isHomePlace(lesson10, start, kanji("林"))).toBe(true);
+    expect(isHomePlace(lesson10, start, kanji("木"))).toBe(false);
+    // A radical head form is never one of a lesson's ten.
+    expect(isHomePlace(lesson10, start, radical(75))).toBe(false);
+  });
+
+  it("treats the place a lessonless stage opened on as its home", () => {
+    // A radical opens with no lesson: the radical itself is where a detour from it
+    // comes back to, and a member tapped from it is the detour.
+    expect(isHomePlace(null, radical(75), radical(75))).toBe(true);
+    expect(isHomePlace(null, radical(75), kanji("林"))).toBe(false);
+    expect(isHomePlace(null, radical(75), radical(9))).toBe(false);
+    expect(isHomePlace(null, kanji("鳩"), kanji("鳩"))).toBe(true);
+  });
+
+  it("remembers the lesson character a detour left from", () => {
+    // Leaving 林 for 木: 林 is what to come back to.
+    expect(anchorAfter(lesson10, start, kanji("林"), start)).toEqual(kanji("林"));
+    // And leaving 木 for one of *its* parts keeps 林, not 木.
+    expect(anchorAfter(lesson10, start, kanji("木"), kanji("林"))).toEqual(kanji("林"));
+  });
+
+  it("offers the way back only while the board is off the lesson", () => {
+    expect(wayBack(lesson10, start, kanji("木"), kanji("林"))).toEqual(kanji("林"));
+    // Back on the lesson, the arrows are the way on and there is nothing to return to.
+    expect(wayBack(lesson10, start, kanji("林"), kanji("林"))).toBeNull();
+    expect(wayBack(lesson10, start, kanji("四"), kanji("林"))).toBeNull();
+  });
+
+  it("never offers a way back to somewhere that is not home", () => {
+    // Defensive: an anchor the lesson does not hold would be a second detour.
+    expect(wayBack(lesson10, start, kanji("木"), kanji("森"))).toBeNull();
+  });
+
+  it("brings a radical's member back to the radical", () => {
+    expect(wayBack(null, radical(75), kanji("林"), radical(75))).toEqual(radical(75));
+    expect(wayBack(null, radical(75), radical(75), radical(75))).toBeNull();
+  });
+
+  // The stage asks `afterGrade(graded, at > 0, hasNext)`; it used to pass
+  // `lesson !== null`, and a graded 木 — no next inside the lesson — read `finish`.
+  const inLesson = (ch: string) => positionIn(lesson10, ch) > 0;
+  const hasNext = (ch: string) => neighbour(lesson10, ch, 1) !== null;
+
+  it("does not finish the lesson after grading a character outside it", () => {
+    expect(afterGrade(true, true, hasNext("木"))).toBe("finish"); // the old call
+    expect(afterGrade(true, inLesson("木"), hasNext("木"))).toBe("grade");
+    // Graded there, the way on is back, which only a detour has.
+    expect(wayBack(lesson10, start, kanji("木"), kanji("林"))).toEqual(kanji("林"));
+  });
+
+  /** `go()`'s rule, folded over a sequence of taps from where the stage opened. */
+  const walk = (from: KanjiPick, ...taps: KanjiPick[]) =>
+    taps.reduce((trail, tap) => moveTo(lesson10, start, trail, tap), { here: from, anchor: start });
+
+  it("comes back into the lesson through a component that the lesson holds", () => {
+    // 林 → 木 (a component, off the lesson) → 十 (木's own component, and the
+    // lesson's tenth): 十 is home again, so the arrows and `10 / 10` are back,
+    // and grading it is the lesson's own Finish.
+    const trail = walk(kanji("林"), kanji("木"), kanji("十"));
+    expect(trail.here).toEqual(kanji("十"));
+    expect(wayBack(lesson10, start, trail.here, trail.anchor)).toBeNull();
+    expect(afterGrade(true, inLesson("十"), hasNext("十"))).toBe("finish");
+    // And leaving 十 now would come back to 十, not to 林.
+    expect(walk(kanji("林"), kanji("木"), kanji("十"), kanji("木")).anchor).toEqual(kanji("十"));
+  });
+
+  it("brings a chain of detours back to where it left the lesson", () => {
+    // 林 → 木 → 丨 → Back: back to 林, and nothing more to come back from.
+    const away = walk(kanji("林"), kanji("木"), kanji("丨"));
+    const back = wayBack(lesson10, start, away.here, away.anchor);
+    expect(back).toEqual(kanji("林"));
+    const home = moveTo(lesson10, start, away, back!);
+    expect(home.here).toEqual(kanji("林"));
+    expect(wayBack(lesson10, start, home.here, home.anchor)).toBeNull();
+    expect(positionIn(lesson10, "林")).toBe(3);
+  });
+
+  it("leaves the lesson's own Next and Finish alone", () => {
+    expect(afterGrade(true, inLesson("林"), hasNext("林"))).toBe("next");
+    expect(afterGrade(true, inLesson("十"), hasNext("十"))).toBe("finish");
+    expect(afterGrade(false, inLesson("林"), hasNext("林"))).toBe("grade");
   });
 });
 

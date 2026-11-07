@@ -633,3 +633,118 @@ fn a_group_imported_from_the_old_list_is_published_with_a_stamp_and_a_device() {
     );
     finish(&[&dir]);
 }
+
+// ---- a collapse meeting an edit made while the sync was in flight -----------
+
+/// A device holding two live copies of 学习 in HSK1 — its own, under `HIGH`, and a
+/// peer's under `LOW` — the way a first sync finds them before it collapses them.
+/// Returns the local id of each, `(low, high)`.
+fn two_copies(db: &Db) -> (u64, u64) {
+    let high = add(db, "学习", "to study", "HSK1");
+    rename_uuid(db, high, HIGH);
+    set_entry_stamp(db, high, "2026-01-01T00:00:00Z");
+    let peer = synced(LOW, "学习", "to study", "2026-01-01T00:00:00Z", "peer");
+    db.apply_vocab_view(&[peer], &[]).unwrap();
+    let low = entries(db)
+        .iter()
+        .find(|e| e.text == "学习" && e.id != high)
+        .expect("the peer's copy arrived")
+        .id;
+    (low, high)
+}
+
+/// The merge a sync would compute from this device's view alone: the two copies
+/// collapse onto `LOW`, and `HIGH` becomes a tombstone.
+fn collapsed(db: &Db) -> Vec<SyncedEntry> {
+    let (view, groups) = db.vocab_view().unwrap();
+    let (merged, _) = merge_vocab(view, groups, Vec::new(), Vec::new());
+    assert!(merged.iter().any(|e| e.uuid == HIGH && e.deleted));
+    merged
+}
+
+#[test]
+fn a_duplicate_edited_while_the_merge_was_in_flight_keeps_its_edit_and_its_practice() {
+    let (dir, db) = device("inflight-dup");
+    let (_, high) = two_copies(&db);
+    let merged = collapsed(&db);
+
+    // While the sync is at the network, the learner edits and practises the copy
+    // the merge is about to remove.
+    {
+        let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+        vocab
+            .update_entry(high, "xuéxí", "to learn", Some("HSK1"))
+            .unwrap();
+        vocab.record_attempt(high, 70.0).unwrap();
+        vocab.save().unwrap();
+    }
+    db.apply_vocab_view(&merged, &[]).unwrap();
+
+    // The edit is newer than the collapse, so it stands, and the practice stays
+    // on the entry the learner practised rather than moving to one that was never
+    // removed from under it.
+    let now = entries(&db);
+    let kept = now.iter().find(|e| e.id == high).expect("the edit kept it");
+    assert_eq!(kept.meaning, "to learn");
+    assert_eq!(kept.attempts, 1, "{now:?}");
+    let survivor = now.iter().find(|e| e.id != high).unwrap();
+    assert_eq!(survivor.attempts, 0, "nothing was moved onto it: {now:?}");
+
+    finish(&[&dir]);
+}
+
+#[test]
+fn a_collapse_onto_a_survivor_renamed_while_the_merge_was_in_flight_waits() {
+    let (dir, db) = device("inflight-survivor");
+    let (low, high) = two_copies(&db);
+    let merged = collapsed(&db);
+
+    // The learner retypes the survivor as another word before the merge lands.
+    // The two copies are no longer the same word, so nothing should be collapsed.
+    {
+        let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+        let entry = vocab.entries().iter().find(|e| e.id == low).unwrap().clone();
+        vocab.remove_entry(low).unwrap();
+        vocab
+            .add_entry("学校", &entry.pinyin, "school", Some("HSK1"))
+            .unwrap();
+        vocab.save().unwrap();
+    }
+    db.apply_vocab_view(&merged, &[]).unwrap();
+
+    let texts: Vec<String> = entries(&db).iter().map(|e| e.text.clone()).collect();
+    assert!(
+        entries(&db).iter().any(|e| e.id == high && e.text == "学习"),
+        "the word is not collapsed onto a survivor that is gone: {texts:?}"
+    );
+
+    finish(&[&dir]);
+}
+
+#[test]
+fn a_publish_does_not_republish_a_device_the_sync_left_out() {
+    let (dir_a, db_a) = device("leftout-a");
+    let shared = scratch("leftout-store");
+    let remote = FolderStore::open(&shared).unwrap();
+
+    // A peer publishes one attempt, and this device pulls it.
+    let first = "devices/peer/attempts/000000000001.jsonl";
+    let line = "{\"seq\":1,\"ch\":\"好\",\"at\":\"2026-09-19T09:00:00Z\",\"score\":80,\"rating\":\"good\"}\n";
+    plant(&remote, first, line.as_bytes());
+    assert_eq!(sync(&db_a, &remote).unwrap().pulled, 1);
+
+    // Then one of the peer's later shards arrives damaged, so the sync leaves the
+    // whole peer out. The store still holds the attempt this device pulled: it is
+    // not this device's to publish again, and no write is attempted over the file.
+    plant(
+        &remote,
+        "devices/peer/attempts/000000000002.jsonl",
+        b"{not json\n",
+    );
+    let summary = sync(&db_a, &remote).unwrap();
+    assert_eq!(summary.published, 0);
+    assert!(summary.withheld.is_empty(), "{:?}", summary.withheld);
+    assert_eq!(fs::read(shared.join(first)).unwrap(), line.as_bytes());
+
+    finish(&[&dir_a, &shared]);
+}

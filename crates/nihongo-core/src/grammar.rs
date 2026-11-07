@@ -583,8 +583,10 @@ pub fn strip_level_references(note: &str) -> String {
             }
         }
         // `at N4` -> `elsewhere`: "covered at N3" is the one construction where
-        // removing the label alone would leave a sentence with a hole in it.
-        if chars[i..].starts_with(&['a', 't', ' ']) {
+        // removing the label alone would leave a sentence with a hole in it. The
+        // `at` has to be a word of its own, or the end of "what N2" is read as one.
+        let starts_word = i == 0 || !chars[i - 1].is_alphanumeric();
+        if starts_word && chars[i..].starts_with(&['a', 't', ' ']) {
             if let Some(level) = level_at(&chars, i + 3) {
                 if level == i + 5 {
                     out.push_str("elsewhere");
@@ -796,6 +798,16 @@ mod tests {
         );
         // What a screen would never show again.
         assert!(!strip_level_references("covered at N3, see N1 〜すら").contains("N3"));
+        // `at` is a word, not two letters: the end of "what" is not "covered at",
+        // and rewriting it made "whelsewhere".
+        assert_eq!(
+            strip_level_references("This is what N2 calls it."),
+            "This is what calls it."
+        );
+        assert_eq!(
+            strip_level_references("A cat N4 would know."),
+            "A cat would know."
+        );
     }
 
     #[test]

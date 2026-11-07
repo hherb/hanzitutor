@@ -257,7 +257,7 @@ fn an_older_builds_one_line_shards_are_left_and_the_last_of_them_grows() {
             .unwrap();
         remote
             .put(
-                &hanzi_sync::attempts_shard_name(a.device_id(), seq),
+                &hanzi_sync::attempts_shard_name(&a.device_id(), seq),
                 format!("{line}\n").as_bytes(),
             )
             .unwrap();
@@ -435,7 +435,7 @@ fn a_shard_whose_lines_changed_is_rewritten_even_after_its_old_version_was_folde
 
     let error = sync(&b, &remote).unwrap_err();
     assert!(
-        matches!(&error, SyncError::Rewritten { device_id, seq: 1 } if device_id == a.device_id()),
+        matches!(&error, SyncError::Rewritten { device_id, seq: 1 } if *device_id == a.device_id()),
         "{error:?}"
     );
     // And a version that grew *and* changed a line is no better.
@@ -525,12 +525,14 @@ fn a_sync_retried_after_its_watermark_was_lost_writes_nothing_twice() {
 }
 
 #[test]
-fn a_copy_of_this_database_that_is_behind_the_store_refuses_to_publish() {
+fn a_copy_of_this_database_that_is_behind_the_store_takes_a_new_name_and_appends_to_nothing_of_the_original() {
     // Two installs with one identity, outside the moment they race: the copy's
-    // last shard holds attempts under its name that its log does not. Starting a
-    // new shard would publish different attempts under the same numbers, and every
-    // device would fail with `Rewritten` for good; so the copy says what it is and
-    // writes nothing.
+    // last shard holds attempts under its name that its log does not. Appending to
+    // it, or starting a new shard, would publish different attempts under the same
+    // numbers, and every device would fail with `Rewritten` for good. Before #47
+    // the copy refused (`SharedIdentity`); with #47's `settle_identity` it takes a
+    // new name first, so the open shard it then appends to is its own, and the
+    // original's files are left exactly as they were.
     let (_dir_a, a) = device("copy-a");
     let shared = scratch("copy-store");
     let remote = Counting::open(&shared);
@@ -554,15 +556,14 @@ fn a_copy_of_this_database_that_is_behind_the_store_refuses_to_publish() {
     let bytes = remote.get(&shards[0]).unwrap();
 
     practise(&b, 5, 1);
-    let error = sync(&b, &remote).unwrap_err();
-    assert!(
-        matches!(&error, SyncError::SharedIdentity { device_id, seq: 2 } if device_id == a.device_id()),
-        "{error:?}"
-    );
-    assert!(error.to_string().contains("copy"), "{error}");
-    assert_eq!(own_shards(&remote, &a), shards, "nothing new");
+    let summary = sync(&b, &remote).expect("the copy renames rather than refuses");
+    assert_ne!(b.device_id(), a.device_id(), "the copy took a new name");
+    assert_eq!(summary.published, 1, "{summary:?}");
+    assert_eq!(own_shards(&remote, &a), shards, "nothing new under the old name");
     assert_eq!(remote.get(&shards[0]).unwrap(), bytes, "nothing changed");
+    assert_eq!(own_shards(&remote, &b).len(), 1, "its own attempt, under its own name");
     sync(&a, &remote).unwrap();
+    assert_eq!(read_attempts(&remote).unwrap().len(), 3, "every attempt once");
     drop(b);
 }
 
