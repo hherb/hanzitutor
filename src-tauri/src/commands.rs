@@ -18,6 +18,7 @@ use tauri_plugin_opener::OpenerExt;
 use hanzi_hearing::AsrStatus;
 use crate::say::SayStatus;
 use hanzi_voice::MicrophoneStatus;
+use crate::chosen_file::{ChosenFile, PickedFile};
 use crate::licences::{AppInfo, LicenceNotice};
 use crate::state::{AppState, BackupOutcome, ProgressState, VocabState};
 use crate::sync::{AutoSync, SyncService, SyncView};
@@ -1113,7 +1114,7 @@ pub fn vocab_record_attempt(
     Ok(committed(&state, vocab))
 }
 
-/// Ask for a path to write to, with the dialog owned here rather than by the
+/// Ask for a file to write to, with the dialog owned here rather than by the
 /// caller.
 ///
 /// **The path must never cross the IPC boundary as a free-form string.** These
@@ -1123,17 +1124,20 @@ pub fn vocab_record_attempt(
 /// command trusted whatever arrived instead of the learner's choice. Since these
 /// commands also *overwrite*, that included the study database itself and the
 /// shell profiles of anything that could call the IPC. Showing the dialog here
-/// removes the question: the only path written to is one the learner chose in a
+/// removes the question: the only file written to is one the learner chose in a
 /// native dialog a moment ago, and the frontend never gets to name a file.
 ///
-/// The save dialog's own answer is already restricted to a real path on desktop
-/// (`FilePath::Url` is a `file://`/`content://` URI and is refused here).
-fn ask_where_to_save(
-    app: &tauri::AppHandle,
+/// The dialog's answer is kept as it came — a path on desktop, a `content://`
+/// URI on Android — and opened through [`PickedFile`], never turned into a path:
+/// `FilePath::into_path` refuses a `content://` URI, and doing that here is what
+/// once made every export and restore fail on Android. See
+/// [`crate::chosen_file`].
+fn ask_where_to_save<'a>(
+    app: &'a tauri::AppHandle,
     title: &str,
     file_name: &str,
     filter: (&str, &[&str]),
-) -> Result<Option<std::path::PathBuf>, String> {
+) -> Option<PickedFile<'a, tauri::Wry>> {
     use tauri_plugin_dialog::DialogExt;
     let chosen = app
         .dialog()
@@ -1145,15 +1149,26 @@ fn ask_where_to_save(
         // async command on the async runtime rather than the main thread, and
         // the plugin marshals the dialog onto the main thread itself. A
         // synchronous command would deadlock here — the plugin's own docs say so.
-        .blocking_save_file();
-    match chosen {
-        None => Ok(None),
-        Some(path) => path
-            .simplified()
-            .into_path()
-            .map(Some)
-            .map_err(|e| format!("that file cannot be written: {e}")),
-    }
+        .blocking_save_file()?;
+    Some(PickedFile::from_dialog(app, chosen))
+}
+
+/// Ask for a file to read, the open-dialog half of [`ask_where_to_save`], whose
+/// reasoning — no path over IPC, blocking because the command is `async`, the
+/// answer opened as it came — applies here unchanged.
+fn ask_which_to_open<'a>(
+    app: &'a tauri::AppHandle,
+    title: &str,
+    filter: (&str, &[&str]),
+) -> Option<PickedFile<'a, tauri::Wry>> {
+    use tauri_plugin_dialog::DialogExt;
+    let chosen = app
+        .dialog()
+        .file()
+        .set_title(title)
+        .add_filter(filter.0, filter.1)
+        .blocking_pick_file()?;
+    Some(PickedFile::from_dialog(app, chosen))
 }
 
 /// Write the list to a file the learner chooses, as `format`: `"json"`
@@ -1184,15 +1199,14 @@ pub async fn vocab_export(
 
     let title = format!("Export vocabulary as {label}");
     let file_name = format!("hanzi-vocabulary.{extension}");
-    let Some(path) = ask_where_to_save(&app, &title, &file_name, (label, &[extension]))? else {
+    let Some(file) = ask_where_to_save(&app, &title, &file_name, (label, &[extension])) else {
         return Ok(None);
     };
 
-    std::fs::write(&path, contents)
-        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    file.write(contents.as_bytes())?;
     Ok(Some(format!(
         "Exported {count} entries as {label} to {}",
-        path.display()
+        file.describe()
     )))
 }
 
@@ -1207,29 +1221,15 @@ pub async fn vocab_import(
     state: State<'_, AppState>,
     merge: bool,
 ) -> Result<Option<VocabOutcome>, String> {
-    use tauri_plugin_dialog::DialogExt;
-    // Blocking on an `async` command, and so off the main thread — see
-    // [`ask_where_to_save`], whose reasoning applies here unchanged.
-    let chosen = app
-        .dialog()
-        .file()
-        .set_title(if merge {
-            "Add to your list"
-        } else {
-            "Replace your list"
-        })
-        .add_filter("JSON", &["json"])
-        .blocking_pick_file();
-    let Some(chosen) = chosen else {
+    let title = if merge {
+        "Add to your list"
+    } else {
+        "Replace your list"
+    };
+    let Some(file) = ask_which_to_open(&app, title, ("JSON", &["json"])) else {
         return Ok(None);
     };
-    let path = chosen
-        .simplified()
-        .into_path()
-        .map_err(|e| format!("that file cannot be read: {e}"))?;
-
-    let json = std::fs::read_to_string(&path)
-        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let json = file.read_to_string()?;
 
     // The other half of the wrong-file guard: a backup holds a list *and* a log,
     // and this import takes a list on its own. Saying which screen wants the file
@@ -1335,10 +1335,10 @@ pub async fn export_practice_log(
     };
     let title = format!("Export your practice log as {label}");
     let file_name = format!("hanzi-practice-log.{format}");
-    let Some(path) = ask_where_to_save(&app, &title, &file_name, (label, &[&format]))? else {
+    let Some(file) = ask_where_to_save(&app, &title, &file_name, (label, &[&format])) else {
         return Ok(None);
     };
-    state.export_practice_log(&path, &format).map(Some)
+    state.export_practice_log(&file, &format).map(Some)
 }
 
 /// Write everything the learner has made — their list and their log — to one file.
@@ -1357,10 +1357,10 @@ pub async fn backup_export(
 ) -> Result<Option<String>, String> {
     let title = "Back up your vocabulary and your practice log";
     let file_name = "hanzi-tutor-backup.json";
-    let Some(path) = ask_where_to_save(&app, title, file_name, ("Backup", &["json"]))? else {
+    let Some(file) = ask_where_to_save(&app, title, file_name, ("Backup", &["json"])) else {
         return Ok(None);
     };
-    state.export_backup(&path).map(Some)
+    state.export_backup(&file).map(Some)
 }
 
 /// Read a backup back in, adding it to this device.
@@ -1379,27 +1379,15 @@ pub async fn backup_import(
     state: State<'_, AppState>,
     merge: bool,
 ) -> Result<Option<BackupOutcome>, String> {
-    use tauri_plugin_dialog::DialogExt;
-    // Blocking on an `async` command, and so off the main thread — see
-    // [`ask_where_to_save`], whose reasoning applies here unchanged.
-    let chosen = app
-        .dialog()
-        .file()
-        .set_title(if merge {
-            "Add a backup to this device"
-        } else {
-            "Replace your vocabulary list from a backup"
-        })
-        .add_filter("Backup", &["json"])
-        .blocking_pick_file();
-    let Some(chosen) = chosen else {
+    let title = if merge {
+        "Add a backup to this device"
+    } else {
+        "Replace your vocabulary list from a backup"
+    };
+    let Some(file) = ask_which_to_open(&app, title, ("Backup", &["json"])) else {
         return Ok(None);
     };
-    let path = chosen
-        .simplified()
-        .into_path()
-        .map_err(|e| format!("that file cannot be read: {e}"))?;
-    state.import_backup(&path, merge).map(Some)
+    state.import_backup(&file, merge).map(Some)
 }
 
 /// What is due for review now, most overdue first, from the course and the

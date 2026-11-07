@@ -1001,8 +1001,9 @@ after each item) both do this now. The shape is the rule, not either file.
 36. **A file path never crosses the IPC boundary as a value the frontend chose.**
     `vocab_export`, `vocab_import`, `export_practice_log`, `backup_export` and
     `backup_import` take no `path`: each
-    opens its own dialog with `tauri-plugin-dialog` and does the I/O with the
-    path the learner picked. They used to take `path: String` and hand it to
+    opens its own dialog with `tauri-plugin-dialog` and does the I/O on the
+    file the learner picked, through `tauri-plugin-fs` (`chosen_file.rs`), so a
+    `content://` URI from the Android dialog works as well as a path. They used to take `path: String` and hand it to
     `std::fs`, which made every one of them a "write anywhere the process can
     write" primitive — the interface *did* use the dialog, but the command
     trusted whatever string arrived, so anything that could call the IPC could
