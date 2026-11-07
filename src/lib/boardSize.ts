@@ -29,9 +29,17 @@ export const BOARD_FRACTIONS: Readonly<Record<BoardSize, number>> = {
  *
  * The value comes from a settings file, so a name this build does not know — one
  * written by a newer version, or by hand — is drawn at the default size rather
- * than at `NaN`.
+ * than at `NaN`. A `switch` rather than a keyed lookup, so that an inherited name
+ * such as `toString` cannot be read as a size, without `Object.hasOwn`: Safari
+ * before 15.4 does not have it, and the app supports macOS 12.0 and iOS 15.0.
  */
 export function boardFractionOf(size: BoardSize | null | undefined): number {
-  if (size != null && Object.hasOwn(BOARD_FRACTIONS, size)) return BOARD_FRACTIONS[size];
-  return BOARD_FRACTIONS.normal;
+  switch (size) {
+    case "compact":
+      return BOARD_FRACTIONS.compact;
+    case "large":
+      return BOARD_FRACTIONS.large;
+    default:
+      return BOARD_FRACTIONS.normal;
+  }
 }

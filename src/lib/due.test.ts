@@ -70,7 +70,9 @@ describe("dueLabel", () => {
 /**
  * Across a daylight-saving change the day is 23 or 25 hours long, which is exactly
  * where a 24-hour window and a calendar disagree. Run in a zone that has one, and
- * put the zone back afterwards: Node re-reads `TZ` when it changes.
+ * put the zone back afterwards: Node re-reads `TZ` when it changes. The zone is
+ * the whole process's, which is why `vitest.config.ts` pins `pool: "forks"` —
+ * one process per test file, so this cannot reach another file's tests.
  */
 describe("dueLabel across a daylight-saving change", () => {
   beforeAll(() => {

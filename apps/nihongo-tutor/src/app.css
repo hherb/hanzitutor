@@ -63,6 +63,8 @@ body {
 main {
   max-width: 1180px;
   margin: 0 auto;
+  /* Focused only from script (see `tabindex` on it), so no ring round the page. */
+  outline: none;
   /* macOS hands the webview the whole window and draws the title bar over it, so
      the first line has to clear the traffic-light strip — which is why 20px left
      the top of the screen half-hidden behind it. `--safe-top` carries the mobile
@@ -127,6 +129,8 @@ main {
 }
 .error .dismiss {
   flex: none;
+  display: grid;
+  place-items: center;
   width: 32px;
   height: 32px;
   margin: -6px -8px -6px 0;
@@ -135,12 +139,23 @@ main {
   border-radius: 8px;
   background: none;
   color: inherit;
+  font: inherit;
   font-size: 1.2rem;
   line-height: 1;
   cursor: pointer;
 }
 .error .dismiss:hover {
+  /* A plain tint first, for a webview too old for `color-mix`. */
+  background: rgb(128 128 128 / 0.16);
   background: color-mix(in srgb, var(--bad) 14%, transparent);
+}
+/* Fingers, not a pointer: the same 44px target Hanzi Tutor's banner has. */
+@media (max-width: 760px) {
+  .error .dismiss {
+    width: 44px;
+    height: 44px;
+    margin: -12px -12px -12px 0;
+  }
 }
 .error .dismiss:focus-visible {
   outline: 2px solid currentColor;

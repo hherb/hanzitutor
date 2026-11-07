@@ -2284,7 +2284,11 @@ back.
   board-size preference (`--board-fraction`, which the canvas publishes) and says
   `--board-presized: 1`, so the canvas fills it instead of taking the fraction a
   second time; on the wide layout the canvas takes the fraction of its frame
-  itself. The fractions are in `src/lib/boardSize.ts`.
+  itself. The fractions are in `src/lib/boardSize.ts`. **The next release's
+  `NOTES` entry should say so:** before issue #33 Normal and Large were the same
+  size, and now Normal (the default) leaves a margin, so Large is the board's old
+  full size. It is not in an entry yet because the release it ships in has no
+  version number; an entry under `0.7.0` would be shown as 0.7.0's news.
 - **Loading a new `src` resets an audio element's `playbackRate`** to its
   `defaultPlaybackRate`. `audio.ts` sets both, or the Phrases speed slider is
   ignored for the first moments of every clip (issue #33).

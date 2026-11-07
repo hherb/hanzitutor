@@ -11,7 +11,7 @@
   import TonedPinyin from "./TonedPinyin.svelte";
   import TonedText from "./TonedText.svelte";
   import * as api from "./api";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
 
   /**
    * What each of the schedule's four states is called on a card, and what it means.
@@ -127,6 +127,13 @@
    * state: it is a guard, not something the interface renders.
    */
   let lastText = "";
+  /**
+   * Bumped when the draft is sent, so that a lookup still pending for it —
+   * Add pressed within the 200 ms delay — cannot fill the fields in while the
+   * save is in flight, which made a draft that was added look edited and kept
+   * it on the form (issue #33). A plain `let` for the same reason as `lastText`.
+   */
+  let lookupGeneration = 0;
 
   // ---- the fields themselves ----------------------------------------------
   /**
@@ -236,11 +243,13 @@
     lookupNote = null;
 
     let cancelled = false;
+    const generation = lookupGeneration;
     const timer = setTimeout(() => {
       void (async () => {
         const found = await lookup(candidate);
-        // A newer keystroke has already scheduled its own derivation.
-        if (cancelled || text.trim() !== candidate) return;
+        // A newer keystroke has already scheduled its own derivation, or the
+        // draft has been sent as it was.
+        if (cancelled || generation !== lookupGeneration || text.trim() !== candidate) return;
         hints = found.characters;
         if (!pinyinEdited) pinyin = found.pinyin;
         if (!meaningEdited) meaning = found.meaning;
@@ -287,6 +296,7 @@
       formError = "Enter a character or word.";
       return;
     }
+    lookupGeneration++;
     const sent = { editingId, text, pinyin, meaning, group };
     const saved =
       editingId !== null
@@ -318,6 +328,17 @@
     lookupNote = null;
     formError = null;
   }
+
+  /**
+   * The entry being edited has gone — removed from its own row, by a sync or by
+   * a group's entries being deleted — so the form is put back to an empty draft
+   * rather than left editing nothing with its text locked (issue #33).
+   */
+  $effect(() => {
+    if (editingId === null) return;
+    const id = editingId;
+    if (!view.entries.some((entry) => entry.id === id)) untrack(resetDraft);
+  });
 
   function practise() {
     if (entriesShown.length === 0) return;

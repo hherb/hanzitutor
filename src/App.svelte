@@ -13,6 +13,7 @@
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
   import { boardFractionOf } from "./lib/boardSize";
+  import { serialQueue } from "./lib/serialQueue";
   import ReadingList from "./lib/ReadingList.svelte";
   import PhrasesPanel from "./lib/PhrasesPanel.svelte";
   import RadicalsPanel from "./lib/RadicalsPanel.svelte";
@@ -495,6 +496,14 @@
   let vocabSelection = $state<string | null>(null);
   let statusMessage = $state<string | null>(null);
   let vocabBusy = $state(false);
+  /**
+   * Every vocabulary command, one at a time and in the order asked for: the
+   * list's own commands, the import and the export, and the attempts the board
+   * records. A command asked for while another runs waits its turn rather than
+   * being dropped (issue #33), and `vocabBusy` is true for as long as any is
+   * running or waiting.
+   */
+  const vocabQueue = serialQueue((busy) => (vocabBusy = busy));
   /** The result of the last practice-log export, shown on the settings screen. */
   let logMessage = $state<string | null>(null);
   let logBusy = $state(false);
@@ -1979,33 +1988,28 @@
    * looking like the entries were lost.
    *
    * Resolves `true` once the command has been applied and `false` when it was
-   * refused or could not run, so that a form can keep what was typed into it. One
-   * command runs at a time; one asked for while another is still running is not
-   * run, and the learner is told so rather than left to think it was (issue #33).
+   * refused or could not run, so that a form can keep what was typed into it
+   * (issue #33). Commands run one at a time through `vocabQueue`, so one asked
+   * for while another is running waits rather than being lost.
    */
-  async function withVocab(
+  function withVocab(
     action: () => Promise<VocabView>,
     note?: string,
     after?: (view: VocabView) => void,
   ): Promise<boolean> {
-    if (vocabBusy) {
-      error = "Your vocabulary list is busy with another request. Try again in a moment.";
-      return false;
-    }
-    vocabBusy = true;
-    error = null;
-    try {
-      const next = await action();
-      applyVocab(next);
-      if (note) statusMessage = note;
-      after?.(next);
-      return true;
-    } catch (cause) {
-      error = String(cause);
-      return false;
-    } finally {
-      vocabBusy = false;
-    }
+    return vocabQueue.run(async () => {
+      error = null;
+      try {
+        const next = await action();
+        applyVocab(next);
+        if (note) statusMessage = note;
+        after?.(next);
+        return true;
+      } catch (cause) {
+        error = String(cause);
+        return false;
+      }
+    });
   }
 
   function addToVocabulary(
@@ -2074,15 +2078,12 @@
       // The save dialog lives in the backend, so the command opens it and
       // writes the file in one step: a path never travels over IPC. `null`
       // means the learner closed the dialog, which is not a failure.
-      vocabBusy = true;
-      const message = await api.vocabExport(format);
+      const message = await vocabQueue.run(() => api.vocabExport(format));
       if (message === null) return;
       statusMessage = message;
       void api.log(message);
     } catch (cause) {
       error = `Export failed: ${cause}`;
-    } finally {
-      vocabBusy = false;
     }
   }
 
@@ -2112,17 +2113,18 @@
   async function importVocabulary(merge: boolean) {
     try {
       // Backend-owned open dialog: the import command both picks the file and
-      // reads it, so the frontend cannot name one.
-      vocabBusy = true;
-      const outcome = await api.vocabImport(merge);
+      // reads it, so the frontend cannot name one. The list is replaced inside
+      // the queue, so a command waiting behind the import sees the imported list.
+      const outcome = await vocabQueue.run(async () => {
+        const read = await api.vocabImport(merge);
+        if (read !== null) applyVocab(read.view);
+        return read;
+      });
       if (outcome === null) return;
-      applyVocab(outcome.view);
       statusMessage = outcome.message;
       void api.log(`vocabulary import: ${outcome.message}`);
     } catch (cause) {
       error = `Import failed: ${cause}`;
-    } finally {
-      vocabBusy = false;
     }
   }
 
@@ -2448,6 +2450,7 @@
     view = "course";
     goToCharacter(ch);
     characterMessage = null;
+    error = null;
   }
 
   /** One page of the character set; the panel owns the query and the debounce. */
@@ -2529,6 +2532,7 @@
     view = "radicals";
     statusMessage = null;
     characterMessage = null;
+    error = null;
   }
 
   /** Return to the course sequence. */
@@ -2778,7 +2782,9 @@
     />
   </div>
 
-  <main>
+  <!-- `tabindex="-1"`: focusable by the app but not a tab stop, so that focus has
+       somewhere to go when the error banner's × takes itself away. -->
+  <main tabindex="-1">
     <!-- Phone only: the way back to the navigation the sheet hides. -->
     <div class="topbar">
       <button
@@ -2805,14 +2811,19 @@
            as "Could not pronounce…" otherwise followed the learner everywhere,
            because only Check and the vocabulary commands ever cleared it (issue
            #33). Not on a timer — some of these have to be read to be acted on. -->
-      <p class="error" role="alert">
-        <span>{error}</span>
+      <p class="error">
+        <span role="alert">{error}</span>
         <button
           type="button"
           class="dismiss"
           aria-label="Dismiss this message"
           title="Dismiss"
-          onclick={() => (error = null)}><span aria-hidden="true">×</span></button
+          onclick={(event) => {
+            // The button is about to go, and focus with it would fall to the
+            // page itself; the screen it was on is the place to put it.
+            event.currentTarget.closest("main")?.focus({ preventScroll: true });
+            error = null;
+          }}><span aria-hidden="true">×</span></button
         >
       </p>
     {/if}
@@ -3528,6 +3539,8 @@
   main {
     flex: 1;
     min-width: 0;
+    /* Focused only from script (see `tabindex` on it), so no ring round the page. */
+    outline: none;
     display: flex;
     flex-direction: column;
     padding: 16px 20px 20px;
@@ -4378,6 +4391,12 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
+      /* Its own height, not the height `main` has left: `main` is the scroller
+         here, and a workspace pinned to the leftover height (the wide layout's
+         rule) spilt its content past its own box, so the end of the page lost
+         `main`'s bottom padding and the home-indicator inset with it. */
+      flex: none;
+      min-height: auto;
     }
     .stage {
       display: contents;
@@ -4396,6 +4415,10 @@
     }
     aside.feedback {
       order: 4;
+      /* Sticky is for the wide layout's side column. In one column, with the
+         workspace now as tall as its content, it would slide over the hint below
+         it on the way down. */
+      position: static;
     }
     .controls + .note,
     .hint {
