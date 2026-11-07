@@ -12,6 +12,8 @@
   import LessonSidebar from "./lib/LessonSidebar.svelte";
   import LicencesPanel from "./lib/LicencesPanel.svelte";
   import PracticeCanvas from "./lib/PracticeCanvas.svelte";
+  import { boardFractionOf } from "./lib/boardSize";
+  import { serialQueue } from "./lib/serialQueue";
   import ReadingList from "./lib/ReadingList.svelte";
   import PhrasesPanel from "./lib/PhrasesPanel.svelte";
   import RadicalsPanel from "./lib/RadicalsPanel.svelte";
@@ -254,20 +256,10 @@
 
   /**
    * How much of the room available the board takes, from the board-size
-   * preference.
-   *
-   * A share of the container rather than a pixel side: the board fits whatever
-   * window it is in, and the preference says how much of that fit to use, so a
-   * large board stays large on a big screen and a compact one stays usable on a
-   * small one.
-   *
-   * **This is the only place a board size becomes a number.** `BoardSize` in
-   * `hanzi-core` carries the name, not the fraction, precisely so that the value
-   * cannot exist in two places and drift; the same goes for the pace below.
+   * preference. The numbers live in `boardSize.ts`, the one place a board size
+   * becomes a number; the same rule holds for the pace below.
    */
-  const boardFraction = $derived(
-    settings.boardSize === "compact" ? 0.72 : 1,
-  );
+  const boardFraction = $derived(boardFractionOf(settings.boardSize));
 
   /**
    * The scale applied to the whole stroke-order timeline, from the pace
@@ -538,6 +530,14 @@
   let vocabSelection = $state<string | null>(null);
   let statusMessage = $state<string | null>(null);
   let vocabBusy = $state(false);
+  /**
+   * Every vocabulary command, one at a time and in the order asked for: the
+   * list's own commands, the import and the export, and the attempts the board
+   * records. A command asked for while another runs waits its turn rather than
+   * being dropped (issue #33), and `vocabBusy` is true for as long as any is
+   * running or waiting.
+   */
+  const vocabQueue = serialQueue((busy) => (vocabBusy = busy));
   /** The result of the last practice-log export, shown on the settings screen. */
   let logMessage = $state<string | null>(null);
   let logBusy = $state(false);
@@ -2140,25 +2140,30 @@
    * A failure is reported but never clears the list: the store refuses to save
    * over a file it could not read, and that must stay visible rather than
    * looking like the entries were lost.
+   *
+   * Resolves `true` once the command has been applied and `false` when it was
+   * refused or could not run, so that a form can keep what was typed into it
+   * (issue #33). Commands run one at a time through `vocabQueue`, so one asked
+   * for while another is running waits rather than being lost.
    */
-  async function withVocab(
+  function withVocab(
     action: () => Promise<VocabView>,
     note?: string,
     after?: (view: VocabView) => void,
-  ) {
-    if (vocabBusy) return;
-    vocabBusy = true;
-    error = null;
-    try {
-      const next = await action();
-      applyVocab(next);
-      if (note) statusMessage = note;
-      after?.(next);
-    } catch (cause) {
-      error = String(cause);
-    } finally {
-      vocabBusy = false;
-    }
+  ): Promise<boolean> {
+    return vocabQueue.run(async () => {
+      error = null;
+      try {
+        const next = await action();
+        applyVocab(next);
+        if (note) statusMessage = note;
+        after?.(next);
+        return true;
+      } catch (cause) {
+        error = String(cause);
+        return false;
+      }
+    });
   }
 
   function addToVocabulary(
@@ -2166,8 +2171,8 @@
     pinyin: string,
     meaning: string,
     group: string | null,
-  ) {
-    void withVocab(
+  ): Promise<boolean> {
+    return withVocab(
       () => api.vocabAdd(text, pinyin, meaning, group),
       `Added ${text} to your list`,
     );
@@ -2182,7 +2187,7 @@
   function addCurrentToVocabulary() {
     if (!character) return;
     const group = vocabSelection && vocabSelection !== "" ? vocabSelection : null;
-    addToVocabulary(
+    void addToVocabulary(
       character.ch,
       character.pinyin.join(" / "),
       character.definition,
@@ -2227,15 +2232,12 @@
       // The save dialog lives in the backend, so the command opens it and
       // writes the file in one step: a path never travels over IPC. `null`
       // means the learner closed the dialog, which is not a failure.
-      vocabBusy = true;
-      const message = await api.vocabExport(format);
+      const message = await vocabQueue.run(() => api.vocabExport(format));
       if (message === null) return;
       statusMessage = message;
       void api.log(message);
     } catch (cause) {
       error = `Export failed: ${cause}`;
-    } finally {
-      vocabBusy = false;
     }
   }
 
@@ -2265,17 +2267,18 @@
   async function importVocabulary(merge: boolean) {
     try {
       // Backend-owned open dialog: the import command both picks the file and
-      // reads it, so the frontend cannot name one.
-      vocabBusy = true;
-      const outcome = await api.vocabImport(merge);
+      // reads it, so the frontend cannot name one. The list is replaced inside
+      // the queue, so a command waiting behind the import sees the imported list.
+      const outcome = await vocabQueue.run(async () => {
+        const read = await api.vocabImport(merge);
+        if (read !== null) applyVocab(read.view);
+        return read;
+      });
       if (outcome === null) return;
-      applyVocab(outcome.view);
       statusMessage = outcome.message;
       void api.log(`vocabulary import: ${outcome.message}`);
     } catch (cause) {
       error = `Import failed: ${cause}`;
-    } finally {
-      vocabBusy = false;
     }
   }
 
@@ -2606,6 +2609,7 @@
     view = "course";
     goToCharacter(ch);
     characterMessage = null;
+    error = null;
   }
 
   /** One page of the character set; the panel owns the query and the debounce. */
@@ -2687,6 +2691,7 @@
     view = "radicals";
     statusMessage = null;
     characterMessage = null;
+    error = null;
   }
 
   /** Return to the course sequence. */
@@ -2786,6 +2791,8 @@
   function switchView(next: View) {
     if (next === view) return;
     view = next;
+    // An error belongs to the screen it happened on (issue #33).
+    error = null;
     statusMessage = null;
     wordMessage = null;
     characterMessage = null;
@@ -2843,6 +2850,7 @@
               : "vocabulary";
     leavePractice();
     view = target;
+    error = null;
     statusMessage = null;
     wordMessage = null;
     characterMessage = null;
@@ -2945,7 +2953,9 @@
     />
   </div>
 
-  <main>
+  <!-- `tabindex="-1"`: focusable by the app but not a tab stop, so that focus has
+       somewhere to go when the error banner's × takes itself away. -->
+  <main tabindex="-1">
     <!-- Phone only: the way back to the navigation the sheet hides. -->
     <div class="topbar">
       <button
@@ -2968,7 +2978,25 @@
     </div>
 
     {#if error}
-      <p class="error">{error}</p>
+      <!-- Dismissable, and cleared on the way to another screen: a one-off such
+           as "Could not pronounce…" otherwise followed the learner everywhere,
+           because only Check and the vocabulary commands ever cleared it (issue
+           #33). Not on a timer — some of these have to be read to be acted on. -->
+      <p class="error">
+        <span role="alert">{error}</span>
+        <button
+          type="button"
+          class="dismiss"
+          aria-label="Dismiss this message"
+          title="Dismiss"
+          onclick={(event) => {
+            // The button is about to go, and focus with it would fall to the
+            // page itself; the screen it was on is the place to put it.
+            event.currentTarget.closest("main")?.focus({ preventScroll: true });
+            error = null;
+          }}><span aria-hidden="true">×</span></button
+        >
+      </p>
     {/if}
 
     {#if syncNotice}
@@ -3012,7 +3040,7 @@
         lookup={lookupText}
         onAdd={addToVocabulary}
         onUpdate={(id, pinyin, meaning, group) =>
-          void withVocab(() => api.vocabUpdate(id, pinyin, meaning, group), "Saved")}
+          withVocab(() => api.vocabUpdate(id, pinyin, meaning, group), "Saved")}
         onRemove={(id) =>
           void withVocab(() => api.vocabRemove(id), "Removed from your list")}
         onAddGroup={(name) =>
@@ -3671,11 +3699,20 @@
     display: flex;
     height: 100vh;
     overflow: hidden;
+    /* Clear of the notch, the status bar, the home indicator and the rounded
+       corners on every side. The wide layout is what a landscape iPhone and an
+       iPad get, and with no inset here the sidebar sat under the notch (issue
+       #33). All four are zero on the desktop. The phone layout below pads its
+       own top and bottom, inside the scrolling column, so it keeps only the
+       sides from this. */
+    padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
   }
 
   main {
     flex: 1;
     min-width: 0;
+    /* Focused only from script (see `tabindex` on it), so no ring round the page. */
+    outline: none;
     display: flex;
     flex-direction: column;
     padding: 16px 20px 20px;
@@ -4263,6 +4300,38 @@
     background: #fef2f2;
     color: #991b1b;
     font-size: 0.84rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .error > span {
+    flex: 1;
+    min-width: 0;
+  }
+  /* A plain × at the end of the line, on a 32px target (44px on a phone, below). */
+  .error .dismiss {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    margin: -7px -8px -7px 0;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: 1.15rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .error .dismiss:hover {
+    background: #fee2e2;
+  }
+  .error .dismiss:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: -2px;
   }
 
   /* What the app is doing rather than what is wrong: a sync that started by itself
@@ -4353,6 +4422,8 @@
   @media (max-width: 760px) {
     .app {
       display: block;
+      padding-top: 0;
+      padding-bottom: 0;
     }
 
     main {
@@ -4453,6 +4524,8 @@
       width: min(86vw, 320px);
       padding-top: var(--safe-top);
       padding-bottom: var(--safe-bottom);
+      /* The sheet is fixed to the screen's edge, not inside `.app`'s padding. */
+      padding-left: var(--safe-left);
       background: var(--surface);
       box-shadow: 0 10px 40px rgb(15 23 42 / 0.3);
       transform: translateX(-102%);
@@ -4490,6 +4563,12 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
+      /* Its own height, not the height `main` has left: `main` is the scroller
+         here, and a workspace pinned to the leftover height (the wide layout's
+         rule) spilt its content past its own box, so the end of the page lost
+         `main`'s bottom padding and the home-indicator inset with it. */
+      flex: none;
+      min-height: auto;
     }
     .stage {
       display: contents;
@@ -4508,18 +4587,30 @@
     }
     aside.feedback {
       order: 4;
+      /* Sticky is for the wide layout's side column. In one column, with the
+         workspace now as tall as its content, it would slide over the hint below
+         it on the way down. */
+      position: static;
     }
     .controls + .note,
     .hint {
       order: 5;
     }
-    /* The board is square and as wide as the phone: at this size it is the
-       screen's job to fit the board, not the board's to fit a column. */
-    :global(.board) {
+    /* The board is square and as wide as the phone's share of it: at this size
+       it is the screen's job to fit the board, not the board's to fit a column.
+       The frame itself is sized from the board-size preference, so a Compact or
+       Normal board gives the height it does not use to the controls below rather
+       than leaving it as an empty square (issue #33); `--board-presized` tells
+       the canvas the share is already taken. Scoped under `.workspace` so that it
+       outranks the canvas's own scoped `.board` rule — a bare `:global(.board)`
+       lost to it, and its `flex` and `min-height` never applied. */
+    .workspace :global(.board) {
       flex: none;
-      width: 100%;
+      align-self: center;
+      width: calc(100% * var(--board-fraction, 1));
       aspect-ratio: 1;
       min-height: 0;
+      --board-presized: 1;
     }
 
     /* Fingers, not a pointer: every control reaches a comfortable target, and
@@ -4567,6 +4658,11 @@
     .nav button {
       min-height: 44px;
       min-width: 44px;
+    }
+    .error .dismiss {
+      width: 44px;
+      height: 44px;
+      margin: -13px -12px -13px 0;
     }
     .slots :global(button) {
       min-width: 54px;

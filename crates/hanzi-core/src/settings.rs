@@ -119,15 +119,15 @@ impl Default for Pace {
 /// so that it fits the window on any screen, and what a learner actually wants
 /// to change is how much of that space it takes. As with [`Pace`], the *name*
 /// travels and the fraction that implements it lives in the interface
-/// (`boardFraction` in `src/App.svelte`).
+/// (`BOARD_FRACTIONS` in `src/lib/boardSize.ts`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BoardSize {
     /// Smallest, for a window with little room to spare.
     Compact,
-    /// The size the board has always been.
+    /// The default: most of the room, with a margin round it.
     Normal,
-    /// Largest, for a big screen or a stylus.
+    /// Largest, for a big screen or a stylus: all the room there is.
     Large,
 }
 
