@@ -1175,7 +1175,11 @@ either file.
       position naming it resolves to the survivor in `Db::vocab_cursor`. That is
       not only a collapsed duplicate: a word deleted and then added again leaves a
       tombstone with a live twin too, and it is kept the same way. Every other
-      never-held tombstone is still skipped.
+      never-held tombstone is still skipped. A list left open across that
+      (#45's stale save) adds what it practised rather than writing its older
+      counts: attempts by difference, best score and last practice by MAX, on
+      the row itself, on a tombstone an edit revives (which keeps its own
+      counters), or — for practice alone on a collapsed copy — on its live twin.
     - **A delete that races a collapse converges, but which way depends on who
       synced first.** If one device deletes its copy before it has heard of the
       other's, the other copy is simply the surviving entry. If the collapse has
@@ -1209,21 +1213,36 @@ either file.
       - **A hidden own shard still counts for the identity check**
         (`local::hidden_own`). Every line that can still be read is evidence like
         a readable shard's, and so is a file with more lines (a cut-off last one
-        included) than this log has *published* attempts for it — so a copy
-        whose evidence sits in a damaged file still renames rather than mend the
-        original's grown tail with its own lines and append a different attempt
-        under a number a peer already holds. And a rename leaves under the old
-        name every row whose number such a file can hold (from its name to the
-        next shard's; with no end for the last shard), so shared history in a
-        damaged file is never republished under the new name. Residuals: a row
-        the copy made that falls in that range stays unpublished under the old
-        name until the file is readable again (then the store holds a different
-        attempt at that number, and `reclaim_attempts` moves it); a truncation
-        that leaves no differing line and no extra line hides a copy for as long
-        as the file stays damaged; and a device whose watermark write was lost
-        right after an append, and whose last shard is then damaged before the
-        next sync, is taken for a copy and renamed — its old name's file then
-        stays damaged.
+        included) than this log has *published* attempts the file can hold — so
+        a copy whose evidence sits in a damaged file still renames rather than
+        mend the original's grown tail with its own lines and append a different
+        attempt under a number a peer already holds. **What a file can hold** is
+        counted the way `repair_own_shards` writes it (`local::could_hold`): this
+        log's attempts from its name to the next shard's name, plus those below
+        its name, back to the previous shard's name (to 1 for the first shard),
+        that no readable shard holds. A shard is named after the attempt that
+        *sorts* first, so it can hold numbers below its name — a clock that
+        stepped back, or a repair that took in what a damaged neighbour held —
+        and counting only from its name took a genuine original for a copy. A
+        repair pass mends in order of name and counts what it has just mended as
+        readable, so one mended file does not take in another's attempts. And a
+        rename leaves under the old name every row such a file can hold (with no
+        upper end for the last shard), so shared history in a damaged file is
+        never republished under the new name.
+      - **Residuals of that.** A row the copy made that falls in a held-back
+        range stays unpublished under the old name until the file is readable
+        again; then `reclaim_attempts` moves it if the store holds a different
+        attempt at that number, *or holds attempts under that name but none at
+        or above it* (only this device can have made such a row; not in the sync
+        that renamed, whose listing hides the file). A truncation that leaves
+        no differing line and no extra line hides a copy for as long as the
+        file stays damaged — in its heaviest form the whole file cut to a
+        partial first line, or emptied, leaves no line at all, so there is no
+        evidence and the copy mends the original's shard with its own lines; an
+        accepted risk that predates this merge. And a device whose watermark
+        write was lost right after an append, and whose last shard is then
+        damaged before the next sync, is taken for a copy and renamed — its old
+        name's file then stays damaged.
       - **A file in another device's directory that was left out is never
         overwritten**; such a write is refused, recorded in `Summary::withheld`,
         and not counted as published.

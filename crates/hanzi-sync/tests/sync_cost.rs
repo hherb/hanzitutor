@@ -673,6 +673,97 @@ fn a_copy_does_not_mend_the_originals_grown_tail_over_with_its_own() {
     assert_eq!(full_log(&c).unwrap().len(), 8);
 }
 
+#[test]
+fn a_shard_holding_an_attempt_numbered_below_its_name_is_mended_not_taken_for_a_copy() {
+    // A clock that stepped back: attempt 1 is recorded at a later time than
+    // attempt 2, so the shard is named after 2 and holds both. Cut short, it still
+    // holds no more than this log wrote into it, and is this device's to mend.
+    let (_dir_a, a) = device("below-a");
+    let shared = scratch("below-store");
+    let remote = FolderStore::open(&*shared).unwrap();
+    {
+        let mut progress = ProgressStore::open_with(Box::new(a.clone())).unwrap();
+        progress.record_at('好', 80.0, "2026-09-20T10:00:00Z").unwrap();
+        progress.record_at('你', 80.0, "2026-09-20T09:00:00Z").unwrap();
+        progress.save().unwrap();
+    }
+    sync(&a, &remote).unwrap();
+    let shard = hanzi_sync::attempts_shard_name(&a.device_id(), 2);
+    assert_eq!(lines(&remote, &shard), 2, "{:?}", own_shards(&remote, &a));
+    let id = a.device_id();
+    truncate(&remote, &shard, prefix_of_lines(&remote, &shard, 1) + 10);
+
+    let summary = sync(&a, &remote).unwrap();
+    assert_eq!(a.device_id(), id, "not renamed: {summary:?}");
+    assert_eq!(summary.repaired.len(), 1, "{summary:?}");
+    assert!(summary.skipped.is_empty(), "{summary:?}");
+    assert_eq!(read_attempts(&remote).unwrap().len(), 2);
+}
+
+#[test]
+fn two_damaged_shards_are_mended_each_with_its_own_and_mended_again_later() {
+    // Mending the first of two damaged shards makes its attempts readable again,
+    // so the second must not take them in as well: a second file holding 500
+    // attempts below its name would, once cut short again, look like more than
+    // this log ever wrote into it.
+    let (_dir_a, a) = device("twice-a");
+    let shared = scratch("twice-store");
+    let remote = FolderStore::open(&*shared).unwrap();
+    practise(&a, 0, CHUNK as i64);
+    sync(&a, &remote).unwrap();
+    practise(&a, CHUNK as i64, 19);
+    sync(&a, &remote).unwrap();
+    let first = hanzi_sync::attempts_shard_name(&a.device_id(), 1);
+    let open = hanzi_sync::attempts_shard_name(&a.device_id(), CHUNK as i64 + 1);
+    truncate(&remote, &first, 1000);
+    truncate(&remote, &open, 300);
+
+    let id = a.device_id();
+    let summary = sync(&a, &remote).unwrap();
+    assert_eq!(summary.repaired.len(), 2, "{summary:?}");
+    assert_eq!(lines(&remote, &open), 19, "only its own");
+
+    truncate(&remote, &open, 300);
+    let summary = sync(&a, &remote).unwrap();
+    assert_eq!(a.device_id(), id, "not renamed: {summary:?}");
+    assert_eq!(summary.repaired.len(), 1, "{summary:?}");
+    assert_eq!(read_attempts(&remote).unwrap().len(), CHUNK + 19);
+}
+
+#[test]
+fn a_copys_attempt_held_back_by_a_damaged_shard_goes_out_under_its_new_name() {
+    // B renames because A's open shard, cut short, holds more than B wrote. B's
+    // own attempts that would have gone in that file stay under the old name
+    // while it is unreadable. Once A mends it, every one of them moves to B's new
+    // name: those whose numbers A used, and the one A never reached — which,
+    // published under A's name, would make A take a new name in turn.
+    let (_dir_a, a) = device("held-a");
+    let shared = scratch("held-store");
+    let remote = FolderStore::open(&*shared).unwrap();
+    practise(&a, 0, 5);
+    sync(&a, &remote).unwrap();
+    let (_dir_b, b) = copy_of(&a, "held-b");
+    practise(&a, 5, 2);
+    sync(&a, &remote).unwrap();
+    let id = a.device_id();
+    let shard = hanzi_sync::attempts_shard_name(&id, 1);
+    truncate(&remote, &shard, prefix_of_lines(&remote, &shard, 5) + 12);
+
+    practise(&b, 50, 3);
+    sync(&b, &remote).unwrap();
+    assert_ne!(b.device_id(), id, "B renamed");
+
+    sync(&a, &remote).unwrap();
+    sync(&b, &remote).unwrap();
+    sync(&a, &remote).unwrap();
+    assert_eq!(a.device_id(), id, "A keeps its name");
+    assert_eq!(attempts_of(&b, &b), 3, "all three of B's are B's");
+    let (_dir_c, c) = device("held-c");
+    sync(&c, &remote).unwrap();
+    assert_eq!(full_log(&c).unwrap().len(), 10);
+    assert_eq!(attempts_of(&c, &a), 7);
+}
+
 // ---- a busy Dropbox is waited for, within a bound ----------------------------
 
 /// A Dropbox with revisions, `update` mode, and failures on demand.

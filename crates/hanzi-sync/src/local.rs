@@ -353,9 +353,11 @@ fn publish_against(
 /// holds a *different* attempt under that name and number, only this device can
 /// have made this one, so it is moved to the current name as well
 /// ([`Db::reclaim_attempts`]) rather than left to fail every pull with
-/// [`SyncError::Rewritten`]. A former name's attempts that the store does not hold
-/// at all are left alone: they are as likely to be the original's, pulled before a
-/// move to an empty store, and are published under that name like anyone else's.
+/// [`SyncError::Rewritten`]. So is one numbered above every attempt the store
+/// holds under that name, when it holds any: had that name published it, the
+/// store would hold it. Any other former-name attempt the store does not hold is
+/// left alone: it is as likely to be the original's, pulled before a move to an
+/// empty store, and is published under that name like anyone else's.
 ///
 /// ## What it cannot do
 ///
@@ -401,8 +403,8 @@ fn publish_against(
 /// would publish shared history a second time under the new name, for every peer
 /// to fold twice. A row this device made that only *would* have gone in such a
 /// file stays behind with them, unpublished, until the file can be read again —
-/// then the store holds a different attempt at that number, and the reclaim below
-/// moves it.
+/// then the store holds a different attempt at that number, or none at or above
+/// it, and the reclaim below moves it.
 ///
 /// Returns the new name, if there is one.
 fn settle_identity(
@@ -438,10 +440,29 @@ fn settle_identity(
     // from before the rename, restored by a build that let it in — goes first, so
     // that it is neither reclaimed below as a second attempt nor published again.
     db.forget_moved_copies().map_err(SyncError::Io)?;
+    let given_up = renamed.as_ref().map(|_| device.as_str());
     for former in db.former_device_ids().map_err(SyncError::Io)? {
-        let keep = |row: &LoggedAttempt| {
-            held.get(&(former.as_str(), row.seq))
-                .is_none_or(|remote| **remote == MergedAttempt::from(row.clone()))
+        // The highest number the store holds under that name, if it holds any.
+        // A row of this log numbered above it was never published under that
+        // name — the store would hold it — so only this device can have made it:
+        // a row a rename held back because a damaged file might have held it
+        // (see `HiddenOwn`), at a number the original never reached. Left under
+        // the old name it would be published there, and the original would take
+        // it for a copy's and rename in turn. Not while that file is still the
+        // reason it was held back, in the sync that gave the name up: the
+        // listing then shows none of what the file holds.
+        let highest = held
+            .keys()
+            .filter(|(owner, _)| *owner == former)
+            .map(|(_, seq)| *seq)
+            .max();
+        let keep = |row: &LoggedAttempt| match held.get(&(former.as_str(), row.seq)) {
+            Some(remote) => **remote == MergedAttempt::from(row.clone()),
+            None => {
+                let beyond = highest.is_some_and(|highest| row.seq > highest);
+                let still_hidden = given_up == Some(former.as_str()) && hidden.covers(row.seq);
+                !beyond || still_hidden
+            }
         };
         db.reclaim_attempts(&former, &keep).map_err(SyncError::Io)?;
     }
@@ -452,10 +473,17 @@ fn settle_identity(
 /// [`settle_identity`].
 #[derive(Default)]
 struct HiddenOwn {
-    /// The numbers each hidden file can hold: from the one it is named after up
-    /// to the next shard's, or with no end for the last one, which an install
-    /// can still be appending to.
-    ranges: Vec<(i64, Option<i64>)>,
+    /// This log's numbers a hidden file can hold, the way `repair_own_shards`
+    /// counts them: those from the number it is named after up to the next
+    /// shard's, and those below it, back to the previous shard's name, that no
+    /// readable shard holds. A shard is named after the attempt that sorts
+    /// first, which need not be the lowest number — a clock that stepped back,
+    /// or a repair that took in what a damaged neighbour held.
+    covered: BTreeSet<i64>,
+    /// The last shard's name, when it is hidden: an install may still be
+    /// appending to it, so every number from there up is covered, whether this
+    /// log holds it yet or not.
+    open_from: Option<i64>,
     /// What could still be read of one contradicts this log: a line this log
     /// lacks or holds differently, or more lines than this log has published
     /// attempts for that file. A truncation only ever shortens a file, so a file
@@ -465,10 +493,33 @@ struct HiddenOwn {
 
 impl HiddenOwn {
     fn covers(&self, seq: i64) -> bool {
-        self.ranges
-            .iter()
-            .any(|(first, end)| seq >= *first && end.is_none_or(|end| seq < end))
+        self.covered.contains(&seq) || self.open_from.is_some_and(|from| seq >= from)
     }
+}
+
+/// This log's numbers that the hidden or damaged own shard named after `first`
+/// can hold, up to `bound`: see [`HiddenOwn::covered`]. `elsewhere` says
+/// whether a readable shard already holds a number below the name.
+fn could_hold(
+    own: impl Iterator<Item = i64>,
+    screened: &Screened,
+    first: i64,
+    bound: i64,
+    elsewhere: &dyn Fn(i64) -> bool,
+) -> BTreeSet<i64> {
+    let from = below_name(screened, first);
+    own.filter(|seq| {
+        (first..bound).contains(seq) || ((from..first).contains(seq) && !elsewhere(*seq))
+    })
+    .collect()
+}
+
+/// The lowest number a shard named after `first` can hold below its name: one
+/// past the previous shard's name, or the first number of all.
+fn below_name(screened: &Screened, first: i64) -> i64 {
+    screened
+        .previous_own_start(first)
+        .map_or(1, |previous| previous + 1)
 }
 
 /// Look at this device's own attempt shards that `screened` hid.
@@ -496,13 +547,19 @@ fn hidden_own(db: &Db, screened: &Screened) -> Result<HiddenOwn, SyncError> {
             continue;
         };
         let end = screened.next_own_start(first);
-        hidden.ranges.push((first, end));
+        let elsewhere = |seq: i64| screened.holds_own(seq);
+        let reach = end.unwrap_or(i64::MAX);
+        let held_here = could_hold(own.keys().copied(), screened, first, reach, &elsewhere);
+        hidden.covered.extend(&held_here);
+        if end.is_none() {
+            hidden.open_from = Some(hidden.open_from.map_or(first, |from| from.min(first)));
+        }
         if shard.newer_format {
             continue;
         }
         let salvaged = salvage_shard(&device, &screened.get(&shard.name)?);
         let bound = end.unwrap_or(published + 1);
-        let wrote = own.keys().filter(|seq| (first..bound).contains(*seq)).count();
+        let wrote = could_hold(own.keys().copied(), screened, first, bound, &elsewhere).len();
         if salvaged.lines > wrote
             || salvaged
                 .attempts
@@ -974,9 +1031,10 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
 ///
 /// The attempts of that range, and — because a shard is named after the earliest
 /// attempt it holds, which is not always the lowest number — any of this log's
-/// attempts below it, back to the previous shard's name, that no readable shard
-/// holds. Writing an attempt into two files is harmless: it is the same attempt in
-/// both, and every reader merges them as one.
+/// attempts below it, back to the previous shard's name (or to the first number
+/// of all, for the first shard), that no readable shard holds, counting the files
+/// this pass has already mended. Writing an attempt into two files is harmless: it
+/// is the same attempt in both, and every reader merges them as one.
 ///
 /// Telling a copy of this database apart from the original is `settle_identity`'s
 /// job, so this runs after it, and only when it did not rename: a copy is not the
@@ -990,12 +1048,22 @@ fn repair_own_shards(db: &Db, screened: &Screened) -> Result<(), SyncError> {
     sort_canonical(&mut log);
     let held: BTreeSet<i64> = log.iter().map(|attempt| attempt.seq).collect();
     let published = published_through(db)?;
+    // What a readable shard holds now, the files this pass mends included: once
+    // one is written again, its attempts are not the next one's to take in. In
+    // order of name, so a file's own attempts are back in place before the file
+    // after it is written.
+    let mut mended: BTreeSet<i64> = BTreeSet::new();
+    let mut damaged = damaged;
+    damaged.sort_by_key(|(_, first)| *first);
     for (name, first) in damaged {
         let end = screened.next_own_start(first).unwrap_or(published + 1);
         if first > published || end <= first || !(first..end).all(|seq| held.contains(&seq)) {
             // This log cannot be the file's writer — see above. Left as it is.
             continue;
         }
+        let elsewhere = |seq: i64| screened.holds_own(seq) || mended.contains(&seq);
+        let seqs = log.iter().map(|attempt| attempt.seq);
+        let wanted = could_hold(seqs, screened, first, end, &elsewhere);
         // Nor if the file holds more than this log would write into it: a
         // truncation only shortens a file, so a longer one had another writer —
         // an install under the same name that appended to it (#36) — and writing
@@ -1003,24 +1071,16 @@ fn repair_own_shards(db: &Db, screened: &Screened) -> Result<(), SyncError> {
         // the same as evidence for a rename, so a sync never gets here with one;
         // this is the guard for anything that does.
         let lines = salvage_shard(&db.device_id(), &screened.get(&name)?).lines;
-        if lines > (first..end).count() {
+        if wanted.is_empty() || lines > wanted.len() {
             continue;
         }
-        let from = screened
-            .previous_own_start(first)
-            .map_or(first, |previous| previous + 1);
         let attempts: Vec<&MergedAttempt> = log
             .iter()
-            .filter(|attempt| {
-                (first..end).contains(&attempt.seq)
-                    || ((from..first).contains(&attempt.seq) && !screened.holds_own(attempt.seq))
-            })
+            .filter(|attempt| wanted.contains(&attempt.seq))
             .collect();
-        if attempts.is_empty() {
-            continue;
-        }
         let body = shard_body(db.device_id(), &attempts)?;
         screened.mend(&name, body.as_bytes())?;
+        mended.extend(wanted);
     }
     Ok(())
 }

@@ -1524,7 +1524,15 @@ fn write_vocab_changes(
                 if !live {
                     if stale && !typed_change(old, entry) {
                         // A peer deleted it after this list was read, and a
-                        // practice attempt is not a reason to bring it back.
+                        // practice attempt is not a reason to bring it back. If it
+                        // went because a merge collapsed it onto a live copy of the
+                        // same word (`collapse_counters`), the practice is that
+                        // word's, and counts on the copy that survived.
+                        if row.is_some() {
+                            if let Some(twin) = live_twin_of(tx, entry.id as i64)? {
+                                add_counter_change(tx, twin, old, entry)?;
+                            }
+                        }
                         continue;
                     }
                     // Either the learner edited it, and an edit made now beats the
@@ -1660,6 +1668,25 @@ fn update_changed_fields(
         )?;
     }
     Ok(())
+}
+
+/// The live entry with the same word in the same group as the removed row `id`,
+/// if there is one: the lowest uuid, as a collapse keeps.
+fn live_twin_of(conn: &Connection, id: i64) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT live.id FROM vocab_entry AS gone
+           JOIN vocab_entry AS live
+             ON live.text = gone.text AND live.group_name IS gone.group_name
+          WHERE gone.id = ?1 AND live.deleted = 0 AND live.id <> gone.id
+          ORDER BY live.uuid LIMIT 1",
+        [id],
+        |row| row.get(0),
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other),
+    })
 }
 
 /// An entry's practice counters: attempts, best score, last practised.

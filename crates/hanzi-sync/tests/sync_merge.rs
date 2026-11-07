@@ -807,3 +807,24 @@ fn an_edit_from_a_list_opened_before_a_collapse_does_not_bring_back_counted_prac
 
     finish(&[&dir]);
 }
+
+#[test]
+fn practice_on_a_collapsed_copy_from_a_list_opened_before_goes_to_the_survivor() {
+    // The stale list practises only the copy the collapse removed. Nothing brings
+    // that copy back — a practice is not an edit — but it is the same word, so the
+    // practice counts on the entry that survived it.
+    let (dir, db) = device("stale-twin");
+    let (low, high) = two_copies(&db);
+    set_attempts(&db, high, 5);
+    set_attempts(&db, low, 3);
+    let mut stale = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    db.apply_vocab_view(&collapsed(&db), &[]).unwrap();
+
+    stale.record_attempt(high, 70.0).unwrap();
+    stale.save().unwrap();
+    assert!(!entries(&db).iter().any(|e| e.id == high), "still removed");
+    let survivor = entries(&db).into_iter().find(|e| e.id == low).unwrap();
+    assert_eq!(survivor.attempts, 9, "{survivor:?}");
+
+    finish(&[&dir]);
+}
