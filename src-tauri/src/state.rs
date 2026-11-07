@@ -1569,10 +1569,11 @@ fn model_home<'a>(
 /// megabytes, done on the way to the first screen, and what makes one fail — a
 /// disk too full — usually lasts; trying again at every launch would make the
 /// learner wait for the same failure each time. So a failed copy leaves a marker
-/// beside `old` ([`copy_failed_marker`]) naming the tree it could not copy, and is
-/// not tried again while that tree is unchanged. Reinstalling or removing the
-/// model changes it, and a move that works, or finds nothing to move, removes the
-/// marker. (The copy itself still runs on this thread; moving it to a background
+/// beside `old` ([`copy_failed_marker`]) naming the tree it could not copy and
+/// when, and is not tried again while that tree is unchanged — for a week
+/// ([`COPY_RETRY_AFTER_SECS`]), because what made it fail may since have gone.
+/// Reinstalling or removing the model changes the tree, and a move that works, or
+/// finds nothing to move, removes the marker. (The copy itself still runs on this thread; moving it to a background
 /// one is a separate change.)
 fn migrate_model_dir(
     old: &Path,
@@ -1601,21 +1602,26 @@ fn migrate_model_dir(
         }
         Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
             let tree = tree_fingerprint(old).ok();
-            let failed_before = std::fs::read_to_string(&marker).ok();
-            if tree.is_some() && failed_before == tree {
-                eprintln!(
-                    "[data] not copying {} to {} again: it failed before, and the model has \
-                     not changed since; it is used where it is",
-                    old.display(),
-                    new.display()
-                );
-                return false;
+            let now = seconds_since_epoch(std::time::SystemTime::now());
+            let failed_before = std::fs::read_to_string(&marker)
+                .ok()
+                .and_then(|text| failed_copy(&text));
+            if let (Some(tree), Some((at, failed_tree))) = (&tree, &failed_before) {
+                if *failed_tree == *tree && now.saturating_sub(*at) < COPY_RETRY_AFTER_SECS {
+                    eprintln!(
+                        "[data] not copying {} to {} again: it failed before, and the model \
+                         has not changed since; it is used where it is",
+                        old.display(),
+                        new.display()
+                    );
+                    return false;
+                }
             }
             let copied = copy_model_dir(old, new);
             if copied {
                 let _ = std::fs::remove_file(&marker);
             } else if let Some(tree) = tree {
-                let _ = std::fs::write(&marker, tree);
+                let _ = std::fs::write(&marker, format!("failed-at {now}\n{tree}"));
             }
             copied
         }
@@ -1693,6 +1699,26 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// How long a failed copy of a model is left alone before it is tried again, even
+/// when the model has not changed: what made it fail — a full disk, a volume not
+/// mounted — may have gone, and nothing else would ever say so.
+const COPY_RETRY_AFTER_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// A time as whole seconds since 1970, or 0 for a clock set before it.
+fn seconds_since_epoch(at: std::time::SystemTime) -> u64 {
+    at.duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0)
+}
+
+/// When a failed copy was recorded, and the tree it failed on, from a marker's
+/// text. `None` for a marker this cannot read — which is then tried again.
+fn failed_copy(text: &str) -> Option<(u64, String)> {
+    let (first, tree) = text.split_once('\n')?;
+    let at = first.strip_prefix("failed-at ")?.parse().ok()?;
+    Some((at, tree.to_string()))
 }
 
 /// Where a failed copy of the model directory `old` is remembered: a hidden file
@@ -2094,6 +2120,34 @@ mod tests {
             "and the marker goes with a move that worked"
         );
         assert!(!old.exists());
+    }
+
+    #[test]
+    fn a_copy_that_failed_a_week_ago_is_tried_again() {
+        let data_dir = scratch("data");
+        let cache_dir = scratch("cache");
+        let old = data_dir.join("asr");
+        installed_model(&old);
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join(".asr.moving"), b"in the way").unwrap();
+        assert_eq!(
+            model_home(&data_dir, &cache_dir, "asr", across_volumes),
+            data_dir.as_path()
+        );
+        std::fs::remove_file(cache_dir.join(".asr.moving")).unwrap();
+
+        // The same tree, but the failure is eight days old.
+        let marker = data_dir.join(".asr.copy-failed");
+        let text = std::fs::read_to_string(&marker).unwrap();
+        let (_, tree) = failed_copy(&text).expect("a marker this can read");
+        let then = seconds_since_epoch(std::time::SystemTime::now()) - 8 * 24 * 60 * 60;
+        std::fs::write(&marker, format!("failed-at {then}\n{tree}")).unwrap();
+
+        assert_eq!(
+            model_home(&data_dir, &cache_dir, "asr", across_volumes),
+            cache_dir.as_path()
+        );
+        assert!(!marker.exists());
     }
 
     #[test]

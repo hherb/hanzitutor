@@ -135,6 +135,17 @@ const ACCOUNT_KEY: &str = "sync:account";
 /// the learner wants a fingerprint the next time they connect.
 const LOCK_KEY: &str = "sync:lock";
 
+/// Set when a disconnect removed every copy of the sign-in a read can reach but a
+/// copy in the login keychain would not go — removing one another build wrote can
+/// ask for the keychain password, and the learner may cancel.
+///
+/// With no record, a launch looks for a sign-in to adopt everywhere, the login
+/// keychain included, and would find that copy: a keychain-password prompt at a
+/// moment nobody chose, for a token Dropbox has just been told to forget. While
+/// this is set, adoption looks only where a copy a read could reach would be
+/// ([`TokenStore::place_past_leftovers`]). A connection that is recorded clears it.
+const LEFTOVER_KEY: &str = "sync:leftover";
+
 /// How long an access token fetched for a publish is reused.
 ///
 /// A full sync fetches one every time, because it may be the first thing to happen
@@ -281,7 +292,7 @@ enum Open {
     #[default]
     Unread,
     /// Read once, and this is the whole of the answer for this run of the app.
-    Known(Option<(Account, Protection)>),
+    Known(Option<Loaded>),
 }
 
 /// The app's sync service.
@@ -466,7 +477,7 @@ impl SyncService {
         // here and the write that follows it.
         let _switching = self.take_switch();
         let recorded = self.read_record();
-        let place = self.place();
+        let place = self.settled_place();
         // The preference, not the default: a learner who asked for a fingerprint
         // gets one from the first read, not from the second connection.
         let saved = match self.tokens.save(&account, self.locked(), place.as_deref()) {
@@ -477,7 +488,10 @@ impl SyncService {
                 // it had already added — Apple's, when a removal and then its rollback
                 // are both refused — would otherwise leave this token, about to be
                 // revoked, for the next launch to adopt as a connection.
-                if recorded.is_none() {
+                // Only when there is definitely none: a record the database could not
+                // read, or one it holds that this build cannot parse, may describe a
+                // sign-in that this must not wipe.
+                if matches!(recorded, Ok(None)) {
                     let _ = self.tokens.clear();
                 }
                 // The code was single-use and is spent, so this sign-in can never be
@@ -490,7 +504,11 @@ impl SyncService {
             }
         };
         let protection = saved.protection;
-        self.remember(Some((account.clone(), protection)));
+        self.remember(Some(Loaded {
+            account: account.clone(),
+            protection,
+            place: saved.place.clone(),
+        }));
         // Whichever account was connected before, this is not it: a token fetched
         // for a publish under the old one must not be used under the new one.
         self.forget_publish_token();
@@ -510,6 +528,8 @@ impl SyncService {
                  again rather than left where nothing could reach it: {why}"
             ));
         }
+        // A connection recorded is one adoption no longer has to be careful around.
+        self.forget_leftover();
         // A learner who asked for a fingerprint and did not get one is told so here
         // as well as on the switch. The store only does that when the device cannot
         // ask at all — a screen lock removed since the switch was turned on — and
@@ -541,21 +561,26 @@ impl SyncService {
             // and a learner may cancel — and the store then keeps the item as it was.
             let saved = self
                 .tokens
-                .save(&account, locked, self.place().as_deref())
+                .save(&account, locked, self.settled_place().as_deref())
                 .map_err(|why| {
                     format!("{why}. The sign-in is kept as it was, and the switch is unchanged.")
                 })?;
             let protection = saved.protection;
+            let place = saved.place.clone();
             // The cache as well as the record, before anything else can fail: they
             // describe the item, which has already changed. The cache is what decides
             // whether a launch may read the sign-in, and a switch flipped to *on* that
             // left it saying "nothing to unlock" would be a prompt at the next launch —
             // which is the one thing this whole arrangement exists to prevent.
-            self.remember(Some((account.clone(), protection)));
+            self.remember(Some(Loaded {
+                account: account.clone(),
+                protection,
+                place: place.clone(),
+            }));
             let recorded = self.write_record(&Stored {
                 account_id: account.account_id,
                 protection,
-                place: saved.place,
+                place,
             });
             // The preference only once the item agrees with it, so a refused rewrite
             // leaves the switch where it was rather than claiming a lock the sign-in
@@ -619,15 +644,24 @@ impl SyncService {
             Err(why) => Some(format!(" (the sign-in could not be read to revoke it: {why})")),
         };
 
-        let cleared = self.tokens.clear().and_then(|()| self.clear_record());
+        // A copy only the login keychain still holds — its removal refused — is one
+        // no read reaches once the record is gone and adoption is told to look past
+        // it, so the record goes; the learner is told what was left.
+        let cleared = self.tokens.clear().and_then(|left| {
+            if left.is_some() {
+                self.write_leftover()?;
+            }
+            self.clear_record().map(|()| left)
+        });
         self.remember(None);
         // A token fetched for a publish under the account that just went is worth
         // nothing, and keeping it would let a later publish use it.
         self.forget_publish_token();
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = None;
         let message = match (cleared, unreported) {
-            (Ok(()), None) => "Disconnected. Your study data is untouched.".to_string(),
-            (Ok(()), Some(why)) => format!("Disconnected{why}."),
+            (Ok(None), None) => "Disconnected. Your study data is untouched.".to_string(),
+            (Ok(None), Some(why)) => format!("Disconnected{why}."),
+            (Ok(Some(left)), why) => format!("Disconnected{}. {left}", why.unwrap_or_default()),
             (Err(why), _) => format!("Could not clear the stored sign-in: {why}"),
         };
         SyncView {
@@ -926,18 +960,43 @@ impl SyncService {
     /// record, because a record that says connected while the store says otherwise
     /// is a screen that offers Sync and then cannot do it.
     fn sign_in(&self) -> Result<Option<(Account, Protection)>, String> {
+        Ok(self.found()?.map(|found| (found.account, found.protection)))
+    }
+
+    /// [`Self::sign_in`], with where the store found it.
+    ///
+    /// A record that names somewhere else is corrected here, before anything can
+    /// write to the store with it: a save starts from the place the record names,
+    /// and one that started from a place that is empty would put its new item where
+    /// a read looks first — the new item under the old record, the moment a save
+    /// is cut short. A record that names an empty place is what a write of the
+    /// record that failed after a save leaves, or a build that had one place.
+    fn found(&self) -> Result<Option<Loaded>, String> {
         let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
         if let Open::Known(known) = &*open {
             return Ok(known.clone());
         }
-        let found = self.tokens.load(self.place().as_deref())?;
+        let found = self.tokens.load(self.read_place().as_deref())?;
         *open = Open::Known(found.clone());
         drop(open);
 
-        if found.is_none() {
-            // Best effort: a record that cannot be cleared is one the next read of
-            // this store corrects anyway, and there is no screen to tell from here.
-            let _ = self.clear_record();
+        match &found {
+            None => {
+                // Best effort: a record that cannot be cleared is one the next read of
+                // this store corrects anyway, and there is no screen to tell from here.
+                let _ = self.clear_record();
+            }
+            Some(loaded) if loaded.place.is_some() => {
+                if let Ok(Some(record)) = self.read_record() {
+                    if record.place != loaded.place {
+                        let _ = self.write_record(&Stored {
+                            place: loaded.place.clone(),
+                            ..record
+                        });
+                    }
+                }
+            }
+            Some(_) => {}
         }
         Ok(found)
     }
@@ -970,7 +1029,7 @@ impl SyncService {
     /// Put the secret store's answer in the cache, without writing to it.
     ///
     /// Used after a save, where the store has just said what it managed to do.
-    fn remember(&self, known: Option<(Account, Protection)>) {
+    fn remember(&self, known: Option<Loaded>) {
         *self.open.lock().unwrap_or_else(|e| e.into_inner()) = Open::Known(known);
     }
 
@@ -1042,10 +1101,17 @@ impl SyncService {
     /// adoption attempt per run, and taking the settings screen down with it would
     /// be a worse answer than showing the connection a moment late.
     fn record(&self) -> Option<Stored> {
-        if let Some(record) = self.read_record() {
+        // A record that cannot be read or parsed is treated as absent here, as it
+        // always was: the store is still the authority on the token, and adopting
+        // what it holds writes the record again.
+        if let Ok(Some(record)) = self.read_record() {
             return Some(record);
         }
-        let (account, reported) = self.sign_in().ok().flatten()?;
+        let Loaded {
+            account,
+            protection: reported,
+            place,
+        } = self.found().ok().flatten()?;
         // A store that cannot say what protection its item carries — Apple's
         // data-protection keychain — is answered from the history here, and the
         // history is not a guess. The record and the *default of asking for nothing*
@@ -1059,13 +1125,13 @@ impl SyncService {
         } else {
             reported
         };
-        // Where it was found is not said by a read, and does not have to be: an item
-        // with no record was written by a build that had one place to put it, which
-        // is what [`TokenStore::legacy_place`] answers from the protection.
+        // Where it was found, so that the first save starts from the copy this
+        // record describes — not from a place a build with one place would have
+        // used, which after a reinstall or a downgrade may be the empty one.
         let stored = Stored {
             account_id: account.account_id,
             protection,
-            place: None,
+            place,
         };
         let _ = self.write_record(&stored);
         // An item behind a fingerprint that no preference knows about is what an
@@ -1085,25 +1151,93 @@ impl SyncService {
         Some(stored)
     }
 
-    /// The record as stored, or `None` when there is none to read.
-    fn read_record(&self) -> Option<Stored> {
-        let text = self.db.as_ref()?.meta_value(ACCOUNT_KEY).ok().flatten()?;
-        // A record that cannot be parsed is treated as absent rather than as a
-        // failure: the store is still the authority on the token, and the adoption
-        // path above will find it and write the record again.
-        serde_json::from_str(&text).ok()
+    /// The record as stored: `Ok(None)` when there is definitely none — no
+    /// database, nothing written, or the empty value [`Self::clear_record`] leaves —
+    /// and an error when there may be one this cannot read: the database refused,
+    /// or holds something this build cannot parse.
+    fn read_record(&self) -> Result<Option<Stored>, String> {
+        let Some(db) = &self.db else {
+            return Ok(None);
+        };
+        match db.meta_value(ACCOUNT_KEY)? {
+            None => Ok(None),
+            Some(text) if text.is_empty() => Ok(None),
+            Some(text) => serde_json::from_str(&text)
+                .map(Some)
+                .map_err(|e| format!("the connection record could not be read: {e}")),
+        }
     }
 
     /// Where the record says the stored item is, for the store to read first.
     ///
     /// A record from before there was a second place says nothing, and the store
     /// answers for it from what that record does say: see
-    /// [`TokenStore::legacy_place`].
-    fn place(&self) -> Option<String> {
-        let record = self.read_record()?;
-        record
+    /// [`TokenStore::legacy_place`]. With no record, nowhere — unless a disconnect
+    /// left a copy behind that nothing should adopt: see [`LEFTOVER_KEY`].
+    fn read_place(&self) -> Option<String> {
+        match self.read_record() {
+            Ok(Some(record)) => record
+                .place
+                .or_else(|| self.tokens.legacy_place(record.protection)),
+            Ok(None) if self.leftover() => self.tokens.place_past_leftovers(),
+            _ => None,
+        }
+    }
+
+    /// Where the record says the stored item is, made right before a save starts
+    /// from it.
+    ///
+    /// The store is asked where a read would really find the item
+    /// ([`TokenStore::locate`]), without reading it, and a record that names
+    /// anywhere else is rewritten first: a save that started from an empty place
+    /// would put the new item where a read looks first. When the record cannot be
+    /// rewritten, the place it names is what the save is given, and a store with
+    /// more than one place refuses to start from it rather than guess.
+    fn settled_place(&self) -> Option<String> {
+        let Ok(Some(record)) = self.read_record() else {
+            return self.read_place();
+        };
+        let named = record
             .place
-            .or_else(|| self.tokens.legacy_place(record.protection))
+            .clone()
+            .or_else(|| self.tokens.legacy_place(record.protection));
+        match self.tokens.locate(named.as_deref()) {
+            Ok(Some(found)) if Some(&found) != named.as_ref() => {
+                let corrected = Stored {
+                    place: Some(found.clone()),
+                    ..record
+                };
+                match self.write_record(&corrected) {
+                    Ok(()) => Some(found),
+                    Err(_) => named,
+                }
+            }
+            _ => named,
+        }
+    }
+
+    /// Whether a disconnect left a copy behind that adoption must look past.
+    fn leftover(&self) -> bool {
+        self.db
+            .as_ref()
+            .and_then(|db| db.meta_value(LEFTOVER_KEY).ok().flatten())
+            .is_some_and(|value| value == "on")
+    }
+
+    fn write_leftover(&self) -> Result<(), String> {
+        match &self.db {
+            Some(db) => db
+                .set_meta_value(LEFTOVER_KEY, "on")
+                .map_err(|e| format!("the connection could not be forgotten: {e}")),
+            None => Ok(()),
+        }
+    }
+
+    /// Best effort: a flag left set only narrows where a later adoption looks.
+    fn forget_leftover(&self) {
+        if let Some(db) = &self.db {
+            let _ = db.set_meta_value(LEFTOVER_KEY, "");
+        }
     }
 
     /// Write the record down.
@@ -1275,18 +1409,45 @@ trait TokenStore: Send + Sync {
     ///
     /// `place` is where the record says the item is — what an earlier
     /// [`Self::save`] answered — and a store with more than one place looks there
-    /// first. A store with one ignores it.
-    fn load(&self, place: Option<&str>) -> Result<Option<(Account, Protection)>, String>;
+    /// first. A store with one ignores it. The answer says where the item was
+    /// found, so that a record naming somewhere else can be put right.
+    fn load(&self, place: Option<&str>) -> Result<Option<Loaded>, String>;
     /// Write the sign-in, asking for a fingerprint on every read if `locked`, in
     /// place of the one the record says is at `place`.
     fn save(&self, account: &Account, locked: bool, place: Option<&str>) -> Result<Saved, String>;
-    fn clear(&self) -> Result<(), String>;
+    /// Remove every copy of the sign-in.
+    ///
+    /// `Ok(Some(why))` when every copy a read reaches is gone but one a read does
+    /// not — Apple's login keychain, whose removal can ask for the keychain
+    /// password — could not be removed; `why` is said to the learner.
+    fn clear(&self) -> Result<Option<String>, String>;
+    /// Where a read starting at `place` would really find the item, found without
+    /// reading it, so that a record naming an empty place can be put right before
+    /// a save starts from it. A store with one place answers `place` itself.
+    fn locate(&self, place: Option<&str>) -> Result<Option<String>, String> {
+        Ok(place.map(str::to_string))
+    }
+    /// A place to read from that never reaches a copy a refused [`Self::clear`]
+    /// left behind. See [`LEFTOVER_KEY`].
+    fn place_past_leftovers(&self) -> Option<String> {
+        None
+    }
     /// Where a record written before [`Stored::place`] existed says the item is,
     /// from the protection it recorded. Only a store with more than one place
     /// has an answer.
     fn legacy_place(&self, _protection: Protection) -> Option<String> {
         None
     }
+}
+
+/// What a read found: the sign-in, what the store can prove about how it is
+/// protected (see [`TokenStore::load`]), and where it was.
+#[derive(Clone, Debug)]
+struct Loaded {
+    account: Account,
+    protection: Protection,
+    /// `None` from a store with one place.
+    place: Option<String>,
 }
 
 /// What a write did: how the item ended up protected, and where the store put it.
@@ -1401,7 +1562,7 @@ impl TokenStore for AndroidKeystore {
             .unwrap_or(false)
     }
 
-    fn load(&self, _place: Option<&str>) -> Result<Option<(Account, Protection)>, String> {
+    fn load(&self, _place: Option<&str>) -> Result<Option<Loaded>, String> {
         let answer: StoredSecret = crate::platform::call("loadSecret", ())?;
         let Some(text) = answer.secret else {
             return Ok(None);
@@ -1414,7 +1575,13 @@ impl TokenStore for AndroidKeystore {
             Protection::KeychainOnly
         };
         serde_json::from_str(&text)
-            .map(|account| Some((account, protection)))
+            .map(|account| {
+                Some(Loaded {
+                    account,
+                    protection,
+                    place: None,
+                })
+            })
             .map_err(|e| format!("the stored Dropbox sign-in could not be read: {e}"))
     }
 
@@ -1438,9 +1605,9 @@ impl TokenStore for AndroidKeystore {
         })
     }
 
-    fn clear(&self) -> Result<(), String> {
+    fn clear(&self) -> Result<Option<String>, String> {
         crate::platform::call::<serde_json::Value>("clearSecret", ())?;
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -1460,7 +1627,9 @@ impl TokenStore for AndroidKeystore {
 /// slot is free, and only then removes the other. See [`replace_sign_in`].
 ///
 /// Which slot holds the item the record describes is written in the record
-/// ([`Stored::place`], as [`Slot::name`]), and every read and save starts there.
+/// ([`Stored::place`], as [`Slot::name`]), and every read and save starts there; a
+/// read that finds the item somewhere else puts the record right, and so does a
+/// save, asking where the item is without reading it.
 /// A save cut short — the app quit, or a removal and then its rollback refused —
 /// can leave two copies, and the record is written only once a save has finished,
 /// so the copy it names is the one it describes. A fixed order cannot know that:
@@ -1484,17 +1653,24 @@ impl Slot {
     const READ_ORDER: [Slot; 3] = [Slot::Primary, Slot::Secondary, Slot::Login];
 
     /// Where a read looks when the record names `place`: there first, and then
-    /// everywhere else — the record can be behind a finished save whose record
-    /// write failed, and an item it does not name is still better than none.
+    /// the other places it may be — the record can be behind a finished save whose
+    /// record write failed, and an item it does not name is still better than none.
+    ///
+    /// Not the login keychain, when the record names a data-protection slot. A copy
+    /// there is one a save could not remove and left beside an item that asks for
+    /// nothing (see [`replace_sign_in`]), or one a disconnect could not: reading it
+    /// is a keychain-password prompt, for a token that may be another account's or
+    /// one Dropbox has been told to forget. With no record, or one naming the login
+    /// keychain, it is where a build that could not use the data-protection
+    /// keychain kept the sign-in, and is read last.
     fn read_order(place: Option<Slot>) -> Vec<Slot> {
-        place
-            .into_iter()
-            .chain(
-                Self::READ_ORDER
-                    .into_iter()
-                    .filter(|slot| Some(*slot) != place),
-            )
-            .collect()
+        let rest: &[Slot] = match place {
+            Some(Slot::Primary) => &[Slot::Secondary],
+            Some(Slot::Secondary) => &[Slot::Primary],
+            Some(Slot::Login) => &[Slot::Primary, Slot::Secondary],
+            None => &Self::READ_ORDER,
+        };
+        place.into_iter().chain(rest.iter().copied()).collect()
     }
 
     /// The name the record keeps for this slot. The data-protection ones are the
@@ -1566,36 +1742,73 @@ trait Slots {
 ///   still a failure.
 /// - With both data-protection slots held — a save cut short — the one the record
 ///   does not name is the stale one, and is removed to make room.
+/// - With one free, the new item goes there only if a read starting at `place`
+///   reaches it after the copy it finds now. A record naming the empty slot while
+///   the copy is in the other leaves no such slot, and the save is refused with
+///   nothing changed; the service corrects the record before a save so that this
+///   is reached only when it could not (see `SyncService::settled_place`).
 /// - A build that cannot use the data-protection keychain falls back to the login
 ///   keychain, whose one item is updated in place: that is all-or-nothing, and
 ///   there is no data-protection copy this build could have left to remove.
+///
+/// ## Left for later
+///
+/// - **A two-phase save.** The record is written once this returns, so the app
+///   quitting after it returned and before that write leaves the record describing
+///   the old item while only the new one is left. Writing the record naming the new
+///   slot after the add and *before* the old copy is removed would close that
+///   window, and with it the cases where the record's place is inferred rather than
+///   known: a `set_lock` whose record write failed, and a first connection adopted
+///   from a build with one place.
+/// - **The login slot counts as held** wherever a read reaches it, because it
+///   cannot be looked for without reading it. With the login keychain empty and a
+///   record naming it while a data-protection copy is held, a new item can land
+///   where a read falling past the empty login slot looks first.
 #[cfg(any(target_vendor = "apple", test))]
 fn replace_sign_in(slots: &dyn Slots, place: Option<Slot>, locked: bool) -> Result<Slot, String> {
     let primary = slots.occupied(Slot::Primary)?;
     let secondary = slots.occupied(Slot::Secondary)?;
-    // The login slot cannot be looked for without reading it, so it counts as held:
-    // removing nothing from it costs nothing.
     let held = |slot: Slot| match slot {
         Slot::Primary => primary,
         Slot::Secondary => secondary,
         Slot::Login => true,
     };
-    // The copy a read finds now, which is the one the record describes.
-    let live = Slot::read_order(place)
-        .into_iter()
-        .find(|slot| held(*slot))
-        .unwrap_or(Slot::Login);
-    let target = match (primary, secondary) {
-        (false, _) => Slot::Primary,
-        (true, false) => Slot::Secondary,
-        (true, true) => {
-            let stale = if live == Slot::Secondary {
-                Slot::Primary
-            } else {
-                Slot::Secondary
-            };
-            slots.remove(stale)?;
-            stale
+    let order = Slot::read_order(place);
+    let live = live_slot(place, primary, secondary);
+    let position = |slot: Slot| order.iter().position(|s| *s == slot);
+    let target = if primary && secondary {
+        // Both held: the one a read does not reach first is the stale one.
+        let stale = if live == Slot::Secondary {
+            Slot::Primary
+        } else {
+            Slot::Secondary
+        };
+        slots.remove(stale)?;
+        stale
+    } else {
+        // A free slot a read reaches only *after* the live copy, so that until this
+        // save has finished — and the record says where its item is — a read
+        // starting where the record says still finds the copy the record describes.
+        let free = [Slot::Primary, Slot::Secondary]
+            .into_iter()
+            .filter(|slot| !held(*slot));
+        let mut after_live = free.clone().filter(|slot| position(*slot) > position(live));
+        match (after_live.next(), place) {
+            (Some(slot), _) => slot,
+            // With no record there is nothing for a read to agree with.
+            (None, None) => free.clone().next().unwrap_or(Slot::Primary),
+            // The record names an empty slot while the copy is in the other one:
+            // the only free slot is where a read looks first. Refused rather than
+            // written there — the service puts the record right first (see
+            // `SyncService::settled_place`), so this is reached only when it could
+            // not, and nothing has been changed.
+            (None, Some(_)) => {
+                return Err(
+                    "the record of where the sign-in is kept is out of date, so it was not \
+                     replaced; please try again"
+                        .to_string(),
+                )
+            }
         }
     };
     match slots.add(target) {
@@ -1636,18 +1849,68 @@ fn replace_sign_in(slots: &dyn Slots, place: Option<Slot>, locked: bool) -> Resu
     Ok(target)
 }
 
-/// Remove every copy of the sign-in, trying each slot even after one refuses, and
-/// report the first refusal.
+/// The slot a read starting at `place` finds the item in, given which
+/// data-protection slots are held.
+///
+/// The slot the record names when it is held, and otherwise the first held one a
+/// read reaches — never an empty data-protection slot the record happens to name
+/// while the copy is in the other. The login slot cannot be looked for without
+/// reading it, so it counts as held wherever a read reaches it: that is an
+/// approximation, and wrong when the login keychain is empty, which a record
+/// naming it with the copy elsewhere would need.
 #[cfg(any(target_vendor = "apple", test))]
-fn clear_slots(slots: &dyn Slots) -> Result<(), String> {
+fn live_slot(place: Option<Slot>, primary: bool, secondary: bool) -> Slot {
+    let held = |slot: Slot| match slot {
+        Slot::Primary => primary,
+        Slot::Secondary => secondary,
+        Slot::Login => true,
+    };
+    Slot::read_order(place)
+        .into_iter()
+        .find(|slot| held(*slot))
+        .or(place)
+        .unwrap_or(Slot::Login)
+}
+
+/// Where a read starting at `place` would find the item, found without reading.
+#[cfg(any(target_vendor = "apple", test))]
+fn locate_slot(slots: &dyn Slots, place: Option<Slot>) -> Result<Slot, String> {
+    let primary = slots.occupied(Slot::Primary)?;
+    let secondary = slots.occupied(Slot::Secondary)?;
+    Ok(live_slot(place, primary, secondary))
+}
+
+/// Remove every copy of the sign-in, trying each slot even after one refuses.
+///
+/// A data-protection copy that will not go is an error, and the first is
+/// reported. A login-keychain copy that will not go — removing one another build
+/// wrote can ask for the keychain password — is `Ok(Some(why))`: no read starting
+/// from a data-protection slot reaches it, and the service makes sure no adoption
+/// does either (see `LEFTOVER_KEY`).
+#[cfg(any(target_vendor = "apple", test))]
+fn clear_slots(slots: &dyn Slots) -> Result<Option<String>, String> {
     let mut first = Ok(());
+    let mut login = None;
     for slot in Slot::READ_ORDER {
-        let removed = slots.remove(slot);
-        if first.is_ok() {
-            first = removed;
+        match slots.remove(slot) {
+            Ok(()) => {}
+            Err(why) if slot == Slot::Login => login = Some(why),
+            Err(why) => {
+                if first.is_ok() {
+                    first = Err(why);
+                }
+            }
         }
     }
-    first
+    first.map(|()| {
+        login.map(|why| {
+            format!(
+                "A copy of the old sign-in in your login keychain could not be removed ({why}); \
+                 this app will not use it, and \"HanziTutor cross-device sync\" can be deleted \
+                 in Keychain Access."
+            )
+        })
+    })
 }
 
 /// Apple's Keychain, which is the same API on macOS and iOS.
@@ -1781,7 +2044,7 @@ impl TokenStore for Keychain {
         true
     }
 
-    fn load(&self, place: Option<&str>) -> Result<Option<(Account, Protection)>, String> {
+    fn load(&self, place: Option<&str>) -> Result<Option<Loaded>, String> {
         // The slot the record names first, then the rest — the slot every earlier
         // build wrote, the other one, and then whatever an earlier build left in the
         // login keychain, so a connection made before any of this existed is not
@@ -1821,7 +2084,7 @@ impl TokenStore for Keychain {
                     } else {
                         Protection::Unknown
                     };
-                    found = Some((bytes, protection));
+                    found = Some((bytes, protection, slot));
                     break;
                 }
                 Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => {}
@@ -1831,14 +2094,18 @@ impl TokenStore for Keychain {
             }
         }
 
-        let Some((bytes, protection)) = found else {
+        let Some((bytes, protection, slot)) = found else {
             return Ok(None);
         };
         let text = String::from_utf8(bytes)
             .map_err(|_| "the stored Dropbox sign-in is not readable text".to_string())?;
         let account: Account = serde_json::from_str(&text)
             .map_err(|e| format!("the stored Dropbox sign-in could not be read: {e}"))?;
-        Ok(Some((account, protection)))
+        Ok(Some(Loaded {
+            account,
+            protection,
+            place: Some(slot.name().to_string()),
+        }))
     }
 
     fn save(&self, account: &Account, locked: bool, place: Option<&str>) -> Result<Saved, String> {
@@ -1862,16 +2129,30 @@ impl TokenStore for Keychain {
         })
     }
 
-    fn clear(&self) -> Result<(), String> {
+    fn clear(&self) -> Result<Option<String>, String> {
         // Every copy, and a failure to find any is success: "forget the sign-in" has
         // to work on a device that never had one, and on one that has a copy in each.
         // Each is tried even when one before it fails, so a refusal in one keychain
-        // does not leave a copy in another; the first refusal is the one reported.
+        // does not leave a copy in another. See [`clear_slots`].
         let slots = AppleSlots {
             text: &[],
             locked: false,
         };
         clear_slots(&slots)
+    }
+
+    fn locate(&self, place: Option<&str>) -> Result<Option<String>, String> {
+        let slots = AppleSlots {
+            text: &[],
+            locked: false,
+        };
+        let slot = locate_slot(&slots, place.and_then(Slot::named))?;
+        Ok(Some(slot.name().to_string()))
+    }
+
+    fn place_past_leftovers(&self) -> Option<String> {
+        // A read starting from a data-protection slot never reaches the login one.
+        Some(Slot::Primary.name().to_string())
     }
 
     fn legacy_place(&self, protection: Protection) -> Option<String> {
@@ -2011,7 +2292,7 @@ impl TokenStore for NoSecureStore {
     fn can_lock(&self) -> bool {
         false
     }
-    fn load(&self, _place: Option<&str>) -> Result<Option<(Account, Protection)>, String> {
+    fn load(&self, _place: Option<&str>) -> Result<Option<Loaded>, String> {
         Ok(None)
     }
     fn save(
@@ -2022,8 +2303,8 @@ impl TokenStore for NoSecureStore {
     ) -> Result<Saved, String> {
         Err(no_secure_store())
     }
-    fn clear(&self) -> Result<(), String> {
-        Ok(())
+    fn clear(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
 }
 
@@ -2104,6 +2385,13 @@ mod tests {
         place: Option<&'static str>,
         /// The place every read and write was handed, in order.
         places: Mutex<Vec<Option<String>>>,
+        /// Where [`TokenStore::locate`] says the item really is; `None` agrees with
+        /// whatever it is asked about.
+        located: Option<&'static str>,
+        /// What a clear says it left behind, as a login copy that would not go.
+        leaves_on_clear: Option<&'static str>,
+        /// What [`TokenStore::place_past_leftovers`] answers.
+        past_leftovers: Option<&'static str>,
     }
 
     impl MemoryStore {
@@ -2119,6 +2407,9 @@ mod tests {
                 read_reports: None,
                 place: None,
                 places: Mutex::new(Vec::new()),
+                located: None,
+                leaves_on_clear: None,
+                past_leftovers: None,
             }
         }
 
@@ -2179,7 +2470,7 @@ mod tests {
         fn can_lock(&self) -> bool {
             self.can_lock
         }
-        fn load(&self, place: Option<&str>) -> Result<Option<(Account, Protection)>, String> {
+        fn load(&self, place: Option<&str>) -> Result<Option<Loaded>, String> {
             self.places.lock().unwrap().push(place.map(str::to_string));
             *self.reads.lock().unwrap() += 1;
             if self.refuse {
@@ -2192,8 +2483,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .clone()
-                .map(|(account, stored)| {
-                    (account, self.read_reports.unwrap_or(stored))
+                .map(|(account, stored)| Loaded {
+                    account,
+                    protection: self.read_reports.unwrap_or(stored),
+                    place: self.place.map(str::to_string),
                 }))
         }
         fn save(
@@ -2221,9 +2514,15 @@ mod tests {
                 place: self.place.map(str::to_string),
             })
         }
-        fn clear(&self) -> Result<(), String> {
+        fn clear(&self) -> Result<Option<String>, String> {
             *self.account.lock().unwrap() = None;
-            Ok(())
+            Ok(self.leaves_on_clear.map(str::to_string))
+        }
+        fn locate(&self, place: Option<&str>) -> Result<Option<String>, String> {
+            Ok(self.located.or(place).map(str::to_string))
+        }
+        fn place_past_leftovers(&self) -> Option<String> {
+            self.past_leftovers.map(str::to_string)
         }
     }
 
@@ -2250,7 +2549,7 @@ mod tests {
         fn can_lock(&self) -> bool {
             self.as_ref().can_lock()
         }
-        fn load(&self, place: Option<&str>) -> Result<Option<(Account, Protection)>, String> {
+        fn load(&self, place: Option<&str>) -> Result<Option<Loaded>, String> {
             self.as_ref().load(place)
         }
         fn save(
@@ -2261,8 +2560,14 @@ mod tests {
         ) -> Result<Saved, String> {
             self.as_ref().save(account, locked, place)
         }
-        fn clear(&self) -> Result<(), String> {
+        fn clear(&self) -> Result<Option<String>, String> {
             self.as_ref().clear()
+        }
+        fn locate(&self, place: Option<&str>) -> Result<Option<String>, String> {
+            self.as_ref().locate(place)
+        }
+        fn place_past_leftovers(&self) -> Option<String> {
+            self.as_ref().place_past_leftovers()
         }
     }
 
@@ -2661,6 +2966,51 @@ mod tests {
     }
 
     #[test]
+    fn a_record_naming_an_empty_slot_is_located_where_the_copy_really_is() {
+        // What a reinstall that kept the keychain leaves, or a record write that
+        // failed after a save: the record says one slot, the copy is in the other.
+        let keychain = FakeSlots::over(&[(Slot::Secondary, "old")], false, None);
+        assert_eq!(
+            locate_slot(&keychain, Some(Slot::Primary)).unwrap(),
+            Slot::Secondary
+        );
+        assert_eq!(
+            locate_slot(&keychain, Some(Slot::Secondary)).unwrap(),
+            Slot::Secondary
+        );
+        assert_eq!(locate_slot(&keychain, None).unwrap(), Slot::Secondary);
+        // A record naming the login keychain is believed: it cannot be looked in
+        // without reading it.
+        assert_eq!(
+            locate_slot(&keychain, Some(Slot::Login)).unwrap(),
+            Slot::Login
+        );
+
+        // And a save given such a record changes nothing rather than write the new
+        // item where a read starting from it looks first.
+        let refusal = replace_sign_in(&keychain, Some(Slot::Primary), false).unwrap_err();
+        assert!(refusal.contains("out of date"), "{refusal}");
+        assert_eq!(keychain.items(), BTreeMap::from([(Slot::Secondary, "old")]));
+        // Put right, it goes through.
+        assert_eq!(
+            replace_sign_in(&keychain, Some(Slot::Secondary), false).unwrap(),
+            Slot::Primary
+        );
+        assert_eq!(keychain.items(), BTreeMap::from([(Slot::Primary, "new")]));
+    }
+
+    #[test]
+    fn a_record_naming_a_data_protection_slot_never_reads_the_login_keychain() {
+        // The login copy is one a save or a disconnect could not remove.
+        let keychain = FakeSlots::over(&[(Slot::Login, "left behind")], false, None);
+        assert_eq!(keychain.read(Some(Slot::Primary)), None);
+        assert_eq!(keychain.read(Some(Slot::Secondary)), None);
+        // With no record, or one naming it, it is a sign-in an ad-hoc build kept.
+        assert_eq!(keychain.read(None), Some("left behind"));
+        assert_eq!(keychain.read(Some(Slot::Login)), Some("left behind"));
+    }
+
+    #[test]
     fn clearing_the_keychain_tries_every_copy_and_reports_the_first_refusal() {
         let keychain = FakeSlots::over(
             &[
@@ -2674,6 +3024,20 @@ mod tests {
         let refusal = clear_slots(&keychain).unwrap_err();
         assert!(refusal.contains("would not remove"), "{refusal}");
         assert_eq!(keychain.items(), BTreeMap::from([(Slot::Primary, "a")]));
+
+        // Only the login copy refusing is not a failure to forget the sign-in — no
+        // read starting from a data-protection slot reaches it — but it is said.
+        let keychain = FakeSlots::over(&[(Slot::Primary, "a"), (Slot::Login, "c")], false, Some(2));
+        let left = clear_slots(&keychain)
+            .unwrap()
+            .expect("the copy left is reported");
+        assert!(left.contains("Keychain Access"), "{left}");
+        assert_eq!(keychain.items(), BTreeMap::from([(Slot::Login, "c")]));
+        assert_eq!(
+            keychain.read(Some(Slot::Primary)),
+            None,
+            "and nothing reads it"
+        );
     }
 
     /// How a save is cut short in [`a_save_on_the_keychain_cut_short_anywhere_reads_what_the_record_says`].
@@ -2726,12 +3090,30 @@ mod tests {
                 if unreachable && items.iter().any(|(slot, _)| *slot != Slot::Login) {
                     continue;
                 }
-                let places: Vec<Option<Slot>> = if items.is_empty() {
-                    vec![None]
-                } else {
-                    items.iter().map(|(slot, _)| Some(*slot)).collect()
-                };
+                // Whatever the record names, whether or not anything is there: a
+                // record can name an empty slot — one whose write failed after a
+                // save, one from a build with one place, a reinstall that kept the
+                // keychain and not the database.
+                let places = [
+                    None,
+                    Some(Slot::Primary),
+                    Some(Slot::Secondary),
+                    Some(Slot::Login),
+                ];
                 for place in places {
+                    let holds = |slot: Slot| items.iter().any(|(held, _)| *held == slot);
+                    // The one case this cannot get right, and does not claim to: a
+                    // record naming the login keychain while it is empty and a
+                    // data-protection copy is held. The login slot cannot be looked
+                    // for without reading it, so it is taken for held — see
+                    // `replace_sign_in` — and a new item can then land where a read
+                    // falling past the empty login slot looks first.
+                    if place == Some(Slot::Login)
+                        && !holds(Slot::Login)
+                        && (holds(Slot::Primary) || holds(Slot::Secondary))
+                    {
+                        continue;
+                    }
                     for locked in [false, true] {
                         for cut in &cuts {
                             let keychain = match cut {
@@ -2753,37 +3135,58 @@ mod tests {
                                 "held {items:?}, record at {place:?}, locked {locked}, \
                                  unreachable {unreachable}, cut {cut:?}"
                             );
-                            match replace_sign_in(&keychain, place, locked) {
-                                Ok(slot) => {
-                                    assert_eq!(keychain.read(Some(slot)), Some("new"), "{case}");
-                                    assert_eq!(slot == Slot::Login, unreachable, "{case}");
-                                    let mut left = keychain.items();
-                                    left.remove(&slot);
-                                    // The one copy allowed to stay: see
-                                    // `a_login_copy_that_will_not_go_is_left_…`.
-                                    if !locked && cut.is_some() {
-                                        left.remove(&Slot::Login);
-                                    }
-                                    assert!(left.is_empty(), "{case}: left behind {left:?}");
+                            let result = replace_sign_in(&keychain, place, locked);
+                            let taken = *keychain.steps.lock().unwrap();
+                            // A record under which a read finds nothing at all is out
+                            // of step already — the service forgets it at its next
+                            // read — and there is nothing for this to keep.
+                            //
+                            // The app quit inside the save, whatever the save went on
+                            // to return: the record was never rewritten. (Quitting
+                            // after it returned and before the record was written is
+                            // the window a two-phase save would close.)
+                            let quit_inside = matches!(cut, Some(Cut::Quit(step)) if *step < taken);
+                            if result.is_err() || quit_inside {
+                                if cut.is_none() {
+                                    // The one refusal with nothing cut: a record naming an
+                                    // empty slot while the copy is in the other.
+                                    let why = result.as_ref().unwrap_err();
+                                    assert!(why.contains("out of date"), "{case}: {why}");
+                                    assert_eq!(
+                                        keychain.items(),
+                                        items.iter().copied().collect(),
+                                        "{case}"
+                                    );
                                 }
-                                Err(why) => {
-                                    assert!(cut.is_some(), "{case}: {why}");
+                                if place.is_some() && before.is_some() {
+                                    assert_eq!(keychain.read(place), before, "{case}: {result:?}");
+                                } else if before.is_some() {
                                     // With no record there is nothing for a read to
-                                    // agree with, and a new item the save could not
-                                    // take back is cleared by the service instead:
-                                    // see `a_first_connection_the_store_could_not_
-                                    // take_back_is_cleared_rather_than_adopted`.
-                                    if place.is_some() {
-                                        assert_eq!(keychain.read(place), before, "{case}: {why}");
-                                    }
-                                    if matches!(cut, Some(Cut::Refused(_))) {
-                                        assert!(
-                                            !keychain.items().values().any(|v| *v == "new"),
-                                            "{case}: a save reported as failed left its item"
-                                        );
-                                    }
+                                    // agree with, only something to find; and a new
+                                    // item a first connection could not take back is
+                                    // cleared by the service: see `a_first_connection_
+                                    // the_store_could_not_take_back_is_cleared_…`.
+                                    assert!(keychain.read(place).is_some(), "{case}: {result:?}");
                                 }
+                                if matches!(cut, Some(Cut::Refused(_))) {
+                                    assert!(
+                                        !keychain.items().values().any(|v| *v == "new"),
+                                        "{case}: a save reported as failed left its item"
+                                    );
+                                }
+                                continue;
                             }
+                            let slot = result.unwrap();
+                            assert_eq!(keychain.read(Some(slot)), Some("new"), "{case}");
+                            assert_eq!(slot == Slot::Login, unreachable, "{case}");
+                            let mut left = keychain.items();
+                            left.remove(&slot);
+                            // The one copy allowed to stay: see
+                            // `a_login_copy_that_will_not_go_is_left_…`.
+                            if !locked && cut.is_some() {
+                                left.remove(&Slot::Login);
+                            }
+                            assert!(left.is_empty(), "{case}: left behind {left:?}");
                         }
                     }
                 }
@@ -3169,7 +3572,7 @@ mod tests {
         fn can_lock(&self) -> bool {
             self.inner.can_lock()
         }
-        fn load(&self, place: Option<&str>) -> Result<Option<(Account, Protection)>, String> {
+        fn load(&self, place: Option<&str>) -> Result<Option<Loaded>, String> {
             self.inner.load(place)
         }
         fn save(
@@ -3185,7 +3588,7 @@ mod tests {
             }
             self.inner.save(account, locked, place)
         }
-        fn clear(&self) -> Result<(), String> {
+        fn clear(&self) -> Result<Option<String>, String> {
             self.inner.clear()
         }
     }
@@ -3482,6 +3885,162 @@ mod tests {
         assert!(service.view().connected);
     }
 
+    fn record_in(db: &Db) -> Stored {
+        serde_json::from_str(&db.meta_value(ACCOUNT_KEY).unwrap().unwrap()).unwrap()
+    }
+
+    fn write_record_in(db: &Db, place: &str) {
+        let mut record = record_in(db);
+        record.place = Some(place.to_string());
+        db.set_meta_value(ACCOUNT_KEY, &serde_json::to_string(&record).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn a_record_naming_somewhere_the_sign_in_is_not_is_put_right_by_the_first_read() {
+        let db = database("place-read");
+        let store = std::sync::Arc::new(MemoryStore {
+            place: Some("where-it-is"),
+            ..MemoryStore::working()
+        });
+        connect(&with_store(Some(db.clone()), &store, connecting()));
+        write_record_in(&db, "somewhere-else");
+
+        let later = with_store(Some(db.clone()), &store, Box::new(FakeHttp::default()));
+        later.set_lock(true).unwrap();
+        assert_eq!(record_in(&db).place.as_deref(), Some("where-it-is"));
+        // And the save that followed started from where the read found it.
+        assert_eq!(
+            store
+                .places
+                .lock()
+                .unwrap()
+                .last()
+                .cloned()
+                .flatten()
+                .as_deref(),
+            Some("where-it-is")
+        );
+    }
+
+    #[test]
+    fn a_sign_in_adopted_without_a_record_is_recorded_where_it_was_found() {
+        // A reinstall on iOS keeps the keychain and not the database, and the item
+        // may be in either slot.
+        let db = database("place-adopt");
+        let store = std::sync::Arc::new(MemoryStore {
+            place: Some("the-other-slot"),
+            ..MemoryStore::working()
+        });
+        *store.account.lock().unwrap() = Some((
+            Account {
+                refresh_token: "kept".to_string(),
+                account_id: Some("dbid:OLD".to_string()),
+            },
+            Protection::DeviceOnly,
+        ));
+        assert!(
+            with_store(Some(db.clone()), &store, Box::new(FakeHttp::default()))
+                .view()
+                .connected
+        );
+        assert_eq!(record_in(&db).place.as_deref(), Some("the-other-slot"));
+    }
+
+    #[test]
+    fn a_connection_starts_from_where_the_store_says_the_sign_in_really_is() {
+        // Connecting reads nothing — a read is a prompt — so the store is asked
+        // where the item is without reading it, and the record put right before the
+        // save starts from it.
+        let db = database("place-finish");
+        let store = std::sync::Arc::new(MemoryStore {
+            place: Some("slot-a"),
+            ..MemoryStore::working()
+        });
+        let service = with_store(Some(db.clone()), &store, connecting());
+        connect(&service);
+        write_record_in(&db, "slot-gone");
+        let store_located = std::sync::Arc::new(MemoryStore {
+            place: Some("slot-b"),
+            located: Some("slot-a"),
+            account: Mutex::new(store.account.lock().unwrap().clone()),
+            ..MemoryStore::working()
+        });
+        let service = with_store(Some(db.clone()), &store_located, connecting());
+        service.begin().unwrap();
+        service.finish("the-code").unwrap();
+        assert_eq!(
+            *store_located.places.lock().unwrap(),
+            vec![Some("slot-a".to_string())],
+            "the save was handed the corrected place"
+        );
+        assert_eq!(record_in(&db).place.as_deref(), Some("slot-b"));
+    }
+
+    #[test]
+    fn a_disconnect_that_leaves_only_an_unread_login_copy_still_disconnects() {
+        let db = database("leftover");
+        let store = std::sync::Arc::new(MemoryStore {
+            leaves_on_clear: Some("A copy in the login keychain could not be removed."),
+            past_leftovers: Some("data-protection-only"),
+            ..MemoryStore::working()
+        });
+        let service = with_store(Some(db.clone()), &store, connecting());
+        connect(&service);
+
+        let gone = service.disconnect();
+        assert!(!gone.connected, "{}", gone.message);
+        assert!(gone.message.starts_with("Disconnected"), "{}", gone.message);
+        assert!(
+            gone.message.contains("login keychain"),
+            "and says what was left: {}",
+            gone.message
+        );
+        assert!(
+            !with_store(Some(db.clone()), &store, Box::new(FakeHttp::default()))
+                .view()
+                .connected
+        );
+
+        // A launch with no record looks for a sign-in to adopt only where that copy
+        // is not.
+        store.places.lock().unwrap().clear();
+        let later = with_store(Some(db.clone()), &store, connecting());
+        let _ = later.view();
+        assert_eq!(
+            *store.places.lock().unwrap(),
+            vec![Some("data-protection-only".to_string())]
+        );
+
+        // Connecting again is a connection like any other, and the caution goes.
+        connect(&later);
+        assert_ne!(db.meta_value(LEFTOVER_KEY).unwrap().as_deref(), Some("on"));
+    }
+
+    #[test]
+    fn a_failed_reconnect_over_a_record_that_cannot_be_read_does_not_wipe_the_sign_in() {
+        // "No record" has to be certain before a failed save may clear the store:
+        // one the database holds and this cannot parse may describe this sign-in.
+        let db = database("unreadable-record");
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let service = with_store(Some(db.clone()), &store, connecting());
+        connect(&service);
+        db.set_meta_value(ACCOUNT_KEY, "{written by something else")
+            .unwrap();
+
+        store
+            .refuse_saves
+            .lock()
+            .unwrap()
+            .replace("the keychain said no".to_string());
+        service.begin().unwrap();
+        assert!(service.finish("the-code").is_err());
+        assert!(
+            store.account.lock().unwrap().is_some(),
+            "the sign-in is still there"
+        );
+    }
+
     #[test]
     fn where_the_store_put_the_sign_in_is_recorded_and_handed_back() {
         // Apple's keychain can hold two copies after a save cut short, and only the
@@ -3588,7 +4147,13 @@ mod tests {
         assert!(connected.connected, "{}", connected.message);
         assert_eq!(connected.account_id.as_deref(), Some("dbid:AAAA"));
         assert_eq!(
-            service.tokens.load(None).unwrap().unwrap().0.refresh_token,
+            service
+                .tokens
+                .load(None)
+                .unwrap()
+                .unwrap()
+                .account
+                .refresh_token,
             "refresh-me",
             "and the long-lived token is what was kept"
         );
