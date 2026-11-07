@@ -21,9 +21,20 @@
  *   one is dropped rather than shown against the new target. A recording still
  *   running when the target moves is cancelled.
  *
- * What this does **not** do is the rest of issue #27: the button stays the only
- * input, the Tone Trainer's Space bar still toggles, and the recording cap is the
- * capture crate's business.
+ * Push-to-talk is a **hold** (issue #27): what decides whether an attempt records
+ * is whether the button is down when the device opens. So a press during
+ * `starting` that follows a release takes the release back — a finger that slid
+ * off and on again, or a key let go and pressed again, is still holding.
+ *
+ * [`PushToTalk.abandon`] is for the learner going away rather than the target
+ * moving: the window hidden, the button taken off the screen. A recording running
+ * or opening is cancelled, but a judgement already on its way is kept — it was
+ * finished on purpose, for a target that is still there to come back to.
+ *
+ * [`HeldKey`] turns a key's keydown/keyup (and the window losing focus) into one
+ * press and one release, for the Tone Trainer's Space bar. The recording cap is the
+ * capture crate's business: it closes the device at the cap, and the release that
+ * follows still judges what was captured.
  */
 
 /** Where the one attempt is. `idle` is the only phase a press starts from. */
@@ -79,8 +90,17 @@ export class PushToTalk<R> {
     this.#onPhase(phase);
   }
 
-  /** The button went down. Resolves once the device is open, or with why not. */
+  /**
+   * The button went down. Resolves once the device is open, or with why not.
+   *
+   * Down again while the device is still opening, after a release: the release is
+   * taken back and the first press's outcome says what came of it.
+   */
   async press(): Promise<Outcome<R>> {
+    if (this.#phase === "starting" && this.#released) {
+      this.#released = false;
+      return { kind: "deferred" };
+    }
     if (this.#phase !== "idle") return { kind: "ignored" };
     const attempt = ++this.#attempt;
     this.#released = false;
@@ -143,6 +163,25 @@ export class PushToTalk<R> {
    */
   async retarget(): Promise<void> {
     this.#attempt++;
+    await this.#cancelRecording();
+  }
+
+  /**
+   * The learner went away — the window was hidden, or the button left the screen —
+   * so no release is coming for a recording that is open or opening.
+   *
+   * That recording is cancelled, as [`retarget`] would. A judgement already being
+   * worked out is **kept**: the learner let go on purpose before leaving, and what
+   * it belongs to is still there when they come back.
+   */
+  async abandon(): Promise<void> {
+    if (this.#phase !== "starting" && this.#phase !== "listening") return;
+    this.#attempt++;
+    await this.#cancelRecording();
+  }
+
+  /** Cancel a recording that is running; one still opening cancels itself. */
+  async #cancelRecording(): Promise<void> {
     if (this.#phase !== "listening") return;
     this.#set("stopping");
     try {
@@ -152,5 +191,36 @@ export class PushToTalk<R> {
     } finally {
       this.#set("idle");
     }
+  }
+}
+
+/**
+ * One key held for push-to-talk: its first keydown is the press, and its keyup —
+ * or the window losing focus, after which the keyup goes to another window — is
+ * the release.
+ *
+ * A held key repeats its keydown; a repeat is not a new press, or a toggle would
+ * be all a hold could be. A release that was never pressed here (Space let go
+ * after focus left a text field) is nothing.
+ */
+export class HeldKey {
+  #held = false;
+
+  get held(): boolean {
+    return this.#held;
+  }
+
+  /** A keydown. True when it starts a hold. */
+  down(repeat: boolean): boolean {
+    if (repeat || this.#held) return false;
+    this.#held = true;
+    return true;
+  }
+
+  /** A keyup, or focus leaving the window. True when it ends a hold. */
+  up(): boolean {
+    if (!this.#held) return false;
+    this.#held = false;
+    return true;
   }
 }

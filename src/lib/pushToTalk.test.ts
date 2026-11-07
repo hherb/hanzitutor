@@ -52,6 +52,107 @@ describe.each([
   ["the full app", here.PushToTalk],
   ["the tone trainer", trainer.PushToTalk],
 ] as const)("push-to-talk in %s", (_, PushToTalk) => {
+  it("keeps recording when the button goes down again before the device opens", async () => {
+    // Held, let go and held again while the device opens — a finger that slid
+    // off and back, or a key tapped twice. What counts is that it is down when
+    // the device is open, so this records rather than throwing the attempt away
+    // under a finger that is on the button.
+    const fake = backend();
+    const talk = new PushToTalk<string>(fake.io);
+
+    const pressed = talk.press();
+    expect(await talk.release()).toEqual({ kind: "deferred" });
+    expect(await talk.press()).toEqual({ kind: "deferred" });
+    fake.starts[0].resolve();
+    expect(await pressed).toEqual({ kind: "listening" });
+
+    const released = talk.release();
+    fake.stops[0].resolve("a judgement");
+    expect(await released).toEqual({ kind: "scored", result: "a judgement" });
+    expect(fake.calls).toEqual(["start", "stop"]);
+  });
+
+  it("still cancels when the second hold is let go before the device opens", async () => {
+    const fake = backend();
+    const talk = new PushToTalk<string>(fake.io);
+
+    const pressed = talk.press();
+    await talk.release();
+    await talk.press();
+    await talk.release();
+    fake.starts[0].resolve();
+
+    expect(await pressed).toEqual({ kind: "released-early" });
+    expect(fake.calls).toEqual(["start", "cancel"]);
+  });
+
+  it("ignores a press while the button is already held and the device opens", async () => {
+    const fake = backend();
+    const talk = new PushToTalk<string>(fake.io);
+
+    const pressed = talk.press();
+    expect(await talk.press()).toEqual({ kind: "ignored" });
+    fake.starts[0].resolve();
+    expect(await pressed).toEqual({ kind: "listening" });
+    expect(fake.calls).toEqual(["start"]);
+  });
+
+  it("cancels a running recording when the learner goes away", async () => {
+    const fake = backend();
+    const talk = new PushToTalk<string>(fake.io);
+
+    const pressed = talk.press();
+    fake.starts[0].resolve();
+    await pressed;
+    await talk.abandon();
+
+    expect(fake.calls).toEqual(["start", "cancel"]);
+    expect(talk.phase).toBe("idle");
+    expect(await talk.release()).toEqual({ kind: "ignored" });
+  });
+
+  it("cancels a device that opens after the learner went away", async () => {
+    const fake = backend();
+    const talk = new PushToTalk<string>(fake.io);
+
+    const pressed = talk.press();
+    await talk.abandon();
+    fake.starts[0].resolve();
+
+    expect(await pressed).toEqual({ kind: "dropped" });
+    expect(fake.calls).toEqual(["start", "cancel"]);
+    expect(talk.phase).toBe("idle");
+  });
+
+  it("keeps a judgement already on its way when the learner goes away", async () => {
+    // Let go, then switched away: the recording was finished on purpose, and the
+    // board it belongs to is still there to come back to.
+    const fake = backend();
+    const talk = new PushToTalk<string>(fake.io);
+
+    const pressed = talk.press();
+    fake.starts[0].resolve();
+    await pressed;
+    const released = talk.release();
+    await talk.abandon();
+    fake.stops[0].resolve("still wanted");
+
+    expect(await released).toEqual({ kind: "scored", result: "still wanted" });
+    expect(fake.calls).toEqual(["start", "stop"]);
+  });
+
+  it("does nothing when the learner goes away with nothing in flight", async () => {
+    const fake = backend();
+    const talk = new PushToTalk<string>(fake.io);
+
+    await talk.abandon();
+    expect(fake.calls).toEqual([]);
+    expect(talk.phase).toBe("idle");
+    const pressed = talk.press();
+    fake.starts[0].resolve();
+    expect(await pressed).toEqual({ kind: "listening" });
+  });
+
   it("returns to idle when a cancel throws instead of rejecting", async () => {
     const fake = backend();
     fake.io.cancel = () => {
@@ -226,5 +327,58 @@ describe.each([
     await settle();
     fake.stops[0].resolve("for this target");
     expect(await released).toEqual({ kind: "scored", result: "for this target" });
+  });
+});
+
+describe.each([
+  ["the full app", here.HeldKey],
+  ["the tone trainer", trainer.HeldKey],
+] as const)("a held key in %s", (_, HeldKey) => {
+  it("starts a hold on the first press and ends it on the release", () => {
+    const key = new HeldKey();
+    expect(key.down(false)).toBe(true);
+    expect(key.held).toBe(true);
+    expect(key.up()).toBe(true);
+    expect(key.held).toBe(false);
+  });
+
+  it("ignores the key repeating while it is held", () => {
+    // Holding Space sends a keydown every few tens of milliseconds; each one is
+    // not a new press, or the second would be taken as a release.
+    const key = new HeldKey();
+    expect(key.down(false)).toBe(true);
+    expect(key.down(true)).toBe(false);
+    expect(key.down(true)).toBe(false);
+    expect(key.held).toBe(true);
+  });
+
+  it("ignores a repeat that arrives without a press", () => {
+    // The key was already down when focus came back to the window.
+    const key = new HeldKey();
+    expect(key.down(true)).toBe(false);
+    expect(key.held).toBe(false);
+  });
+
+  it("does not start a second hold while one is held", () => {
+    // Some platforms do not mark a repeat; a second press is still the same hold.
+    const key = new HeldKey();
+    key.down(false);
+    expect(key.down(false)).toBe(false);
+    expect(key.up()).toBe(true);
+  });
+
+  it("ends a hold once, however many ways it ends", () => {
+    // The window losing focus ends it too — the key's own release then goes to
+    // another window — and the release that may follow is not a second one.
+    const key = new HeldKey();
+    key.down(false);
+    expect(key.up()).toBe(true);
+    expect(key.up()).toBe(false);
+  });
+
+  it("ignores a release it never saw pressed", () => {
+    // Space pressed in a text field, released after focus left it.
+    const key = new HeldKey();
+    expect(key.up()).toBe(false);
   });
 });

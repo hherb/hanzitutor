@@ -79,6 +79,12 @@ use std::sync::{Mutex, PoisonError};
 /// grow the buffer until the process died. Ten seconds is several times the
 /// longest syllable this feature scores, so hitting the cap means something has
 /// gone wrong rather than that the learner was slow.
+///
+/// **The cap closes the device**, not only the buffer (issue #27): a stream that
+/// ran on after it, recording nothing, kept the system's microphone indicator lit
+/// for as long as the button stayed down — or for good, if the release was lost.
+/// What was captured up to the cap is kept for [`Recorder::stop`], which still
+/// judges it and says it was cut short.
 pub const MAX_RECORD_SECS: u32 = 10;
 
 /// How long to wait for the device to open before giving up on it. Opening a
@@ -283,6 +289,14 @@ impl Recorder {
     #[cfg(not(target_os = "android"))]
     fn open_stream(&self) -> Result<(), String> {
         let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        // A recording whose device closed itself at the cap, and that nobody came
+        // back to stop. The interface only presses with nothing of its own in
+        // flight, so this one is orphaned — a webview that reloaded mid-press —
+        // and refusing every later press with "Already listening." for it would
+        // be the stale flag the Android backend already learned not to trust.
+        if let Some(over) = active.take_if(|recording| recording.thread.is_finished()) {
+            let _ = over.thread.join();
+        }
         if active.is_some() {
             return Err("Already listening.".into());
         }
@@ -298,8 +312,11 @@ impl Recorder {
             let samples = Arc::clone(&samples);
             let failure = Arc::clone(&failure);
             let truncation = Arc::clone(&truncation);
+            // The audio callback's way of saying the cap is reached: the same
+            // channel a stop arrives on, so the thread has one thing to wait for.
+            let full = stop_tx.clone();
             std::thread::spawn(move || {
-                capture_thread(samples, failure, truncation, ready_tx, stop_rx);
+                capture_thread(samples, failure, truncation, ready_tx, stop_rx, full);
             })
         };
 
@@ -339,6 +356,10 @@ impl Recorder {
     }
 
     /// Stop recording and hand back what was captured.
+    ///
+    /// A recording whose device already closed at the cap is still here to be
+    /// stopped, with `truncated` set: the learner held on too long, and is judged on
+    /// the first [`MAX_RECORD_SECS`] rather than told nothing was being recorded.
     #[cfg(not(target_os = "android"))]
     pub fn stop(&self) -> Result<Recording, String> {
         let active = {
@@ -347,7 +368,7 @@ impl Recorder {
         };
 
         // Ignore a send failure: the thread may already have exited because the
-        // device disappeared, and the samples it did capture are still worth
+        // cap closed the device, and the samples it did capture are still worth
         // having.
         let _ = active.stop.send(());
         let _ = active.thread.join();
@@ -531,6 +552,61 @@ fn release_input_session() {
     });
 }
 
+/// Where the audio callback puts what it hears, up to the cap.
+///
+/// Its own type so that what happens at the cap can be tested without a
+/// microphone: the buffer stops growing, the truncation flag is set, and the
+/// capture thread is told once to let the stream go.
+#[cfg(not(target_os = "android"))]
+struct Sink {
+    samples: Arc<Mutex<Vec<f32>>>,
+    truncation: Arc<Mutex<Truncation>>,
+    channels: usize,
+    limit: usize,
+    /// Wakes the capture thread to drop the stream. Taken when it is used, so it is
+    /// sent once however many callbacks arrive before the stream is gone.
+    full: Option<Sender<()>>,
+}
+
+#[cfg(not(target_os = "android"))]
+impl Sink {
+    /// One callback's worth of audio.
+    fn accept(&mut self, data: &cpal::Data) {
+        // The lock is held only for the copy. The stop path takes it once, after
+        // the stream has been dropped, so there is no contention to speak of.
+        let Ok(mut out) = self.samples.lock() else {
+            return;
+        };
+        if out.len() < self.limit {
+            append_mono(data, self.channels, &mut out, self.limit);
+        }
+        if out.len() < self.limit {
+            return;
+        }
+        drop(out);
+        if let Ok(mut flag) = self.truncation.lock() {
+            flag.0 = true;
+        }
+        if let Some(full) = self.full.take() {
+            // A failure means the thread is already on its way out, which is what
+            // this asked for.
+            let _ = full.send(());
+        }
+    }
+}
+
+/// Keep the stream alive until a stop, or the cap, says to let it go.
+///
+/// Dropping the stream is what closes the device and puts the system's
+/// recording indicator out. Generic so a test can stand a stream in.
+#[cfg(not(target_os = "android"))]
+fn hold<S>(stream: S, stop: &mpsc::Receiver<()>) {
+    // The sink holds a sender to this channel until the cap, so a `Recorder`
+    // dropped without a stop is let go at the cap at the latest.
+    let _ = stop.recv();
+    drop(stream);
+}
+
 /// Runs on its own thread for the life of one recording.
 #[cfg(not(target_os = "android"))]
 fn capture_thread(
@@ -539,6 +615,7 @@ fn capture_thread(
     truncation: Arc<Mutex<Truncation>>,
     ready: Sender<Result<(u32, String), String>>,
     stop: mpsc::Receiver<()>,
+    full: Sender<()>,
 ) {
     let host = cpal::default_host();
     let Some(device) = host.default_input_device() else {
@@ -560,23 +637,15 @@ fn capture_thread(
     let channels = config.channels as usize;
     let limit = sample_rate as usize * MAX_RECORD_SECS as usize;
 
-    let data_samples = Arc::clone(&samples);
-    let data_truncation = Arc::clone(&truncation);
-    let data_error = Arc::clone(&failure);
-    let data_callback = move |data: &cpal::Data, _: &cpal::InputCallbackInfo| {
-        // The lock is held only for the copy. The stop path takes it once, after
-        // the stream has been dropped, so there is no contention to speak of.
-        let Ok(mut out) = data_samples.lock() else {
-            return;
-        };
-        if out.len() >= limit {
-            if let Ok(mut flag) = data_truncation.lock() {
-                flag.0 = true;
-            }
-            return;
-        }
-        append_mono(data, channels, &mut out, limit);
+    let mut sink = Sink {
+        samples,
+        truncation,
+        channels,
+        limit,
+        full: Some(full),
     };
+    let data_error = Arc::clone(&failure);
+    let data_callback = move |data: &cpal::Data, _: &cpal::InputCallbackInfo| sink.accept(data);
 
     let error_callback = move |err: cpal::Error| {
         // A changed route is not the end of a recording, and on iOS *taking* the
@@ -626,10 +695,8 @@ fn capture_thread(
 
     let _ = ready.send(Ok((sample_rate, name)));
 
-    // Park until told to stop. A disconnected channel means the `Recorder` was
-    // dropped without a stop, which is also a reason to let the stream go.
-    let _ = stop.recv();
-    drop(stream);
+    // Park until told to stop, by the learner or by the cap.
+    hold(stream, &stop);
 }
 
 /// Downmix one callback's worth of samples to mono and append them.
@@ -734,6 +801,151 @@ mod tests {
         });
         assert!(recorder.active.is_poisoned());
         assert_eq!(recorder.stop().unwrap_err(), "Not listening.");
+    }
+
+    /// What the cap does to a `cpal` recording (issue #27). Android's recorder
+    /// stops itself at the cap in Kotlin, and has no stream on this side.
+    #[cfg(not(target_os = "android"))]
+    mod cap {
+        use super::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// One callback's worth of mono `f32` audio, as cpal would hand it over.
+        fn callback(buffer: &mut [f32]) -> cpal::Data {
+            // SAFETY: the pointer and length describe `buffer`, which is `f32` and
+            // outlives every use of the `Data` in these tests.
+            unsafe {
+                cpal::Data::from_parts(
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
+                    cpal::SampleFormat::F32,
+                )
+            }
+        }
+
+        /// Stands in for a `cpal::Stream`: says when it has been let go.
+        struct Stream(Arc<AtomicBool>);
+
+        impl Drop for Stream {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        /// A recording as `open_stream` leaves it, with a stand-in stream held by the
+        /// same `hold` the capture thread uses, and the sink its callback would fill.
+        fn recording(limit: usize) -> (Active, Sink, Arc<AtomicBool>) {
+            let samples = Arc::new(Mutex::new(Vec::new()));
+            let truncation = Arc::new(Mutex::new(Truncation::default()));
+            let (stop_tx, stop_rx) = mpsc::channel();
+            let closed = Arc::new(AtomicBool::new(false));
+            let stream = Stream(Arc::clone(&closed));
+            let thread = std::thread::spawn(move || hold(stream, &stop_rx));
+            let sink = Sink {
+                samples: Arc::clone(&samples),
+                truncation: Arc::clone(&truncation),
+                channels: 1,
+                limit,
+                full: Some(stop_tx.clone()),
+            };
+            let active = Active {
+                samples,
+                failure: Arc::new(Mutex::new(None)),
+                truncation,
+                stop: stop_tx,
+                thread,
+                sample_rate: 16_000,
+                device: "a test input".into(),
+            };
+            (active, sink, closed)
+        }
+
+        /// Wait, briefly, for the capture thread to have let its stream go.
+        fn closes(active: &Active) -> bool {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !active.thread.is_finished() {
+                if std::time::Instant::now() > deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            true
+        }
+
+        #[test]
+        fn the_cap_closes_the_device_and_keeps_what_was_captured() {
+            // Issue #27: the cap used to stop the buffer and leave the stream running,
+            // so the system's microphone indicator stayed lit with nothing recorded.
+            let (active, mut sink, closed) = recording(10);
+
+            sink.accept(&callback(&mut [0.25; 6]));
+            assert!(
+                !active.thread.is_finished(),
+                "under the cap, the device stays open"
+            );
+            assert!(!closed.load(Ordering::SeqCst));
+
+            sink.accept(&callback(&mut [0.5; 6]));
+            assert!(closes(&active), "reaching the cap must let the stream go");
+            assert!(closed.load(Ordering::SeqCst));
+            // A callback already on its way when the device closed changes nothing.
+            sink.accept(&callback(&mut [0.75; 6]));
+
+            // And the release that follows is a stop like any other: the first ten
+            // samples are judged, and said to be cut short — not "Not listening.".
+            let recorder = Recorder::default();
+            *recorder.active.lock().unwrap() = Some(active);
+            let recording = recorder
+                .stop()
+                .expect("a capped recording can still be stopped");
+            assert_eq!(recording.samples.len(), 10);
+            assert_eq!(&recording.samples[..6], &[0.25; 6]);
+            assert_eq!(&recording.samples[6..], &[0.5; 4]);
+            assert!(recording.truncated);
+            assert_eq!(recording.sample_rate, 16_000);
+            assert_eq!(recorder.stop().unwrap_err(), "Not listening.");
+        }
+
+        #[test]
+        fn a_recording_stopped_before_the_cap_is_not_truncated() {
+            let (active, mut sink, closed) = recording(10);
+            sink.accept(&callback(&mut [0.25; 4]));
+
+            let recorder = Recorder::default();
+            *recorder.active.lock().unwrap() = Some(active);
+            let recording = recorder.stop().expect("stopping should succeed");
+            assert!(closed.load(Ordering::SeqCst), "a stop lets the stream go");
+            assert_eq!(recording.samples, vec![0.25; 4]);
+            assert!(!recording.truncated);
+        }
+
+        #[test]
+        fn a_recording_closed_at_the_cap_does_not_refuse_the_next_press() {
+            // Nobody came back to stop it — the webview reloaded mid-press, say. Its
+            // device is already closed, so it is not a reason for "Already listening."
+            let (active, mut sink, _) = recording(4);
+            sink.accept(&callback(&mut [0.25; 4]));
+            assert!(closes(&active));
+
+            let recorder = Recorder::default();
+            *recorder.active.lock().unwrap() = Some(active);
+            match recorder.start() {
+                Ok(()) => {
+                    let _ = recorder.stop();
+                }
+                Err(message) => assert_ne!(message, "Already listening."),
+            }
+        }
+
+        #[test]
+        fn a_recording_still_running_refuses_the_next_press() {
+            let (active, _sink, _) = recording(4);
+            let recorder = Recorder::default();
+            *recorder.active.lock().unwrap() = Some(active);
+            assert_eq!(recorder.start().unwrap_err(), "Already listening.");
+            // And is still there to be stopped.
+            assert!(recorder.stop().is_ok());
+        }
     }
 
     #[test]
