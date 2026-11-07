@@ -433,9 +433,11 @@ impl Recorder {
         };
 
         let stopped: RecordStopped = crate::platform::call("recordStop", ())?;
-        let bytes = std::fs::read(&stopped.path)
-            .map_err(|error| format!("could not read the recording: {error}"))?;
+        // Removed whether or not it could be read: a file that would not read is
+        // still ten seconds of somebody's voice.
+        let read = std::fs::read(&stopped.path);
         let _ = std::fs::remove_file(&stopped.path);
+        let bytes = read.map_err(|error| format!("could not read the recording: {error}"))?;
 
         let rate = if stopped.sample_rate == 0 {
             active.sample_rate
@@ -443,17 +445,7 @@ impl Recorder {
             stopped.sample_rate
         };
         let limit = rate as usize * MAX_RECORD_SECS as usize;
-        let mut samples: Vec<f32> = bytes
-            .chunks_exact(2)
-            // 32768 rather than 32767: it is the exact scale of the negative
-            // half, so a full-scale sample lands on -1.0 rather than slightly
-            // past it, and the sign is symmetric.
-            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32_768.0)
-            .collect();
-        let truncated = samples.len() > limit;
-        if truncated {
-            samples.truncate(limit);
-        }
+        let (samples, truncated) = decode_pcm16(&bytes, limit);
 
         Ok(Recording {
             samples,
@@ -462,6 +454,32 @@ impl Recorder {
             truncated,
         })
     }
+}
+
+/// Kotlin's PCM16 little-endian mono file as samples, cut at `limit`, and
+/// whether the cut was needed.
+///
+/// A recording that *reaches* the cap is a truncated one, not only a recording
+/// that passes it — the same rule the `cpal` callback applies with its own
+/// `out.len() >= limit`. Kotlin writes whole tenths of a second, so a hold that
+/// ends on the cap's last buffer is exactly `limit` samples long, and a strict
+/// `>` reported that as a complete utterance though nothing says its tail was
+/// not cut off.
+///
+/// Pure, and compiled for tests on every platform, because the Android path
+/// that calls it cannot be built or run anywhere else.
+#[cfg(any(target_os = "android", test))]
+fn decode_pcm16(bytes: &[u8], limit: usize) -> (Vec<f32>, bool) {
+    let mut samples: Vec<f32> = bytes
+        .chunks_exact(2)
+        // 32768 rather than 32767: it is the exact scale of the negative
+        // half, so a full-scale sample lands on -1.0 rather than slightly
+        // past it, and the sign is symmetric.
+        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32_768.0)
+        .collect();
+    let truncated = samples.len() >= limit;
+    samples.truncate(limit);
+    (samples, truncated)
 }
 
 /// The default input device and its configuration, or nothing.
@@ -710,6 +728,44 @@ mod tests {
             assert_eq!(status.sample_rate, 0);
             assert!(status.detail.contains("No microphone"));
         }
+    }
+
+    /// PCM16 little-endian bytes for `count` copies of `value`.
+    fn pcm16(value: i16, count: usize) -> Vec<u8> {
+        (0..count).flat_map(|_| value.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn an_android_recording_that_reaches_the_cap_is_truncated() {
+        // Kotlin writes whole buffers, so a hold can end on exactly `limit`
+        // samples. That is the cap reached, and the tail may be missing.
+        let (samples, truncated) = decode_pcm16(&pcm16(100, 16), 16);
+        assert_eq!(samples.len(), 16);
+        assert!(truncated, "reaching the cap is truncation, as on desktop");
+    }
+
+    #[test]
+    fn an_android_recording_past_the_cap_is_cut_to_it() {
+        let (samples, truncated) = decode_pcm16(&pcm16(100, 20), 16);
+        assert_eq!(samples.len(), 16);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn an_android_recording_under_the_cap_is_whole() {
+        let (samples, truncated) = decode_pcm16(&pcm16(100, 15), 16);
+        assert_eq!(samples.len(), 15);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn android_samples_are_scaled_symmetrically() {
+        let mut bytes = pcm16(i16::MIN, 1);
+        bytes.extend(pcm16(16_384, 1));
+        // A stray odd byte is half a sample, and is dropped rather than read.
+        bytes.push(0x7f);
+        let (samples, _) = decode_pcm16(&bytes, 16);
+        assert_eq!(samples, vec![-1.0, 0.5]);
     }
 
     #[test]
