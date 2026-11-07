@@ -333,12 +333,20 @@ impl Model {
 /// pasted paragraph, and when it happens it cuts at the strongest boundary that
 /// gets each piece under the limit, packing as much as fits into each:
 ///
-/// 1. **sentence ends** — `。！？`, and ASCII `.!?` before a space;
-/// 2. **clause marks** — `，；、：`, and ASCII `,;:` before a space;
+/// 1. **sentence ends** — `。！？` and `……`, and ASCII `.!?` before a space;
+/// 2. **clause marks** — `，；、：` and `——`, and ASCII `,;:` before a space;
 /// 3. **spaces**, for a passage typed with them;
 /// 4. a **hard wrap** at the limit, only for a run with none of the above, and
 ///    even then backed off to the start of a number or Latin word (`2026`,
-///    `3.14`, `Beijing`) rather than cutting through it.
+///    `3.14`, `12:30`, `-12.5%`, `２０２６`, `Beijing`) rather than cutting
+///    through it.
+///
+/// A chunk with nothing to say — no letter, digit or character, only
+/// punctuation such as the tail of `！！！…` — is joined to its neighbour rather
+/// than sent alone, because the model returns no audio for it and that fails
+/// the whole phrase. That join can take a chunk a few marks past the limit,
+/// which costs nothing: the limit is about how long the model speaks for, and
+/// punctuation is not spoken.
 ///
 /// Chinese has no spaces, so before the first two steps existed a long Chinese
 /// passage went straight to the hard wrap and was cut at character 60,
@@ -355,6 +363,27 @@ pub fn chunk_text(text: &str) -> Vec<String> {
         &[Boundary::Sentence, Boundary::Clause, Boundary::Space],
         &mut out,
     );
+    join_unspeakable(out)
+}
+
+/// Fold every chunk with nothing to say into the chunk before it, or the one
+/// after when it comes first. A text that is all punctuation stays as it was.
+fn join_unspeakable(chunks: Vec<String>) -> Vec<String> {
+    let speakable = |s: &str| s.chars().any(char::is_alphanumeric);
+    let mut out: Vec<String> = Vec::new();
+    let mut leading = String::new();
+    for chunk in chunks {
+        if speakable(&chunk) {
+            out.push(std::mem::take(&mut leading) + &chunk);
+        } else if let Some(last) = out.last_mut() {
+            last.push_str(&chunk);
+        } else {
+            leading.push_str(&chunk);
+        }
+    }
+    if !leading.is_empty() {
+        out.push(leading);
+    }
     out
 }
 
@@ -373,10 +402,12 @@ impl Boundary {
         let spaced = next.is_none_or(char::is_whitespace);
         match self {
             Self::Sentence => {
-                matches!(ch, '。' | '！' | '？') || (matches!(ch, '.' | '!' | '?') && spaced)
+                matches!(ch, '。' | '！' | '？' | '…' | '⋯')
+                    || (matches!(ch, '.' | '!' | '?') && spaced)
             }
             Self::Clause => {
-                matches!(ch, '，' | '；' | '、' | '：') || (matches!(ch, ',' | ';' | ':') && spaced)
+                matches!(ch, '，' | '；' | '、' | '：' | '—')
+                    || (matches!(ch, ',' | ';' | ':') && spaced)
             }
             Self::Space => ch.is_whitespace(),
         }
@@ -515,17 +546,23 @@ fn push_trimmed(chars: &[char], out: &mut Vec<String>) {
 }
 
 /// True when a cut between `chars[at - 1]` and `chars[at]` would split one
-/// number or Latin word: two ASCII letters or digits, or a digit and the `.`
-/// or `,` inside a number (`3.14`, `1,000`).
+/// number or Latin word: two letters or digits (ASCII, or full-width digits),
+/// a digit and the `.` `,` `:` inside a number (`3.14`, `1,000`, `12:30`), a
+/// sign and the number it signs (`-12`), or a number and its `%`.
 fn joins(chars: &[char], at: usize) -> bool {
     let (Some(&a), Some(&b)) = (at.checked_sub(1).and_then(|k| chars.get(k)), chars.get(at)) else {
         return false;
     };
-    let digit = |i: usize| chars.get(i).is_some_and(char::is_ascii_digit);
-    let separator = |c: char| matches!(c, '.' | ',');
-    (a.is_ascii_alphanumeric() && b.is_ascii_alphanumeric())
-        || (a.is_ascii_digit() && separator(b) && digit(at + 1))
-        || (separator(a) && b.is_ascii_digit() && at >= 2 && digit(at - 2))
+    let digit = |c: char| c.is_ascii_digit() || ('０'..='９').contains(&c);
+    let word = |c: char| c.is_ascii_alphanumeric() || digit(c);
+    let digit_at = |i: usize| chars.get(i).copied().is_some_and(digit);
+    let separator = |c: char| matches!(c, '.' | ',' | ':');
+    let sign = |c: char| matches!(c, '-' | '+' | '−' | '－' | '＋');
+    (word(a) && word(b))
+        || (digit(a) && separator(b) && digit_at(at + 1))
+        || (separator(a) && digit(b) && at >= 2 && digit_at(at - 2))
+        || (sign(a) && digit(b))
+        || (digit(a) && matches!(b, '%' | '％'))
 }
 
 /// The manifest the build tool writes beside a corpus's clips.
@@ -744,6 +781,61 @@ mod tests {
         let chunks = chunk_text(&text);
         assert_well_formed(&text, &chunks);
         assert!(chunks.iter().any(|c| c.contains("1,000")), "{chunks:?}");
+    }
+
+    #[test]
+    fn an_ellipsis_or_a_dash_is_a_place_to_cut() {
+        // `……` ends a thought the way `。` does, and `——` sets off a clause.
+        let clause = "他想了很久很久很久很久"; // 11 chars
+        let text = format!("{clause}……").repeat(6);
+        assert!(text.chars().count() > MAX_CHUNK);
+        let chunks = chunk_text(&text);
+        assert_well_formed(&text, &chunks);
+        for chunk in &chunks {
+            assert!(chunk.ends_with("……"), "{chunk:?}");
+        }
+
+        let text = format!("{clause}——").repeat(6);
+        let chunks = chunk_text(&text);
+        assert_well_formed(&text, &chunks);
+        for chunk in &chunks {
+            assert!(chunk.ends_with("——"), "{chunk:?}");
+        }
+    }
+
+    #[test]
+    fn a_hard_wrap_keeps_times_signs_percentages_and_full_width_digits() {
+        for (fill, token) in [
+            (MAX_CHUNK - 2, "12:30"),
+            (MAX_CHUNK - 3, "-12.5%"),
+            (MAX_CHUNK - 1, "5%"),
+            (MAX_CHUNK - 2, "２０２６"),
+        ] {
+            let text = format!("{}{token}{}", "汉".repeat(fill), "字".repeat(10));
+            let chunks = chunk_text(&text);
+            assert_well_formed(&text, &chunks);
+            assert!(
+                chunks.iter().any(|c| c.contains(token)),
+                "{token} was cut: {chunks:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chunk_of_bare_punctuation_joins_its_neighbour() {
+        // Nothing in `！！！…` to say, and a chunk with nothing to say is the
+        // model's NoAudio — which would fail the whole phrase.
+        let text = format!("你好{}", "！".repeat(MAX_CHUNK + 10));
+        let chunks = chunk_text(&text);
+        assert_eq!(chunks.concat(), text, "nothing lost");
+        for chunk in &chunks {
+            assert!(
+                chunk.chars().any(char::is_alphanumeric),
+                "unspeakable chunk {chunk:?}"
+            );
+        }
+        // A text that is nothing but punctuation stays one chunk, as before.
+        assert_eq!(chunk_text("！！！"), vec!["！！！"]);
     }
 
     #[test]

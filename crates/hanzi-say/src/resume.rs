@@ -38,13 +38,30 @@
 //!     from the inputs is not evidence the phrase was retired; deleting a
 //!     retired phrase is a deliberate edit, not a side effect of a partial run.
 //!
-//! Manifests written before keys existed have none. An entry like that is
-//! adopted ([`Reuse::Legacy`]) only when its text matches the phrase and the
-//! model it records is the model in use now — the two facts the old manifest
-//! did record — so a corpus synthesised by this tool is not re-encoded wholesale
-//! the first time the new version runs, and one produced any other way (the
-//! `no7z` clips are the corpus's own recordings, under a different model name)
-//! is not mistaken for this model's output.
+//! Manifests written before keys existed have none. Every entry read from disk
+//! is first **pinned** to the model its manifest recorded ([`Merged::new`]),
+//! because the manifest written back carries this run's model at the top and
+//! an entry without its own would silently become this run's output. Then:
+//!
+//! * a key-less entry whose text matches and whose pinned model is the model
+//!   in use now is this tool's own older output, and is adopted
+//!   ([`Reuse::Legacy`]) — so a corpus synthesised by this tool is not
+//!   re-encoded wholesale the first time the new version runs;
+//! * a key-less entry under **another** model, or clip files with **no entry**
+//!   at all, were not made by this tool ([`foreign`]). The committed `no7z`
+//!   clips are the case: the corpus's own CosyVoice2 recordings, chosen over
+//!   MeloTTS on measurement. `synthesize-audio` refuses to replace them unless
+//!   given `--replace-foreign-clips`, and says so before touching anything.
+//!   A *keyed* entry under another model is this tool's own, and is simply
+//!   synthesised again.
+//!
+//! ## Not handled: two runs at once
+//!
+//! Two runs over the same corpus at the same time would each merge into the
+//! manifest they read at the start, and the later write wins. There is no lock:
+//! a lock file left behind by a `Ctrl-C` — the usual way a long run ends early —
+//! would block the next run, which is a worse failure than the one it prevents
+//! for a tool one developer runs by hand. Run one at a time per corpus.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -179,10 +196,10 @@ pub enum Reuse {
 
 /// Whether a phrase's existing clips can stand, or it must be synthesised.
 ///
-/// * `entry` — the phrase's entry in the manifest on disk, if it has one;
+/// * `entry` — the phrase's entry in the manifest on disk, if it has one. Its
+///   `model` is always set once it has been through [`Merged::new`], which
+///   pins each entry to the model the manifest it came from recorded;
 /// * `text`, `key`, `model` — what this run would synthesise it from;
-/// * `manifest_model` — the model the manifest on disk records for itself, the
-///   fallback for an entry that does not name its own;
 /// * `present` — whether both clip files exist.
 ///
 /// A clip on disk with no entry is never reused: nothing says what it is.
@@ -191,7 +208,6 @@ pub fn reuse(
     text: &str,
     key: &str,
     model: &str,
-    manifest_model: Option<&str>,
     present: bool,
 ) -> Option<Reuse> {
     let entry = entry?;
@@ -202,9 +218,37 @@ pub fn reuse(
         Some(k) if k == key => Some(Reuse::Keyed),
         Some(_) => None,
         None => {
-            let recorded = entry.model.as_deref().or(manifest_model);
-            (entry.text == text && recorded == Some(model)).then_some(Reuse::Legacy)
+            (entry.text == text && entry.model.as_deref() == Some(model)).then_some(Reuse::Legacy)
         }
+    }
+}
+
+/// Why a phrase's existing clips may not be replaced without being asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Foreign {
+    /// An entry with no key, recorded under another model: clips this tool did
+    /// not make, such as a corpus's own recordings. Carries that model.
+    OtherModel(Option<String>),
+    /// Clip files at the phrase's names with no manifest entry at all — laid
+    /// down by another tool, or by a run that stopped before recording them.
+    Unlisted,
+}
+
+/// Whether replacing a phrase's clips would overwrite audio this tool did not
+/// make, given its entry (pinned by [`Merged::new`]), this run's `model`, and
+/// whether any of its clip files is on disk.
+///
+/// An entry *with* a key is this tool's own, whatever model it names: a changed
+/// model is an ordinary re-synthesis. So is a key-less entry under this run's
+/// model, which is this tool's output from before keys existed.
+pub fn foreign(entry: Option<&ManifestPhrase>, model: &str, on_disk: bool) -> Option<Foreign> {
+    match entry {
+        Some(e) if e.key.is_none() && e.model.as_deref() != Some(model) => {
+            Some(Foreign::OtherModel(e.model.clone()))
+        }
+        Some(_) => None,
+        None if on_disk => Some(Foreign::Unlisted),
+        None => None,
     }
 }
 
@@ -252,12 +296,21 @@ impl Merged {
             previous_order: Vec::new(),
             previous_model: None,
         };
-        if let Some(existing) = existing {
+        if let Some(mut existing) = existing {
             if existing.source != source {
                 return Err(format!(
                     "the manifest on disk is for {:?}, not {source:?} — refusing to merge them",
                     existing.source
                 ));
+            }
+            // Each entry is pinned to the model its manifest recorded. The top-
+            // level `model` written back is this run's, so an entry left
+            // without its own would read as this run's output from then on —
+            // and the corpus's own recordings would be adopted as MeloTTS.
+            for phrase in &mut existing.phrases {
+                if phrase.model.is_none() {
+                    phrase.model = Some(existing.model.clone());
+                }
             }
             merged.previous_model = Some(existing.model);
             for phrase in existing.phrases {
@@ -397,55 +450,63 @@ mod tests {
     #[test]
     fn a_matching_key_is_reused_and_any_other_is_not() {
         let e = entry("p1", "你好", Some("k1"));
-        assert_eq!(
-            reuse(Some(&e), "你好", "k1", "m", None, true),
-            Some(Reuse::Keyed)
-        );
+        assert_eq!(reuse(Some(&e), "你好", "k1", "m", true), Some(Reuse::Keyed));
         // Text, model or voice changed: the key differs, and the clip is redone.
-        assert_eq!(reuse(Some(&e), "你好", "k2", "m", None, true), None);
+        assert_eq!(reuse(Some(&e), "你好", "k2", "m", true), None);
         // The key matches but a clip is gone.
-        assert_eq!(reuse(Some(&e), "你好", "k1", "m", None, false), None);
+        assert_eq!(reuse(Some(&e), "你好", "k1", "m", false), None);
         // A clip on disk with no entry at all says nothing about what it is.
-        assert_eq!(reuse(None, "你好", "k1", "m", None, true), None);
+        assert_eq!(reuse(None, "你好", "k1", "m", true), None);
     }
 
     #[test]
     fn a_legacy_entry_is_adopted_only_for_the_same_text_and_model() {
-        let e = entry("p1", "你好", None);
+        let legacy = |model: Option<&str>| {
+            let mut e = entry("p1", "你好", None);
+            e.model = model.map(str::to_string);
+            e
+        };
+        let e = legacy(Some("melo"));
         assert_eq!(
-            reuse(Some(&e), "你好", "k", "melo", Some("melo"), true),
+            reuse(Some(&e), "你好", "k", "melo", true),
             Some(Reuse::Legacy)
         );
         // The phrase's text has changed since.
-        assert_eq!(
-            reuse(Some(&e), "您好", "k", "melo", Some("melo"), true),
-            None
-        );
+        assert_eq!(reuse(Some(&e), "您好", "k", "melo", true), None);
         // A different model made it — the no7z case, the corpus's own audio.
-        assert_eq!(
-            reuse(
-                Some(&e),
-                "你好",
-                "k",
-                "melo",
-                Some("cosyvoice2-0.5b (dataset's own audio)"),
-                true
-            ),
-            None
-        );
+        let theirs = legacy(Some("cosyvoice2-0.5b (dataset's own audio)"));
+        assert_eq!(reuse(Some(&theirs), "你好", "k", "melo", true), None);
         // No model recorded at all is not a match.
-        assert_eq!(reuse(Some(&e), "你好", "k", "melo", None, true), None);
-        // An entry's own model wins over the manifest's.
-        let mut own = entry("p1", "你好", None);
-        own.model = Some("other".to_string());
+        assert_eq!(reuse(Some(&legacy(None)), "你好", "k", "melo", true), None);
+        assert_eq!(reuse(Some(&e), "你好", "k", "melo", false), None);
+    }
+
+    #[test]
+    fn only_clips_this_tool_did_not_make_are_foreign() {
+        let with = |key: Option<&str>, model: Option<&str>| {
+            let mut e = entry("p1", "你好", key);
+            e.model = model.map(str::to_string);
+            e
+        };
+        let dataset = "cosyvoice2-0.5b (dataset's own audio)";
+        // The corpus's own recordings: no key, another model.
         assert_eq!(
-            reuse(Some(&own), "你好", "k", "melo", Some("melo"), true),
-            None
+            foreign(Some(&with(None, Some(dataset))), "melo", true),
+            Some(Foreign::OtherModel(Some(dataset.to_string())))
         );
         assert_eq!(
-            reuse(Some(&e), "你好", "k", "melo", Some("melo"), false),
+            foreign(Some(&with(None, None)), "melo", true),
+            Some(Foreign::OtherModel(None))
+        );
+        // This tool's own, keyed under an older model, or key-less under this one.
+        assert_eq!(
+            foreign(Some(&with(Some("k"), Some("old"))), "melo", true),
             None
         );
+        assert_eq!(foreign(Some(&with(None, Some("melo"))), "melo", true), None);
+        // Files with no entry, and nothing at all.
+        assert_eq!(foreign(None, "melo", true), Some(Foreign::Unlisted));
+        assert_eq!(foreign(None, "melo", false), None);
     }
 
     #[test]
@@ -498,6 +559,28 @@ mod tests {
         assert_eq!(ids(&built.manifest), ["p1", "other-file"]);
         assert_eq!(built.dropped_missing, ["gone"]);
         assert_eq!(built.kept_outside, ["other-file"]);
+    }
+
+    #[test]
+    fn existing_entries_keep_the_model_they_were_made_with() {
+        // The manifest on disk records the dataset's model for itself and none
+        // per entry. Once merged, the top-level model is this run's — so each
+        // carried-over entry has to say its own, or it would read as this run's.
+        let mut own = entry("own", "二", Some("k"));
+        own.model = Some("melo".to_string());
+        let existing = manifest("dataset", vec![entry("theirs", "一", None), own]);
+        let merged = Merged::new(Some(existing), "src", "melo", vec![1.0, 0.7]).unwrap();
+        assert_eq!(
+            merged.entry("theirs").unwrap().model.as_deref(),
+            Some("dataset")
+        );
+        assert_eq!(merged.entry("own").unwrap().model.as_deref(), Some("melo"));
+        let built = merged.build(&[], |_| true);
+        assert_eq!(built.manifest.model, "melo");
+        assert_eq!(built.manifest.phrases[0].model.as_deref(), Some("dataset"));
+        // And it is no longer adoptable as this run's output.
+        let theirs = merged.entry("theirs");
+        assert_eq!(reuse(theirs, "一", "k2", "melo", true), None);
     }
 
     #[test]

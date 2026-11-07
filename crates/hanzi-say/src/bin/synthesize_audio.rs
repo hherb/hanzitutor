@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! scripts/with-cargo-env.sh cargo run --release -p hanzi-say --bin synthesize-audio -- \
-//!     --source no7z --in data/slices/no7z_hsk12_slice.json
+//!     --source harukicoder --in data/phrases/harukicoder-readers.jsonl
 //! ```
 //!
 //! Reads one or more sentence files, writes one MP3 per phrase per speed under
@@ -35,6 +35,12 @@
 //! manifest records it under the key this run would compute — text, engine,
 //! model, voice and encoder settings — so changing any of them re-synthesises
 //! it; and the manifest on disk is merged into rather than replaced.
+//!
+//! It will not overwrite clips it did not make — a corpus's own recordings, as
+//! `no7z` ships, or clip files with no manifest entry — unless given
+//! `--replace-foreign-clips`; without it such a run stops before touching
+//! anything and says which phrases and which model. Run one at a time per
+//! corpus: two concurrent runs each merge into the manifest they started from.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -89,6 +95,8 @@ struct Args {
     /// torch breaks one or the other. So it has its own virtualenv, and the
     /// caller names the interpreter inside it.
     cosyvoice_python: String,
+    /// Allow replacing clips this tool did not make. See [`foreign_refusal`].
+    replace_foreign: bool,
 }
 
 /// The engine that produces the audio.
@@ -121,7 +129,10 @@ fn usage() -> String {
          \x20 --cosyvoice-model <dir>  its model directory\n\
          \x20 --prompt-wav <file>      reference clip for zero-shot cloning\n\
          \x20 --prompt-text <text>     that clip's transcript\n\
-         \x20 --cosyvoice-python <exe> interpreter for the CosyVoice venv (default python3)\n"
+         \x20 --cosyvoice-python <exe> interpreter for the CosyVoice venv (default python3)\n\
+         \x20 --replace-foreign-clips  allow overwriting clips this tool did not make (a\n\
+         \x20                          corpus's own recordings, or files with no manifest\n\
+         \x20                          entry); without it such a run is refused\n"
     )
 }
 
@@ -138,6 +149,7 @@ fn parse_args() -> Result<Args, String> {
     let mut prompt_wav: Option<PathBuf> = None;
     let mut prompt_text = "You are a helpful assistant.<|endofprompt|>".to_string();
     let mut cosyvoice_python = "python3".to_string();
+    let mut replace_foreign = false;
 
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
@@ -169,6 +181,7 @@ fn parse_args() -> Result<Args, String> {
             "--prompt-wav" => prompt_wav = Some(PathBuf::from(value("--prompt-wav")?)),
             "--prompt-text" => prompt_text = value("--prompt-text")?,
             "--cosyvoice-python" => cosyvoice_python = value("--cosyvoice-python")?,
+            "--replace-foreign-clips" => replace_foreign = true,
             "-h" | "--help" => return Err(usage()),
             other => return Err(format!("unexpected argument {other:?}\n{}", usage())),
         }
@@ -191,6 +204,7 @@ fn parse_args() -> Result<Args, String> {
         prompt_wav,
         prompt_text,
         cosyvoice_python,
+        replace_foreign,
     })
 }
 
@@ -430,17 +444,6 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = args.out.join(&args.source);
     let manifest_path = out_dir.join("manifest.json");
 
-    // What an interrupted run left half-written. Nothing at a final name can be
-    // partial — encoding goes to `.tmp` and is renamed — so these are the only
-    // files that can be, and they are of no use to anyone.
-    let partials = resume::remove_partials(&out_dir)?;
-    if !partials.is_empty() {
-        println!(
-            "removed {} partial file(s) left by an interrupted run",
-            partials.len()
-        );
-    }
-
     let model_name = model_id(args);
     let voice = voice_parts(args, &model_name)?;
     let speeds: Vec<f32> = Speed::all().iter().map(|s| s.multiplier()).collect();
@@ -455,6 +458,7 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // use, and which need synthesising. Decided before any engine is loaded, so
     // a run with nothing to do needs no model.
     let mut todo: Vec<(sentences::Phrase, String)> = Vec::new();
+    let mut foreign: Vec<(String, resume::Foreign)> = Vec::new();
     let (mut reused, mut adopted) = (0usize, 0usize);
     for phrase in &phrases {
         let key = phrase_key(&voice, &phrase.text);
@@ -462,15 +466,12 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         let entry = merged.entry(&phrase.id);
         let present =
             entry.is_some_and(|e| e.audio == audio) && resume::clips_present(&args.out, &audio);
-        let verdict = resume::reuse(
-            entry,
-            &phrase.text,
-            &key,
-            &model_name,
-            merged.previous_model(),
-            present,
-        );
+        let verdict = resume::reuse(entry, &phrase.text, &key, &model_name, present);
         let Some(verdict) = verdict else {
+            let on_disk = files.iter().any(|f| f.exists());
+            if let Some(why) = resume::foreign(entry, &model_name, on_disk) {
+                foreign.push((phrase.id.clone(), why));
+            }
             todo.push((phrase.clone(), key));
             continue;
         };
@@ -502,6 +503,23 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             String::new()
         }
     );
+    // Clips this tool did not make are not replaced unless asked, and the check
+    // comes before anything is written, cleaned up or loaded.
+    if !foreign.is_empty() && !args.replace_foreign {
+        return Err(foreign_refusal(&args.source, &model_name, &foreign).into());
+    }
+
+    // What an interrupted run left half-written. Nothing at a final name can be
+    // partial — encoding goes to `.tmp` and is renamed — so these are the only
+    // files that can be, and they are of no use to anyone.
+    let partials = resume::remove_partials(&out_dir)?;
+    if !partials.is_empty() {
+        println!(
+            "removed {} partial file(s) left by an interrupted run",
+            partials.len()
+        );
+    }
+
     // Clips that exist and are about to be overwritten deserve a line of their
     // own: they are committed, and a model or text change replaces them all.
     let replacing = todo
@@ -711,6 +729,56 @@ fn run(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Why a run that would overwrite clips this tool did not make is refused.
+///
+/// The case this exists for is the committed `no7z` corpus: its clips are the
+/// corpus's own CosyVoice2 recordings, chosen on measurement over MeloTTS and
+/// shipped under their own licence notice. Their manifest predates synthesis
+/// keys and records the dataset's model, so a plain `--source no7z` run would
+/// otherwise queue every one of them and replace 1,638 recordings with MeloTTS.
+/// The same goes for clip files with no manifest entry at all, which is what
+/// `scripts/fetch-clip-audio.py` lays down before a manifest exists.
+///
+/// Clips this tool made — a keyed entry, whatever model it names — are never
+/// foreign: re-synthesising them after a model change is the ordinary case.
+fn foreign_refusal(source: &str, model: &str, foreign: &[(String, resume::Foreign)]) -> String {
+    let mut by_model: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut unlisted = 0usize;
+    for (_, why) in foreign {
+        match why {
+            resume::Foreign::OtherModel(m) => {
+                *by_model
+                    .entry(m.clone().unwrap_or_else(|| "(none recorded)".to_string()))
+                    .or_default() += 1
+            }
+            resume::Foreign::Unlisted => unlisted += 1,
+        }
+    }
+    let mut out = format!(
+        "refusing to overwrite clips this tool did not make: {} phrase(s) in corpus \
+         {source:?} would be replaced with {model:?}",
+        foreign.len()
+    );
+    for (recorded, n) in &by_model {
+        out.push_str(&format!(
+            "\n  {n} recorded under model {recorded:?} with no synthesis key \
+             (e.g. the corpus's own recordings)"
+        ));
+    }
+    if unlisted > 0 {
+        out.push_str(&format!(
+            "\n  {unlisted} with clip files on disk but no manifest entry"
+        ));
+    }
+    let shown: Vec<&str> = foreign.iter().take(10).map(|(id, _)| id.as_str()).collect();
+    out.push_str(&format!("\n  e.g. {}", shown.join(", ")));
+    out.push_str(
+        "\nIf replacing them is what you want, pass --replace-foreign-clips; \
+         nothing has been changed.",
+    );
+    out
+}
+
 /// Print a list of report lines, the first twenty and a count of the rest.
 fn print_ids(lines: impl ExactSizeIterator<Item = String>) {
     let total = lines.len();
@@ -757,6 +825,7 @@ mod tests {
             prompt_wav: None,
             prompt_text: "prompt".to_string(),
             cosyvoice_python: "python3".to_string(),
+            replace_foreign: false,
         }
     }
 
@@ -826,6 +895,12 @@ mod tests {
     /// A corpus of two phrases at levels 1 and 3, with finished clips and a
     /// manifest naming them, in a fresh directory. No model, and no `ffmpeg`.
     fn corpus(name: &str, keyed: bool) -> (Args, PathBuf) {
+        corpus_with(name, "vits-melo-tts-zh_en", [keyed, keyed])
+    }
+
+    /// [`corpus`], with the model the manifest records and, per phrase (level 1,
+    /// level 3), whether its entry carries this tool's key.
+    fn corpus_with(name: &str, manifest_model: &str, keyed: [bool; 2]) -> (Args, PathBuf) {
         let dir = std::env::temp_dir().join(format!("hanzi-say-run-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("out/no7z")).unwrap();
@@ -842,10 +917,13 @@ mod tests {
 
         let voice = voice_parts(&a, &model_id(&a)).unwrap();
         let mut phrases = Vec::new();
-        for (id, level, text) in [
+        for ((id, level, text), keyed) in [
             ("hsk1-0001", "1", "你好。"),
             ("hsk3-0001", "3", "我学中文。"),
-        ] {
+        ]
+        .into_iter()
+        .zip(keyed)
+        {
             let (audio, files) = clip_paths(&a, id);
             for f in &files {
                 std::fs::write(f, b"a finished clip").unwrap();
@@ -858,13 +936,13 @@ mod tests {
                 translation: String::new(),
                 audio,
                 bytes: 30,
-                model: None,
+                model: keyed.then(|| model_id(&a)),
                 key: keyed.then(|| phrase_key(&voice, text)),
             });
         }
         let manifest = hanzi_say::AudioManifest {
             source: "no7z".to_string(),
-            model: "vits-melo-tts-zh_en".to_string(),
+            model: manifest_model.to_string(),
             speeds: vec![1.0, 0.7],
             phrases,
         };
@@ -880,6 +958,109 @@ mod tests {
         resume::read_manifest(&dir.join("out/no7z/manifest.json"))
             .unwrap()
             .unwrap()
+    }
+
+    /// The model the committed `no7z` manifest records: the corpus's own audio.
+    const DATASET: &str = "cosyvoice2-0.5b (dataset's own audio)";
+
+    /// Every file under the corpus directory, with its bytes.
+    fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut files: Vec<(PathBuf, Vec<u8>)> = std::fs::read_dir(dir.join("out/no7z"))
+            .unwrap()
+            .map(|e| {
+                let path = e.unwrap().path();
+                let bytes = std::fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    #[test]
+    fn a_corpus_this_tool_did_not_make_is_refused() {
+        // The binary's own header example used to be `--source no7z`: with the
+        // default MeloTTS, every one of the corpus's 1,638 recordings would have
+        // been queued and overwritten.
+        let (a, dir) = corpus_with("foreign", DATASET, [false, false]);
+        std::fs::write(dir.join("out/no7z/hsk1-0001.mp3.tmp"), b"half").unwrap();
+        let before = snapshot(&dir);
+        let err = run(&a)
+            .expect_err("foreign clips must not be replaced")
+            .to_string();
+        assert!(err.contains("--replace-foreign-clips"), "{err}");
+        assert!(err.contains("no7z") && err.contains(DATASET), "{err}");
+        assert!(err.contains("2 phrase(s)"), "{err}");
+        assert_eq!(snapshot(&dir), before, "a refused run must touch nothing");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn replacing_foreign_clips_proceeds_with_the_flag() {
+        let (mut a, dir) = corpus_with("foreign-flag", DATASET, [false, false]);
+        a.replace_foreign = true;
+        // Past the refusal and on to the engine, which is absent here.
+        let err = run(&a).expect_err("no model in the test").to_string();
+        assert!(err.contains("fetch-tts.sh"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_clip_with_no_manifest_entry_is_not_overwritten_without_the_flag() {
+        // `fetch-clip-audio.py` lays clips down before any manifest exists.
+        let (a, dir) = corpus("unlisted", true);
+        std::fs::remove_file(dir.join("out/no7z/manifest.json")).unwrap();
+        let err = run(&a)
+            .expect_err("unlisted clips must not be replaced")
+            .to_string();
+        assert!(err.contains("--replace-foreign-clips"), "{err}");
+        assert!(err.contains("no manifest entry"), "{err}");
+        assert!(!dir.join("out/no7z/manifest.json").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_partial_run_does_not_relabel_the_corpus_own_clips() {
+        // hsk3 was made by this tool; hsk1 is the corpus's own recording, in a
+        // manifest that records the dataset's model. A `--level 3` run writes
+        // this run's model at the top — and used to leave hsk1 with no model of
+        // its own, so the next full run read it as MeloTTS and adopted it.
+        let (mut a, dir) = corpus_with("relabel", DATASET, [false, true]);
+        a.levels = vec!["3".to_string()];
+        run(&a).expect("hsk3 is reusable, so no engine is needed");
+        let m = manifest_at(&dir);
+        assert_eq!(m.phrases[0].id, "hsk1-0001");
+        assert_eq!(
+            m.phrases[0].model.as_deref(),
+            Some(DATASET),
+            "provenance is pinned"
+        );
+        assert_eq!(m.phrases[0].key, None);
+
+        a.levels.clear();
+        let before = snapshot(&dir);
+        let err = run(&a)
+            .expect_err("the full run must not adopt hsk1")
+            .to_string();
+        assert!(err.contains("--replace-foreign-clips"), "{err}");
+        assert_eq!(snapshot(&dir), before);
+        assert_eq!(
+            manifest_at(&dir).phrases[0].key,
+            None,
+            "not stamped with a MeloTTS key"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_keyed_clip_from_another_model_is_replaced_without_the_flag() {
+        // This tool made it and recorded how; a changed model is an ordinary
+        // re-synthesis, not a foreign corpus.
+        let (mut a, dir) = corpus("keyed-other-model", true);
+        a.model = dir.join("vits-melo-tts-zh_en-v2");
+        let err = run(&a).expect_err("no model in the test").to_string();
+        assert!(err.contains("fetch-tts.sh"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
