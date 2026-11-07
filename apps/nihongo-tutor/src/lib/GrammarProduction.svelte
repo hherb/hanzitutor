@@ -44,7 +44,7 @@
   } from "./types";
   import type { VoiceStatus } from "./speech";
   import { needsRuby } from "./words";
-  import { recordLine, sessionLine } from "./grammarDrill";
+  import { emptyNote, recordLine, sessionLine } from "./grammarDrill";
   import { canSubmit, outcomeLine, poolNote } from "./grammarProduction";
 
   interface Props {
@@ -64,6 +64,8 @@
   let right = $state(0);
   let error = $state<string | null>(null);
   let busy = $state(false);
+  /** Whether the draw came back empty: there is nothing to write, not something coming. */
+  let nothing = $state(false);
 
   /**
    * A ticket per ask, so an earlier request cannot land on top of a later one.
@@ -82,6 +84,7 @@
       const drawn = await api.nextGrammarProduction();
       if (mine !== ticket) return;
       question = drawn;
+      nothing = drawn === null;
       outcome = null;
       typed = "";
     } catch (e) {
@@ -177,6 +180,8 @@
       <!-- The field and the button are one row at every width: measured at 390px,
            the label beside them pushed `Check` onto a line of its own, which put the
            one control the question has below the box the learner had just typed in. -->
+      <!-- The placeholder says what may be typed and never what to type: an example
+           answer here would be the answer to every question on the same pattern. -->
       <div class="row">
         <input
           id="written"
@@ -184,7 +189,7 @@
           autocomplete="off"
           autocapitalize="off"
           spellcheck="false"
-          placeholder="nohouga ・ のほうが"
+          placeholder="in romaji or kana"
           bind:value={typed}
           disabled={outcome !== null}
           onkeydown={(event) => event.key === "Enter" && void submit()}
@@ -240,6 +245,11 @@
         Which pattern does this sentence take? Write what is missing — romaji or kana.
       </p>
     {/if}
+  {:else if nothing && !error}
+    <p class="hint" role="status">{emptyNote(size, "write")}</p>
+    <div class="after">
+      <button class="next" onclick={onleave}>Back to the grammar course</button>
+    </div>
   {:else if !error}
     <p class="hint">{busy ? "Drawing a question…" : "Loading…"}</p>
   {/if}

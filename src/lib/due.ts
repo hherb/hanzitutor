@@ -2,18 +2,41 @@
  * How a due date is said out loud.
  *
  * The backend compares due timestamps as text; the interface only has to make
- * one readable, so this measures from the clock in whole days. It lives here
- * rather than in `App.svelte` because two screens say it — the board's detail
- * card, and the character lookup's — and two copies of "in 5 days" would drift.
+ * one readable. It lives here rather than in `App.svelte` because two screens
+ * say it — the board's detail card, and the character lookup's — and two copies
+ * of "in 5 days" would drift.
+ *
+ * "Today" and "tomorrow" are dates on the learner's own calendar, not 24-hour
+ * windows from the clock (issue #33): at 22:00 a card due at 08:00 is due
+ * *tomorrow*, though it is only ten hours away, and a day and a half from the
+ * morning is tomorrow evening rather than "in 2 days". Counting dates rather than
+ * hours is also what keeps the answer right across a daylight-saving change, when
+ * a day is 23 or 25 hours long.
+ *
+ * `now` is a parameter so that the tests can say what the clock reads; the app
+ * leaves it to default.
  */
-export function dueLabel(due: string): string {
-  const remaining = Date.parse(due) - Date.now();
-  if (Number.isNaN(remaining)) return due;
-  if (remaining <= 0) return "now";
-  if (remaining < 86_400_000) return "today";
-  const days = Math.round(remaining / 86_400_000);
-  if (days <= 1) return "tomorrow";
+export function dueLabel(due: string, now: Date = new Date()): string {
+  const at = Date.parse(due);
+  if (Number.isNaN(at)) return due;
+  if (at <= now.getTime()) return "now";
+  const days = calendarDay(new Date(at)) - calendarDay(now);
+  if (days <= 0) return "today";
+  if (days === 1) return "tomorrow";
   if (days < 30) return `in ${days} days`;
   const months = Math.round(days / 30);
   return months <= 1 ? "next month" : `in ${months} months`;
+}
+
+/**
+ * The local calendar date a moment falls on, as a count of days.
+ *
+ * The local year, month and day are read and then counted as if they were a UTC
+ * date, which has no daylight-saving changes, so two dates a day apart are always
+ * exactly one apart here whatever the clocks did in between.
+ */
+function calendarDay(moment: Date): number {
+  return Math.round(
+    Date.UTC(moment.getFullYear(), moment.getMonth(), moment.getDate()) / 86_400_000,
+  );
 }

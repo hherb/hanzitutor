@@ -53,6 +53,14 @@
      two agree rather than summing, because this takes the maximum. */
   --safe-top: max(env(safe-area-inset-top, 0px), var(--inset-top, 0px));
   --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--inset-bottom, 0px));
+  /* The sides matter once the device is turned: in landscape an iPhone's notch
+     or Dynamic Island and its rounded corners are on the left or the right, and
+     the wide layout used there would otherwise draw the sidebar under them
+     (issue #33). Only `env()` reports these — the Android backend measures the
+     top and bottom bars — and on Android that is the cutout, which in landscape
+     is exactly the side that needs clearing. */
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
   /* The canvas draws real glyph outlines, but lists and headings still need a
      CJK face for the characters they render as text. The first entry is the
      copy bundled with the app; the rest are what any machine can be relied on

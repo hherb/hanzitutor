@@ -25,6 +25,39 @@
 #                                 grade sets and decompositions, and EDRDG's
 #                                 readings and glosses. See the two sections
 #                                 below for what each file is and is not for.
+#
+# ## Every source is pinned
+#
+# Each repository is read at a **commit**, not at a branch head, and each single
+# file is checked against a **SHA-256** before anything uses it — the same
+# arrangement as `fetch-sherpa.sh`, `fetch-tts.sh` and `fetch-phrases.sh`. A
+# branch head can move between two runs of this script, and `hanzi.bin.gz` and the
+# Japanese artifacts are committed: a re-fetch that silently pulled different
+# upstream text would make the next `prepare-*` run quietly produce a different
+# artifact. A file that does not match its digest is refused, whether it was just
+# downloaded or was already on disk.
+#
+# The revisions are the ones the committed artifacts were built from: the head of
+# each repository on the day its artifact was last regenerated (2026-09-23 for
+# `hanzi.bin.gz`, 2026-10-02/03 for the kana and kanji). `hanzi.bin.gz`,
+# `kana.bin.gz` and `kanji.bin.gz` were checked to rebuild **byte-identically**
+# from them on 2026-11-07, and `words.bin.gz` identically but for the one thing
+# no pin can hold, the `JMdict_e.gz` date below. Moving a pin is a deliberate
+# commit: change the revision, re-record the digests from a download you have read,
+# re-run the `prepare-*` step, and commit the artifact with it.
+#
+# Two exceptions, each for a reason that is the upstream's rather than this
+# script's:
+#
+#   * The per-character SVGs (AnimCJK's kana, KanjiVG's cross-check) are a few
+#     thousand files, so they are pinned by commit alone. A commit fixes their
+#     content just as firmly; what it does not add is a second check against the
+#     transport, which HTTPS already provides.
+#   * `JMdict_e.gz` cannot be pinned at all: EDRDG rebuilds it daily and keeps no
+#     archive of earlier days. It is fetched over HTTPS, its digest is printed and
+#     recorded in `data/raw/JMdict_e.PROVENANCE.txt`, and `prepare-words` records
+#     its own `JMdict created` date in the artifact. `JMDICT_E_SHA256=<digest>`
+#     checks a copy against a digest you recorded earlier.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,12 +66,27 @@ LICENCES="$ROOT/licences"
 FONTS="$ROOT/src/assets/fonts"
 mkdir -p "$RAW" "$LICENCES" "$FONTS"
 
-MMAH="https://raw.githubusercontent.com/skishore/makemeahanzi/master"
-HANZIDB="https://raw.githubusercontent.com/ruddfawcett/hanziDB.csv/master"
-HSKVOCAB="https://raw.githubusercontent.com/drkameleon/complete-hsk-vocabulary/main"
-GOOGLEFONTS="https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc"
-ANIMCJK="https://raw.githubusercontent.com/parsimonhi/animCJK/master"
-KANJIVG="https://raw.githubusercontent.com/KanjiVG/kanjivg/master"
+# The upstream revisions, one commit per repository. Recorded 2026-11-07 from each
+# repository's history: the commit that was its head when the artifact it feeds
+# was last regenerated. Make Me a Hanzi, hanziDB and complete-hsk-vocabulary had
+# not moved since well before then (2026-03-08, 2023-10-18 and 2026-03-23), and
+# the google/fonts revision is a later one whose two files are byte-identical to
+# the committed font and OFL text.
+MMAH_REV="bddc96d41bef78427ed0e034e9f7e31d71fd1b92"     # 2026-03-08
+HANZIDB_REV="3e9f908d25f70674862343b201f6b641a36cd226"  # 2023-10-18
+HSKVOCAB_REV="7ac65bf1a6387d35f1ade478906172a19311c7f9" # 2026-03-23
+GOOGLEFONTS_REV="86aced91de05cd4f96a06838124cca45be337b2b"
+ANIMCJK_REV="ec5e17cca76c87587790bcbce5ea0b4d4fb753d6"  # 2026-05-13
+KANJIVG_REV="70a0b7ae0c18ceb5cb358274b029cce0234a43bc"  # 2026-09-30
+# The commit JmdictFurigana's release tag points at, for its licence text.
+FURIGANA_REV="8ab94725bedd23f5a566556519a892f78127fffb"
+
+MMAH="https://raw.githubusercontent.com/skishore/makemeahanzi/$MMAH_REV"
+HANZIDB="https://raw.githubusercontent.com/ruddfawcett/hanziDB.csv/$HANZIDB_REV"
+HSKVOCAB="https://raw.githubusercontent.com/drkameleon/complete-hsk-vocabulary/$HSKVOCAB_REV"
+GOOGLEFONTS="https://raw.githubusercontent.com/google/fonts/$GOOGLEFONTS_REV/ofl/notosanssc"
+ANIMCJK="https://raw.githubusercontent.com/parsimonhi/animCJK/$ANIMCJK_REV"
+KANJIVG="https://raw.githubusercontent.com/KanjiVG/kanjivg/$KANJIVG_REV"
 
 # The pinned Japanese dictionary snapshots, used by both the kanji and the
 # vocabulary sections below. Pinned rather than `latest` because the artifacts
@@ -53,68 +101,56 @@ KANJIVG="https://raw.githubusercontent.com/KanjiVG/kanjivg/master"
 JMDICT_SIMPLIFIED="3.6.2+20260928191014"
 JMDICT_FURIGANA="2.3.1+2026-09-25"
 
-# How every download here retries. `raw.githubusercontent.com` resets the
-# connection (`curl: (56)`) rather than answering when it is asked for hundreds of
-# files at once — which is exactly what the kanji cross-check does — and a retry
-# is the whole difference between "the file is not there" and "the fetch was
-# unlucky". Deliberately *not* `--retry-all-errors`: a genuine 404 should stay a
-# 404, because a missing file is something the caller diagnoses properly.
-#
-# Written into both functions rather than shared through a variable, because
-# `fetch_quiet` is exported to a subshell for the per-character fetches and an
-# exported function does not carry a variable with it.
-
-# fetch <url> <destination> [optional]
-fetch() {
-  local url="$1" dest="$2" optional="${3:-}"
-  if [ -s "$dest" ]; then
-    echo "  have  $(basename "$dest")  ($(du -h "$dest" | cut -f1))"
-    return 0
-  fi
-  echo "  get   $(basename "$dest")"
-  if curl --fail --location --silent --show-error --retry 4 --retry-delay 1 --retry-connrefused "$url" --output "$dest.partial"; then
-    mv "$dest.partial" "$dest"
-    echo "        -> $(du -h "$dest" | cut -f1)"
-  else
-    rm -f "$dest.partial"
-    if [ -n "$optional" ]; then
-      echo "        warning: not available at $url" >&2
-      return 0
-    fi
-    echo "        failed: $url" >&2
-    return 1
-  fi
-}
+# `fetch` and `hash_of`: a download checked against a recorded SHA-256, and how it
+# retries. Shared so the tests can drive it; see the file for both.
+# shellcheck source-path=SCRIPTDIR source=lib/fetch.sh
+. "$ROOT/scripts/lib/fetch.sh"
 
 echo "fetching datasets into $RAW"
-fetch "$MMAH/graphics.txt"   "$RAW/graphics.txt"
-fetch "$MMAH/dictionary.txt" "$RAW/dictionary.txt"
-fetch "$HANZIDB/data/hanziDB.csv" "$RAW/hanziDB.csv"
-fetch "$HSKVOCAB/complete.min.json" "$RAW/hsk-words.json"
+fetch "$MMAH/graphics.txt"   "$RAW/graphics.txt" \
+      a28c478b5178e98f67f510b2d52fde08a69dc664654ef43498253b9b764d46ee
+fetch "$MMAH/dictionary.txt" "$RAW/dictionary.txt" \
+      744bb05d5b0742e9ee35c37791f94d56a173349b3367569e7ca11e510364d203
+fetch "$HANZIDB/data/hanziDB.csv" "$RAW/hanziDB.csv" \
+      03f809543a2bd0d32c8f65f98567cbaa01527f2eefbdb0ea214a1abddc0b03a0
+fetch "$HSKVOCAB/complete.min.json" "$RAW/hsk-words.json" \
+      52d8e64ba65a6db4a38ea34302c6de5df53cdb5145254b25edcbf93b80676434
 
 # The notices are committed and bundled, so this only restores one that was
 # deleted. They are fetched verbatim rather than transcribed, because a notice
 # that has been reworded by hand is no longer the notice the licence requires.
+# Each digest is the committed copy's, so a restored notice is the same notice.
+# The CC and GNU texts come from their publishers' sites, which have no revision
+# to pin to; the digest is what holds them still.
 echo "fetching upstream licence texts into $LICENCES"
-fetch "$MMAH/COPYING"               "$LICENCES/MakeMeAHanzi-COPYING.txt"
-fetch "$MMAH/LGPL"                  "$LICENCES/LGPL-3.0.txt"
-fetch "$MMAH/APL/english/ARPHICPL.TXT" "$LICENCES/Arphic-Public-License.txt"
-fetch "$HANZIDB/LICENSE"            "$LICENCES/MIT-hanziDB.txt"
-fetch "$HSKVOCAB/LICENSE"           "$LICENCES/MIT-complete-hsk-vocabulary.txt"
+fetch "$MMAH/COPYING"               "$LICENCES/MakeMeAHanzi-COPYING.txt" \
+      26fa6b699b32401de4b75a4af574c2e0a99b3df6cb12df9313d257ee4634359c
+fetch "$MMAH/LGPL"                  "$LICENCES/LGPL-3.0.txt" \
+      eeb6fd06beac4a94a12ffb66876ecd6af68d5b6f38650d5f11aa90125933098b
+fetch "$MMAH/APL/english/ARPHICPL.TXT" "$LICENCES/Arphic-Public-License.txt" \
+      3a5e90c0957524a89e48203febcd4492ca4393678abaa7e5b4d70f3ff32b386d
+fetch "$HANZIDB/LICENSE"            "$LICENCES/MIT-hanziDB.txt" \
+      321fbc7640cdd947a44d17b9810e273a3ba7ac75e4d32ab1aee9adfa58bc122f
+fetch "$HSKVOCAB/LICENSE"           "$LICENCES/MIT-complete-hsk-vocabulary.txt" \
+      21094287f6e487f6978cf240c67603e4a0e9f341c6e732558d052feb44210c8f
 fetch "https://creativecommons.org/licenses/by-sa/4.0/legalcode.txt" \
-      "$LICENCES/CC-BY-SA-4.0.txt"
-fetch "$GOOGLEFONTS/OFL.txt"        "$LICENCES/OFL-1.1.txt"
+      "$LICENCES/CC-BY-SA-4.0.txt" \
+      28a9529c7d0bb4dc51f4bf5c116a3d16ef247a052f7591466768ddf563fd1cf5
+fetch "$GOOGLEFONTS/OFL.txt"        "$LICENCES/OFL-1.1.txt" \
+      1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9
 # The GPL-3.0 text, for espeak-ng. It is not a dependency of this project in any
 # package manager's sense: it is inside the prebuilt sherpa-onnx library that the
 # *mobile* builds link, which is why it is only owed on Android and iOS. See
 # LICENSES.md — the macOS build does not contain it, and the notice says so.
-fetch "https://www.gnu.org/licenses/gpl-3.0.txt" "$LICENCES/GPL-3.0.txt"
+fetch "https://www.gnu.org/licenses/gpl-3.0.txt" "$LICENCES/GPL-3.0.txt" \
+      3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986
 
 # Noto Sans SC, OFL-1.1. Variable weight, so one ~17 MB file covers every weight
 # the interface asks for. The canvas does not use it: it draws the stored vector
 # outlines, so the font is only for Chinese rendered as text.
 echo "fetching the interface font into $FONTS"
-fetch "$GOOGLEFONTS/NotoSansSC%5Bwght%5D.ttf" "$FONTS/NotoSansSC-VF.ttf"
+fetch "$GOOGLEFONTS/NotoSansSC%5Bwght%5D.ttf" "$FONTS/NotoSansSC-VF.ttf" \
+      a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da
 
 # ---------------------------------------------------------------------------
 # Japanese kana, for `pnpm run prepare-kana`.
@@ -141,6 +177,11 @@ fetch "$GOOGLEFONTS/NotoSansSC%5Bwght%5D.ttf" "$FONTS/NotoSansSC-VF.ttf"
 # already there, and a failure is a warning rather than a stop, because a missing
 # SVG is something `prepare-kana`/`prepare-kanji` diagnose properly — it knows
 # which characters it needs and which it could not check.
+#
+# It retries the way `fetch` does (see `lib/fetch.sh`), with the flags written out
+# again rather than shared through a variable: it is exported to a subshell for
+# the parallel fetches below, and an exported function does not carry a variable
+# with it.
 fetch_quiet() {
   local url="$1" dest="$2"
   [ -s "$dest" ] && return 0
@@ -153,7 +194,8 @@ fetch_quiet() {
 }
 
 echo "fetching the kana material into $RAW"
-fetch "$ANIMCJK/graphicsJaKana.txt" "$RAW/graphicsJaKana.txt"
+fetch "$ANIMCJK/graphicsJaKana.txt" "$RAW/graphicsJaKana.txt" \
+      50041c8fb477e08d77bcf96716003989b8b1f95a751e4d2628b7339de3b58f38
 
 KANA_SVG="$RAW/svgsJaKana"
 KVG_SVG="$RAW/kvgJa"
@@ -205,14 +247,19 @@ KD2_TGZ="$RAW/kanjidic2-all-$JMDICT_SIMPLIFIED.json.tgz"
 KD2_JSON="$RAW/kanjidic2-all.json"
 
 echo "fetching the kanji material into $RAW"
-fetch "$ANIMCJK/graphicsJa.txt"   "$RAW/graphicsJa.txt"
-fetch "$ANIMCJK/dictionaryJa.txt" "$RAW/dictionaryJa.txt"
+fetch "$ANIMCJK/graphicsJa.txt"   "$RAW/graphicsJa.txt" \
+      2bcd1c6d186e5376c5f9202b4eae2eaeff13c2566675a55f1c9dd548a2ef31c8
+fetch "$ANIMCJK/dictionaryJa.txt" "$RAW/dictionaryJa.txt" \
+      0d80195ac4821d2075bd277934c4eda4c8d98ede047275921e9ece73c660b378
 # The release URL carries the tag percent-encoded (`+` -> `%2B`); the asset name
 # does not. The tarball holds one document whose own file name has no build
 # timestamp in it — the dictionary version and the date it was built from are
 # *inside* the document, which is where `prepare-kanji` reads them from so that
 # the artifact records what it was built from.
-fetch "https://github.com/scriptin/jmdict-simplified/releases/download/${JMDICT_SIMPLIFIED//+/%2B}/kanjidic2-all-$JMDICT_SIMPLIFIED.json.tgz" "$KD2_TGZ"
+# A release asset can be replaced under the same tag, so the tag is not the whole
+# pin; the digest is the rest of it.
+fetch "https://github.com/scriptin/jmdict-simplified/releases/download/${JMDICT_SIMPLIFIED//+/%2B}/kanjidic2-all-$JMDICT_SIMPLIFIED.json.tgz" "$KD2_TGZ" \
+      0607ff2415f907ae412b387b6965a5cdc7ab1f8f59c233ebf619567ee716af54
 if [ ! -s "$KD2_JSON" ]; then
   echo "  unpack kanjidic2-all.json"
   tar -xzf "$KD2_TGZ" -C "$RAW"
@@ -271,20 +318,52 @@ echo "  KanjiVG SVGs     $(ls "$KVG_SVG" | wc -l | tr -d ' ') in $KVG_SVG (the c
 # JMdict is pinned like KANJIDIC2 and for the same reason. `JMdict_e.gz` is not
 # pinned because EDRDG does not version it — it is rebuilt daily — so the artifact
 # records that file's own `JMdict created` date instead, and the counts the words
-# artifact test pins are what catch it moving.
+# artifact test pins are what catch it moving. It is fetched over HTTPS from
+# `www.edrdg.org`: the same server and the same `/pub/Nihongo/` tree as
+# `ftp.edrdg.org` (same file, same ETag, checked 2026-11-07), but the server's
+# certificate names only `www.edrdg.org`, so the `ftp.` name could only ever be
+# reached over plain HTTP — a download anybody on the path can rewrite.
 JD_TGZ="$RAW/jmdict-eng-$JMDICT_SIMPLIFIED.json.tgz"
 JD_JSON="$RAW/jmdict-eng.json"
 
 echo "fetching the vocabulary material into $RAW"
-fetch "https://github.com/scriptin/jmdict-simplified/releases/download/${JMDICT_SIMPLIFIED//+/%2B}/jmdict-eng-$JMDICT_SIMPLIFIED.json.tgz" "$JD_TGZ"
+fetch "https://github.com/scriptin/jmdict-simplified/releases/download/${JMDICT_SIMPLIFIED//+/%2B}/jmdict-eng-$JMDICT_SIMPLIFIED.json.tgz" "$JD_TGZ" \
+      a4851e4dc63de5ac9d1a2af9d0a2b1d3c2c0e8811e72331a7dd3cab4b3e0f786
 if [ ! -s "$JD_JSON" ]; then
   echo "  unpack jmdict-eng.json"
   tar -xzf "$JD_TGZ" -C "$RAW"
   mv "$RAW/jmdict-eng-${JMDICT_SIMPLIFIED%%+*}.json" "$JD_JSON"
 fi
-fetch "http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz" "$RAW/JMdict_e.gz"
+JMDICT_E_URL="https://www.edrdg.org/pub/Nihongo/JMdict_e.gz"
+# A mismatch against `JMDICT_E_SHA256` is not the usual one: the digest is yours,
+# not this script's, and re-downloading cannot help, because upstream will only
+# ever serve today's file.
+fetch "$JMDICT_E_URL" "$RAW/JMdict_e.gz" "${JMDICT_E_SHA256:-}" \
+  "JMDICT_E_SHA256 names an older JMdict_e.gz, and EDRDG rebuilds the file daily
+and keeps no archive, so re-downloading cannot produce it. Restore the copy you
+recorded that digest from into data/raw/, or unset JMDICT_E_SHA256 to take
+today's file (its digest and date are then recorded in JMdict_e.PROVENANCE.txt)."
+# What arrived, since nothing upstream will say later. Rewritten on every run, so
+# it always describes the copy that is on disk.
+JMDICT_E_SHA="$(hash_of "$RAW/JMdict_e.gz")"
+# `q` stops at the first match, near the top of the file; gzip then exits on a
+# closed pipe, which is why the status is not this assignment's business.
+JMDICT_E_CREATED="$(gzip -dc "$RAW/JMdict_e.gz" 2>/dev/null \
+  | sed -n 's/.*JMdict created: *\([0-9-]*\).*/\1/p;/JMdict created:/q' || true)"
+{
+  echo "# The JMdict_e.gz in this directory. Written by scripts/fetch-data.sh;"
+  echo "# EDRDG rebuilds the file daily and keeps no archive, so this is the record."
+  echo "url      $JMDICT_E_URL"
+  echo "sha256   $JMDICT_E_SHA"
+  echo "bytes    $(wc -c <"$RAW/JMdict_e.gz" | tr -d ' ')"
+  echo "created  ${JMDICT_E_CREATED:-unknown}"
+} >"$RAW/JMdict_e.PROVENANCE.txt"
+if [ -z "${JMDICT_E_SHA256:-}" ]; then
+  echo "        JMdict_e.gz is not pinnable: sha256 $JMDICT_E_SHA, created ${JMDICT_E_CREATED:-unknown}"
+fi
 # The release URL percent-encodes the `+`, as the jmdict-simplified ones do.
-fetch "https://github.com/Doublevil/JmdictFurigana/releases/download/${JMDICT_FURIGANA//+/%2B}/JmdictFurigana.json.tar.gz" "$RAW/JmdictFurigana.json.tar.gz"
+fetch "https://github.com/Doublevil/JmdictFurigana/releases/download/${JMDICT_FURIGANA//+/%2B}/JmdictFurigana.json.tar.gz" "$RAW/JmdictFurigana.json.tar.gz" \
+      2327ccc8dfb5181e5aabdb0bc540464caec93cb9ce902d3b6832b841221d392d
 if [ ! -s "$RAW/JmdictFurigana.json" ]; then
   echo "  unpack JmdictFurigana.json  (it starts with a UTF-8 BOM — see prepare_words.rs)"
   tar -xzf "$RAW/JmdictFurigana.json.tar.gz" -C "$RAW"
@@ -294,10 +373,12 @@ fi
 # substantial portion of the work and which the app therefore ships. It belongs to
 # the app rather than to the shared `licences/` directory, because that directory's
 # own test requires every file in it to be catalogued by the *Chinese* app — the
-# mistake HANDOVER_NIHONGO.md invariant 12 records. Fetched from the same pinned
-# release as the data, so the notice and the data cannot come from two releases.
+# mistake HANDOVER_NIHONGO.md invariant 12 records. Fetched from the commit the
+# pinned release's tag points at, so the notice and the data cannot come from two
+# releases — and a tag that is moved later cannot change which one that is.
 echo "fetching the Japanese app's own notices"
-fetch "https://raw.githubusercontent.com/Doublevil/JmdictFurigana/${JMDICT_FURIGANA}/LICENSE" \
-      "$ROOT/apps/nihongo-tutor/src-tauri/licences/MIT-JmdictFurigana.txt"
+fetch "https://raw.githubusercontent.com/Doublevil/JmdictFurigana/$FURIGANA_REV/LICENSE" \
+      "$ROOT/apps/nihongo-tutor/src-tauri/licences/MIT-JmdictFurigana.txt" \
+      c7d0d41a2df5c30b2d9c45dabc224103fa897021ab444fc0f109feb89b64f190
 
 echo "done"

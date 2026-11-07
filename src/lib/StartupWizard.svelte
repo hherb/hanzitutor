@@ -162,7 +162,8 @@
     justify-content: center;
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: calc(var(--safe-top) + 16px) 16px calc(var(--safe-bottom) + 16px);
+    padding: calc(var(--safe-top) + 16px) calc(var(--safe-right) + 16px)
+      calc(var(--safe-bottom) + 16px) calc(var(--safe-left) + 16px);
     background: rgb(15 23 42 / 0.45);
   }
 

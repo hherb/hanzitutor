@@ -716,7 +716,7 @@ impl SyncService {
         if cursors.is_empty() {
             return Ok(());
         }
-        write_vocab_cursors(remote, db.device_id(), &cursors)?;
+        write_vocab_cursors(remote, &db.device_id(), &cursors)?;
         Ok(())
     }
 

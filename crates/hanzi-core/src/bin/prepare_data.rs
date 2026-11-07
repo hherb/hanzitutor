@@ -23,6 +23,7 @@ use std::process::ExitCode;
 
 use hanzi_core::dataset::{Artifact, Character, Word, ARTIFACT_MAGIC};
 use hanzi_core::geom::Point;
+use hanzi_core::pinyin::join_syllables;
 use serde::Deserialize;
 
 /// Geometry: one JSON object per line.
@@ -400,7 +401,7 @@ fn build_words(
         let Some(form) = choose_form(&entry.forms) else {
             continue;
         };
-        let pinyin: String = form.transcriptions.pinyin.split_whitespace().collect();
+        let pinyin = word_reading(&form.transcriptions.pinyin);
         if pinyin.is_empty() {
             continue;
         }
@@ -510,6 +511,34 @@ fn parse_leading_u8(value: &str) -> u8 {
     digits.parse().unwrap_or(0)
 }
 
+/// A word's reading as the artifact stores it, from the source's spaced form.
+///
+/// The source writes one syllable per space-separated part (`"nán guò"`, `"nǚ
+/// ér"`, `"zhè r"`). Simply removing the spaces (issue #19) lost the boundaries
+/// the splitter cannot recover on its own — `nǚér` and `kěài` cannot be divided —
+/// so the parts are joined by [`join_syllables`], which writes the apostrophe
+/// pinyin itself uses before a vowel-initial syllable and nothing anywhere else:
+/// the stored reading is the one a dictionary prints (`nánguò`, `nǚ'ér`,
+/// `zhèr`), and the interface can show it as it is.
+///
+/// Three CC-CEDICT spellings are normalised on the way: `u:` is its ASCII for
+/// `ü` (`lu:è` is 略 `lüè`), `˙` is a neutral-tone dot, and a `5` is its
+/// numbered neutral tone, left on ten erhua entries (`yīhuǐr5`). The neutral tone
+/// is written as no mark at all, so the digit and the dot are dropped.
+fn word_reading(raw: &str) -> String {
+    let parts: Vec<String> = raw
+        .split_whitespace()
+        .map(|part| {
+            part.replace("u:", "ü")
+                .replace("U:", "Ü")
+                .chars()
+                .filter(|ch| !matches!(ch, '˙' | '5'))
+                .collect()
+        })
+        .collect();
+    join_syllables(&parts)
+}
+
 /// Split a compact pronunciation string such as `"hǎo, hào"` into readings.
 fn split_readings(value: &str) -> Vec<String> {
     value
@@ -548,6 +577,41 @@ mod tests {
     }
 
     // ---- the word list ----------------------------------------------------
+
+    #[test]
+    fn a_word_reading_keeps_the_boundaries_the_source_spaced() {
+        // Issue #19: the spaces were simply removed, and the splitter then read
+        // 难过 as náng + uò and could not read 女儿 at all.
+        assert_eq!(word_reading("nán guò"), "nánguò");
+        assert_eq!(word_reading("quán guó"), "quánguó");
+        assert_eq!(word_reading("wǎn ān"), "wǎn'ān");
+        assert_eq!(word_reading("rán ér"), "rán'ér");
+        assert_eq!(word_reading("nǚ ér"), "nǚ'ér");
+        assert_eq!(word_reading("kě ài"), "kě'ài");
+        assert_eq!(word_reading("dì èr"), "dì'èr");
+        assert_eq!(word_reading("É yǔ"), "Éyǔ");
+        // Entries the source already runs together are kept as they are.
+        assert_eq!(word_reading("jiànguò"), "jiànguò");
+        assert_eq!(word_reading("bù lìyú"), "bùlìyú");
+    }
+
+    #[test]
+    fn an_erhua_r_is_written_onto_its_syllable() {
+        assert_eq!(word_reading("zhè r"), "zhèr");
+        assert_eq!(word_reading("yī diǎn r"), "yīdiǎnr");
+        assert_eq!(word_reading("wán r"), "wánr");
+        // CC-CEDICT's numbered neutral tone on the `r`, left in ten entries.
+        assert_eq!(word_reading("bù yīhuǐr5"), "bùyīhuǐr");
+        assert_eq!(word_reading("hútòngr5"), "hútòngr");
+        assert_eq!(word_reading("lí pǔr5"), "lípǔr");
+    }
+
+    #[test]
+    fn cedict_spellings_of_u_umlaut_and_the_neutral_dot_are_normalised() {
+        assert_eq!(word_reading("cè lu:è"), "cèlüè");
+        assert_eq!(word_reading("nu:è dài"), "nüèdài");
+        assert_eq!(word_reading("guī ˙nu:"), "guīnü");
+    }
 
     fn form(pinyin: &str, meanings: &[&str]) -> RawWordForm {
         RawWordForm {

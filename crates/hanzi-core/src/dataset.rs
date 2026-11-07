@@ -95,6 +95,12 @@ pub struct Word {
     /// The reading of the **whole word**, e.g. `"xuéxí"`. Measured from a
     /// dictionary rather than composed from the characters, which is what makes
     /// a polyphonic word such as 着急 come out `zháojí` and not `zhejí`.
+    ///
+    /// Written as pinyin writes a word: run together, with an apostrophe before
+    /// a vowel-initial syllable (`nǚ'ér`, `kě'ài`) and an erhua `r` on the
+    /// syllable it belongs to (`yīdiǎnr`). See
+    /// [`crate::pinyin::join_syllables`]; [`crate::pinyin::syllables`] divides it
+    /// back into one syllable per character, erhua's 儿 aside.
     pub pinyin: String,
     /// English definition. Several senses are joined with `"; "`.
     pub meaning: String,
@@ -179,7 +185,9 @@ struct CharacterQuery {
     /// The query lowercased, for matching definitions.
     lowered: String,
     /// The query's syllables, when it has more than one. Empty for a single
-    /// syllable or a query that cannot be read as pinyin at all.
+    /// syllable or a query that cannot be read as pinyin at all. An unmarked
+    /// `n` + `g` + vowel boundary contributes both of its readings: `pingan` is
+    /// `pin`, `gan`, `ping` and `an`.
     syllables: Vec<String>,
 }
 
@@ -191,12 +199,33 @@ impl CharacterQuery {
         // taken apart: one syllable is already asked as a reading, and the exact
         // and prefix rules answer it.
         let syllables = if folded.chars().count() > 1 {
-            let parts: Vec<String> = crate::pinyin::syllables(&text)
-                .into_iter()
-                .flatten()
-                .map(|syllable| fold_pinyin(&syllable.text))
+            let split = crate::pinyin::syllables_with_spans(&text).unwrap_or_default();
+            let mut parts: Vec<String> = split
+                .iter()
+                .map(|(syllable, _)| fold_pinyin(&syllable.text))
                 .filter(|syllable| !syllable.is_empty())
                 .collect();
+            // Typed pinyin rarely carries the apostrophe that tells `píng'ān`
+            // from `pǐngǎn`, so the splitter's reading of an unmarked `n` + `g`
+            // + vowel — `pin` + `gan` — is right by the orthography and wrong
+            // for what a learner typing `pingan` usually means. Where that is
+            // the boundary, the other reading's two syllables (`ping` + `an`)
+            // are searched as well. A boundary the learner marked is left alone.
+            for pair in split.windows(2) {
+                let [(left, left_span), (right, right_span)] = pair else {
+                    continue;
+                };
+                let left_folded = fold_pinyin(&left.text);
+                let right_folded = fold_pinyin(&right.text);
+                if left_span.end == right_span.start
+                    && left_folded.ends_with('n')
+                    && right_folded.len() > 1
+                    && right_folded.starts_with('g')
+                {
+                    parts.push(format!("{left_folded}g"));
+                    parts.push(right_folded[1..].to_string());
+                }
+            }
             if parts.len() > 1 {
                 parts
             } else {
@@ -877,7 +906,8 @@ impl Dataset {
     ///   is right (着急 → `zháojí`) and the meaning is a definition rather than
     ///   a guess.
     /// * **Anything else** gets a composed reading, because word pinyin is the
-    ///   characters' readings run together (学习 → `xuéxí`), and no meaning: a
+    ///   characters' readings run together (学习 → `xuéxí`, 很爱 → `hěn'ài`,
+    ///   by [`crate::pinyin::join_syllables`]), and no meaning: a
     ///   word's meaning cannot be composed from its parts, and inventing one
     ///   would be worse than leaving it blank. The per-character hints are
     ///   returned so the learner has the material to write it.
@@ -917,12 +947,13 @@ impl Dataset {
             // that is a definition rather than an invention.
             (word.pinyin.clone(), word.meaning.clone())
         } else {
-            // Readings run together, which is how word pinyin is written.
-            let composed: String = hints
-                .iter()
-                .filter_map(|h| h.pinyin.first())
-                .cloned()
-                .collect();
+            // Readings run together, which is how word pinyin is written — with
+            // the apostrophe pinyin puts before a vowel-initial syllable, so the
+            // draft divides back into its characters (很爱 is `hěn'ài`, not the
+            // `hěnài` that reads as hě + nài). A transcription is read against
+            // this reading, so a lost boundary there is a wrong syllable here.
+            let firsts: Vec<&String> = hints.iter().filter_map(|h| h.pinyin.first()).collect();
+            let composed = crate::pinyin::join_syllables(&firsts);
             (composed, String::new())
         };
 
@@ -1223,6 +1254,39 @@ mod tests {
         assert_eq!(lookup.pinyin, "zhōngguórén");
         assert_eq!(lookup.meaning, "");
         assert_eq!(lookup.characters.len(), 3);
+    }
+
+    #[test]
+    fn a_composed_reading_keeps_its_syllable_boundaries() {
+        // Issue #19: run together with nothing between them, 很 + 爱 read back as
+        // hě + nài, and 我爱你 and 你饿 could not be divided at all. The
+        // composed draft is what a transcription is read against, so it has to
+        // split back into the characters it was made from.
+        let dataset = Dataset::from_chars(vec![
+            speaker('很', &["hěn"], "very"),
+            speaker('爱', &["ài"], "love"),
+            speaker('我', &["wǒ"], "I"),
+            speaker('你', &["nǐ"], "you"),
+            speaker('饿', &["è"], "hungry"),
+            speaker('好', &["hǎo"], "good"),
+        ]);
+        let split = |text: &str| -> Vec<String> {
+            let reading = dataset.lookup_text(text).pinyin;
+            crate::pinyin::aligned_reading(text, &reading)
+                .unwrap_or_else(|| panic!("{text} ({reading}) should align"))
+                .into_iter()
+                .map(|s| s.text)
+                .collect()
+        };
+
+        assert_eq!(dataset.lookup_text("很爱").pinyin, "hěn'ài");
+        assert_eq!(split("很爱"), ["hěn", "ài"]);
+        assert_eq!(dataset.lookup_text("我爱你").pinyin, "wǒ'àinǐ");
+        assert_eq!(split("我爱你"), ["wǒ", "ài", "nǐ"]);
+        assert_eq!(dataset.lookup_text("你饿").pinyin, "nǐ'è");
+        assert_eq!(split("你饿"), ["nǐ", "è"]);
+        // And no apostrophe where pinyin does not write one.
+        assert_eq!(dataset.lookup_text("你好").pinyin, "nǐhǎo");
     }
 
     #[test]
@@ -1539,6 +1603,48 @@ mod tests {
         let single = dataset.search_characters("xi", None, 10);
         assert_eq!(single[0].ch, '习', "exact reading first");
         assert_eq!(single[1].ch, '血', "then the prefix");
+    }
+
+    #[test]
+    fn a_typed_ng_before_a_vowel_is_searched_both_ways() {
+        // Typed pinyin carries no apostrophes, so `pingan` is the splitter's
+        // pin + gan — which is right for 品感 and wrong for 平安, the word the
+        // learner more likely means. Both readings of that one boundary are
+        // searched, and the boundaries that are not ambiguous are left alone.
+        let dataset = Dataset::from_chars(vec![
+            lexeme('平', &["píng"], "flat", 1, 10),
+            lexeme('安', &["ān"], "peaceful", 1, 20),
+            lexeme('品', &["pǐn"], "article", 2, 30),
+            lexeme('感', &["gǎn"], "to feel", 2, 40),
+            lexeme('全', &["quán"], "whole", 1, 50),
+            lexeme('国', &["guó"], "country", 1, 60),
+            lexeme('嫦', &["cháng"], "Chang'e", 6, 70),
+            lexeme('娥', &["é"], "good; beautiful", 6, 80),
+        ]);
+        let found = |query: &str| -> Vec<char> {
+            dataset
+                .search_characters(query, None, 20)
+                .iter()
+                .map(|c| c.ch)
+                .collect()
+        };
+
+        let pingan = found("pingan");
+        for ch in ['平', '安', '品', '感'] {
+            assert!(pingan.contains(&ch), "pingan finds {ch}: {pingan:?}");
+        }
+        let quanguo = found("quanguo");
+        assert!(
+            quanguo.contains(&'全') && quanguo.contains(&'国'),
+            "{quanguo:?}"
+        );
+        let change = found("change");
+        assert!(
+            change.contains(&'嫦') && change.contains(&'娥'),
+            "{change:?}"
+        );
+        // A boundary the learner marked is not second-guessed.
+        assert!(!found("pin'gan").contains(&'平'));
     }
 
     #[test]

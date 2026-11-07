@@ -38,6 +38,7 @@
   import ModelPanel from "./lib/ModelPanel.svelte";
   import RecognitionPanel from "./lib/RecognitionPanel.svelte";
   import ToneChart from "./lib/ToneChart.svelte";
+  import { DownloadFollower } from "./lib/downloadFollow";
   import type {
     AppInfo,
     AsrStatus,
@@ -278,49 +279,108 @@
         ? { kind: "character", base: sets[0].base, ch: sets[0].members[0].ch }
         : null;
 
-      // The model's state, once, so the screen can describe a download nobody has
-      // agreed to yet. Asking is not installing, and it opens no socket.
-      await refreshAsr();
+      // The model's state, so the screen can describe a download nobody has
+      // agreed to yet — and follow one that is already running, after a reload of
+      // the page. Asking is not installing, and it opens no socket.
+      await checkAsr();
     })();
   });
 
-  /** Read the recognition model's state. */
-  async function refreshAsr() {
+  // Asked again whenever the app comes back to the front (issue #41): a download
+  // keeps running while the window is hidden, and the screen should not show the
+  // state it had when the learner left it.
+  onMount(() => {
+    const onFocus = () => void checkAsr();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void checkAsr();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+      asrFollower.stop();
+    };
+  });
+
+  /**
+   * Read the recognition model's state, and return it — or `null` when it could
+   * not be asked, which the follower counts as a failure and backs off on.
+   */
+  async function refreshAsr(): Promise<AsrStatus | null> {
     try {
       asr = await api.asrStatus();
       asrFailure = null;
+      return asr;
     } catch (cause) {
       asrFailure = `Could not ask about the recognition model: ${cause}`;
+      return null;
     }
+  }
+
+  /**
+   * Follows a download until it settles — finished, failed or cancelled — however
+   * long that takes. One follower, so the button, a focus and the first load
+   * cannot start two loops. See `lib/downloadFollow.ts`.
+   */
+  const asrFollower = new DownloadFollower(
+    refreshAsr,
+    (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  );
+
+  async function followAsr() {
+    asrPolling = true;
+    try {
+      await asrFollower.follow();
+    } finally {
+      asrPolling = asrFollower.running;
+    }
+  }
+
+  /** Ask once, and follow the download if one turns out to be running. */
+  async function checkAsr() {
+    // A failed question says nothing new, so the last known state decides.
+    const status = (await refreshAsr()) ?? asr;
+    if (status?.state === "downloading") await followAsr();
   }
 
   /**
    * Fetch the model, then follow it until it settles.
    *
-   * The install call returns as soon as the transfer has *started* — 163 MB takes
-   * minutes and holding the IPC call open for it would be wrong — so progress is
-   * read by polling, and the loop stops itself when the state is no longer
-   * `downloading`. This is the only thing in this app that ever touches the
-   * network, and only because the button was pressed.
+   * The install call returns as soon as the transfer has *started*, so progress
+   * and the outcome are read by polling. This is the only thing in this app that
+   * ever touches the network, and only because the button was pressed.
    */
   async function installAsr() {
     asrFailure = null;
-    asrPolling = true;
     try {
       await api.asrInstall();
-      // Poll until it settles. A failed or finished download ends the loop; the
-      // bound is a backstop against a state that never changes, so a wedged
-      // thread cannot poll forever.
-      for (let attempt = 0; attempt < 2400; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        await refreshAsr();
-        if (asr?.state !== "downloading") break;
-      }
     } catch (cause) {
       asrFailure = `Could not install the recognition model: ${cause}`;
-    } finally {
-      asrPolling = false;
+      return;
     }
+    // Asked at once rather than after the first pause, so the button turns into
+    // Cancel straight away instead of inviting a second press.
+    await checkAsr();
+  }
+
+  /**
+   * Ask the download to stop. The backend stops at its next chunk and removes
+   * what it had fetched; the follower already running sees the state go back to
+   * "not installed". Resolves `false` when the request did not reach the backend,
+   * so the panel can offer the button again.
+   */
+  async function cancelAsr(): Promise<boolean> {
+    asrFailure = null;
+    let sent = true;
+    try {
+      asr = await api.asrCancel();
+    } catch (cause) {
+      asrFailure = `Could not cancel the download: ${cause}`;
+      sent = false;
+    }
+    if (asr?.state === "downloading") void followAsr();
+    return sent;
   }
 
   async function removeAsr() {
@@ -1094,7 +1154,10 @@
               </button>
               <p class="mic-hint">
                 Say it while the button is held, or hold the space bar. The recording
-                stops at {recordLimit} seconds and nothing is written to disk.
+                stops at {recordLimit} seconds and nothing is written to disk. The tone
+                is judged from your pitch on this device; the optional model below, a
+                163 MB download fetched only if you ask for it, also says which
+                syllable it heard.
               </p>
               {#if micNote}
                 <p class="caveat">{micNote}</p>
@@ -1132,6 +1195,7 @@
             status={asr}
             polling={asrPolling}
             onInstall={() => void installAsr()}
+            onCancel={cancelAsr}
             onRemove={() => void removeAsr()}
             failure={asrFailure}
           />

@@ -61,18 +61,24 @@
      * the card it saw before any of this existed.
      */
     appearance = "button",
+    /**
+     * The tooltip, when the default would say too much. The default names the
+     * text, which on the Review screen is the character being asked for.
+     */
+    title,
   }: {
     text: string;
     voice: VoiceStatus;
     label?: string;
     note?: boolean;
     appearance?: "button" | "link";
+    title?: string;
   } = $props();
 
   let error = $state<string | null>(null);
   const available = $derived(canHear(voice));
   const why = $derived(voiceNote(voice));
-  const title = $derived(why ?? `Say ${text} in the system's Japanese voice`);
+  const tooltip = $derived(why ?? title ?? `Say ${text} in the system's Japanese voice`);
 
   async function hear() {
     try {
@@ -93,7 +99,7 @@
     class={appearance}
     onclick={() => void hear()}
     disabled={!available}
-    {title}
+    title={tooltip}
   >
     {label}
   </button>
