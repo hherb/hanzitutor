@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { hasNextDue, nextDue, overdueLabel, scheduleNote, upcomingLabel } from "./review";
+import {
+  cardKey,
+  hasNextDue,
+  isSameCard,
+  nextDue,
+  overdueLabel,
+  reviewPrompt,
+  scheduleNote,
+  upcomingLabel,
+} from "./review";
 import type { DueItem } from "./types";
 
 /**
@@ -123,6 +132,37 @@ describe("scheduleNote", () => {
     expect(note?.text).toContain("could not be saved");
   });
 
+  it("says a traced attempt was not counted, whatever the schedule did not do", () => {
+    const note = scheduleNote(
+      { scheduled: false, traced: true, nextDue: "2026-09-20T09:00:00Z", warning: null },
+      now,
+    );
+    expect(note?.tone).toBe("plain");
+    expect(note?.text).toMatch(/^Traced — not counted as a review/);
+  });
+
+  it("words a traced attempt by what helped, so the advice fits the screen", () => {
+    const traced = { scheduled: false, traced: true, nextDue: null, warning: null };
+    expect(scheduleNote(traced, now, "guide")?.text).toContain("Turn the hint off");
+    const animation = scheduleNote(traced, now, "animation")?.text ?? "";
+    expect(animation).toContain("stroke order");
+    expect(animation).not.toContain("hint");
+    const answered = scheduleNote(traced, now, "answered")?.text ?? "";
+    expect(answered).toContain("answer");
+    expect(answered).not.toContain("hint");
+    for (const reason of ["guide", "animation", "answered"] as const) {
+      expect(scheduleNote(traced, now, reason)?.text).toContain("not counted as a review");
+    }
+  });
+
+  it("still puts a failed write ahead of a traced attempt", () => {
+    const note = scheduleNote(
+      { scheduled: false, traced: true, nextDue: null, warning: "the schedule could not be opened" },
+      now,
+    );
+    expect(note?.tone).toBe("bad");
+  });
+
   it("has nothing to say about nothing", () => {
     expect(scheduleNote({ scheduled: true, nextDue: null, warning: null }, now)).toEqual({
       tone: "ok",
@@ -186,5 +226,47 @@ describe("hasNextDue", () => {
   it("is false only for a queue with nothing left in it", () => {
     expect(hasNextDue({ items: [due("あ")], due: 1 }, due("あ"))).toBe(false);
     expect(hasNextDue({ items: [], due: 0 }, null)).toBe(false);
+  });
+});
+
+describe("reviewPrompt", () => {
+  /** A due item with the prompt Rust sends for it. */
+  const item = (ch: string, kind: "kana" | "kanji" | "radical", hint: string): DueItem => ({
+    ...due(ch, kind),
+    hint,
+  });
+
+  it("never shows a kana or a kanji before the attempt is graded", () => {
+    for (const entry of [item("か", "kana", "ka · hiragana"), item("学", "kanji", "study")]) {
+      const prompt = reviewPrompt(entry, false);
+      expect(prompt.glyph).toBeNull();
+      expect(prompt.hint).toBe(entry.hint);
+    }
+  });
+
+  it("reveals the character once the attempt is graded", () => {
+    expect(reviewPrompt(item("学", "kanji", "study"), true).glyph).toBe("学");
+  });
+
+  it("shows a radical head form, which has no name to recall it from", () => {
+    const prompt = reviewPrompt(item("亅", "radical", "radical 6 of 214"), false);
+    expect(prompt.glyph).toBe("亅");
+    expect(prompt.hint).toBe("radical 6 of 214");
+  });
+});
+
+describe("cardKey and isSameCard", () => {
+  it("tell a character from the same character's radical", () => {
+    expect(cardKey(due("人", "kanji"))).not.toBe(cardKey(due("人", "radical")));
+    expect(isSameCard(due("人", "kanji"), due("人", "radical"))).toBe(false);
+  });
+
+  it("are the same for the same card, whichever copy of the queue it came from", () => {
+    expect(cardKey(due("あ"))).toBe(cardKey({ ...due("あ"), attempts: 9 }));
+    expect(isSameCard(due("あ"), { ...due("あ"), attempts: 9 })).toBe(true);
+  });
+
+  it("is never the same as nothing", () => {
+    expect(isSameCard(due("あ"), null)).toBe(false);
   });
 });

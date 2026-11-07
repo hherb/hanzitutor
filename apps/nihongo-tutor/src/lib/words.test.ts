@@ -7,6 +7,7 @@ import {
   needsRuby,
   pageWindow,
   readingOf,
+  readingShown,
   spokenRuby,
   tokenIsTappable,
   tokenReading,
@@ -160,5 +161,23 @@ describe("passage tokens", () => {
     expect(tokenIsTappable({ surface: "ます", rt: null, word: null })).toBe(false);
     // A link to an empty string is not a link.
     expect(tokenIsTappable({ surface: "は", rt: null, word: "" })).toBe(false);
+  });
+});
+
+describe("readingShown", () => {
+  it("shows the reading when nothing is asking for it", () => {
+    expect(readingShown({ asking: false, checked: false, revealed: false })).toBe(true);
+  });
+
+  it("hides the reading while the learner is asked to type it", () => {
+    expect(readingShown({ asking: true, checked: false, revealed: false })).toBe(false);
+  });
+
+  it("shows it once a check has been made, right or wrong", () => {
+    expect(readingShown({ asking: true, checked: true, revealed: false })).toBe(true);
+  });
+
+  it("shows it when the learner asks to see it", () => {
+    expect(readingShown({ asking: true, checked: false, revealed: true })).toBe(true);
   });
 });

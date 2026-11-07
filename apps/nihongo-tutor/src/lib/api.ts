@@ -108,12 +108,22 @@ export function kana(ch: string): Promise<Kana> {
  * `GradeOptions` therefore deserialises a partial object — an interface that
  * sends some fields and not others must not be rejected for the ones it left
  * out.
+ *
+ * `traced` says whether the attempt was helped — written over the faint guide,
+ * or after the stroke animation drew the character (`board.ts`'s `traceReason`). It
+ * is required by the command: a traced attempt is graded and shown and never
+ * reaches the schedule, because copying a character is not remembering it.
  */
-export function gradeAttempt(ch: string, strokes: Point[][]): Promise<GradedAttempt> {
+export function gradeAttempt(
+  ch: string,
+  strokes: Point[][],
+  traced: boolean,
+): Promise<GradedAttempt> {
   return invoke<GradedAttempt>("grade_attempt", {
     ch,
     strokes,
     options: { inkWidth: INK_WIDTH },
+    traced,
   });
 }
 

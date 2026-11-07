@@ -235,10 +235,10 @@
 
       {#if openedWord}
         <!-- The word's own card, the same one every other screen opens: its
-             dictionary reading, its band, and the box that asks the learner to type
-             it. -->
+             dictionary reading and its band. Without the box that asks for the
+             reading, because the chip that opened it already shows the reading. -->
         <div class="card">
-          <WordCard word={openedWord} {voice} />
+          <WordCard word={openedWord} {voice} askReading={false} />
         </div>
       {/if}
     </section>

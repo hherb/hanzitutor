@@ -2936,14 +2936,16 @@ fn a_synced_vocabulary_entry_survives_the_next_local_edit() {
     std::fs::remove_dir_all(&shared).ok();
 }
 
-/// And the other half: without the reload, a sync's entries are destroyed.
+/// And the other half: without the reload, a sync's entries are still safe.
 ///
-/// Runs the same steps as the test above with the reload left out, so that the
-/// hazard is a demonstrated fact rather than a claim in a comment. If this test ever
-/// stops failing to lose the entry, either `save` changed how it reads the absence
-/// of an entry, or these two tests are no longer testing what they say.
+/// Runs the same steps as the test above with the reload left out. A save from the
+/// stale list used to read every entry the sync had brought as one the learner had
+/// removed, tombstone it, and so delete it on every other device too (#11). The
+/// database handle now remembers what the list looked like when it was read, writes
+/// only what changed since, and hands the list back as the database holds it — so
+/// the reload is a matter of showing the right list sooner, not of keeping data.
 #[test]
-fn a_stale_vocabulary_list_tombstones_what_a_sync_brought() {
+fn a_stale_vocabulary_list_keeps_what_a_sync_brought() {
     let dir = data_dir("vocab-sync-stale");
     let state = AppState::load(Some(dir.clone())).expect("the dataset should decode");
     let db = state.db.clone().expect("a data directory means a database");
@@ -2980,12 +2982,21 @@ fn a_stale_vocabulary_list_tombstones_what_a_sync_brought() {
         assert!(vocab.save().is_none(), "and this save goes through");
     }
 
-    // The entry the sync delivered is now a tombstone in the database — and that
-    // tombstone is exactly what sync propagates, so it would have deleted the entry
-    // on the other devices too.
+    // The entry the sync delivered is still live, next to the one added here.
     let after = hanzi_core::VocabStore::open_with(Box::new(db.clone())).unwrap();
-    assert_eq!(after.entries().len(), 1, "only the locally added entry is left");
-    assert_eq!(after.entries()[0].text, "你好");
+    let mut texts: Vec<&str> = after.entries().iter().map(|e| e.text.as_str()).collect();
+    texts.sort();
+    assert_eq!(texts, ["你好", "学习"], "both entries are in the database");
+    // And the open list caught up with the database as it saved.
+    let mut held: Vec<String> = state
+        .lock_vocab()
+        .store
+        .entries()
+        .iter()
+        .map(|e| e.text.clone())
+        .collect();
+    held.sort();
+    assert_eq!(held, ["你好", "学习"], "the open list now shows the synced entry");
 
     std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_dir_all(&shared).ok();
