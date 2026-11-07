@@ -278,8 +278,7 @@ pub fn own_lumps(point: &GrammarPoint) -> Vec<String> {
     if let Some(reading) = point.reading.as_deref() {
         out.extend(lumps(reading));
     }
-    out.sort_by_key(|lump| std::cmp::Reverse(lump.chars().count()));
-    out.dedup();
+    crate::grammar_drill::longest_first_once(&mut out);
     out
 }
 
@@ -369,12 +368,11 @@ fn read_back(typed: &str) -> String {
 
 /// Whether a character belongs in a Japanese sentence.
 ///
-/// Kana, kanji and `ー` are the language; the rest is the punctuation and the space a
-/// sentence may carry. Latin letters are **not** on the list, which is what makes
-/// [`CompositionVerdict::readable`] false for them.
+/// Kana, kanji, `ー` and the marks written in their place are the language; the rest
+/// is the punctuation and the space a sentence may carry. Latin letters are **not**
+/// on the list, which is what makes [`CompositionVerdict::readable`] false for them.
 fn is_japanese(ch: char) -> bool {
-    Script::of(ch).is_some()
-        || is_kanji(ch)
+    is_written_language(ch)
         || matches!(
             ch,
             '。' | '、'
@@ -411,9 +409,19 @@ fn is_japanese(ch: char) -> bool {
 
 /// How many kana/kanji characters a sentence holds: the measure the length bar uses.
 fn japanese_len(text: &str) -> usize {
-    text.chars()
-        .filter(|ch| Script::of(*ch).is_some() || is_kanji(*ch))
-        .count()
+    text.chars().filter(|ch| is_written_language(*ch)).count()
+}
+
+/// Whether a character is the language itself rather than punctuation: a kana, a
+/// kanji, or one of the marks that stand in a word where a kana or kanji would.
+///
+/// The marks are 々 (the kanji before it, again: 時々, 人々), 〆 (a ligature of 締め),
+/// ゝ and ゞ (the hiragana iteration marks) and 〇 (zero, written as a kanji
+/// numeral). None of them is a kana [`Script::of`] knows — ゝ and ゞ sit in the
+/// hiragana block, past the kana it counts — or a kanji [`is_kanji`] knows, which
+/// is why they are listed here.
+fn is_written_language(ch: char) -> bool {
+    Script::of(ch).is_some() || is_kanji(ch) || matches!(ch, '々' | '〆' | 'ゝ' | 'ゞ' | '〇')
 }
 
 /// What may be handed to the voice for a sentence the learner wrote: the sentence as
@@ -643,6 +651,52 @@ mod tests {
         assert!(!mixed.readable, "the app does not guess where a Latin word ends");
         assert!(!mixed.kept);
         assert!(!mixed.text.is_empty(), "and it says what it read rather than nothing");
+    }
+
+    /// 々 repeats the kanji before it, and 〆, ゝ, ゞ and 〇 are written in sentences
+    /// the same way: none of them is a kana or a kanji to this module, and a sentence
+    /// that held one was unreadable and not kept — ten of the corpus's own example
+    /// sentences among them (人々, 年々, 次々).
+    #[test]
+    fn the_iteration_marks_are_part_of_a_japanese_sentence() {
+        let p = point("wa", "〜は");
+        let verdict = verdict_for(&p, &kanji(), "私は時々コーヒーを飲みます。");
+        assert!(verdict.readable, "{verdict:?}");
+        assert!(verdict.kept, "{verdict:?}");
+        // 々 counts towards the length the way the kanji it repeats does.
+        assert_eq!(verdict.characters, 13);
+        for ch in ['々', '〆', 'ゝ', 'ゞ', '〇'] {
+            assert!(is_japanese(ch), "{ch} is part of a sentence");
+            assert_eq!(
+                japanese_len(&ch.to_string()),
+                1,
+                "{ch} counts as a character"
+            );
+        }
+    }
+
+    /// A lump the pattern and its reading both write is found once, even when the
+    /// two lists put other lumps of the same length between the copies.
+    #[test]
+    fn a_lump_the_pattern_and_its_reading_share_is_listed_once() {
+        let mut p = point("ai", "〜あい〜うえ");
+        p.reading = Some("〜あい〜かき".to_string());
+        let lumps = own_lumps(&p);
+        let mut unique = lumps.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(lumps.len(), unique.len(), "a duplicate survived: {lumps:?}");
+        let verdict = verdict_for(&p, &kanji(), "あいうえあいかきです。");
+        assert_eq!(
+            verdict
+                .found
+                .iter()
+                .filter(|lump| lump.as_str() == "あい")
+                .count(),
+            1,
+            "{:?}",
+            verdict.found
+        );
     }
 
     #[test]
