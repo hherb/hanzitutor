@@ -720,13 +720,17 @@ fn a_group_position_follows_the_device_that_drilled_last() {
     let remote = FolderStore::open(&shared).unwrap();
 
     // Two groups, both devices, so that the per-group settling is exercised
-    // rather than a single global position.
+    // rather than a single global position. Different words on each: the same
+    // word added to the same group on both would be one entry after a sync.
     let mut ids = Vec::new();
-    for (db, tag) in [(&db_a, "a"), (&db_b, "b")] {
+    for (db, tag, words) in [
+        (&db_a, "a", ["学生", "姐姐", "中国"]),
+        (&db_b, "b", ["老师", "妹妹", "美国"]),
+    ] {
         let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
-        let silu = vocab.add_entry("学生", "", "", Some("SiLu")).unwrap().id;
-        let silu2 = vocab.add_entry("姐姐", "", "", Some("SiLu")).unwrap().id;
-        let hsk = vocab.add_entry("中国", "", "", Some("HSK 1")).unwrap().id;
+        let silu = vocab.add_entry(words[0], "", "", Some("SiLu")).unwrap().id;
+        let silu2 = vocab.add_entry(words[1], "", "", Some("SiLu")).unwrap().id;
+        let hsk = vocab.add_entry(words[2], "", "", Some("HSK 1")).unwrap().id;
         vocab.save().unwrap();
         ids.push((tag, silu, silu2, hsk));
     }

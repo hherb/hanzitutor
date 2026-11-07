@@ -407,8 +407,17 @@ impl SyncService {
                 "There is no sign-in in progress. Press Connect to start one.".to_string()
             })?;
 
+        // Dropbox answers a mistyped, expired or already-used code with the same
+        // `invalid_grant` it gives a revoked sign-in, which arrives as
+        // `Unauthorized`. Here, before anything is connected, "disconnect and connect
+        // again" would be advice about a connection that does not exist.
         let tokens = exchange_code(self.http.as_ref(), APP_KEY, code.trim(), &pkce.verifier)
-            .map_err(|e| describe(&e))?;
+            .map_err(|e| match e {
+                SyncError::Unauthorized => {
+                    "Dropbox did not accept that code. Press Connect for a new one.".to_string()
+                }
+                other => describe(&other),
+            })?;
         let account = Account {
             refresh_token: tokens.refresh_token().map_err(|e| describe(&e))?.to_string(),
             account_id: tokens.account_id.clone(),
@@ -1030,8 +1039,23 @@ fn describe(error: &SyncError) -> String {
     }
 }
 
-/// What one sync did, in a sentence.
+/// What one sync did, in a sentence — and, after it, what it had to leave out.
+///
+/// A file another device wrote that this build cannot use no longer stops the sync
+/// (see `hanzi_sync::Summary::skipped`), so it has to be *said*: otherwise a phone
+/// running an older version would report "Already up to date" for ever while the
+/// newer device's changes never arrived.
 fn describe_summary(summary: &hanzi_sync::Summary) -> String {
+    let mut message = describe_counts(summary);
+    if let Some(notice) = summary.notice() {
+        message.push(' ');
+        message.push_str(&notice);
+    }
+    message
+}
+
+/// What one sync did, in a sentence.
+fn describe_counts(summary: &hanzi_sync::Summary) -> String {
     if summary.is_empty() {
         let mut message = "Already up to date.".to_string();
         if summary.left_alone > 0 {
@@ -1901,6 +1925,37 @@ mod tests {
     }
 
     #[test]
+    fn a_code_dropbox_refuses_is_told_to_ask_for_a_new_one_not_to_reconnect() {
+        // The token endpoint answers a mistyped, expired or reused code with
+        // `invalid_grant`, which the client reports as `Unauthorized` — the same
+        // as a revoked sign-in. Nothing is connected yet, so the advice differs.
+        struct Refusing;
+        impl Http for Refusing {
+            fn rpc(&self, _: &str, _: &str, _: &str) -> Result<String, SyncError> {
+                Err(SyncError::Unauthorized)
+            }
+            fn form(&self, _: &str, _: &str) -> Result<String, SyncError> {
+                Err(SyncError::Unauthorized)
+            }
+            fn upload(&self, _: &str, _: &str, _: &str, _: &[u8]) -> Result<String, SyncError> {
+                Err(SyncError::Unauthorized)
+            }
+            fn download(&self, _: &str, _: &str, _: &str) -> Result<Vec<u8>, SyncError> {
+                Err(SyncError::Unauthorized)
+            }
+        }
+        let store = std::sync::Arc::new(MemoryStore::working());
+        let service = with_probe(None, &store, Box::new(Refusing), true);
+        service.begin().unwrap();
+        let error = service.finish("mistyped").unwrap_err();
+        assert_eq!(
+            error,
+            "Dropbox did not accept that code. Press Connect for a new one."
+        );
+        assert!(!service.view().connected);
+    }
+
+    #[test]
     fn the_app_key_is_the_one_dropbox_knows_and_is_not_a_secret() {
         // The key is public by design — it travels in the URL above — so this is a
         // guard against it being replaced with something that is not.
@@ -1947,6 +2002,26 @@ mod tests {
         assert!(message.contains("Already up to date"), "{message}");
         assert!(message.contains("1 character "), "{message}");
         assert!(!message.contains("characters"), "one character is singular: {message}");
+    }
+
+    #[test]
+    fn a_file_another_device_wrote_that_was_left_out_is_said_after_the_summary() {
+        let skipped = hanzi_sync::Summary {
+            skipped: vec![hanzi_sync::SkippedShard {
+                name: "devices/newer/vocab.json".into(),
+                device_id: "newer".into(),
+                kind: hanzi_sync::ShardKind::Vocab,
+                own: false,
+                newer_format: true,
+                reason: "format 2".into(),
+            }],
+            ..hanzi_sync::Summary::default()
+        };
+        assert_eq!(
+            describe_summary(&skipped),
+            "Already up to date. Another device uses a newer version of the app; update this \
+             one to sync its changes."
+        );
     }
 
     #[test]

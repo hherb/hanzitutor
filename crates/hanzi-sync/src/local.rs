@@ -57,7 +57,11 @@ use crate::document::{
     read_vocab_cursors, write_baseline, write_cursor, write_vocab, write_vocab_cursors,
     Baseline, Baselines,
 };
-use crate::shard::{fold_cards, merge_attempts, read_attempts, write_attempts, MergedAttempt};
+use crate::shard::{
+    fold_cards, merge_attempts, read_attempts, shard_body, sort_canonical, write_attempts,
+    MergedAttempt,
+};
+use crate::skipped::{Screened, SkippedShard};
 use crate::store::{RemoteStore, SyncError};
 
 /// Where this device records how far it has published its own log.
@@ -90,6 +94,17 @@ pub struct Summary {
     pub vocab_changed: usize,
     /// Whether the course position moved.
     pub cursor_moved: bool,
+    /// Files this sync left out because they could not be used — another device's
+    /// newer format, or a damaged file — while everything else synced. See
+    /// [`crate::skipped`]; [`Summary::notice`] says it in words.
+    pub skipped: Vec<SkippedShard>,
+    /// Files in this device's own directory that could not be read and that this
+    /// sync wrote again — see `repair_own_shards`.
+    pub repaired: Vec<SkippedShard>,
+    /// Writes this sync declined to make because they would have replaced a file
+    /// it could not read in another device's directory. Not counted in
+    /// [`Summary::published`]; see [`crate::skipped`].
+    pub withheld: Vec<String>,
 }
 
 impl Summary {
@@ -101,6 +116,12 @@ impl Summary {
             && self.recomputed == 0
             && self.vocab_changed == 0
             && !self.cursor_moved
+    }
+
+    /// What the learner should be told about files this sync left out, if any:
+    /// a sentence to put after the summary, never instead of it.
+    pub fn notice(&self) -> Option<String> {
+        crate::skipped::notice(&self.skipped, &self.repaired)
     }
 }
 
@@ -375,8 +396,15 @@ pub fn pull_vocab_cursors(db: &Db, store: &dyn RemoteStore) -> Result<bool, Sync
 /// pulled, because the log is what the schedule is folded from and a device should
 /// never be in the position of having applied a peer's work without having offered
 /// its own.
+///
+/// A file that cannot be used — another device's newer format, a damaged shard — is
+/// left out rather than stopping the sync, and reported in [`Summary::skipped`]: see
+/// [`crate::skipped`] for why leaving one out loses nothing.
 pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
-    let published = publish(db, store)?;
+    let screened = Screened::read(store, db.device_id())?;
+    let store: &dyn RemoteStore = &screened;
+    repair_own_shards(db, &screened)?;
+    let published = publish(db, store)?.saturating_sub(screened.withheld_attempts());
     publish_documents(db, store)?;
     let pulled = pull(db, store)?;
     let vocab_changed = pull_vocab(db, store)?;
@@ -392,7 +420,14 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
     if let Some(own) = own_baseline(db)? {
         baselines.push(own);
     }
-    let (recomputed, left_alone) = recompute(db, &Baselines::resolve(baselines))?;
+    // Without every baseline the fold would rebuild a migrated card from the tail
+    // of its history, so a sync that could not read one leaves every schedule as it
+    // is: stale until the next sync, never wrong.
+    let (recomputed, left_alone) = if screened.baseline_skipped() {
+        (0, 0)
+    } else {
+        recompute(db, &Baselines::resolve(baselines))?
+    };
     Ok(Summary {
         published,
         pulled,
@@ -400,7 +435,89 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
         left_alone,
         vocab_changed,
         cursor_moved,
+        skipped: screened.skipped(),
+        repaired: screened.repaired(),
+        withheld: screened.withheld(),
     })
+}
+
+/// Write this device's own damaged attempt shards again, from its own log.
+///
+/// ## Why this device has to
+///
+/// A shard is named once and never rewritten, and [`publish`] only ever writes
+/// attempts past the watermark — so a shard of this device's that a sync client
+/// truncated, or that was damaged some other way, would stay damaged for good. And
+/// every peer leaves a device with an unreadable shard out *whole*, so from then on
+/// none of this device's attempts, old or new, would reach anyone. Nobody else can
+/// mend it: only this device holds its whole log.
+///
+/// ## When it may not
+///
+/// Only when this log can be the file's writer. The damaged file is the one copy
+/// of what it held, and a database restored from an older backup, or copied from
+/// another device, holds fewer of this name's attempts than the file did: writing
+/// what it has would destroy the rest, and hand peers attempts under numbers the
+/// original also used. So a damaged file is mended only if this database has
+/// published that far (its watermark is at or past the number the file is named
+/// after) and its log holds **every** sequence number the file could have held —
+/// from that number up to the next shard's, or up to the watermark when it is the
+/// last shard — and never with an empty body. The watermark, rather than this
+/// log's last attempt, bounds the last shard because a copy that has lost the end
+/// of its log still has a last attempt, just an earlier one. A file this build
+/// reads as a *newer format* is never written either: it is not damaged, and
+/// rewriting it would drop what the newer build said. Anything left alone stays
+/// reported in [`Summary::skipped`].
+///
+/// ## What is written
+///
+/// The attempts of that range, and — because a shard is named after the earliest
+/// attempt it holds, which is not always the lowest number — any of this log's
+/// attempts below it, back to the previous shard's name, that no readable shard
+/// holds. Writing an attempt into two files is harmless: it is the same attempt in
+/// both, and every reader merges them as one.
+///
+/// Telling a copy of this database apart from the original is #12's
+/// `settle_identity`; after that lands, this must run after it and only when it did
+/// not rename.
+fn repair_own_shards(db: &Db, screened: &Screened) -> Result<(), SyncError> {
+    let damaged = screened.own_damaged_attempts();
+    if damaged.is_empty() {
+        return Ok(());
+    }
+    let mut log = own_log(db)?;
+    sort_canonical(&mut log);
+    let held: BTreeSet<i64> = log.iter().map(|attempt| attempt.seq).collect();
+    // Read from `meta` directly rather than through `watermark`, which #12 removes
+    // while keeping the value written.
+    let published: i64 = db
+        .meta_value(PUBLISHED_THROUGH)
+        .map_err(SyncError::Io)?
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(0);
+    for (name, first) in damaged {
+        let end = screened.next_own_start(first).unwrap_or(published + 1);
+        if first > published || end <= first || !(first..end).all(|seq| held.contains(&seq)) {
+            // This log cannot be the file's writer — see above. Left as it is.
+            continue;
+        }
+        let from = screened
+            .previous_own_start(first)
+            .map_or(first, |previous| previous + 1);
+        let attempts: Vec<&MergedAttempt> = log
+            .iter()
+            .filter(|attempt| {
+                (first..end).contains(&attempt.seq)
+                    || ((from..first).contains(&attempt.seq) && !screened.holds_own(attempt.seq))
+            })
+            .collect();
+        if attempts.is_empty() {
+            continue;
+        }
+        let body = shard_body(db.device_id(), &attempts)?;
+        screened.mend(&name, body.as_bytes())?;
+    }
+    Ok(())
 }
 
 /// This device's own baseline, if it has one.

@@ -29,10 +29,12 @@
 pub mod analyse;
 pub mod backup;
 pub mod export;
+#[macro_use]
+mod clock;
 mod migrate;
 mod schema;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -42,7 +44,6 @@ use hanzi_core::progress::{
     MAX_HISTORY,
 };
 use hanzi_core::settings::{BoardSize, Pace, Settings, SettingsError, SettingsSink};
-use hanzi_core::time::now_iso8601;
 use hanzi_core::vocab::{Document as VocabDocument, VocabError, VocabSink};
 use hanzi_core::{Attempt, AttemptMeasures, AttemptRecord, CardState, Entry, Rating};
 use rusqlite::{params, Connection};
@@ -766,6 +767,46 @@ impl CursorSink for Db {
     fn save(&mut self, document: &CursorDocument) -> Result<(), ProgressError> {
         let path = self.path();
         let conn = self.lock();
+        // Only a *move* is written. The app saves the cursor on every visit, and a
+        // save that left the position where it was must not touch the row at all:
+        // a fresh stamp would make merely looking at a character beat a peer's newer
+        // move, and even a kept stamp with this device's id and a new revision would
+        // be a version of the position this device never chose.
+        //
+        // The comparison is with the stored row, not with what this store loaded.
+        // That leaves one window open, stated rather than hidden: a sync that has
+        // just moved the row, followed by a save from a store not yet reloaded
+        // (`reload_after_sync`), reads as a move back to the stale position and
+        // wins. A sync reloads straight after it finishes, and nothing between its
+        // cursor step and the end of the pass waits on the network, so the window is
+        // a few milliseconds of local work.
+        let held = cursor_row(&conn).map_err(|e| progress_error(&path, e))?;
+        if held
+            .as_ref()
+            .is_some_and(|(position, _)| *position == document.index as i64)
+        {
+            return Ok(());
+        }
+        // A move is stamped by the sync clock rather than by the wall clock the
+        // engine read, so that it is later than any position this device has
+        // already seen from a peer, and later than the one it replaces — see
+        // `clock`. A document that was never moved has no stamp, and is not given
+        // one.
+        let stamped;
+        let document = match &document.updated_at {
+            None => document,
+            Some(_) => {
+                let replaced = held.as_ref().and_then(|(_, stamp)| stamp.as_deref());
+                stamped = CursorDocument {
+                    updated_at: Some(
+                        clock::next_stamp_past(&conn, replaced)
+                            .map_err(|e| progress_error(&path, e))?,
+                    ),
+                    ..document.clone()
+                };
+                &stamped
+            }
+        };
         // The device id is written as well as the time, because the pair is what
         // settles a course position two devices moved inside the same second. A
         // local move that kept a peer's device id would leave the stamp saying
@@ -783,6 +824,20 @@ impl CursorSink for Db {
         .map_err(|e| progress_error(&path, e))?;
         Ok(())
     }
+}
+
+/// The stored course position and its stamp, or `None` when nobody has moved it.
+fn cursor_row(conn: &Connection) -> rusqlite::Result<Option<(i64, Option<String>)>> {
+    conn.query_row(
+        "SELECT position, updated_at FROM course_cursor WHERE only_row = 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other),
+    })
 }
 
 // ---- the vocabulary list --------------------------------------------------
@@ -853,7 +908,7 @@ impl VocabSink for Db {
         let path = self.path();
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(|e| vocab_error(&path, e))?;
-        let now = now_iso8601();
+        let now = clock::next_stamp(&tx).map_err(|e| vocab_error(&path, e))?;
         let device = self.device_id.clone();
 
         // Nothing is deleted any more, and that is the change sync forced. An
@@ -870,9 +925,11 @@ impl VocabSink for Db {
         for name in group_names(&tx, false).map_err(|e| vocab_error(&path, e))? {
             if !wanted.contains(name.as_str()) {
                 tx.execute(
-                    "UPDATE vocab_group SET deleted = 1, updated_at = ?1, device_id = ?2,
-                             revision = revision + 1
-                     WHERE name = ?3",
+                    concat!(
+                        "UPDATE vocab_group SET deleted = 1, updated_at = ",
+                        past_sql!("?1", "updated_at"),
+                        ", device_id = ?2, revision = revision + 1 WHERE name = ?3"
+                    ),
                     params![now, device, name],
                 )
                 .map_err(|e| vocab_error(&path, e))?;
@@ -890,7 +947,9 @@ impl VocabSink for Db {
                      updated_at = CASE
                          WHEN vocab_group.position <> excluded.position
                            OR vocab_group.deleted <> 0
-                         THEN excluded.updated_at ELSE vocab_group.updated_at END,
+                         THEN MAX(excluded.updated_at, IFNULL(strftime('%Y-%m-%dT%H:%M:%SZ',
+                                  vocab_group.updated_at, '+1 second'), excluded.updated_at))
+                         ELSE vocab_group.updated_at END,
                      device_id = CASE
                          WHEN vocab_group.position <> excluded.position
                            OR vocab_group.deleted <> 0
@@ -910,9 +969,11 @@ impl VocabSink for Db {
         for id in entry_ids(&tx, false).map_err(|e| vocab_error(&path, e))? {
             if !kept.contains(&id) {
                 tx.execute(
-                    "UPDATE vocab_entry SET deleted = 1, updated_at = ?1, device_id = ?2,
-                             revision = revision + 1
-                     WHERE id = ?3",
+                    concat!(
+                        "UPDATE vocab_entry SET deleted = 1, updated_at = ",
+                        past_sql!("?1", "updated_at"),
+                        ", device_id = ?2, revision = revision + 1 WHERE id = ?3"
+                    ),
                     params![now, device, id],
                 )
                 .map_err(|e| vocab_error(&path, e))?;
@@ -987,7 +1048,9 @@ fn write_entry(
                    OR vocab_entry.meaning <> excluded.meaning
                    OR IFNULL(vocab_entry.group_name, '') <> IFNULL(excluded.group_name, '')
                    OR vocab_entry.deleted <> 0
-                 THEN excluded.updated_at ELSE vocab_entry.updated_at END,
+                 THEN MAX(excluded.updated_at, IFNULL(strftime('%Y-%m-%dT%H:%M:%SZ',
+                          vocab_entry.updated_at, '+1 second'), excluded.updated_at))
+                 ELSE vocab_entry.updated_at END,
              device_id = CASE
                  WHEN vocab_entry.text <> excluded.text
                    OR vocab_entry.pinyin <> excluded.pinyin
@@ -1446,6 +1509,26 @@ impl Db {
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(|e| at(&path, e))?;
         let mut changed = 0usize;
+        // Every stamp a peer wrote moves this device's clock past it — see `clock`.
+        clock::observe(
+            &tx,
+            self.device_id(),
+            entries
+                .iter()
+                .map(|e| (e.updated_at.as_str(), e.device_id.as_str()))
+                .chain(
+                    groups
+                        .iter()
+                        .map(|g| (g.updated_at.as_str(), g.device_id.as_str())),
+                ),
+        )
+        .map_err(|e| at(&path, e))?;
+        // Which of the entries arriving as removed are live here now: when one of
+        // them is a duplicate the merge collapsed, its practice counters move to the
+        // entry that survived — see `collapse_counters`.
+        let survivors = survivors(entries);
+        let collapsing =
+            live_duplicates_removed(&tx, entries, &survivors).map_err(|e| at(&path, e))?;
 
         for group in groups {
             let known = group_exists(&tx, &group.name).map_err(|e| at(&path, e))?;
@@ -1534,7 +1617,14 @@ impl Db {
                     }
                 }
                 None => {
-                    if entry.deleted {
+                    // A removal of something never held is not written down — with
+                    // one exception: the duplicate a merge collapsed onto a live
+                    // entry. Its tombstone is the only record here of where that
+                    // name went, which a group position naming it needs (see
+                    // `Db::vocab_cursor`), and there is at most one per duplicate
+                    // ever made, so these cannot pile up the way every peer's
+                    // ordinary deletions would.
+                    if entry.deleted && live_twin(&survivors, entry).is_none() {
                         continue;
                     }
                     // A row this device has never held, so its practice counters
@@ -1545,7 +1635,7 @@ impl Db {
                              (id, text, pinyin, meaning, group_name, added_at, attempts,
                               best_score, last_practised, uuid, updated_at, deleted,
                               device_id, revision)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, NULL, NULL, ?7, ?8, 0, ?9, ?10)",
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, NULL, NULL, ?7, ?8, ?11, ?9, ?10)",
                         params![
                             next_id,
                             entry.text,
@@ -1556,7 +1646,8 @@ impl Db {
                             entry.uuid,
                             entry.updated_at,
                             entry.device_id,
-                        entry.revision,
+                            entry.revision,
+                            entry.deleted as i64,
                         ],
                     )
                     .map_err(|e| at(&path, e))?;
@@ -1565,6 +1656,7 @@ impl Db {
             }
             changed += 1;
         }
+        collapse_counters(&tx, &collapsing).map_err(|e| at(&path, e))?;
         set_meta(&tx, "vocab_next_id", &next_id.to_string()).map_err(|e| at(&path, e))?;
 
         tx.commit().map_err(|e| at(&path, e))?;
@@ -1600,6 +1692,12 @@ impl Db {
     /// Move the cursor to a merged position, returning whether it actually moved.
     pub fn set_cursor_from_sync(&self, cursor: &SyncedCursor) -> Result<bool, String> {
         let (path, conn) = (self.path(), self.lock());
+        clock::observe(
+            &conn,
+            self.device_id(),
+            [(cursor.updated_at.as_str(), cursor.device_id.as_str())],
+        )
+        .map_err(|e| at(&path, e))?;
         let before = conn
             .query_row(
                 "SELECT position, updated_at, device_id, revision FROM course_cursor
@@ -1671,9 +1769,22 @@ impl Db {
         let Some(uuid) = uuid else {
             return Ok(None);
         };
+        // The entry itself, or else the live entry with the same word in this
+        // group that a removed one was collapsed onto: two devices that each added
+        // the word keep one of the two after a sync, and a position taken on the
+        // other one still means that word — see `collapse_counters`.
         conn.query_row(
-            "SELECT id FROM vocab_entry WHERE uuid = ?1 AND deleted = 0",
-            [&uuid],
+            "SELECT id FROM (
+                 SELECT id, 0 AS rank, '' AS tiebreak FROM vocab_entry
+                  WHERE uuid = ?1 AND deleted = 0
+                 UNION ALL
+                 SELECT live.id, 1, live.uuid FROM vocab_entry AS gone
+                   JOIN vocab_entry AS live
+                     ON live.text = gone.text AND live.group_name = gone.group_name
+                  WHERE gone.uuid = ?1 AND gone.deleted <> 0
+                    AND live.deleted = 0 AND live.group_name = ?2
+             ) ORDER BY rank, tiebreak LIMIT 1",
+            params![uuid, group],
             |row| row.get::<_, i64>(0),
         )
         .map(|id| Some(id.max(0) as u64))
@@ -1716,6 +1827,15 @@ impl Db {
         if unchanged {
             return Ok(());
         }
+        // Past the position it replaces as well as past the clock — see `clock`.
+        let replaced: Option<String> = conn
+            .query_row(
+                "SELECT updated_at FROM vocab_cursor WHERE group_name = ?1",
+                [group],
+                |row| row.get(0),
+            )
+            .ok();
+        let stamp = clock::next_stamp_past(&conn, replaced.as_deref()).map_err(|e| at(&path, e))?;
         conn.execute(
             "INSERT INTO vocab_cursor (group_name, entry_uuid, updated_at, device_id, revision)
              VALUES (?1, ?2, ?3, ?4, 0)
@@ -1724,7 +1844,7 @@ impl Db {
                  updated_at = excluded.updated_at,
                  device_id  = excluded.device_id,
                  revision   = vocab_cursor.revision + 1",
-            params![group, uuid, now_iso8601(), self.device_id],
+            params![group, uuid, stamp, self.device_id],
         )
         .map_err(|e| at(&path, e))?;
         Ok(())
@@ -1802,6 +1922,14 @@ impl Db {
         let (path, mut conn) = (self.path(), self.lock());
         let tx = conn.transaction().map_err(|e| at(&path, e))?;
         let mut changed = 0usize;
+        clock::observe(
+            &tx,
+            self.device_id(),
+            cursors
+                .iter()
+                .map(|c| (c.updated_at.as_str(), c.device_id.as_str())),
+        )
+        .map_err(|e| at(&path, e))?;
         for cursor in cursors {
             let held: Option<(Option<String>, String, String, i64)> = tx
                 .query_row(
@@ -1926,6 +2054,104 @@ fn entry_state(conn: &Connection, id: i64) -> rusqlite::Result<Option<EntryState
         rusqlite::Error::QueryReturnedNoRows => Ok(None),
         other => Err(other),
     })
+}
+
+/// For each text and group, the uuid of the live entry a duplicate of it is
+/// collapsed onto: the lowest, which is the merge's own rule (see
+/// `hanzi_sync::merge_vocab`).
+type Survivors<'a> = HashMap<(&'a str, Option<&'a str>), &'a str>;
+
+fn survivors(entries: &[SyncedEntry]) -> Survivors<'_> {
+    let mut found: Survivors<'_> = HashMap::new();
+    for entry in entries.iter().filter(|e| !e.deleted) {
+        let key = (entry.text.as_str(), entry.group.as_deref());
+        let held = found.entry(key).or_insert(entry.uuid.as_str());
+        if entry.uuid.as_str() < *held {
+            *held = entry.uuid.as_str();
+        }
+    }
+    found
+}
+
+/// The live entry a removed `entry` was collapsed onto, if it is a duplicate the
+/// merge collapsed rather than an ordinary deletion.
+fn live_twin<'a>(survivors: &Survivors<'a>, entry: &SyncedEntry) -> Option<&'a str> {
+    survivors
+        .get(&(entry.text.as_str(), entry.group.as_deref()))
+        .copied()
+        .filter(|uuid| *uuid != entry.uuid)
+}
+
+/// The uuids of entries arriving removed that are live here, before anything is
+/// written.
+fn live_duplicates_removed(
+    conn: &Connection,
+    entries: &[SyncedEntry],
+    survivors: &Survivors<'_>,
+) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut found = Vec::new();
+    for entry in entries.iter().filter(|e| e.deleted) {
+        let Some(survivor) = live_twin(survivors, entry) else {
+            continue;
+        };
+        let live: Option<bool> = conn
+            .query_row(
+                "SELECT deleted = 0 FROM vocab_entry WHERE uuid = ?1",
+                [&entry.uuid],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        if live == Some(true) {
+            found.push((entry.uuid.clone(), survivor.to_string()));
+        }
+    }
+    Ok(found)
+}
+
+/// Move the practice counters of each collapsed duplicate onto its survivor.
+///
+/// The counters never travel — they are this device's own record of practising
+/// that row (see the note on [`SyncedEntry`]) — so when a merge removes a row
+/// this device practised because another device had added the same word, they
+/// would otherwise vanish with it. They are this device's practice of the *same
+/// word*, so they add up: attempts summed, the best score and the latest practice
+/// kept. The removed row's own are cleared, so a later edit that revives it
+/// cannot count them twice.
+///
+/// The attempt log, which is what schedules are folded from, is keyed by
+/// character and is untouched by any of this.
+fn collapse_counters(conn: &Connection, collapsed: &[(String, String)]) -> rusqlite::Result<()> {
+    for (uuid, survivor) in collapsed {
+        let counters: (u32, Option<f32>, Option<String>) = conn.query_row(
+            "SELECT attempts, best_score, last_practised FROM vocab_entry WHERE uuid = ?1",
+            [uuid],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        conn.execute(
+            "UPDATE vocab_entry SET
+                 attempts = attempts + ?1,
+                 best_score = CASE
+                     WHEN best_score IS NULL THEN ?2
+                     WHEN ?2 IS NULL THEN best_score
+                     ELSE MAX(best_score, ?2) END,
+                 last_practised = CASE
+                     WHEN last_practised IS NULL THEN ?3
+                     WHEN ?3 IS NULL THEN last_practised
+                     ELSE MAX(last_practised, ?3) END
+             WHERE uuid = ?4 AND deleted = 0",
+            params![counters.0, counters.1, counters.2, survivor],
+        )?;
+        conn.execute(
+            "UPDATE vocab_entry SET attempts = 0, best_score = NULL, last_practised = NULL
+             WHERE uuid = ?1",
+            [uuid],
+        )?;
+    }
+    Ok(())
 }
 
 /// The local id of the entry carrying a uuid, if this device has it.

@@ -104,17 +104,25 @@ pub(crate) fn vocabulary(
     let document = store.document();
 
     let tx = conn.transaction().map_err(|e| vocab_error(&db, e))?;
+    // Stamped as the schema backfill stamps a group that predates stamps — the
+    // epoch, and this device — because this runs *after* that backfill: left
+    // without, an imported group published an empty stamp and device until the
+    // next launch's backfill filled them in. The epoch rather than now for the
+    // backfill's own reason: a group has no recorded creation time, and any real
+    // edit on any device should win over it.
     for (position, name) in document.groups.iter().enumerate() {
         tx.execute(
-            "INSERT INTO vocab_group (name, position) VALUES (?1, ?2)
+            "INSERT INTO vocab_group (name, position, updated_at, device_id)
+             VALUES (?1, ?2, '1970-01-01T00:00:00Z', ?3)
              ON CONFLICT(name) DO UPDATE SET position = excluded.position",
-            rusqlite::params![name, position as i64],
+            rusqlite::params![name, position as i64, device_id],
         )
         .map_err(|e| vocab_error(&db, e))?;
     }
     // The imported entries have no stamp of their own, so they take one from this
     // device and this moment: they are new here, and there was no other writer.
-    let stamp = now_iso8601();
+    // From the sync clock like every other stamp a learner's list carries.
+    let stamp = crate::clock::next_stamp(&tx).map_err(|e| vocab_error(&db, e))?;
     for entry in &document.entries {
         write_entry(&tx, entry, &stamp, device_id).map_err(|e| vocab_error(&db, e))?;
     }
