@@ -343,6 +343,9 @@ crates/hanzi-say/           speech synthesis, wrapping sherpa-onnx's OfflineTts.
                             difference a recogniser prefers
   src/judge.rs              the judgement half of `verify-audio`, kept apart from
                             the recogniser so it is testable without a model
+  src/resume.rs             what makes re-running synthesize-audio safe: a key per
+                            phrase in the manifest (text, model, voice), clips
+                            encoded to .tmp and renamed, and a merged manifest
   src/bin/synthesize_audio.rs   corpus -> MP3 clips + manifest.json. Resumable;
                             the only place that needs ffmpeg. See §3a
   src/bin/verify_audio.rs   does a clip say what its text says? It drives a

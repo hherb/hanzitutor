@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod judge;
 pub mod phonetics;
+pub mod resume;
 pub mod sentences;
 
 pub use sentences::{Phrase, Speed};
@@ -326,26 +327,141 @@ impl Model {
 /// own is three characters, and the model produced audio so poor that the app's
 /// own recogniser transcribed only the second clause.
 ///
-/// So punctuation is no longer a split point. Text at or under [`MAX_CHUNK`]
-/// goes to the model whole, which covers every graded phrase in both corpora —
-/// the longest is 18 characters. Splitting is a fallback for a pasted paragraph,
-/// and it happens on **spaces** where there are any, because a passage the user
-/// typed has them, so the cut lands between words rather than inside one.
+/// So punctuation is not a split point *below the limit*. Text at or under
+/// [`MAX_CHUNK`] goes to the model whole, which covers every graded phrase in
+/// both corpora — the longest is 18 characters. Splitting is a fallback for a
+/// pasted paragraph, and when it happens it cuts at the strongest boundary that
+/// gets each piece under the limit, packing as much as fits into each:
+///
+/// 1. **sentence ends** — `。！？`, and ASCII `.!?` before a space;
+/// 2. **clause marks** — `，；、：`, and ASCII `,;:` before a space;
+/// 3. **spaces**, for a passage typed with them;
+/// 4. a **hard wrap** at the limit, only for a run with none of the above, and
+///    even then backed off to the start of a number or Latin word (`2026`,
+///    `3.14`, `Beijing`) rather than cutting through it.
+///
+/// Chinese has no spaces, so before the first two steps existed a long Chinese
+/// passage went straight to the hard wrap and was cut at character 60,
+/// whatever word sat there. A closing quote or bracket stays with the sentence
+/// it closes. The ASCII marks need a following space so that `3.14` and `1,000`
+/// are never split points.
 ///
 /// Public because the build tool reports how many pieces a phrase became, and a
 /// phrase that split is worth being able to see.
 pub fn chunk_text(text: &str) -> Vec<String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Vec::new();
+    let mut out = Vec::new();
+    pack(
+        text,
+        &[Boundary::Sentence, Boundary::Clause, Boundary::Space],
+        &mut out,
+    );
+    out
+}
+
+/// A place text may be cut, strongest first. See [`chunk_text`].
+#[derive(Clone, Copy, PartialEq)]
+enum Boundary {
+    Sentence,
+    Clause,
+    Space,
+}
+
+impl Boundary {
+    /// True when `ch` is this kind of boundary. `next` is the character after
+    /// any closing quotes, which the ASCII marks need to be a space.
+    fn is_mark(self, ch: char, next: Option<char>) -> bool {
+        let spaced = next.is_none_or(char::is_whitespace);
+        match self {
+            Self::Sentence => {
+                matches!(ch, '。' | '！' | '？') || (matches!(ch, '.' | '!' | '?') && spaced)
+            }
+            Self::Clause => {
+                matches!(ch, '，' | '；' | '、' | '：') || (matches!(ch, ',' | ';' | ':') && spaced)
+            }
+            Self::Space => ch.is_whitespace(),
+        }
     }
-    if trimmed.chars().count() <= MAX_CHUNK {
-        return vec![trimmed.to_string()];
+}
+
+/// A character that closes what a sentence mark ended, and so belongs with it.
+fn is_closer(ch: char) -> bool {
+    matches!(
+        ch,
+        '”' | '’' | '」' | '』' | '）' | '》' | '〉' | '】' | ')' | ']' | '"' | '\''
+    )
+}
+
+/// Cut `text` after every `boundary`, keeping each mark — and the closing
+/// quotes, repeated marks and whitespace after it — with the piece it ends.
+/// The pieces concatenate back to `text` exactly.
+fn split_after(text: &str, boundary: Boundary) -> Vec<&str> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    // Only punctuation has closing quotes after it. Between words a quote is as
+    // likely to open the next one, so a space never takes one with it.
+    let closes = |c: char| boundary != Boundary::Space && is_closer(c);
+    let at = |k: usize| chars.get(k).map(|c| c.1);
+    while i < chars.len() {
+        let (_, ch) = chars[i];
+        // Where the closing quotes after this character end.
+        let mut j = i + 1;
+        while at(j).is_some_and(closes) {
+            j += 1;
+        }
+        if !boundary.is_mark(ch, at(j)) {
+            i += 1;
+            continue;
+        }
+        // Repeated marks (`？！`) and their quotes stay together, and then the
+        // whitespace after them — but not a quote after that, which opens the
+        // next sentence.
+        while at(j)
+            .is_some_and(|c| closes(c) || (!c.is_whitespace() && boundary.is_mark(c, at(j + 1))))
+        {
+            j += 1;
+        }
+        while at(j).is_some_and(char::is_whitespace) {
+            j += 1;
+        }
+        let end = chars.get(j).map_or(text.len(), |c| c.0);
+        pieces.push(&text[start..end]);
+        start = end;
+        i = j;
+    }
+    if start < text.len() {
+        pieces.push(&text[start..]);
+    }
+    pieces
+}
+
+/// Characters in `text` once its surrounding whitespace is gone.
+fn width(text: &str) -> usize {
+    text.trim().chars().count()
+}
+
+/// Pack `text` into chunks at the first of `boundaries` that has any, and
+/// recurse into the finer ones for a piece that is still too long.
+fn pack(text: &str, boundaries: &[Boundary], out: &mut Vec<String>) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    if width(text) <= MAX_CHUNK {
+        out.push(text.to_string());
+        return;
+    }
+    let Some((&boundary, finer)) = boundaries.split_first() else {
+        hard_wrap(text, out);
+        return;
+    };
+    let pieces = split_after(text, boundary);
+    if pieces.len() < 2 {
+        pack(text, finer, out);
+        return;
     }
 
-    // Over the limit: break on spaces, keeping whole words where the text has
-    // any, and hard-wrap only a run that is itself longer than the limit.
-    let mut out: Vec<String> = Vec::new();
     let mut current = String::new();
     let flush = |current: &mut String, out: &mut Vec<String>| {
         let piece = current.trim();
@@ -354,28 +470,62 @@ pub fn chunk_text(text: &str) -> Vec<String> {
         }
         current.clear();
     };
-
-    for word in trimmed.split(' ') {
-        let word_len = word.chars().count();
-        let current_len = current.chars().count();
-        if current_len > 0 && current_len + 1 + word_len > MAX_CHUNK {
-            flush(&mut current, &mut out);
-        }
-        if word_len > MAX_CHUNK {
-            flush(&mut current, &mut out);
-            let chars: Vec<char> = word.chars().collect();
-            for window in chars.chunks(MAX_CHUNK) {
-                out.push(window.iter().collect());
-            }
+    for piece in pieces {
+        if width(piece) > MAX_CHUNK {
+            flush(&mut current, out);
+            pack(piece, finer, out);
             continue;
         }
-        if !current.is_empty() {
-            current.push(' ');
+        if width(&format!("{current}{piece}")) > MAX_CHUNK {
+            flush(&mut current, out);
         }
-        current.push_str(word);
+        current.push_str(piece);
     }
-    flush(&mut current, &mut out);
-    out
+    flush(&mut current, out);
+}
+
+/// Cut a run with no boundary at all into pieces of at most [`MAX_CHUNK`].
+///
+/// A cut that would land inside a number or a Latin word moves back to where
+/// it starts, unless the word is itself longer than the limit.
+fn hard_wrap(text: &str, out: &mut Vec<String>) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut start = 0;
+    while chars.len() - start > MAX_CHUNK {
+        let mut end = start + MAX_CHUNK;
+        let mut back = end;
+        while back > start && joins(&chars, back) {
+            back -= 1;
+        }
+        if back > start {
+            end = back;
+        }
+        push_trimmed(&chars[start..end], out);
+        start = end;
+    }
+    push_trimmed(&chars[start..], out);
+}
+
+fn push_trimmed(chars: &[char], out: &mut Vec<String>) {
+    let piece: String = chars.iter().collect();
+    let piece = piece.trim();
+    if !piece.is_empty() {
+        out.push(piece.to_string());
+    }
+}
+
+/// True when a cut between `chars[at - 1]` and `chars[at]` would split one
+/// number or Latin word: two ASCII letters or digits, or a digit and the `.`
+/// or `,` inside a number (`3.14`, `1,000`).
+fn joins(chars: &[char], at: usize) -> bool {
+    let (Some(&a), Some(&b)) = (at.checked_sub(1).and_then(|k| chars.get(k)), chars.get(at)) else {
+        return false;
+    };
+    let digit = |i: usize| chars.get(i).is_some_and(char::is_ascii_digit);
+    let separator = |c: char| matches!(c, '.' | ',');
+    (a.is_ascii_alphanumeric() && b.is_ascii_alphanumeric())
+        || (a.is_ascii_digit() && separator(b) && digit(at + 1))
+        || (separator(a) && b.is_ascii_digit() && at >= 2 && digit(at - 2))
 }
 
 /// The manifest the build tool writes beside a corpus's clips.
@@ -409,6 +559,22 @@ pub struct ManifestPhrase {
     pub audio: AudioPaths,
     /// Total bytes of every clip for this phrase.
     pub bytes: u64,
+    /// The model that spoke these clips, when it is known per phrase.
+    ///
+    /// The manifest's own `model` says what the *latest* run used, and a run
+    /// over one level merges into a manifest whose other phrases may have come
+    /// from an earlier model, so this is the field that stays true for each
+    /// phrase. Absent in manifests written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// What these clips were synthesised from — see [`resume::synthesis_key`].
+    ///
+    /// `synthesize-audio` reuses a clip only when this matches the key it would
+    /// compute now, so a phrase whose text, model or voice settings changed is
+    /// synthesised again rather than trusted because a file exists. Absent in
+    /// manifests written before it existed; the frontend ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 /// The clips written for one phrase.
@@ -469,6 +635,115 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].chars().count(), MAX_CHUNK);
         assert_eq!(chunks[1].chars().count(), 5);
+    }
+
+    /// Every chunk within the limit and non-blank, and nothing lost or reordered.
+    fn assert_well_formed(text: &str, chunks: &[String]) {
+        for chunk in chunks {
+            assert!(
+                chunk.chars().count() <= MAX_CHUNK,
+                "chunk over the limit: {chunk:?}"
+            );
+            assert!(!chunk.trim().is_empty(), "blank chunk from {text:?}");
+        }
+        let strip = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        assert_eq!(
+            strip(&chunks.concat()),
+            strip(text),
+            "text lost or reordered"
+        );
+    }
+
+    #[test]
+    fn long_chinese_splits_at_sentence_ends_not_mid_word() {
+        // Chinese has no spaces, so the space rule used to hard-wrap this at
+        // exactly 60 characters, inside whatever word sat there.
+        let sentence = "我每天早上七点起床，然后去学校学习汉语和数学。"; // 23 chars
+        assert_eq!(sentence.chars().count(), 23);
+        let text = sentence.repeat(3);
+        assert!(text.chars().count() > MAX_CHUNK);
+        let chunks = chunk_text(&text);
+        assert_well_formed(&text, &chunks);
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(
+                chunk.ends_with('。'),
+                "cut away from a sentence end: {chunk:?}"
+            );
+        }
+        // And it packs as much as fits rather than cutting at every mark.
+        assert_eq!(chunks.len(), 2);
+    }
+
+    #[test]
+    fn a_long_sentence_splits_at_its_clause_marks() {
+        // One sentence over the limit, with commas, a semicolon and an
+        // enumeration comma to break on — and no full stop until the end.
+        let clause = "我们一起去商店买苹果、香蕉和橘子"; // 16 chars
+        let text = format!("{clause}，{clause}；{clause}，{clause}，{clause}。");
+        assert!(text.chars().count() > MAX_CHUNK);
+        let chunks = chunk_text(&text);
+        assert_well_formed(&text, &chunks);
+        for chunk in &chunks {
+            let last = chunk.chars().last().unwrap();
+            assert!(
+                "，；、。".contains(last),
+                "cut away from a clause mark: {chunk:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_closing_quote_stays_with_its_sentence() {
+        let sentence = "他说：“我明天要去北京看朋友，你想一起去吗？”"; // 23 chars
+        let text = sentence.repeat(3);
+        let chunks = chunk_text(&text);
+        assert_well_formed(&text, &chunks);
+        for chunk in &chunks {
+            assert!(chunk.ends_with('”'), "the quote was split off: {chunk:?}");
+        }
+    }
+
+    #[test]
+    fn a_hard_wrap_does_not_cut_a_number_or_latin_word() {
+        // No punctuation and no spaces at all, so the hard wrap is the only
+        // option — but it backs off to the start of an ASCII run rather than
+        // reading 2026 as 20 and 26.
+        let text = format!("{}2026年{}", "汉".repeat(MAX_CHUNK - 2), "字".repeat(10));
+        let chunks = chunk_text(&text);
+        assert_well_formed(&text, &chunks);
+        assert!(chunks.iter().any(|c| c.contains("2026")), "{chunks:?}");
+
+        let text = format!("{}Beijing{}", "汉".repeat(MAX_CHUNK - 3), "字".repeat(10));
+        let chunks = chunk_text(&text);
+        assert_well_formed(&text, &chunks);
+        assert!(chunks.iter().any(|c| c.contains("Beijing")), "{chunks:?}");
+
+        // A decimal is one number too.
+        let text = format!("{}3.14{}", "汉".repeat(MAX_CHUNK - 2), "字".repeat(10));
+        let chunks = chunk_text(&text);
+        assert!(chunks.iter().any(|c| c.contains("3.14")), "{chunks:?}");
+    }
+
+    #[test]
+    fn a_decimal_point_is_not_a_sentence_end() {
+        // ASCII `.` ends a sentence only before a space or the end, so 3.14 is
+        // not a split point. Built so that, were it one, the greedy packing would
+        // cut exactly there: the text up to `3.` is 60 characters.
+        let text = format!("{}is 3.14 now. And again.", "word ".repeat(11));
+        assert_eq!(text.find("3.").map(|i| i + 2), Some(MAX_CHUNK));
+        let chunks = chunk_text(&text);
+        assert_well_formed(&text, &chunks);
+        assert!(chunks.iter().all(|c| !c.ends_with("3.")), "{chunks:?}");
+        assert!(chunks.iter().any(|c| c.contains("3.14")), "{chunks:?}");
+    }
+
+    #[test]
+    fn a_number_with_a_comma_is_not_split_at_the_comma() {
+        let text = format!("{}1,000{}", "汉".repeat(MAX_CHUNK - 3), "字".repeat(10));
+        let chunks = chunk_text(&text);
+        assert_well_formed(&text, &chunks);
+        assert!(chunks.iter().any(|c| c.contains("1,000")), "{chunks:?}");
     }
 
     #[test]
