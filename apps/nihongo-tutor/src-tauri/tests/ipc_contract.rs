@@ -259,6 +259,45 @@ fn the_options_the_interface_posts_survive_a_round_trip() {
     assert_eq!(read_back.ink_width, all.ink_width);
 }
 
+/// What a webview can post to `grade_attempt` cannot size the grader's work
+/// (issue #40).
+///
+/// The interface sends `{ inkWidth }` alone, but the command takes the whole of
+/// `GradeOptions`, and `resampleK: 1e15` used to reach `Vec::with_capacity` and
+/// abort the app. Through the command the interface calls, for a kana (which
+/// grades every way of joining its strokes) and a kanji, with a strokes array far
+/// longer than any character has as well.
+#[test]
+fn grade_attempt_grades_a_hostile_payload_rather_than_obeying_it() {
+    let state = state();
+    let options: GradeOptions = serde_json::from_value(json!({
+        "resampleK": 1_000_000_000_000_000u64,
+        "minStrokeLen": 1e300,
+        "inkWidth": 1e300,
+    }))
+    .expect("deserialises");
+    let stroke = vec![Point::new(120.0, 500.0), Point::new(900.0, 505.0)];
+    for ch in ['ー', 'さ', '一'] {
+        for strokes in [vec![stroke.clone()], vec![stroke.clone(); 20_000]] {
+            let graded = state
+                .grade_and_schedule(ch, &strokes, &options)
+                .expect("grades");
+            assert!(
+                (0.0..=100.0).contains(&graded.report.overall),
+                "{ch}: {}",
+                graded.report.overall
+            );
+            // `hanzi_core::grade::MAX_ATTEMPT_STROKES`, which this crate does not
+            // depend on directly: the strokes past it are strays.
+            assert!(graded.report.given_strokes <= 128, "{ch}");
+            assert_eq!(
+                graded.report.given_strokes + graded.report.stray_strokes,
+                strokes.len()
+            );
+        }
+    }
+}
+
 #[test]
 fn an_error_crosses_as_a_string_not_as_a_panic() {
     // Every fallible command returns Result<_, String>, so the interface can show

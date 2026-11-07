@@ -1263,6 +1263,12 @@ pub async fn vocab_import(
     if summary.groups_added > 0 {
         message.push_str(&format!(", {} new groups", summary.groups_added));
     }
+    if summary.skipped_invalid > 0 {
+        message.push_str(&format!(
+            ", left out {} that were empty, too long or held a control character",
+            summary.skipped_invalid
+        ));
+    }
 
     Ok(Some(VocabOutcome { view, message }))
 }

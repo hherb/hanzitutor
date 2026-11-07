@@ -106,7 +106,7 @@ pub const HEADLINE_INK: f32 = 0.25;
 /// "missing field `resampleK`" before any grading happens. That is exactly how
 /// Nihongo Tutor shipped a Grade button that could not grade anything: it sends
 /// pen width and nothing else. Sending every field is still fine.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GradeOptions {
     /// Points each polyline is resampled to before comparison.
@@ -148,7 +148,75 @@ impl GradeOptions {
             ..Self::default()
         }
     }
+
+    /// These options with every tunable brought inside the range the grader can
+    /// use (issue #40).
+    ///
+    /// The options arrive from the webview, and the webview is not trusted to
+    /// size an allocation: `{"resampleK": 1000000000000000}` reached
+    /// `Vec::with_capacity` in [`geom::resample`] and aborted the process. So the
+    /// grader applies this itself, on every run, rather than relying on each
+    /// command remembering to — whoever calls [`grade`] gets bounded work.
+    ///
+    /// The bounds are wide, and every value an interface sends today sits well
+    /// inside them, so nothing a learner can do changes grade; a unit test pins
+    /// that for the exact payloads both boards post:
+    ///
+    /// * `resample_k` to [`RESAMPLE_K_RANGE`]. Both interfaces use 16, the value
+    ///   the tolerance study was fitted at. Below 2 [`geom::resample`] already
+    ///   rounds up, so the floor changes nothing; past a few hundred points a
+    ///   1024-unit box has no more shape to resolve, and the cost is per pair of
+    ///   strokes.
+    /// * `min_stroke_len` to `0..=`[`geom::EM`] — a negative bar discards no more
+    ///   than zero does, and none longer than the box means anything. (The grader
+    ///   also lowers it to half the shortest reference stroke.)
+    /// * `ink_width` to `0..=`[`MAX_INK_WIDTH`]. Both interfaces send
+    ///   [`INK_WIDTH`], 36. The raster measure already reads a negative width as
+    ///   zero; the ceiling is what keeps the rasteriser's work per segment small,
+    ///   since the area painted grows with the square of the width.
+    ///
+    /// `NaN` — which no JSON can carry, but a Rust caller can — falls back to the
+    /// default for that field, since `f32::clamp` would pass it straight through.
+    /// Infinities clamp to the nearer bound like any other out-of-range value.
+    pub fn clamped(&self) -> Self {
+        let defaults = Self::default();
+        let bounded = |value: f32, low: f32, high: f32, default: f32| {
+            if value.is_nan() {
+                default
+            } else {
+                value.clamp(low, high)
+            }
+        };
+        Self {
+            resample_k: self
+                .resample_k
+                .clamp(*RESAMPLE_K_RANGE.start(), *RESAMPLE_K_RANGE.end()),
+            min_stroke_len: bounded(self.min_stroke_len, 0.0, geom::EM, defaults.min_stroke_len),
+            global_fit: self.global_fit,
+            ink_width: bounded(self.ink_width, 0.0, MAX_INK_WIDTH, defaults.ink_width),
+        }
+    }
 }
+
+/// The resampling resolutions [`GradeOptions::clamped`] allows.
+pub const RESAMPLE_K_RANGE: std::ops::RangeInclusive<usize> = 2..=256;
+
+/// The widest pen, in design units out of 1024, the ink measure is asked to
+/// rasterise; see [`GradeOptions::clamped`]. An eighth of the box, more than
+/// three times the canvas pen.
+pub const MAX_INK_WIDTH: f32 = 128.0;
+
+/// The most strokes of one attempt the grader pairs (issue #40).
+///
+/// Pairing is an assignment problem over a square matrix as wide as the larger
+/// side, so its memory grows with the square of the stroke count and its time
+/// with the cube: a webview posting a hundred thousand two-point strokes asked
+/// for an 80 GB matrix. No character has more than a few dozen strokes, so
+/// strokes past this many are counted as strays — reported, as a tap is, and not
+/// paired — and an attempt with that many is never legible anyway, since its
+/// count cannot be right. Every attempt of up to this many real strokes is graded
+/// exactly as before.
+pub const MAX_ATTEMPT_STROKES: usize = 128;
 
 /// What went wrong with one reference stroke.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -396,6 +464,8 @@ fn grade_inner(
     attempt: &[Vec<Point>],
     options: &GradeOptions,
 ) -> GradeReport {
+    // Bounded here, not at each command, so every caller gets bounded work.
+    let options = &options.clamped();
     let expected = reference_medians.len();
 
     // 1. Discard marks too short to be strokes, keeping original indices.
@@ -422,7 +492,9 @@ fn grade_inner(
         // as well as the answer: a non-finite stroke is refused before its length
         // is measured, because that length would be `NaN` too.
         let finite = stroke.iter().all(|p| p.x.is_finite() && p.y.is_finite());
-        if !finite || geom::path_length(stroke) < stray_below {
+        // Past [`MAX_ATTEMPT_STROKES`] real strokes, the rest are strays too: the
+        // pairing below is quadratic in memory and cubic in time.
+        if !finite || geom::path_length(stroke) < stray_below || kept.len() >= MAX_ATTEMPT_STROKES {
             stray += 1;
         } else {
             kept.push(Kept {
@@ -1000,6 +1072,162 @@ mod tests {
         let none: GradeOptions = serde_json::from_value(serde_json::json!({})).expect("{}");
         assert_eq!(none.ink_width, INK_WIDTH);
         assert_eq!(none.resample_k, GradeOptions::default().resample_k);
+    }
+
+    /// Clamping changes nothing an interface sends today (issue #40).
+    ///
+    /// These are the exact payloads the two boards post — Hanzi Tutor every
+    /// field, in both modes (`src/App.svelte`); Nihongo Tutor the pen width alone
+    /// (`apps/nihongo-tutor/src/lib/api.ts`) — plus the two presets. Each must come
+    /// out of [`GradeOptions::clamped`] exactly as it went in, so the bound cannot
+    /// move a grade a learner has ever been given.
+    #[test]
+    fn clamping_passes_the_options_the_interfaces_send_through_unchanged() {
+        let posted = [
+            serde_json::json!({
+                "resampleK": 16, "minStrokeLen": 12, "globalFit": true, "inkWidth": 36
+            }),
+            serde_json::json!({
+                "resampleK": 16, "minStrokeLen": 12, "globalFit": false, "inkWidth": 36
+            }),
+            serde_json::json!({ "inkWidth": 36 }),
+        ];
+        let mut all: Vec<GradeOptions> = posted
+            .into_iter()
+            .map(|json| serde_json::from_value(json).expect("deserialises"))
+            .collect();
+        all.extend([GradeOptions::default(), GradeOptions::tracing()]);
+        for options in all {
+            assert_eq!(options.clamped(), options);
+        }
+    }
+
+    /// Every tunable is brought inside the range the grader can use, `NaN`
+    /// included — `f32::clamp` would hand a `NaN` straight back.
+    #[test]
+    fn clamping_bounds_every_tunable() {
+        let defaults = GradeOptions::default();
+        let (k_low, k_high) = (*RESAMPLE_K_RANGE.start(), *RESAMPLE_K_RANGE.end());
+        for (k, expected) in [
+            (0, k_low),
+            (1, k_low),
+            (k_high + 1, k_high),
+            (1_000_000_000_000_000, k_high),
+            (usize::MAX, k_high),
+        ] {
+            let options = GradeOptions {
+                resample_k: k,
+                ..GradeOptions::default()
+            };
+            assert_eq!(options.clamped().resample_k, expected, "k = {k}");
+        }
+        for (value, stroke, ink) in [
+            (f32::NAN, defaults.min_stroke_len, defaults.ink_width),
+            (f32::INFINITY, geom::EM, MAX_INK_WIDTH),
+            (f32::NEG_INFINITY, 0.0, 0.0),
+            (-5.0, 0.0, 0.0),
+            (1e30, geom::EM, MAX_INK_WIDTH),
+        ] {
+            let options = GradeOptions {
+                min_stroke_len: value,
+                ink_width: value,
+                ..GradeOptions::default()
+            }
+            .clamped();
+            assert_eq!(options.min_stroke_len, stroke, "min_stroke_len {value}");
+            assert_eq!(options.ink_width, ink, "ink_width {value}");
+        }
+        // A posted number too large for an `f32` arrives as infinity.
+        let posted: GradeOptions =
+            serde_json::from_value(serde_json::json!({ "inkWidth": 1e300, "minStrokeLen": 1e300 }))
+                .expect("deserialises");
+        assert_eq!(posted.clamped().ink_width, MAX_INK_WIDTH);
+        assert_eq!(posted.clamped().min_stroke_len, geom::EM);
+    }
+
+    /// Options no interface sends are graded, not obeyed (issue #40).
+    ///
+    /// `resampleK: 1e15` went straight to `Vec::with_capacity` and took the whole
+    /// process down — an allocation failure aborts rather than panics, so not
+    /// even the command's error path ran. Grading itself applies the bound, so a
+    /// caller that forgot to is still safe.
+    #[test]
+    fn grading_with_absurd_options_finishes_with_real_numbers() {
+        let reference = shi_reference();
+        let hostile = [
+            GradeOptions {
+                resample_k: 1_000_000_000_000_000,
+                ..GradeOptions::default()
+            },
+            GradeOptions {
+                resample_k: usize::MAX,
+                ..GradeOptions::default()
+            },
+            GradeOptions {
+                min_stroke_len: f32::NAN,
+                ink_width: f32::NAN,
+                ..GradeOptions::default()
+            },
+            GradeOptions {
+                min_stroke_len: f32::INFINITY,
+                ink_width: f32::INFINITY,
+                ..GradeOptions::tracing()
+            },
+            GradeOptions {
+                min_stroke_len: f32::NEG_INFINITY,
+                ink_width: f32::NEG_INFINITY,
+                ..GradeOptions::default()
+            },
+        ];
+        for options in hostile {
+            let report = grade(&reference, &reference, &options);
+            assert_eq!(report.given_strokes, 2, "{options:?}");
+            for value in [
+                report.overall / 100.0,
+                report.shape_score,
+                report.position_score,
+                report.ink_score,
+                report.ink_coverage,
+                report.order_score,
+            ] {
+                assert!(
+                    value.is_finite() && (0.0..=1.0).contains(&value),
+                    "{options:?} reported {value}"
+                );
+            }
+            // The run is the clamped run, to the bit.
+            let clamped = grade(&reference, &reference, &options.clamped());
+            assert_eq!(report.overall, clamped.overall, "{options:?}");
+        }
+    }
+
+    /// An attempt of far more strokes than any character has is graded in
+    /// bounded memory and time (issue #40).
+    ///
+    /// Pairing builds a square matrix as wide as the larger side and solves it in
+    /// cubic time, so twenty thousand posted strokes asked for 3.2 GB and hours of
+    /// one core. Past [`MAX_ATTEMPT_STROKES`] real strokes the rest are strays.
+    #[test]
+    fn an_attempt_with_absurdly_many_strokes_is_graded_with_the_excess_as_strays() {
+        let reference = shi_reference();
+        let posted = 20_000;
+        let mut attempt = reference.clone();
+        attempt.extend((0..posted - reference.len()).map(|i| {
+            let y = 100.0 + (i % 800) as f32;
+            line((100.0, y), (300.0, y), 2)
+        }));
+        let report = grade(&reference, &attempt, &GradeOptions::default());
+        assert_eq!(report.given_strokes, MAX_ATTEMPT_STROKES);
+        assert_eq!(report.stray_strokes, posted - MAX_ATTEMPT_STROKES);
+        assert_eq!(report.assignment.len(), posted);
+        assert!(!report.legible && !report.count_ok);
+        assert!(report.overall.is_finite());
+
+        // At the cap itself nothing is set aside.
+        let at_cap = &attempt[..MAX_ATTEMPT_STROKES];
+        let report = grade(&reference, at_cap, &GradeOptions::default());
+        assert_eq!(report.given_strokes, MAX_ATTEMPT_STROKES);
+        assert_eq!(report.stray_strokes, 0);
     }
 
     // ---- assignment solver -------------------------------------------------

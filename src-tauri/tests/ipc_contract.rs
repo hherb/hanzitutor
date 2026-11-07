@@ -338,6 +338,48 @@ fn a_json_null_option_is_the_same_as_omitting_it() {
     assert!(parsed.is_none());
 }
 
+/// What a webview can post to `grade_attempt` cannot size the grader's work
+/// (issue #40).
+///
+/// `resampleK: 1e15` used to reach `Vec::with_capacity` and abort the whole app,
+/// and a strokes array tens of thousands long asked the stroke pairing for a
+/// matrix of gigabytes. Both are now graded: the options are clamped and the
+/// strokes past `MAX_ATTEMPT_STROKES` are strays. The payload goes through serde
+/// as the command receives it, since a number too large for an `f32` arrives as
+/// infinity rather than as an error.
+#[test]
+fn grade_attempt_grades_a_hostile_payload_rather_than_obeying_it() {
+    let state = state();
+    let options: GradeOptions = serde_json::from_value(serde_json::json!({
+        "resampleK": 1_000_000_000_000_000u64,
+        "minStrokeLen": 1e300,
+        "globalFit": true,
+        "inkWidth": 1e300,
+    }))
+    .expect("deserialises");
+    let stroke = vec![Point::new(120.0, 400.0), Point::new(900.0, 400.0)];
+    let report = state
+        .grade('一', std::slice::from_ref(&stroke), &options)
+        .expect("grades");
+    assert_eq!(report.given_strokes, 1);
+    assert!(
+        (0.0..=100.0).contains(&report.overall),
+        "{}",
+        report.overall
+    );
+
+    let many = vec![stroke; 20_000];
+    let report = state
+        .grade('一', &many, &GradeOptions::default())
+        .expect("grades");
+    assert_eq!(report.given_strokes, hanzi_core::grade::MAX_ATTEMPT_STROKES);
+    assert_eq!(
+        report.stray_strokes,
+        many.len() - hanzi_core::grade::MAX_ATTEMPT_STROKES
+    );
+    assert!(!report.legible);
+}
+
 // ---- vocabulary list ------------------------------------------------------
 
 /// A list with one entry, as the interface would receive it.

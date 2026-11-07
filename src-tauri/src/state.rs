@@ -439,6 +439,12 @@ fn describe_restore(
     if summary.groups_added > 0 {
         parts.push(format!("{} new groups", summary.groups_added));
     }
+    if summary.skipped_invalid > 0 {
+        parts.push(format!(
+            "left out {} that were empty, too long or held a control character",
+            summary.skipped_invalid
+        ));
+    }
 
     if attempts_added > 0 {
         parts.push(format!("recovered {attempts_added} attempts"));
