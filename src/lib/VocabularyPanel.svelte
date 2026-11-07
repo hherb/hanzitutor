@@ -7,6 +7,7 @@
    * actually taking. An entry's text may be a single character or a word.
    */
   import type { CharacterHint, EntryProgress, TextLookup, VocabEntry, VocabView } from "./types";
+  import type { DrillOptions } from "./practiceCursor";
   import Icon from "./Icon.svelte";
   import TonedPinyin from "./TonedPinyin.svelte";
   import TonedText from "./TonedText.svelte";
@@ -66,11 +67,12 @@
      * Drill these entries on the board.
      *
      * `group` is the group being drilled, or `null` when the selection is not one
-     * group — everything, or the unfiled remainder — and for a row's own Practise
-     * button, which is a one-off and must not overwrite the place the learner had
-     * reached in the group that entry belongs to.
+     * group — everything, or the unfiled remainder. A row's own Practise button
+     * passes `keepPlace: false` as well: it is a one-off and must not overwrite
+     * the place the learner had reached in the group that entry belongs to, and
+     * `null` alone would let that group be read back from the entry itself.
      */
-    onPractise: (entries: VocabEntry[], group: string | null) => void;
+    onPractise: (entries: VocabEntry[], group: string | null, options?: DrillOptions) => void;
     onExport: (format: "json" | "csv") => void;
     onImport: (merge: boolean) => void;
   }
@@ -593,7 +595,7 @@
           <span class="row-actions">
             <button
               class="icon"
-              onclick={() => onPractise([entry], null)}
+              onclick={() => onPractise([entry], null, { keepPlace: false })}
               disabled={busy}
               aria-label={`Practise ${entry.text}`}
               title="Practise this entry on the board"

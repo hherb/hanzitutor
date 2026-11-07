@@ -23,6 +23,20 @@
   import TonedPinyin from "./lib/TonedPinyin.svelte";
   import TonedText from "./lib/TonedText.svelte";
   import { mnemonicFor, SOUND_NOTE } from "./lib/mnemonics";
+  import {
+    boardInUse,
+    courseCursorAfterSync,
+    drillGroup,
+    placeKeptBy,
+    syncNoticeLine,
+    takeDeferred,
+  } from "./lib/practiceCursor";
+  import type {
+    CourseBoard,
+    CursorDecision,
+    DeferredCursor,
+    DrillOptions,
+  } from "./lib/practiceCursor";
   import VocabularyPanel from "./lib/VocabularyPanel.svelte";
   import WordsPanel from "./lib/WordsPanel.svelte";
   import { setCharacterTones } from "./lib/tones.svelte";
@@ -487,11 +501,15 @@
       );
       clearTimeout(workingTimer);
       switch (outcome.outcome) {
-        case "synced":
-          refreshAfterSync();
+        case "synced": {
+          // Waited for, so the line can say whether the board followed the
+          // course position or is waiting for the learner's next step.
+          const cursor = await refreshAfterSync();
           syncPulse += 1;
-          showSyncNotice(autoSyncLine(outcome.view));
+          const line = autoSyncLine(outcome.view);
+          showSyncNotice(line === null ? null : syncNoticeLine(line, cursor));
           break;
+        }
         case "offline":
           showSyncNotice(
             "No connection, so nothing was synced. Your practice is safe on this device.",
@@ -586,6 +604,20 @@
   /** The position last handed to the backend, so a redraw is not a save. */
   let cursorSaved = -1;
   let cursorTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * A course position a sync brought in that the board could not take yet —
+   * see `followSyncedCursor`. Plain, not state: nothing renders it.
+   */
+  let cursorDeferred: DeferredCursor | null = null;
+  /** Whether a course save is waiting for its timer, and how many are on their
+   * way to the backend — so a sync read can tell it raced one. */
+  let cursorPending = false;
+  let cursorWrites = 0;
+  /** The board's line about a deferred move, so the next step can clear it. */
+  let cursorNote: string | null = null;
+  /** Set when a sync finished before the start-up restore did, so the restore
+   * looks again once it has. */
+  let cursorResync = false;
 
   // ---- practising the list -------------------------------------------------
   /**
@@ -1371,8 +1403,11 @@
     const position = index;
     if (!cursorRestored || position === cursorSaved) return;
     clearTimeout(cursorTimer);
+    cursorPending = true;
     cursorTimer = setTimeout(() => {
+      cursorPending = false;
       cursorSaved = position;
+      cursorWrites += 1;
       void api
         .setCourseCursor(position)
         .then((saved) => {
@@ -1380,9 +1415,15 @@
         })
         .catch((cause) => {
           cursorWarning = `Could not remember your place in the course: ${cause}`;
+        })
+        .finally(() => {
+          cursorWrites -= 1;
         });
     }, 400);
-    return () => clearTimeout(cursorTimer);
+    return () => {
+      clearTimeout(cursorTimer);
+      cursorPending = false;
+    };
   });
 
   /** Open where the reader left off, or at the beginning on a first run. */
@@ -1402,7 +1443,91 @@
       cursorWarning = `Could not restore your place in the course: ${cause}`;
     } finally {
       cursorRestored = true;
+      if (cursorResync) {
+        cursorResync = false;
+        void followSyncedCursor();
+      }
     }
+  }
+
+  /**
+   * Re-read the course position after a sync, which may have moved it.
+   *
+   * Without this the board stayed where it was while the notice said "moved to
+   * where you left off", and the next arrow saved the old place over the synced
+   * one on every device (issue #32). It runs after every sync rather than only
+   * when the summary says the position moved, because "Sync now" does not hand
+   * the summary over; when nothing moved this is one read and no change.
+   *
+   * `cursorSaved` is moved with `index`, so the save effect sees the position as
+   * already stored and does not write it back. When the board cannot follow yet —
+   * strokes on it, or another drill showing — the position waits in
+   * `cursorDeferred` for the learner's next step: see `takeDeferredCursor`.
+   *
+   * The board is looked at on both sides of the read, because a save can go out
+   * during it and the answer may then be older than the board. Answers what was
+   * decided, so the sync notice can say it, or `null` when nothing was read.
+   */
+  async function followSyncedCursor(): Promise<CursorDecision | null> {
+    if (!cursorRestored) {
+      cursorResync = true;
+      return null;
+    }
+    const board = (): CourseBoard => ({
+      current: index,
+      lastSaved: cursorSaved,
+      saving: cursorPending || cursorWrites > 0,
+      total: allCharacters.length,
+      onCourse: source === "course",
+      busy: boardInUse({
+        strokes: strokes.length,
+        playing,
+        revealed,
+        sweeping: sweep !== null,
+      }),
+    });
+    const before = board();
+    try {
+      const saved = await api.courseCursor();
+      // Only a warning of its own: a failed save's warning is still true.
+      if (saved.warning) cursorWarning = saved.warning;
+      const decision = courseCursorAfterSync(saved.index, board(), before);
+      cursorDeferred = decision.action === "defer" ? { index: decision.index, at: index } : null;
+      if (decision.action === "move") {
+        index = decision.index;
+        cursorSaved = decision.index;
+      }
+      if (decision.action !== "stay") {
+        void api.log(
+          `course cursor after sync: ${decision.action} to character ${decision.index + 1}`,
+        );
+      }
+      return decision;
+    } catch (cause) {
+      cursorWarning = `Could not re-read your place in the course: ${cause}`;
+      return null;
+    }
+  }
+
+  /**
+   * Move to a synced course position that was waiting, if it still applies.
+   *
+   * `step` is the direction of the learner's step, `1` for coming back from a
+   * drill: only a step on takes it, and any step drops it (see `takeDeferred`).
+   * Answers whether it moved, so an arrow that took the learner there does not
+   * also step on from it. The move is said on the board, because the learner
+   * pressed → and did not land on the next character.
+   */
+  function takeDeferredCursor(step = 1): boolean {
+    const target = takeDeferred(cursorDeferred, index, step);
+    cursorDeferred = null;
+    if (target === null) return false;
+    index = target;
+    cursorSaved = target;
+    cursorNote = `Moved to character ${target + 1}, where your other device left off.`;
+    statusMessage = cursorNote;
+    void api.log(`course cursor: moved to character ${target + 1}, where the sync left it`);
+    return true;
   }
 
   /**
@@ -1984,14 +2109,17 @@
    * went on showing what it had, which is what "the list only updates after a
    * restart" was: the restart was the next thing that called these.
    *
-   * All three, because one sync does all three: it rebuilds schedules, settles the
-   * vocabulary list, and moves the course position. Refreshing only the list would
-   * have replaced one half-fixed bug with another.
+   * All four, because one sync does all of them: it rebuilds schedules, settles
+   * the vocabulary list, and moves the course position. Refreshing only the list
+   * would have replaced one half-fixed bug with another. A group's place is not
+   * re-read because nothing here holds a copy of it: a drill reads it when it
+   * starts.
    */
-  function refreshAfterSync() {
+  function refreshAfterSync(): Promise<CursorDecision | null> {
     void refreshVocabulary();
     void refreshProgress();
     void refreshReview();
+    return followSyncedCursor();
   }
 
   async function refreshVocabulary() {
@@ -2226,6 +2354,10 @@
     queue = items;
     queueCursor = 0;
     source = from;
+    // A new drill keeps no group's place until `practiseQueue` says it does: a
+    // group left over from the drill this replaces had its place erased when an
+    // entry of the new one was finished (issue #32).
+    queueGroup = null;
     mode = "recall";
     beginEntry();
     statusMessage = null;
@@ -2236,23 +2368,30 @@
    * Start drilling a snapshot of the given entries, from where the learner got to.
    *
    * `group` is the group the drill is of, or `null` when it is not one group —
-   * the whole list, the unfiled remainder, or a single entry from a row's own
-   * button. Only a group has a position: there is nowhere to remember a place in
-   * "everything", and a one-off drill of one entry must not overwrite the place
-   * the learner had reached in the group it came from.
+   * the whole list or the unfiled remainder. Only a group has a position: there
+   * is nowhere to remember a place in "everything".
    *
    * When the caller does not name a group but every entry agrees on one, that
    * group is used: a view that is one group's list *is* that group, and the
-   * position has to follow it whether or not the caller knew to say so.
+   * position has to follow it whether or not the caller knew to say so. That is
+   * why a row's own Practise button says `keepPlace: false` rather than passing
+   * `null`: a one-off drill of one entry must not read or overwrite the place the
+   * learner had reached in the group it came from, and its one entry always
+   * "agrees" on that group (issue #32). See `drillGroup`.
    *
    * The stored position wins when it names an entry still in the list, because
    * it is exactly where the learner stopped. Otherwise the drill starts at the
    * first entry they have not practised, and if they have practised them all it
    * starts at the top: such a list is due for review, not finished.
    */
-  async function practiseQueue(entries: VocabEntry[], group: string | null) {
+  async function practiseQueue(
+    entries: VocabEntry[],
+    group: string | null,
+    options: DrillOptions = {},
+  ) {
     if (entries.length === 0) return;
-    const scope = group ?? sharedGroup(entries);
+    const scope = drillGroup(entries, group, options);
+    const oneOff = options.keepPlace === false;
 
     // A stored position, when one names an entry that is still in the list.
     let resume: VocabEntry[] | null = null;
@@ -2302,14 +2441,15 @@
           : skipped > 0
             ? `resuming past ${skipped} already practised`
             : "";
-      if (fallback !== "") outcome = outcome === "" ? fallback : `${outcome}; ${fallback}`;
+      // A one-off is one entry the learner chose, so where it "resumes" says nothing.
+      if (oneOff) outcome = "";
+      else if (fallback !== "") outcome = outcome === "" ? fallback : `${outcome}; ${fallback}`;
       // And when there is nothing to say, say that: a group drill that starts at
       // the first entry with no explanation at all is the report this exists to
       // make answerable.
       else if (outcome === "" && scope !== null) outcome = "no place kept yet — starting at the first entry";
     }
 
-    queueGroup = scope;
     startPractice(
       resume.map((entry) => ({
         text: entry.text,
@@ -2321,31 +2461,22 @@
       })),
       "vocabulary",
     );
+    // After, because starting a drill clears whatever group the last one kept.
+    queueGroup = scope;
     const where = scope === null ? "" : `“${scope}”: `;
     void api.log(
-      `practising ${resume.length} vocabulary entries${outcome ? ` — ${where}${outcome}` : ""}`,
+      `practising ${resume.length} vocabulary entries` +
+        (oneOff ? " (one-off, no place kept)" : outcome ? ` — ${where}${outcome}` : ""),
     );
     // On the board, so "it started at the beginning again" arrives with its
     // reason attached instead of being a mystery to report.
     if (outcome !== "") statusMessage = `${where}${outcome}`;
-    else if (scope === null)
+    else if (scope === null && !oneOff)
       // And the case where there is no group at all is said too: a drill with
       // nowhere to keep a place is the one failure that looks exactly like a
       // lost place, and it is invisible unless it is named.
       statusMessage =
         "this drill is not one group, so no place is being kept — practise a group to resume";
-  }
-
-  /**
-   * The one group every entry belongs to, or `null` when they do not agree.
-   *
-   * Used only when the caller passed no group, so that a single group's list
-   * still keeps its place.
-   */
-  function sharedGroup(entries: VocabEntry[]): string | null {
-    const first = entries[0]?.group ?? null;
-    if (first === null) return null;
-    return entries.every((entry) => entry.group === first) ? first : null;
   }
 
   /** Start drilling what is due for review, most overdue first. */
@@ -2469,6 +2600,8 @@
    * does not move.
    */
   function showCharacterInCourse(ch: string) {
+    // A pick is a newer request than a synced position waiting for the board.
+    cursorDeferred = null;
     leavePractice();
     view = "course";
     goToCharacter(ch);
@@ -2563,6 +2696,8 @@
     queueCursor = 0;
     queueGroup = null;
     beginEntry();
+    // A course position synced in during the drill is taken now, on a clear board.
+    takeDeferredCursor();
   }
 
   /** Move within the practice queue, abandoning an unfinished entry. */
@@ -2621,21 +2756,25 @@
           : " — that was the last entry in this list"
         : "");
 
+    // Where the learner got to: the entry they are about to write, or nothing at
+    // all when that was the last one, so the next session opens at the top of a
+    // finished list rather than at its end. A position is the group's, so a drill
+    // that is not one group keeps none — and neither does a drill from another
+    // screen (see `placeKeptBy`). Worked out *before* recording the entry, because
+    // the learner can start another drill or leave this one while that is awaited.
+    const place = placeKeptBy(source, queueGroup);
+    const next = isLast ? null : (queue[queueCursor]?.entryId ?? null);
+
     if (entryId !== null) {
       await withVocab(() => api.vocabRecordAttempt(entryId, mean), note);
     } else {
       statusMessage = note;
     }
-    // Where the learner got to, written once the entry is recorded: the entry
-    // they are about to write, or nothing at all when that was the last one, so
-    // the next session opens at the top of a finished list rather than at its
-    // end. A position is the group's, so a drill that is not one group keeps
-    // none.
-    if (queueGroup !== null) {
-      const next = isLast ? null : (queue[queueCursor]?.entryId ?? null);
-      await api.setVocabCursor(queueGroup, next).catch((cause) => {
+    // Written once the entry is recorded.
+    if (place !== null) {
+      await api.setVocabCursor(place, next).catch((cause) => {
         // The drill itself succeeded; say only that the place was not kept.
-        void api.log(`could not remember the place in ${queueGroup}: ${cause}`);
+        void api.log(`could not remember the place in ${place}: ${cause}`);
       });
     }
     // Answering may have cleared the queue, so the badge is brought up to date.
@@ -2671,15 +2810,21 @@
   function move(delta: number) {
     const total = allCharacters.length;
     if (total === 0) return;
+    // A step on from the character the board was kept on goes where the sync left
+    // the course instead, rather than saving one past the old place over it.
+    if (takeDeferredCursor(delta)) return;
+    if (statusMessage !== null && statusMessage === cursorNote) statusMessage = null;
     index = Math.min(total - 1, Math.max(0, index + delta));
   }
 
   function goToLesson(lessonIndex: number) {
+    cursorDeferred = null;
     const start = lessonStarts[lessonIndex];
     if (start !== undefined) index = start;
   }
 
   function goToCharacter(ch: string) {
+    cursorDeferred = null;
     const found = allCharacters.indexOf(ch);
     if (found >= 0) index = found;
   }
