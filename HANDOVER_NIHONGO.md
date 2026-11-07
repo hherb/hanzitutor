@@ -1167,13 +1167,27 @@ to check first when the two apps' interfaces are compared.
 
 `KanaCanvas.svelte` and `board.ts` are new, not lifted: Hanzi Tutor's
 `PracticeCanvas` carries tone-panel and verdict-display concerns this app does
-not have. **The pointer rules are lifted, though**: `src/lib/strokeInput.ts` is
-byte-identical to Hanzi Tutor's (issue #30), so both boards agree on which
-pointer draws, what a cancel does and what a tap is. A tap now reaches the grader
-as a two-point dot rather than being dropped by `isStroke`, so `grade_kana` counts
-the strokes the grader *kept* when it decides whether to look for a joined hand —
-a tap beside さ written in two strokes would otherwise have read as three. `KanaCanvas` keeps its name after growing a second and third caller, and
+not have. `KanaCanvas` keeps its name after growing a second and third caller, and
 its prop is `character` rather than `kana` for the same reason.
+
+**The pointer rules are lifted, though.** `src/lib/strokeInput.ts` is
+byte-identical to Hanzi Tutor's (issue #30), so both boards agree on which pointer
+draws, what a cancel does and what a tap is — including the second's grace after a
+pen lifts, in which a touch is taken for the palm that held it. A tap now reaches
+the grader as a two-point dot rather than being dropped by `isStroke`, and four
+things follow from that:
+
+* `grade_kana` counts the strokes the grader *kept* when it decides whether to look
+  for a joined hand. A tap beside さ written in two strokes would otherwise have
+  read as three.
+* Grade is offered on `board.ts`'s `canGrade` — at least one stroke that is more
+  than a tap (`hasDrawnStroke`) — not on the stroke count, so a lone tap cannot be
+  graded.
+* `grade_and_schedule` does not schedule an attempt whose report has
+  `given_strokes == 0`, and `scheduleNote` says why, for a mark that gets past
+  `canGrade` but not the grader's stray filter.
+* The verdict says when marks were left out as too small (`strayNote`), with Hanzi
+  Tutor's caveat that they are not why anything above was marked.
 
 ### 7. **The board's geometry belongs to the stylesheet; the script only sets resolution.**
 

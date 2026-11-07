@@ -71,12 +71,29 @@ export function upcomingLabel(due: string, now: string): string {
  * The three cases — counted, not counted because it was not due, and an attempt
  * that could not be saved — are a rule about the schedule rather than about the
  * drawing, so they are decided here and the panel only gives them a colour.
+ *
+ * A fourth is about the drawing after all: an attempt the grader found **no
+ * stroke** in — only taps — is not offered to the schedule (a zero for a slip of
+ * the hand is not a review), and saying "already scheduled" would give the wrong
+ * reason. The board's Grade control is off for such an attempt (`canGrade`), so
+ * this is the line for a mark between that rule and the grader's.
  */
 export function scheduleNote(
-  graded: { scheduled: boolean; nextDue: string | null; warning: string | null },
+  graded: {
+    scheduled: boolean;
+    nextDue: string | null;
+    warning: string | null;
+    report?: { givenStrokes: number };
+  },
   now: string,
 ): { tone: "ok" | "plain" | "bad"; text: string } | null {
   if (graded.warning) return { tone: "bad", text: graded.warning };
+  if (graded.report?.givenStrokes === 0) {
+    return {
+      tone: "plain",
+      text: "Nothing on the board was big enough to be a stroke, so this was not saved for review.",
+    };
+  }
   if (!graded.scheduled) {
     return {
       tone: "plain",

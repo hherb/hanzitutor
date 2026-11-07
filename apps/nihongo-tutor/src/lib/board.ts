@@ -10,6 +10,7 @@
  */
 
 import { BOX } from "./render";
+import { hasDrawnStroke } from "./strokeInput";
 import type { Point } from "./types";
 
 /** A pointer position, as the browser reports it. */
@@ -98,6 +99,45 @@ export const MIN_POINTS = 2;
 
 export function isStroke(points: Point[]): boolean {
   return points.length >= MIN_POINTS;
+}
+
+/**
+ * Whether the board's Grade control is live.
+ *
+ * Not "is anything on the board": a tap stays on the board as a dot — the learner
+ * put it there, and Undo takes it back — but an attempt that is *only* taps has
+ * nothing the grader will count as a stroke, and grading it would score zero and
+ * hand that zero to the review schedule. The rule for "more than a tap" is
+ * `strokeInput.ts`'s `hasDrawnStroke`, shared with Hanzi Tutor's board: it is
+ * deliberately far looser than the grader's stray filter, so it never holds back
+ * an attempt the grader would grade, and a mark between the two is graded and
+ * reported as a stray (and the command does not schedule an attempt with no
+ * stroke in it). `busy` is a verdict already on its way.
+ */
+export function canGrade(strokes: Point[][], busy: boolean): boolean {
+  return !busy && hasDrawnStroke(strokes);
+}
+
+/**
+ * The verdict's line about marks the grader left out, or `null` when there were
+ * none.
+ *
+ * Hanzi Tutor's feedback says the same thing, for the same reason: the stray-tap
+ * filter runs **before** strokes are paired, so a mark it dropped cannot have
+ * caused any verdict above it — and reading it as "my stroke was thrown away, so
+ * that is why stroke 2 is wrong" is the natural mistake. Before issue #30 this
+ * board dropped one-point taps itself and the line was never needed; now a tap
+ * reaches the grader, and saying nothing would leave a dot on the board that the
+ * verdict silently ignored.
+ */
+export function strayNote(stray: number): string | null {
+  if (stray <= 0) return null;
+  const one = stray === 1;
+  return (
+    `${stray} ${one ? "mark was" : "marks were"} too small to be ${one ? "a stroke" : "strokes"} ` +
+    `and ${one ? "was" : "were"} left out — ${one ? "it is" : "they are"} not why anything ` +
+    `above was marked.`
+  );
 }
 
 /**

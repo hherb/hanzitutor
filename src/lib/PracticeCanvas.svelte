@@ -189,8 +189,24 @@
       pointerId: event.pointerId,
       pointerType: event.pointerType,
       isPrimary: event.isPrimary,
+      t: event.timeStamp,
       ...toDisplay(event),
     };
+  }
+
+  /**
+   * Capture the pointer that is now drawing. `strokeInput` has already given it
+   * the stroke, so a capture that throws — a pointer id the platform no longer
+   * knows, which is what a synthetic event carries — must take the stroke back
+   * rather than leave one open that no release will reach.
+   */
+  function capture(pointerId: number): boolean {
+    try {
+      canvas?.setPointerCapture(pointerId);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function release(pointerId: number) {
@@ -241,7 +257,7 @@
     const down = input.down(sample(event));
     if (!down.accepted) return;
     if (down.release !== null) release(down.release);
-    canvas?.setPointerCapture(event.pointerId);
+    if (!capture(event.pointerId)) input.discard();
     repaint();
   }
 
@@ -299,7 +315,7 @@
       commit(toDisplay(event));
       return;
     }
-    if (!input.cancel(event.pointerId)) return;
+    if (!input.cancel(event.pointerId, event.timeStamp)) return;
     event.preventDefault();
     release(event.pointerId);
     repaint();
@@ -312,7 +328,7 @@
    */
   function handleLostCapture(event: PointerEvent) {
     if (clickToDraw) return;
-    const finished = input.lost(event.pointerId);
+    const finished = input.lost(event.pointerId, event.timeStamp);
     if (finished) lift(finished);
   }
 

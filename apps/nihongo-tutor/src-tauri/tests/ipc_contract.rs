@@ -1639,8 +1639,10 @@ fn what_the_schedule_remembers_survives_a_restart() {
     let dir = TempDir::new("review-restart");
     let due = {
         let state = AppState::load_at(dir.path());
+        // Something written: an empty board is graded but not scheduled.
+        let written = state.kana('あ').expect("あ").medians.clone();
         let graded = state
-            .grade_and_schedule('あ', &[], &GradeOptions::default())
+            .grade_and_schedule('あ', &written, &GradeOptions::default())
             .expect("grades");
         assert!(graded.scheduled);
         graded.next_due.expect("a new card has a due date")

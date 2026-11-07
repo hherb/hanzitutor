@@ -295,3 +295,138 @@ describe.each([
     });
   });
 });
+
+/** A sample stamped with `PointerEvent.timeStamp`, in milliseconds. */
+const at = <T extends PointerSample>(sample: T, t: number): T => ({ ...sample, t });
+
+describe.each([
+  ["Hanzi Tutor", here],
+  ["Nihongo Tutor", nihongo],
+] as const)("the pen's grace period in %s", (_, module) => {
+  const { PEN_GRACE_MS, StrokeInput } = module;
+
+  it("ignores a palm that lands just after the pen lifts", () => {
+    // Between two pencil strokes the hand stays on the glass. Without a pen down
+    // at the same moment there is nothing for the pen to win against, so the
+    // palm would draw — and lift — a stroke of its own.
+    const input = new StrokeInput();
+    input.down(at(pen(100, 100), 1000));
+    expect(input.up(at(pen(200, 100), 1100))).not.toBeNull();
+
+    expect(input.down(at(touch(800, 800, PALM), 1100 + PEN_GRACE_MS - 1))).toEqual({
+      accepted: false,
+    });
+    expect(input.points).toBeNull();
+    expect(input.up(at(touch(810, 810, PALM), 1100 + PEN_GRACE_MS))).toBeNull();
+
+    // The pencil coming back is unaffected.
+    expect(input.down(at(pen(300, 300), 1100 + PEN_GRACE_MS))).toEqual({
+      accepted: true,
+      release: null,
+    });
+  });
+
+  it("lets a finger draw once the grace period is over", () => {
+    const input = new StrokeInput();
+    input.down(at(pen(100, 100), 0));
+    input.up(at(pen(200, 100), 50));
+    expect(input.down(at(touch(400, 400), 50 + PEN_GRACE_MS))).toEqual({
+      accepted: true,
+      release: null,
+    });
+    expect(input.up(at(touch(450, 400), 60 + PEN_GRACE_MS))).toStrictEqual([
+      xy(400, 400),
+      xy(450, 400),
+    ]);
+  });
+
+  it("starts the grace period however the pen's stroke ended", () => {
+    const cancelled = new StrokeInput();
+    cancelled.down(at(pen(100, 100), 0));
+    cancelled.cancel(PEN, 10);
+    expect(cancelled.down(at(touch(1, 1), 20))).toEqual({ accepted: false });
+
+    const lost = new StrokeInput();
+    lost.down(at(pen(100, 100), 0));
+    lost.lost(PEN, 10);
+    expect(lost.down(at(touch(1, 1), 20))).toEqual({ accepted: false });
+  });
+
+  it("leaves a finger user alone, and a mouse after a pen", () => {
+    // No pen, no grace period: a finger stroke straight after a finger stroke.
+    const fingers = new StrokeInput();
+    fingers.down(at(touch(100, 100, 30), 0));
+    fingers.up(at(touch(200, 100, 30), 10));
+    expect(fingers.down(at(touch(300, 100, 31), 20)).accepted).toBe(true);
+
+    const mixed = new StrokeInput();
+    mixed.down(at(pen(100, 100), 0));
+    mixed.up(at(pen(200, 100), 10));
+    expect(mixed.down(at(mouse(5, 5), 20)).accepted).toBe(true);
+  });
+
+  it("does not apply without a timestamp to measure it by", () => {
+    const input = new StrokeInput();
+    input.down(pen(100, 100));
+    input.up(pen(200, 100));
+    expect(input.down(touch(300, 300)).accepted).toBe(true);
+  });
+
+  it("can be configured, or turned off", () => {
+    const short = new StrokeInput({ penGraceMs: 100 });
+    short.down(at(pen(0, 0), 0));
+    short.up(at(pen(10, 0), 0));
+    expect(short.down(at(touch(1, 1), 99)).accepted).toBe(false);
+    expect(short.down(at(touch(1, 1), 100)).accepted).toBe(true);
+
+    const off = new StrokeInput({ penGraceMs: 0 });
+    off.down(at(pen(0, 0), 0));
+    off.up(at(pen(10, 0), 0));
+    expect(off.down(at(touch(1, 1), 0)).accepted).toBe(true);
+  });
+});
+
+describe.each([
+  ["Hanzi Tutor", here],
+  ["Nihongo Tutor", nihongo],
+] as const)("what counts as something drawn in %s", (_, module) => {
+  const { DRAWN_MIN_LENGTH, hasDrawnStroke, isDrawnStroke } = module;
+
+  it("refuses a tap: one point, or the two coincident points a board hands over", () => {
+    expect(isDrawnStroke([])).toBe(false);
+    expect(isDrawnStroke([xy(5, 5)])).toBe(false);
+    expect(isDrawnStroke([xy(5, 5), xy(5, 5)])).toBe(false);
+    expect(isDrawnStroke([xy(5, 5), xy(5.3, 5.3), xy(5, 5)])).toBe(false);
+  });
+
+  it("accepts anything that travelled, measured along the path", () => {
+    expect(isDrawnStroke([xy(5, 5), xy(5 + DRAWN_MIN_LENGTH, 5)])).toBe(true);
+    // Back and forth over the same spot still travelled.
+    expect(isDrawnStroke([xy(0, 0), xy(0.6, 0), xy(0, 0)])).toBe(true);
+    expect(isDrawnStroke([xy(0, 0), xy(300, 0)])).toBe(true);
+  });
+
+  it("stays far below the grader's stray threshold, so it never refuses a stroke the grader keeps", () => {
+    // The grader drops marks under min(12, half the shortest reference stroke);
+    // the shortest stroke in the Chinese data is 4 units, which puts its
+    // threshold at 2. Anything between this and that is the grader's to call.
+    expect(DRAWN_MIN_LENGTH).toBeLessThan(2);
+  });
+
+  it("asks whether any stroke of an attempt was drawn", () => {
+    expect(hasDrawnStroke([])).toBe(false);
+    expect(hasDrawnStroke([[xy(1, 1), xy(1, 1)]])).toBe(false);
+    expect(hasDrawnStroke([[xy(1, 1), xy(1, 1)], [xy(0, 0), xy(50, 0)]])).toBe(true);
+  });
+});
+
+describe("the two copies", () => {
+  it("are byte-identical", async () => {
+    // Node's own module, typed by hand: the root project has no `@types/node`.
+    const fs = (await import("node:fs" as string)) as {
+      readFileSync(path: URL, encoding: "utf8"): string;
+    };
+    const read = (relative: string) => fs.readFileSync(new URL(relative, import.meta.url), "utf8");
+    expect(read("../../apps/nihongo-tutor/src/lib/strokeInput.ts")).toBe(read("./strokeInput.ts"));
+  });
+});

@@ -123,6 +123,33 @@ describe("scheduleNote", () => {
     expect(note?.text).toContain("could not be saved");
   });
 
+  it("does not call an attempt with no stroke in it practice", () => {
+    // The command does not schedule an attempt the grader found no stroke in, and
+    // "already scheduled" would be the wrong reason to give.
+    const note = scheduleNote(
+      { scheduled: false, nextDue: null, warning: null, report: { givenStrokes: 0 } },
+      now,
+    );
+    expect(note).toEqual({
+      tone: "plain",
+      text: "Nothing on the board was big enough to be a stroke, so this was not saved for review.",
+    });
+    // A failed open of the schedule is still the first thing said.
+    expect(
+      scheduleNote(
+        { scheduled: false, nextDue: null, warning: "denied", report: { givenStrokes: 0 } },
+        now,
+      )?.tone,
+    ).toBe("bad");
+    // And a real attempt reads as it always did.
+    expect(
+      scheduleNote(
+        { scheduled: false, nextDue: null, warning: null, report: { givenStrokes: 2 } },
+        now,
+      )?.text,
+    ).toContain("practice");
+  });
+
   it("has nothing to say about nothing", () => {
     expect(scheduleNote({ scheduled: true, nextDue: null, warning: null }, now)).toEqual({
       tone: "ok",

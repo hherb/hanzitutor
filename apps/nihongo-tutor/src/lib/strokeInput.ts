@@ -19,6 +19,11 @@
  *   that a pen takes over from a touch.** The palm usually lands first; the pencil
  *   is what the learner is writing with. The touch's stroke is thrown away, and
  *   the caller is told which pointer to release.
+ * - **A touch that lands just after the pen lifts is ignored** — for
+ *   [`PEN_GRACE_MS`]. Between two pencil strokes the hand stays on the glass, and
+ *   with no pen down at that moment there is nothing for the pen to win against,
+ *   so the palm would draw a stroke of its own. A finger after the grace period
+ *   draws as it always did, and a learner who never uses a pen never meets it.
  * - **A primary pointer of the same kind going down again starts again.** There is
  *   only ever one primary pointer of a kind, so the first one's release must have
  *   been lost; waiting for it would leave the board deaf. This is what the boards
@@ -40,7 +45,13 @@
  *   come, and keeping the ink is the failure that loses nothing.
  *
  * Pointer events arrive as plain objects already mapped into display space, so
- * this module never sees the DOM and the root project's vitest can run it.
+ * this module never sees the DOM and the root project's vitest can run it. Time
+ * arrives the same way — as the event's own `timeStamp` — so the grace period is
+ * arithmetic on what the caller passed, not a clock this module reads.
+ *
+ * [`isDrawnStroke`] is the other half of a tap: the boards keep one on the board
+ * (it is ink the learner put down, and Undo takes it back), but a screen should
+ * not offer to grade an attempt that holds nothing else.
  */
 
 /** A position on the board, in display space. */
@@ -55,13 +66,23 @@ export interface PointerSample extends StrokePoint {
   /** `"mouse"`, `"pen"` or `"touch"`, as `PointerEvent.pointerType` reports it. */
   pointerType: string;
   isPrimary: boolean;
+  /**
+   * When it happened, in milliseconds — `PointerEvent.timeStamp`. Optional: the
+   * pen's grace period needs it, and without it simply does not apply.
+   */
+  t?: number;
 }
+
+/** How long after a pen lifts a touch is taken for the hand that held it, in ms. */
+export const PEN_GRACE_MS = 1000;
 
 export interface StrokeInputOptions {
   /** Drop a sample closer than this to the one before it. `0` keeps every one. */
   minSpacing?: number;
   /** Stop growing a stroke once it has this many points. */
   maxPoints?: number;
+  /** Override [`PEN_GRACE_MS`]; `0` turns the grace period off. */
+  penGraceMs?: number;
 }
 
 /**
@@ -79,12 +100,16 @@ export class StrokeInput {
   private stroke: StrokePoint[] | null = null;
   private activeId: number | null = null;
   private activeType: string | null = null;
+  /** When the last pen stroke ended, if a timestamp said. */
+  private penUpAt: number | null = null;
   private readonly minSpacing: number;
   private readonly maxPoints: number;
+  private readonly penGraceMs: number;
 
   constructor(options: StrokeInputOptions = {}) {
     this.minSpacing = options.minSpacing ?? 0;
     this.maxPoints = options.maxPoints ?? Infinity;
+    this.penGraceMs = options.penGraceMs ?? PEN_GRACE_MS;
   }
 
   /** The stroke in progress, for painting, or `null` when there is none. */
@@ -105,6 +130,8 @@ export class StrokeInput {
       const sameKind = sample.pointerType === this.activeType;
       const penOverTouch = sample.pointerType === "pen" && this.activeType === "touch";
       if (!sameKind && !penOverTouch) return IGNORED;
+    } else if (sample.pointerType === "touch" && this.inPenGrace(sample.t)) {
+      return IGNORED;
     }
     this.activeId = sample.pointerId;
     this.activeType = sample.pointerType;
@@ -130,19 +157,28 @@ export class StrokeInput {
   up(sample: PointerSample): StrokePoint[] | null {
     if (!this.owns(sample.pointerId)) return null;
     this.push(sample);
+    this.ended(sample.t);
     return this.take();
   }
 
-  /** A pointer was cancelled. Returns whether a stroke was thrown away. */
-  cancel(pointerId: number): boolean {
+  /**
+   * A pointer was cancelled, at `t` if the caller knows. Returns whether a stroke
+   * was thrown away.
+   */
+  cancel(pointerId: number, t?: number): boolean {
     if (!this.owns(pointerId)) return false;
+    this.ended(t);
     this.discard();
     return true;
   }
 
-  /** A pointer lost its capture. Returns the stroke it was still drawing, if any. */
-  lost(pointerId: number): StrokePoint[] | null {
+  /**
+   * A pointer lost its capture, at `t` if the caller knows. Returns the stroke it
+   * was still drawing, if any.
+   */
+  lost(pointerId: number, t?: number): StrokePoint[] | null {
     if (!this.owns(pointerId)) return null;
+    this.ended(t);
     return this.take();
   }
 
@@ -175,6 +211,17 @@ export class StrokeInput {
     this.activeType = null;
   }
 
+  /** The drawing pointer's stroke is ending; remember when, if it was a pen. */
+  private ended(t: number | undefined) {
+    if (this.activeType === "pen" && t !== undefined) this.penUpAt = t;
+  }
+
+  private inPenGrace(t: number | undefined): boolean {
+    if (t === undefined || this.penUpAt === null) return false;
+    const since = t - this.penUpAt;
+    return since >= 0 && since < this.penGraceMs;
+  }
+
   private owns(pointerId: number): boolean {
     return this.stroke !== null && this.activeId === pointerId;
   }
@@ -195,4 +242,37 @@ export class StrokeInput {
     if (stroke.length === 1) stroke.push({ ...stroke[0] });
     return stroke;
   }
+}
+
+/**
+ * How far a stroke must travel, in design units, to be more than a tap.
+ *
+ * Deliberately far below the grader's stray-tap threshold — `min(12, half the
+ * shortest reference stroke)`, which the shortest stroke in the Chinese data (4
+ * units, in 黧) puts at 2 — so this can only disagree with the grader in the safe
+ * direction: it never refuses a mark the grader would keep as a stroke. It exists
+ * to tell a tap (coincident points, or sub-pixel jitter: one unit is under half a
+ * pixel on a 400-pixel board) from ink, not to second-guess the grader, which
+ * still has the last word on a mark between the two.
+ */
+export const DRAWN_MIN_LENGTH = 1;
+
+/** Whether a stroke travelled far enough to be more than a tap. */
+export function isDrawnStroke(points: readonly StrokePoint[]): boolean {
+  let length = 0;
+  for (let i = 1; i < points.length; i++) {
+    length += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    if (length >= DRAWN_MIN_LENGTH) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether an attempt holds anything to grade: at least one stroke that is more
+ * than a tap. A screen offers Grade on this rather than on a stroke count, so a
+ * lone accidental tap cannot be graded — and scored zero — on the learner's
+ * behalf.
+ */
+export function hasDrawnStroke(strokes: readonly (readonly StrokePoint[])[]): boolean {
+  return strokes.some(isDrawnStroke);
 }

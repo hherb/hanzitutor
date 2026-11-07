@@ -420,7 +420,8 @@ src/
                             drag and click-to-draw input modes
   lib/strokeInput.ts        which pointer draws and what its stroke is made of —
                             one pointer per drag, a pen over a touch, a cancel
-                            discards, a tap is a two-point dot (issue #30). COPIED
+                            discards, a pen's 1 s grace over a palm, a tap is a
+                            two-point dot, `hasDrawnStroke` (issue #30). COPIED
                             VERBATIM to Nihongo Tutor's board; strokeInput.test.ts
                             runs the same cases against both copies
   lib/CharacterThumb.svelte one small picture of one character's attempt
@@ -1366,6 +1367,10 @@ back.
   committing it — the platform took the pointer back, and the stroke is not what
   the learner meant. A tap comes back as its point doubled, which the grader counts
   as a stray, and `render.ts` paints any stroke whose points all coincide as a dot.
+  A touch that lands within `PEN_GRACE_MS` (1 s) of a pen lifting is taken for the
+  palm and ignored. And Check is offered on `hasDrawnStroke`, not on the stroke
+  count: a lone tap stays on the board but cannot be checked, and an attempt the
+  grader finds no stroke in (`givenStrokes == 0`) is shown but not recorded.
 - **Pointer samples arrive by time, not by distance.** Sample density records
   drawing *speed*, so anything judging where a stroke sits must not use a sample
   mean (invariant 15): the mean moves when the learner speeds up, and the verdict —
