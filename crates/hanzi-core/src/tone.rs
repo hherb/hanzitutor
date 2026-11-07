@@ -254,7 +254,16 @@ impl PitchTrack {
 /// `rubato` for it. Aliasing here folds high-frequency hiss down into the pass
 /// band, which is a cosmetic problem for pitch and would be an audible one for
 /// speech.
+///
+/// A rate of 0 on either side gives back nothing. Zero is what a capture reports
+/// when it never started, and there is no ratio to it: from 0 Hz the ratio is
+/// infinite, which used to ask for `usize::MAX` samples and panic, and to 0 Hz
+/// it is nothing at all. An empty result is what the pitch tracker already
+/// reads as "no voice", so a recording without a rate is never scored.
 pub fn resample(input: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {
+    if from_hz == 0 || to_hz == 0 {
+        return Vec::new();
+    }
     if from_hz == to_hz || input.is_empty() {
         return input.to_vec();
     }
@@ -842,7 +851,8 @@ pub enum ToneVerdict {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToneAttempt {
-    /// The tone the character called for, 1..=4.
+    /// The tone the character called for: 1..=4 for the full tones, 5 for the
+    /// neutral tone, 0 for a reading that names no tone.
     pub expected_tone: u8,
     /// The tone the contour looks most like, when there was a contour at all.
     pub heard_tone: Option<u8>,
@@ -1228,7 +1238,8 @@ fn find_boundaries(
 pub struct SyllableReport {
     /// Which syllable this is, counting from 1, for the wording.
     pub position: usize,
-    /// The tone asked for. `5` means nothing was scored for this syllable.
+    /// The tone asked for, with 5 for the neutral tone. Whether it was scored is
+    /// [`is_scorable`] of this.
     pub expected_tone: u8,
     pub attempt: ToneAttempt,
 }
@@ -1270,7 +1281,7 @@ impl ToneReport {
             .map(|(i, tone)| SyllableReport {
                 position: i + 1,
                 expected_tone: *tone,
-                attempt: if (1..=4).contains(tone) {
+                attempt: if is_scorable(*tone) {
                     ToneAttempt::unheard(
                         *tone,
                         "I could not hear enough voice to judge. Hold the button, then say it.",
@@ -1297,8 +1308,9 @@ impl ToneReport {
 
 /// Score a whole utterance against the tones it should carry.
 ///
-/// One tone per expected syllable, in order. A tone of `5` (neutral) is carried
-/// through and reported but not scored — see [`unsupported`].
+/// One tone per expected syllable, in order. A tone of `5` (neutral) is judged on
+/// being level — see [`NEUTRAL_LIMIT`] — and counts in the aggregate like any
+/// other; only a tone [`is_scorable`] refuses is carried through unscored.
 ///
 /// With one tone this is the single-character case and the whole voiced span is
 /// one syllable. With several, the recording is divided first: the syllable
@@ -1309,6 +1321,23 @@ impl ToneReport {
 pub fn analyze(samples: &[f32], sample_rate: u32, expected: &[u8]) -> ToneReport {
     if expected.is_empty() {
         return ToneReport::silent(Vec::new(), "There was no tone to listen for.");
+    }
+    // Refused here rather than left to `resample`, which would hand back nothing
+    // and so be reported as silence: the learner did nothing wrong, and "I
+    // could not hear you" would send them to the microphone for a fault in the
+    // capture.
+    // The syllables say the same as the report, for the same reason: each of
+    // them would otherwise carry `silent`'s "I could not hear enough voice".
+    if sample_rate == 0 {
+        const NO_RATE: &str =
+            "The recording did not come with a sample rate, so its pitch cannot be measured.";
+        let mut report = ToneReport::silent(expected.to_vec(), NO_RATE);
+        for syllable in &mut report.syllables {
+            if is_scorable(syllable.expected_tone) {
+                syllable.attempt.detail = NO_RATE.to_string();
+            }
+        }
+        return report;
     }
 
     let resampled = resample(samples, sample_rate, TARGET_SAMPLE_RATE);
@@ -1457,13 +1486,42 @@ pub fn analyze(samples: &[f32], sample_rate: u32, expected: &[u8]) -> ToneReport
 impl ToneReport {
     /// Fill in the aggregate from the syllables, and word the summary.
     ///
-    /// The aggregate ignores a syllable that was never scoreable (the neutral
-    /// tone), so a word containing one can still be judged on the rest.
+    /// The aggregate counts every full tone (1 to 4), and a neutral syllable
+    /// only when it was judged a match. A neutral syllable judged wrong or
+    /// unclear is still shown, with its own verdict, but it does not count
+    /// against the word. Neither does a syllable whose reading names no tone.
+    ///
+    /// The asymmetry is deliberate and it is temporary. The neutral rule in
+    /// [`score_contour`] knows nothing about the syllable before it: it accepts a
+    /// level contour and refuses anything that moves more than [`FLAT_ST`]. A
+    /// neutral tone as it is really spoken is a short transition of two to five
+    /// semitones — a fall after tones 1, 2 and 4, a rise after a half-third tone
+    /// 3 — so a correctly spoken 妈妈, 谢谢, 东西, 朋友 or 你们 is often judged
+    /// wrong on its second syllable, and a voiced initial such as the `m` of 妈妈
+    /// leaks the glide into the segment even when the neutral tone was level.
+    /// Letting that judgement fail the word would fail correct speech. A match is
+    /// still evidence, so it counts; a miss is not yet, so it does not.
+    ///
+    /// Counting the neutral tone fully waits on a rule that depends on the
+    /// preceding tone: after 1, 2 or 4, accept level or falling; after 3, accept
+    /// level or rising; and cap the fall, so that 谢谢 said as two full tone 4s
+    /// still fails. A second problem belongs with it: a half-third tone 3 before
+    /// a neutral syllable (the 你 of 你们) is a low fall, and is heard as tone 4.
+    ///
+    /// When nothing is left to count but neutral syllables that missed — 的 said
+    /// with a fall — the report is uncertain rather than wrong, and says what the
+    /// syllable says.
     fn finish(mut self) -> Self {
-        let scored: Vec<&SyllableReport> = self
+        let counts = |s: &&SyllableReport| match s.expected_tone {
+            1..=4 => true,
+            5 => s.attempt.verdict == ToneVerdict::Match,
+            _ => false,
+        };
+        let scored: Vec<&SyllableReport> = self.syllables.iter().filter(counts).collect();
+        let uncounted: Vec<&SyllableReport> = self
             .syllables
             .iter()
-            .filter(|s| (1..=4).contains(&s.expected_tone))
+            .filter(|s| s.expected_tone == 5 && s.attempt.verdict != ToneVerdict::Match)
             .collect();
 
         if scored.is_empty() {
@@ -1471,7 +1529,10 @@ impl ToneReport {
             self.score = 0.0;
             self.grade = Grade::from_score(0.0);
             if self.detail.is_empty() {
-                self.detail = "Nothing in this could be scored.".into();
+                self.detail = match uncounted.first() {
+                    Some(neutral) => neutral.attempt.detail.clone(),
+                    None => "Nothing in this could be scored.".into(),
+                };
             }
             return self;
         }
@@ -1499,31 +1560,63 @@ impl ToneReport {
         self.grade = Grade::from_score(self.score);
 
         if self.detail.is_empty() {
-            self.detail = self.summary(&scored, &off, &unsure);
+            self.detail = self.summary(&scored, &off, &unsure, &uncounted);
         }
         self
     }
 
+    /// The sentence for a word.
+    ///
+    /// The counts are of what was counted, and say so whenever a neutral syllable
+    /// was left out: "All 2 tones are right" over a word whose neutral syllable
+    /// was judged wrong would claim a judgement the aggregate did not make.
     fn summary(
         &self,
         scored: &[&SyllableReport],
         off: &[&SyllableReport],
         unsure: &[&SyllableReport],
+        uncounted: &[&SyllableReport],
     ) -> String {
         if self.syllables.len() == 1 {
             return self.syllables[0].attempt.detail.clone();
         }
         let total = scored.len();
-        if off.is_empty() && unsure.is_empty() {
-            return format!("All {total} tones are right.");
+        let counted = if uncounted.is_empty() { "" } else { " counted" };
+        let mut sentence = if off.is_empty() && unsure.is_empty() {
+            if total == 1 {
+                format!("The one tone{counted} is right.")
+            } else {
+                format!("All {total} tones{counted} are right.")
+            }
+        } else {
+            let right = total - off.len() - unsure.len();
+            let worst = off.first().or_else(|| unsure.first()).expect("one of them");
+            let label = if off.is_empty() { "unclear" } else { "wrong" };
+            let (tones, verb) = if total == 1 {
+                ("tone", "is")
+            } else {
+                ("tones", "are")
+            };
+            format!(
+                "{right} of {total} {tones}{counted} {verb} right; syllable {} (tone {}) was \
+                 {label}.",
+                worst.position, worst.expected_tone
+            )
+        };
+        if let Some(neutral) = uncounted.first() {
+            let what = if neutral.attempt.verdict == ToneVerdict::OffTarget {
+                "did not sound level"
+            } else {
+                "could not be judged"
+            };
+            sentence.push_str(&format!(
+                " Syllable {} is the neutral tone, and it {what}. That is not counted against \
+                 the word: a neutral tone takes its pitch from the syllable before it, which \
+                 this does not judge yet.",
+                neutral.position
+            ));
         }
-        let right = total - off.len() - unsure.len();
-        let worst = off.first().or_else(|| unsure.first()).expect("one of them");
-        let label = if off.is_empty() { "unclear" } else { "wrong" };
-        format!(
-            "{right} of {total} tones are right; syllable {} (tone {}) was {label}.",
-            worst.position, worst.expected_tone
-        )
+        sentence
     }
 }
 
@@ -1546,8 +1639,9 @@ fn median_hz_of(track: &PitchTrack, first: usize, last: usize) -> Option<f32> {
 /// `samples` is mono, at `sample_rate`, nominally -1..=1. Any rate works; it is
 /// resampled to [`TARGET_SAMPLE_RATE`] first.
 ///
-/// A tone of `5` (neutral) or `0` (not a tone) is not scored and comes back as
-/// [`ToneVerdict::Uncertain`]. For a word, use [`analyze`].
+/// A tone of `5` (neutral) is judged on being level, as in [`analyze`]. A tone of
+/// `0` (not a tone) is not scored and comes back as [`ToneVerdict::Uncertain`].
+/// For a word, use [`analyze`].
 pub fn analyze_tone(samples: &[f32], sample_rate: u32, expected_tone: u8) -> ToneAttempt {
     analyze(samples, sample_rate, &[expected_tone])
         .syllables
@@ -2369,6 +2463,142 @@ mod tests {
         assert_eq!(attempt.heard_tone, Some(4));
     }
 
+    #[test]
+    fn a_neutral_tone_on_its_own_is_judged_in_the_report_too() {
+        // 的 alone, said level. The syllable is judged, so the report has to
+        // agree with it: it used to say "Nothing in this could be scored" with a
+        // score of 0 beside a syllable that had matched, because the aggregate
+        // still counted only the four full tones.
+        let samples = say(8000, &[(0.0, 0.0), (1.0, 0.0)], 50);
+        let report = analyze(&samples, TARGET_SAMPLE_RATE, &[5]);
 
+        let syllable = &report.syllables[0].attempt;
+        assert_eq!(syllable.verdict, ToneVerdict::Match, "{}", syllable.detail);
+        assert_eq!(report.verdict, ToneVerdict::Match, "{}", report.detail);
+        assert_eq!(report.score, syllable.score);
+        assert_eq!(report.grade, Grade::from_score(syllable.score));
+        assert_eq!(report.detail, syllable.detail);
+    }
+
+    #[test]
+    fn a_wrong_neutral_tone_is_shown_but_not_counted_against_the_word() {
+        // A falling tone, then a neutral one said rising. The neutral syllable is
+        // marked wrong where it is shown, but the word is judged on its full
+        // tone: the neutral rule cannot see the syllable before it, so a miss
+        // from it is not yet evidence — see `finish`. The sentence has to say
+        // what was left out rather than claim "All 2 tones are right", and it
+        // used to say "All 1 tones are right", which counted without saying so.
+        let samples = say_word(&[(4.0, -4.0), (-3.0, 3.0)], 220, 60);
+        let report = analyze(&samples, TARGET_SAMPLE_RATE, &[4, 5]);
+
+        assert_eq!(
+            report.syllables[1].attempt.verdict,
+            ToneVerdict::OffTarget,
+            "{}",
+            report.syllables[1].attempt.detail
+        );
+        assert_eq!(report.verdict, ToneVerdict::Match, "{}", report.detail);
+        assert_eq!(report.score, report.syllables[0].attempt.score);
+        assert!(
+            report.detail.starts_with("The one tone counted is right.")
+                && report.detail.contains("Syllable 2 is the neutral tone"),
+            "{}",
+            report.detail
+        );
+    }
+
+    /// A neutral syllable as it is really spoken: a short fall after the tone
+    /// before it. The neutral rule judges it wrong for having moved, and the
+    /// word must not be failed for it.
+    fn assert_a_falling_neutral_does_not_fail(first: (f32, f32), first_tone: u8) {
+        let samples = say_word(&[first, (first.1 - 0.5, first.1 - 3.0)], 220, 60);
+        let report = analyze(&samples, TARGET_SAMPLE_RATE, &[first_tone, 5]);
+
+        assert_eq!(
+            report.syllables[0].attempt.verdict,
+            ToneVerdict::Match,
+            "{}",
+            report.syllables[0].attempt.detail
+        );
+        // The premise: the neutral rule really did refuse the fall. Without it
+        // this test would pass for the wrong reason.
+        assert_eq!(
+            report.syllables[1].attempt.verdict,
+            ToneVerdict::OffTarget,
+            "{}",
+            report.syllables[1].attempt.detail
+        );
+        assert_ne!(report.verdict, ToneVerdict::OffTarget, "{}", report.detail);
+        assert_eq!(report.verdict, ToneVerdict::Match, "{}", report.detail);
+        assert_eq!(report.score, report.syllables[0].attempt.score);
+        assert!(!report.detail.contains("All 2 tones"), "{}", report.detail);
+    }
+
+    #[test]
+    fn a_neutral_tone_falling_after_tone_one_does_not_fail_the_word() {
+        // 妈妈, 东西: a level tone 1, then a neutral syllable falling 2.5 st.
+        assert_a_falling_neutral_does_not_fail((2.0, 2.0), 1);
+    }
+
+    #[test]
+    fn a_neutral_tone_falling_after_tone_four_does_not_fail_the_word() {
+        // 谢谢: a falling tone 4, then a neutral syllable falling 2.5 st below it.
+        assert_a_falling_neutral_does_not_fail((4.0, -4.0), 4);
+    }
+
+    #[test]
+    fn a_neutral_tone_on_its_own_with_a_fall_is_unsure_rather_than_wrong() {
+        // 的 said with a 1.5 st fall, which is how it is often said. There is
+        // nothing else in the report to count, so it is uncertain, and the
+        // sentence is the syllable's own rather than "Nothing could be scored".
+        let samples = say(8000, &[(0.0, 0.75), (1.0, -0.75)], 50);
+        let report = analyze(&samples, TARGET_SAMPLE_RATE, &[5]);
+        let syllable = &report.syllables[0].attempt;
+
+        assert_ne!(syllable.verdict, ToneVerdict::Match, "{}", syllable.detail);
+        assert_eq!(report.verdict, ToneVerdict::Uncertain, "{}", report.detail);
+        assert_eq!(report.score, 0.0);
+        assert_eq!(report.detail, syllable.detail);
+    }
+
+    #[test]
+    fn silence_is_unheard_for_a_neutral_syllable_as_well() {
+        // Nothing was said, so every syllable that could have been judged says
+        // so — including the neutral one, which used to be told that its reading
+        // did not name a tone at all.
+        let samples = vec![0.0f32; TARGET_SAMPLE_RATE as usize];
+        let report = analyze(&samples, TARGET_SAMPLE_RATE, &[1, 5]);
+
+        assert_eq!(report.verdict, ToneVerdict::Uncertain);
+        for syllable in &report.syllables {
+            assert!(
+                syllable.attempt.detail.contains("could not hear"),
+                "syllable {}: {}",
+                syllable.position,
+                syllable.attempt.detail
+            );
+        }
+    }
+
+    #[test]
+    fn a_recording_with_no_sample_rate_is_refused_rather_than_resampled() {
+        // A rate of 0 is what a capture reports when it never started, and the
+        // ratio to 16 kHz from it is infinite: the resampler used to try to
+        // allocate `usize::MAX` samples and panic.
+        let samples = say(8000, &[(0.0, 0.0), (1.0, 0.0)], 50);
+        assert!(resample(&samples, 0, TARGET_SAMPLE_RATE).is_empty());
+        assert!(resample(&samples, TARGET_SAMPLE_RATE, 0).is_empty());
+
+        let report = analyze(&samples, 0, &[1]);
+        assert_eq!(report.verdict, ToneVerdict::Uncertain);
+        assert_eq!(report.score, 0.0);
+        assert_eq!(report.syllables.len(), 1);
+        assert!(report.detail.contains("sample rate"), "{}", report.detail);
+        assert!(
+            report.syllables[0].attempt.detail.contains("sample rate"),
+            "{}",
+            report.syllables[0].attempt.detail
+        );
+        assert_eq!(analyze_tone(&samples, 0, 1).verdict, ToneVerdict::Uncertain);
+    }
 }
-
