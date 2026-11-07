@@ -29,6 +29,7 @@
 pub mod analyse;
 pub mod backup;
 pub mod export;
+#[macro_use]
 mod clock;
 mod migrate;
 mod schema;
@@ -766,31 +767,40 @@ impl CursorSink for Db {
     fn save(&mut self, document: &CursorDocument) -> Result<(), ProgressError> {
         let path = self.path();
         let conn = self.lock();
+        // Only a *move* is written. The app saves the cursor on every visit, and a
+        // save that left the position where it was must not touch the row at all:
+        // a fresh stamp would make merely looking at a character beat a peer's newer
+        // move, and even a kept stamp with this device's id and a new revision would
+        // be a version of the position this device never chose.
+        //
+        // The comparison is with the stored row, not with what this store loaded.
+        // That leaves one window open, stated rather than hidden: a sync that has
+        // just moved the row, followed by a save from a store not yet reloaded
+        // (`reload_after_sync`), reads as a move back to the stale position and
+        // wins. A sync reloads straight after it finishes, and nothing between its
+        // cursor step and the end of the pass waits on the network, so the window is
+        // a few milliseconds of local work.
+        let held = cursor_row(&conn).map_err(|e| progress_error(&path, e))?;
+        if held
+            .as_ref()
+            .is_some_and(|(position, _)| *position == document.index as i64)
+        {
+            return Ok(());
+        }
         // A move is stamped by the sync clock rather than by the wall clock the
         // engine read, so that it is later than any position this device has
-        // already seen from a peer — see `clock`. Only a *move* is: the app saves
-        // the cursor on every visit, and a save that left the position where it was
-        // must keep the stamp it had, or merely looking at a character would make
-        // this device's old position beat a peer's newer one. A document that was
-        // never moved has no stamp, and is not given one.
-        let held = cursor_row(&conn).map_err(|e| progress_error(&path, e))?;
-        let moved = held
-            .as_ref()
-            .is_none_or(|(position, _)| *position != document.index as i64);
+        // already seen from a peer, and later than the one it replaces — see
+        // `clock`. A document that was never moved has no stamp, and is not given
+        // one.
         let stamped;
-        let document = match (&document.updated_at, held) {
-            (None, _) => document,
-            (Some(_), Some((_, Some(kept)))) if !moved => {
-                stamped = CursorDocument {
-                    updated_at: Some(kept),
-                    ..document.clone()
-                };
-                &stamped
-            }
-            (Some(_), _) => {
+        let document = match &document.updated_at {
+            None => document,
+            Some(_) => {
+                let replaced = held.as_ref().and_then(|(_, stamp)| stamp.as_deref());
                 stamped = CursorDocument {
                     updated_at: Some(
-                        clock::next_stamp(&conn).map_err(|e| progress_error(&path, e))?,
+                        clock::next_stamp_past(&conn, replaced)
+                            .map_err(|e| progress_error(&path, e))?,
                     ),
                     ..document.clone()
                 };
@@ -915,9 +925,11 @@ impl VocabSink for Db {
         for name in group_names(&tx, false).map_err(|e| vocab_error(&path, e))? {
             if !wanted.contains(name.as_str()) {
                 tx.execute(
-                    "UPDATE vocab_group SET deleted = 1, updated_at = ?1, device_id = ?2,
-                             revision = revision + 1
-                     WHERE name = ?3",
+                    concat!(
+                        "UPDATE vocab_group SET deleted = 1, updated_at = ",
+                        past_sql!("?1", "updated_at"),
+                        ", device_id = ?2, revision = revision + 1 WHERE name = ?3"
+                    ),
                     params![now, device, name],
                 )
                 .map_err(|e| vocab_error(&path, e))?;
@@ -935,7 +947,9 @@ impl VocabSink for Db {
                      updated_at = CASE
                          WHEN vocab_group.position <> excluded.position
                            OR vocab_group.deleted <> 0
-                         THEN excluded.updated_at ELSE vocab_group.updated_at END,
+                         THEN MAX(excluded.updated_at, IFNULL(strftime('%Y-%m-%dT%H:%M:%SZ',
+                                  vocab_group.updated_at, '+1 second'), excluded.updated_at))
+                         ELSE vocab_group.updated_at END,
                      device_id = CASE
                          WHEN vocab_group.position <> excluded.position
                            OR vocab_group.deleted <> 0
@@ -955,9 +969,11 @@ impl VocabSink for Db {
         for id in entry_ids(&tx, false).map_err(|e| vocab_error(&path, e))? {
             if !kept.contains(&id) {
                 tx.execute(
-                    "UPDATE vocab_entry SET deleted = 1, updated_at = ?1, device_id = ?2,
-                             revision = revision + 1
-                     WHERE id = ?3",
+                    concat!(
+                        "UPDATE vocab_entry SET deleted = 1, updated_at = ",
+                        past_sql!("?1", "updated_at"),
+                        ", device_id = ?2, revision = revision + 1 WHERE id = ?3"
+                    ),
                     params![now, device, id],
                 )
                 .map_err(|e| vocab_error(&path, e))?;
@@ -1032,7 +1048,9 @@ fn write_entry(
                    OR vocab_entry.meaning <> excluded.meaning
                    OR IFNULL(vocab_entry.group_name, '') <> IFNULL(excluded.group_name, '')
                    OR vocab_entry.deleted <> 0
-                 THEN excluded.updated_at ELSE vocab_entry.updated_at END,
+                 THEN MAX(excluded.updated_at, IFNULL(strftime('%Y-%m-%dT%H:%M:%SZ',
+                          vocab_entry.updated_at, '+1 second'), excluded.updated_at))
+                 ELSE vocab_entry.updated_at END,
              device_id = CASE
                  WHEN vocab_entry.text <> excluded.text
                    OR vocab_entry.pinyin <> excluded.pinyin
@@ -1809,7 +1827,15 @@ impl Db {
         if unchanged {
             return Ok(());
         }
-        let stamp = clock::next_stamp(&conn).map_err(|e| at(&path, e))?;
+        // Past the position it replaces as well as past the clock — see `clock`.
+        let replaced: Option<String> = conn
+            .query_row(
+                "SELECT updated_at FROM vocab_cursor WHERE group_name = ?1",
+                [group],
+                |row| row.get(0),
+            )
+            .ok();
+        let stamp = clock::next_stamp_past(&conn, replaced.as_deref()).map_err(|e| at(&path, e))?;
         conn.execute(
             "INSERT INTO vocab_cursor (group_name, entry_uuid, updated_at, device_id, revision)
              VALUES (?1, ?2, ?3, ?4, 0)

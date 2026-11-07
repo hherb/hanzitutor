@@ -57,7 +57,10 @@ use crate::document::{
     read_vocab_cursors, write_baseline, write_cursor, write_vocab, write_vocab_cursors,
     Baseline, Baselines,
 };
-use crate::shard::{fold_cards, merge_attempts, read_attempts, write_attempts, MergedAttempt};
+use crate::shard::{
+    fold_cards, merge_attempts, read_attempts, shard_body, sort_canonical, write_attempts,
+    MergedAttempt,
+};
 use crate::skipped::{Screened, SkippedShard};
 use crate::store::{RemoteStore, SyncError};
 
@@ -95,6 +98,13 @@ pub struct Summary {
     /// newer format, or a damaged file — while everything else synced. See
     /// [`crate::skipped`]; [`Summary::notice`] says it in words.
     pub skipped: Vec<SkippedShard>,
+    /// Files in this device's own directory that could not be read and that this
+    /// sync wrote again — see `repair_own_shards`.
+    pub repaired: Vec<SkippedShard>,
+    /// Writes this sync declined to make because they would have replaced a file
+    /// it could not read in another device's directory. Not counted in
+    /// [`Summary::published`]; see [`crate::skipped`].
+    pub withheld: Vec<String>,
 }
 
 impl Summary {
@@ -111,7 +121,7 @@ impl Summary {
     /// What the learner should be told about files this sync left out, if any:
     /// a sentence to put after the summary, never instead of it.
     pub fn notice(&self) -> Option<String> {
-        crate::skipped::notice(&self.skipped)
+        crate::skipped::notice(&self.skipped, &self.repaired)
     }
 }
 
@@ -393,7 +403,8 @@ pub fn pull_vocab_cursors(db: &Db, store: &dyn RemoteStore) -> Result<bool, Sync
 pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
     let screened = Screened::read(store, db.device_id())?;
     let store: &dyn RemoteStore = &screened;
-    let published = publish(db, store)?;
+    repair_own_shards(db, &screened)?;
+    let published = publish(db, store)?.saturating_sub(screened.withheld_attempts());
     publish_documents(db, store)?;
     let pulled = pull(db, store)?;
     let vocab_changed = pull_vocab(db, store)?;
@@ -425,7 +436,69 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
         vocab_changed,
         cursor_moved,
         skipped: screened.skipped(),
+        repaired: screened.repaired(),
+        withheld: screened.withheld(),
     })
+}
+
+/// Write this device's own damaged attempt shards again, from its own log.
+///
+/// ## Why this device has to
+///
+/// A shard is named once and never rewritten, and [`publish`] only ever writes
+/// attempts past the watermark — so a shard of this device's that a sync client
+/// truncated, or that was damaged some other way, would stay damaged for good. And
+/// every peer leaves a device with an unreadable shard out *whole*, so from then on
+/// none of this device's attempts, old or new, would reach anyone. Nobody else can
+/// mend it: only this device holds its whole log.
+///
+/// ## What is written
+///
+/// Every attempt of this device's that no readable shard holds, into the damaged
+/// file names — each attempt into the damaged shard named nearest below its
+/// sequence number, or the first one when none is. That is a superset of what the
+/// damaged files held, because this device's log is append-only and keeps every
+/// attempt it ever published: an attempt that lands in two files is the same
+/// attempt in both, which every reader merges as one, and an attempt that lands in
+/// none would be the only real loss, which this cannot produce. Unpublished
+/// attempts are included too; the publish that follows writes them again under
+/// their own name, which is harmless for the same reason.
+///
+/// A database that is a *copy* of another device's (restored from a backup, say)
+/// does not hold the other copy's attempts, and would mend the file with what it
+/// has. Telling a copy apart is #12's `settle_identity`, which must run first.
+fn repair_own_shards(db: &Db, screened: &Screened) -> Result<(), SyncError> {
+    let damaged = screened.own_damaged_attempts();
+    if damaged.is_empty() {
+        return Ok(());
+    }
+    let mut missing: Vec<MergedAttempt> = own_log(db)?
+        .into_iter()
+        .filter(|attempt| !screened.holds_own(attempt.seq))
+        .collect();
+    sort_canonical(&mut missing);
+    let mut bodies: BTreeMap<&str, Vec<&MergedAttempt>> = damaged
+        .iter()
+        .map(|(name, _)| (name.as_str(), Vec::new()))
+        .collect();
+    let lowest = damaged
+        .iter()
+        .min_by_key(|(_, first)| *first)
+        .map(|(name, _)| name.as_str())
+        .expect("there is a damaged shard");
+    for attempt in &missing {
+        let home = damaged
+            .iter()
+            .filter(|(_, first)| *first <= attempt.seq)
+            .max_by_key(|(_, first)| *first)
+            .map_or(lowest, |(name, _)| name.as_str());
+        bodies.entry(home).or_default().push(attempt);
+    }
+    for (name, attempts) in bodies {
+        let body = shard_body(db.device_id(), &attempts)?;
+        screened.put(name, body.as_bytes())?;
+    }
+    Ok(())
 }
 
 /// This device's own baseline, if it has one.

@@ -1090,23 +1090,54 @@ after each item) both do this now. The shape is the rule, not either file.
       entries**: per (text, group) the lowest uuid survives carrying the newest
       duplicate's content and stamp, and every other one becomes a tombstone with
       its own stamp and `revision + 1`. Every device computes the same bytes, in
-      any order, and a second pass changes nothing. History is safe because the
-      attempt log is keyed by character; `apply_vocab_view` moves this device's
-      per-entry counters onto the survivor and keeps a never-held duplicate's
-      tombstone (the only never-held tombstone it keeps) so that a group position
-      naming it resolves to the survivor in `Db::vocab_cursor`.
+      any order, and a second pass changes nothing. Two copies of one uuid with the
+      same stamp (possible, because the survivor borrows a stamp) are settled by
+      their content — a removal first, then the fields in a fixed order — so the
+      per-uuid merge is a total order. History is safe because the attempt log is
+      keyed by character; `apply_vocab_view` moves this device's per-entry
+      counters onto the survivor, and keeps the tombstone of any entry it never
+      held **that has a live twin** (same text and group) so that a group
+      position naming it resolves to the survivor in `Db::vocab_cursor`. That is
+      not only a collapsed duplicate: a word deleted and then added again leaves a
+      tombstone with a live twin too, and it is kept the same way. Every other
+      never-held tombstone is still skipped.
+    - **A delete that races a collapse converges, but which way depends on who
+      synced first.** If one device deletes its copy before it has heard of the
+      other's, the other copy is simply the surviving entry. If the collapse has
+      already happened when the survivor is deleted, the word is gone everywhere.
+      Both are consistent on every device; neither is "the" answer.
     - **A file this build cannot use is left out, per device and kind, and
       reported** (`hanzi_sync::Summary::skipped`, `notice()`): `sync` reads the
       store once through `skipped::Screened`, which hides those files from the
-      strict readers and refuses to overwrite one outside this device's own
-      directory. A device with one bad attempt shard is left out whole, and a
+      strict readers. A device with one bad attempt shard is left out whole, and a
       peer's unreadable baseline means no schedule is rebuilt that sync. The
       public `read_*` functions stay strict on purpose.
-    - **Stamps come from `hanzi-store`'s `clock`**: `max(now, floor)`, where the
-      floor (in `meta` as `sync:clock`) is raised past every peer stamp a merge
-      applies, plus one second, and to this device's own last stamp. Never stamp a
+      - **This device's own damaged file is mended**, because nobody else can:
+        its documents are rewritten every sync anyway, and its damaged attempt
+        shards are rewritten from its log at the start of the sync
+        (`repair_own_shards`) — otherwise a name that is never reused would stay
+        damaged and every peer would leave this device out for good. Reported in
+        `Summary::repaired`.
+      - **A file in another device's directory that was left out is never
+        overwritten**; such a write is refused, recorded in `Summary::withheld`,
+        and not counted as published.
+      - **Not screened:** two readable shards that disagree about one attempt
+        (`SyncError::Rewritten`) still stop the sync, as before — that is a
+        rewritten shard, not an unreadable one, and no rule here can say which
+        copy is real.
+    - **Stamps come from `hanzi-store`'s `clock`**: `max(now, floor + 1 s)`,
+      where the floor (in `meta` as `sync:clock`) is the latest stamp this device
+      has seen from a peer or issued itself. So this device's stamps strictly
+      increase, and its next write beats anything it already holds. A peer stamp
+      more than a day ahead of this device's clock is not taken into the floor —
+      one dead clock battery would otherwise pin every device's stamps to its
+      future — and instead an edit of a particular record is stamped past that
+      record's own stamp (`past_sql!`, `clock::next_stamp_past`). Never stamp a
       synced record with `now_iso8601()` directly. The format is unchanged
       (whole-second ISO-8601, compared as text), so older builds read it as before.
+    - **A course-cursor save that did not move writes nothing.** The app saves on
+      every visit; a write would make an unmoved position look newer, or claim a
+      peer's position under this device's name.
 
 ## 5. The verification loop
 

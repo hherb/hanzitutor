@@ -130,6 +130,9 @@ pub(crate) fn screen_document(name: &str, bytes: &[u8]) -> Option<Result<(), Ski
         name: name.to_string(),
         device_id: owner.to_string(),
         kind,
+        // Whether it is this device's own is for the caller to say; see
+        // `crate::skipped::Screened`.
+        own: false,
         newer_format,
         reason,
     };
@@ -389,20 +392,31 @@ pub fn merge_vocab_cursors(
 /// Settle one entry against another: the later stamp wins, and the device id only
 /// matters when two devices wrote inside the same second.
 ///
-/// Two copies with the *same* stamp should be the same record; if one of them says
-/// the entry is removed, the removal wins. Without that last step the answer would
-/// depend on which copy arrived first, and two devices could keep different ones.
+/// Two copies with the *same* stamp should be the same record, but they need not
+/// be: the survivor of a collapse carries another entry's stamp (see
+/// [`collapse_duplicates`]), and a device can meet that stamp again on a copy it
+/// wrote itself. So a tie on the stamp is settled by the content — a removal
+/// first, then the fields in a fixed order — which makes this a total order over
+/// the records themselves. Without it the answer would depend on which copy
+/// arrived first, and two devices could keep different ones for ever.
 fn later_than(candidate: &SyncedEntry, winner: &SyncedEntry) -> bool {
+    entry_order(candidate) > entry_order(winner)
+}
+
+/// What [`later_than`] compares, most significant first.
+type EntryOrder<'a> = (
+    (&'a str, &'a str, i64),
+    bool,
+    (&'a str, &'a str, Option<&'a str>),
+    (&'a str, &'a str),
+);
+
+fn entry_order(e: &SyncedEntry) -> EntryOrder<'_> {
     (
-        stamp(
-            &candidate.updated_at,
-            &candidate.device_id,
-            candidate.revision,
-        ),
-        candidate.deleted,
-    ) > (
-        stamp(&winner.updated_at, &winner.device_id, winner.revision),
-        winner.deleted,
+        stamp(&e.updated_at, &e.device_id, e.revision),
+        e.deleted,
+        (e.pinyin.as_str(), e.meaning.as_str(), e.group.as_deref()),
+        (e.text.as_str(), e.added_at.as_str()),
     )
 }
 

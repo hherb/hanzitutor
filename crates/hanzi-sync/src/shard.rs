@@ -189,31 +189,51 @@ pub fn write_attempts(
             .first()
             .expect("a chunk of a non-empty slice is non-empty")
             .seq;
-        let mut body = String::new();
-        for attempt in chunk {
-            if attempt.device_id != device_id {
-                return Err(SyncError::Malformed(format!(
-                    "an attempt of {} cannot be published as {device_id}'s",
-                    attempt.device_id
-                )));
-            }
-            let line = ShardLine {
-                seq: attempt.seq,
-                ch: attempt.ch.clone(),
-                at: attempt.at.clone(),
-                score: attempt.score,
-                rating: attempt.rating,
-            };
-            let encoded = serde_json::to_string(&line)
-                .map_err(|e| SyncError::Malformed(format!("an attempt could not be encoded: {e}")))?;
-            body.push_str(&encoded);
-            body.push('\n');
-        }
+        let body = shard_body(device_id, chunk)?;
         let name = attempts_shard_name(device_id, first);
         store.put(&name, body.as_bytes())?;
         names.push(name);
     }
     Ok(names)
+}
+
+/// The text of one attempt shard: one line per attempt, in the order given.
+///
+/// Every attempt must belong to `device_id`, for the reason [`write_attempts`]
+/// gives.
+///
+/// `device_id` is whatever `Db::device_id` hands back, borrowed or owned.
+pub(crate) fn shard_body(
+    device_id: impl AsRef<str>,
+    attempts: &[&MergedAttempt],
+) -> Result<String, SyncError> {
+    let device_id = device_id.as_ref();
+    let mut body = String::new();
+    for attempt in attempts {
+        if attempt.device_id != device_id {
+            return Err(SyncError::Malformed(format!(
+                "an attempt of {} cannot be published as {device_id}'s",
+                attempt.device_id
+            )));
+        }
+        let line = ShardLine {
+            seq: attempt.seq,
+            ch: attempt.ch.clone(),
+            at: attempt.at.clone(),
+            score: attempt.score,
+            rating: attempt.rating,
+        };
+        let encoded = serde_json::to_string(&line)
+            .map_err(|e| SyncError::Malformed(format!("an attempt could not be encoded: {e}")))?;
+        body.push_str(&encoded);
+        body.push('\n');
+    }
+    Ok(body)
+}
+
+/// Sort attempts into the order shards are written and folded in.
+pub(crate) fn sort_canonical(attempts: &mut [MergedAttempt]) {
+    attempts.sort_by(canonical);
 }
 
 /// Union two logs into one, in canonical order.

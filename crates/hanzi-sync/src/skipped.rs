@@ -27,7 +27,7 @@
 //! Every file left out is reported in [`crate::Summary::skipped`], and
 //! [`crate::Summary::notice`] says it in words a learner can act on.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::document::{is_document, screen_document};
@@ -52,6 +52,8 @@ pub struct SkippedShard {
     /// The device whose directory it is in.
     pub device_id: String,
     pub kind: ShardKind,
+    /// In this device's own directory: a file this device wrote, damaged since.
+    pub own: bool,
     /// Written by a newer version of the app, rather than unreadable.
     pub newer_format: bool,
     /// What was wrong, for a log or a bug report.
@@ -78,7 +80,12 @@ pub struct SkippedShard {
 /// this device's own directory. Nothing in a sync writes into another device's
 /// directory today, so this costs nothing; it is here so that a later change that
 /// does — publishing attempts on a peer's behalf, say — cannot replace a file it
-/// could not read with the part of it this device happens to know.
+/// could not read with the part of it this device happens to know. A write it
+/// refuses is recorded ([`Screened::withheld`]) rather than passed off as done.
+///
+/// A file in this device's **own** directory that was left out is the opposite
+/// case: this device is the only one that can mend it, and nobody else will. See
+/// `repair_own_shards` in [`crate::local`].
 pub(crate) struct Screened<'a> {
     inner: &'a dyn RemoteStore,
     own_device: String,
@@ -86,6 +93,11 @@ pub(crate) struct Screened<'a> {
     held: RefCell<BTreeMap<String, Vec<u8>>>,
     left_out: RefCell<BTreeSet<String>>,
     skipped: Vec<SkippedShard>,
+    /// The sequence numbers of this device's attempts that a readable shard holds.
+    own_readable: BTreeSet<i64>,
+    /// Writes refused by the guard, and how many attempts they carried.
+    withheld: RefCell<Vec<String>>,
+    withheld_attempts: Cell<usize>,
 }
 
 impl<'a> Screened<'a> {
@@ -100,7 +112,9 @@ impl<'a> Screened<'a> {
         inner: &'a dyn RemoteStore,
         own_device: impl Into<String>,
     ) -> Result<Self, SyncError> {
+        let own_device: String = own_device.into();
         let listing = inner.list()?;
+        let mut own_readable = BTreeSet::new();
         let mut held = BTreeMap::new();
         let mut left_out = BTreeSet::new();
         let mut skipped = Vec::new();
@@ -109,7 +123,10 @@ impl<'a> Screened<'a> {
             if let Some((device_id, _)) = parse_attempts_shard(&entry.name) {
                 let bytes = inner.get(&entry.name)?;
                 match parse_shard(&entry.name, device_id, &bytes) {
-                    Ok(_) => {
+                    Ok(attempts) => {
+                        if device_id == own_device {
+                            own_readable.extend(attempts.iter().map(|a| a.seq));
+                        }
                         held.insert(entry.name.clone(), bytes);
                     }
                     Err(reason) => {
@@ -118,6 +135,7 @@ impl<'a> Screened<'a> {
                             name: entry.name.clone(),
                             device_id: device_id.to_string(),
                             kind: ShardKind::Attempts,
+                            own: device_id == own_device,
                             newer_format: false,
                             reason,
                         });
@@ -126,8 +144,9 @@ impl<'a> Screened<'a> {
             } else if is_document(&entry.name) {
                 let bytes = inner.get(&entry.name)?;
                 match screen_document(&entry.name, &bytes) {
-                    Some(Err(skip)) => {
+                    Some(Err(mut skip)) => {
                         left_out.insert(entry.name.clone());
+                        skip.own = skip.device_id == own_device;
                         skipped.push(skip);
                     }
                     _ => {
@@ -154,12 +173,51 @@ impl<'a> Screened<'a> {
             .collect();
         Ok(Self {
             inner,
-            own_device: own_device.into(),
+            own_device,
             listing: RefCell::new(listing),
             held: RefCell::new(held),
             left_out: RefCell::new(left_out),
             skipped,
+            own_readable,
+            withheld: RefCell::new(Vec::new()),
+            withheld_attempts: Cell::new(0),
         })
+    }
+
+    /// This device's own attempt shards that could not be read, by name, with the
+    /// sequence number each is named after.
+    pub(crate) fn own_damaged_attempts(&self) -> Vec<(String, i64)> {
+        self.skipped()
+            .into_iter()
+            .filter(|s| s.own && s.kind == ShardKind::Attempts)
+            .filter_map(|s| parse_attempts_shard(&s.name).map(|(_, first)| (s.name.clone(), first)))
+            .collect()
+    }
+
+    /// Whether a readable shard holds this device's attempt `seq`.
+    pub(crate) fn holds_own(&self, seq: i64) -> bool {
+        self.own_readable.contains(&seq)
+    }
+
+    /// The files that were left out and that this device has since written afresh:
+    /// its own, mended.
+    pub(crate) fn repaired(&self) -> Vec<SkippedShard> {
+        let left_out = self.left_out.borrow();
+        self.skipped
+            .iter()
+            .filter(|s| !left_out.contains(&s.name))
+            .cloned()
+            .collect()
+    }
+
+    /// The writes the guard refused, by name.
+    pub(crate) fn withheld(&self) -> Vec<String> {
+        self.withheld.borrow().clone()
+    }
+
+    /// How many attempts those writes carried, so they are not counted as sent.
+    pub(crate) fn withheld_attempts(&self) -> usize {
+        self.withheld_attempts.get()
     }
 
     /// The files left out, in the order they were found — less any this device has
@@ -179,7 +237,7 @@ impl<'a> Screened<'a> {
     pub(crate) fn baseline_skipped(&self) -> bool {
         self.skipped()
             .iter()
-            .any(|s| s.kind == ShardKind::Baseline && s.device_id != self.own_device)
+            .any(|s| s.kind == ShardKind::Baseline && !s.own)
     }
 }
 
@@ -199,6 +257,17 @@ impl RemoteStore for Screened<'_> {
         let own = device_of_shard(name) == Some(self.own_device.as_str());
         if !own && self.left_out.borrow().contains(name) {
             // See the type's note: never overwrite a file this sync could not read.
+            // Not an error, because the sync can go on without it; recorded, so the
+            // write is neither lost silently nor counted as made.
+            self.withheld.borrow_mut().push(name.to_string());
+            if parse_attempts_shard(name).is_some() {
+                let lines = String::from_utf8_lossy(bytes)
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .count();
+                self.withheld_attempts
+                    .set(self.withheld_attempts.get() + lines);
+            }
             return Ok(());
         }
         self.inner.put(name, bytes)?;
@@ -217,20 +286,17 @@ impl RemoteStore for Screened<'_> {
     }
 }
 
-/// What to tell the learner about the files a sync left out, if any were.
-pub(crate) fn notice(skipped: &[SkippedShard]) -> Option<String> {
-    if skipped.is_empty() {
-        return None;
-    }
+/// What to tell the learner about the files a sync left out or mended, if any.
+pub(crate) fn notice(skipped: &[SkippedShard], repaired: &[SkippedShard]) -> Option<String> {
     let mut sentences = Vec::new();
-    if skipped.iter().any(|s| s.newer_format) {
+    if skipped.iter().any(|s| s.newer_format && !s.own) {
         sentences.push(
             "Another device uses a newer version of the app; update this one to sync its \
              changes."
                 .to_string(),
         );
     }
-    let unreadable = skipped.iter().filter(|s| !s.newer_format).count();
+    let unreadable = skipped.iter().filter(|s| !s.newer_format && !s.own).count();
     if unreadable > 0 {
         sentences.push(format!(
             "{} could not be read, so {} left out of this sync; everything else synced.",
@@ -245,12 +311,28 @@ pub(crate) fn notice(skipped: &[SkippedShard]) -> Option<String> {
             },
         ));
     }
-    if skipped.iter().any(|s| s.kind == ShardKind::Baseline) {
+    if !repaired.is_empty() {
+        sentences.push(
+            "A file this device wrote to Dropbox was damaged; it has been written again."
+                .to_string(),
+        );
+    }
+    if skipped.iter().any(|s| s.own) {
+        sentences.push(
+            "A file this device wrote to Dropbox earlier is damaged; it will be written \
+             again the next time this device has that to sync."
+                .to_string(),
+        );
+    }
+    if skipped
+        .iter()
+        .any(|s| s.kind == ShardKind::Baseline && !s.own)
+    {
         sentences.push(
             "Schedules were left as they are until that device's files can be read.".to_string(),
         );
     }
-    Some(sentences.join(" "))
+    (!sentences.is_empty()).then(|| sentences.join(" "))
 }
 
 #[cfg(test)]
@@ -262,6 +344,7 @@ mod tests {
             name: "devices/x/vocab.json".into(),
             device_id: "x".into(),
             kind,
+            own: false,
             newer_format,
             reason: "because".into(),
         }
@@ -300,12 +383,18 @@ mod tests {
             "only the peer's is still left out"
         );
         assert!(!screened.baseline_skipped());
+        assert_eq!(screened.repaired().len(), 1, "and its own counts as mended");
+        assert_eq!(
+            screened.withheld(),
+            ["devices/peer/vocab.json"],
+            "the refused write is recorded, not passed off as made"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn a_newer_device_is_named_as_the_reason_and_the_remedy_given() {
-        let message = notice(&[skipped(ShardKind::Vocab, true)]).unwrap();
+        let message = notice(&[skipped(ShardKind::Vocab, true)], &[]).unwrap();
         assert_eq!(
             message,
             "Another device uses a newer version of the app; update this one to sync its changes."
@@ -314,10 +403,13 @@ mod tests {
 
     #[test]
     fn an_unreadable_file_is_counted_and_a_skipped_baseline_says_schedules_waited() {
-        let message = notice(&[
-            skipped(ShardKind::Attempts, false),
-            skipped(ShardKind::Baseline, false),
-        ])
+        let message = notice(
+            &[
+                skipped(ShardKind::Attempts, false),
+                skipped(ShardKind::Baseline, false),
+            ],
+            &[],
+        )
         .unwrap();
         assert!(
             message.starts_with("2 files other devices wrote could not be read"),
@@ -327,6 +419,21 @@ mod tests {
             message.contains("Schedules were left as they are"),
             "{message}"
         );
-        assert_eq!(notice(&[]), None);
+        assert_eq!(notice(&[], &[]), None);
+    }
+
+    #[test]
+    fn this_devices_own_damaged_file_is_told_apart_from_another_devices() {
+        let own = SkippedShard {
+            own: true,
+            ..skipped(ShardKind::Attempts, false)
+        };
+        assert_eq!(
+            notice(&[], std::slice::from_ref(&own)).unwrap(),
+            "A file this device wrote to Dropbox was damaged; it has been written again."
+        );
+        let message = notice(&[own], &[]).unwrap();
+        assert!(!message.contains("another device"), "{message}");
+        assert!(message.contains("this device wrote"), "{message}");
     }
 }
