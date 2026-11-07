@@ -1612,7 +1612,10 @@ refusal is a bug report, a plaintext credential is a vulnerability nobody notice
   locked write failed and quietly fell back to a key that asks nothing (#28). Locking the
   sign-in — on Connect, or when the switch is turned on — now shows the same prompt with the
   *encrypting* cipher as its `CryptoObject`. The constraint is still compatible with a sync that
-  runs by itself: the prompt is per *operation*, and the token is read once per run.
+  runs by itself: the prompt is per *operation*, and the token is read once per run. A learner
+  who turned the switch on under an earlier build still has an unlocked sign-in; the status
+  line says so (switch on, protection `keychainOnly`) and asks them to turn it off and on
+  again, which rewrites the item behind the prompt.
 - **A refused lock is an error, not a downgrade.** A cancelled prompt or a key keystore will not
   make is reported, and whatever was stored before is left as it was. The one downgrade left is
   a device that cannot ask at all — its screen lock removed since the switch was turned on,

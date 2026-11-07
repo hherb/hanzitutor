@@ -65,11 +65,14 @@ import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.io.File
 import java.io.FileOutputStream
+import java.security.InvalidKeyException
 import java.security.KeyStore
 import java.security.UnrecoverableEntryException
 import java.util.Locale
 import java.util.UUID
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
+import javax.crypto.IllegalBlockSizeException
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
@@ -130,6 +133,23 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
 
     /** The focus this app is currently holding, if any. */
     private var focus: AudioFocusRequest? = null
+
+    /**
+     * The utterance [focus] was taken for, so that a late callback for an earlier
+     * one does not hand back the focus a newer one is using. Main thread only.
+     */
+    private var audibleUtterance: String? = null
+
+    /**
+     * Whether a fingerprint prompt is showing. Main thread only.
+     *
+     * androidx.biometric 1.1.0 keeps a prompt's state in one `ViewModel` per
+     * activity, so a second `BiometricPrompt` built while the first is up takes
+     * over its callback: the first caller would never be answered, and a read
+     * could be handed the cipher of a write. So there is one at a time, and a
+     * second asks again later instead. See [askFor].
+     */
+    private var prompting = false
 
     /** The recorder while it is running. */
     private var recordDevice: AudioRecord? = null
@@ -264,6 +284,7 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
             lastProblem = null
             makeAudible(tts)
             val waiter = Speaking(invoke, UUID.randomUUID().toString())
+            audibleUtterance = waiter.utterance
             speaking = waiter
             val accepted = tts.speak(args.text, TextToSpeech.QUEUE_FLUSH, null, waiter.utterance)
             if (accepted == TextToSpeech.ERROR) {
@@ -348,8 +369,25 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
         manager.requestAudioFocus(request)
     }
 
-    /** Give the audio back, so anything that was ducked returns to volume. */
+    /**
+     * Give the audio back once [utteranceId] is over, unless a newer utterance has
+     * taken the focus since. Called from the engine's binder thread, so it only
+     * posts; an id of null is taken at face value, as in [finishSpeaking].
+     */
+    private fun giveBackAudioAfter(utteranceId: String?) {
+        main.post {
+            if (utteranceId == null || utteranceId == audibleUtterance) {
+                giveBackAudio()
+            }
+        }
+    }
+
+    /**
+     * Give the audio back, so anything that was ducked returns to volume. Main
+     * thread only.
+     */
     private fun giveBackAudio() {
+        audibleUtterance = null
         val manager = audio ?: return
         val request = focus ?: return
         focus = null
@@ -649,10 +687,12 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
      * to connect and unable to turn it off; the token is kept the unlocked way and
      * the answer says so, which Rust labels `keychainOnly` and explains.
      *
-     * **Why the ciphertext is what is written.** `apply()` rather than `commit()`:
-     * the write is to this app's own preferences and a lost race with process
-     * death costs one reconnect, while blocking the main thread — which is where
-     * mobile plugin commands run — costs the frame the learner is looking at.
+     * **Why the write is `commit()`.** The blob is written synchronously, on the
+     * main thread where mobile plugin commands run, because the other mode's key
+     * is deleted straight afterwards — see [keep]. With `apply()` a process death
+     * between the two could leave the old blob on disk and its key gone, which
+     * is a sign-in lost for nothing. A few hundred bytes to this app's own
+     * preferences is not a write the learner can see.
      */
     @Command
     fun saveSecret(invoke: Invoke) {
@@ -686,9 +726,14 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
      *
      * A blob in the locked mode is forgotten first, with both keys: its own key
      * cannot be used without a prompt, and nothing here asks. A key under this
-     * alias that will not encrypt — one an earlier build made in the locked mode
-     * before it filed that mode under an alias of its own — is replaced once
-     * rather than reported, because the blob it guarded is being replaced anyway.
+     * alias that keystore will not encrypt with — one an earlier build made in
+     * the locked mode before it filed that mode under an alias of its own — is
+     * replaced once rather than reported, because the blob it guarded is being
+     * replaced anyway. Only keystore's refusals count as that: an
+     * `InvalidKeyException` from `init` (which covers an invalidated key and one
+     * waiting for authentication), or the `IllegalBlockSizeException` that
+     * `doFinal` wraps a refused operation in — GCM without padding has no block
+     * size to get wrong. Anything else is reported, and nothing is forgotten.
      */
     private fun storeUnlocked(secret: String) {
         if (preferences().getBoolean(SECRET_AUTH_ENTRY, false)) {
@@ -699,12 +744,19 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
         val encrypted = try {
             cipher.init(Cipher.ENCRYPT_MODE, secretKey(false))
             cipher.doFinal(plain)
-        } catch (stale: Exception) {
-            forgetSecret()
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey(false))
-            cipher.doFinal(plain)
+        } catch (stale: InvalidKeyException) {
+            replaceUnlockedKey(cipher, plain)
+        } catch (stale: IllegalBlockSizeException) {
+            replaceUnlockedKey(cipher, plain)
         }
         keep(cipher, encrypted, false)
+    }
+
+    /** Forget everything, then encrypt [plain] under a freshly made unlocked key. */
+    private fun replaceUnlockedKey(cipher: Cipher, plain: ByteArray): ByteArray {
+        forgetSecret()
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey(false))
+        return cipher.doFinal(plain)
     }
 
     /**
@@ -732,13 +784,12 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
             "Confirm it is you to keep the sign-in behind your fingerprint.",
             SAVE_REFUSED
         ) { unlocked ->
-            val encrypted = try {
-                unlocked.doFinal(secret.toByteArray(Charsets.UTF_8))
+            try {
+                keep(unlocked, unlocked.doFinal(secret.toByteArray(Charsets.UTF_8)), true)
             } catch (problem: Exception) {
                 invoke.reject(notStored(problem))
                 return@askFor
             }
-            keep(unlocked, encrypted, true)
             resolveSaved(invoke, true)
         }
     }
@@ -770,13 +821,21 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
      * a blob, and the one that does not is deleted here rather than left behind —
      * which is also what keeps the recorded mode and the key in use from ever
      * disagreeing.
+     *
+     * The other key goes only once `commit()` says the new blob is on disk. A
+     * write that did not happen throws instead, and leaves the old blob and its
+     * key exactly as they were, so the caller reports it rather than claiming a
+     * sign-in that is not there.
      */
     private fun keep(cipher: Cipher, encrypted: ByteArray, requireAuth: Boolean) {
         val blob = encode(cipher.iv) + ":" + encode(encrypted)
-        preferences().edit()
+        val written = preferences().edit()
             .putString(SECRET_ENTRY, blob)
             .putBoolean(SECRET_AUTH_ENTRY, requireAuth)
-            .apply()
+            .commit()
+        if (!written) {
+            throw IllegalStateException("this app's preferences could not be written")
+        }
         deleteKey(if (requireAuth) SECRET_KEY_ALIAS else SECRET_LOCKED_KEY_ALIAS)
     }
 
@@ -935,9 +994,20 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
         ) { unlocked ->
             val secret = try {
                 String(unlocked.doFinal(encrypted), Charsets.UTF_8)
-            } catch (problem: Exception) {
+            } catch (unreadable: AEADBadTagException) {
+                // The blob does not match its key: a restored backup, or a key
+                // made again since. Nobody can read it, so it is forgotten.
                 forgetSecret()
                 null
+            } catch (unreadable: KeyPermanentlyInvalidatedException) {
+                forgetSecret()
+                null
+            } catch (problem: Exception) {
+                // Anything else is not evidence that the blob is bad — keystore
+                // may simply have refused this one operation — so it is reported
+                // and the sign-in kept for the next attempt.
+                invoke.reject("the Dropbox sign-in could not be read: ${problem.message}")
+                return@askFor
             }
             resolveSecret(invoke, secret, true)
         }
@@ -973,6 +1043,17 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
             invoke.reject("this app cannot show a fingerprint prompt on this device, so $refused")
             return
         }
+        if (prompting) {
+            invoke.reject("another fingerprint prompt is already showing, so $refused")
+            return
+        }
+        if (host.supportFragmentManager.isStateSaved) {
+            // androidx logs and does nothing at all in this state — no prompt and
+            // no callback — which would leave the caller waiting for good.
+            invoke.reject("the app is not in the foreground to ask for a fingerprint, so $refused")
+            return
+        }
+        prompting = true
         var answered = false
         val prompt = BiometricPrompt(
             host,
@@ -983,6 +1064,7 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
                 ) {
                     if (answered) return
                     answered = true
+                    prompting = false
                     val unlocked = result.cryptoObject?.cipher
                     if (unlocked == null) {
                         // The prompt hands back the cipher it was given. Without it
@@ -1000,6 +1082,7 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
                 override fun onAuthenticationError(errorCode: Int, message: CharSequence) {
                     if (answered) return
                     answered = true
+                    prompting = false
                     invoke.reject(reasonForPrompt(errorCode, message, refused))
                 }
 
@@ -1035,6 +1118,7 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
             // but an exception escaping here would leave the caller unanswered.
             if (answered) return
             answered = true
+            prompting = false
             invoke.reject(
                 "this device cannot show the fingerprint prompt, so $refused: ${problem.message}"
             )
@@ -1231,8 +1315,8 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
      * Watch one utterance from acceptance to its first sound, or to its failure.
      *
      * The callbacks arrive on a binder thread, not this one, so they hand what
-     * happened back to the main thread — which is where `Invoke` and [speaking]
-     * belong — and match nothing against [speaking] themselves.
+     * happened back to the main thread — which is where `Invoke`, [speaking] and
+     * the audio focus belong — and match nothing themselves.
      */
     private fun listen(tts: TextToSpeech?) {
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -1243,17 +1327,17 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
             override fun onDone(utteranceId: String?) {
                 // The word is over, so hand the audio back and let anything that
                 // was ducked return to volume.
-                giveBackAudio()
+                giveBackAudioAfter(utteranceId)
             }
 
             override fun onError(utteranceId: String?) {
                 finishSpeaking(utteranceId, "the speech engine reported that it could not speak")
-                giveBackAudio()
+                giveBackAudioAfter(utteranceId)
             }
 
             override fun onError(utteranceId: String?, errorCode: Int) {
                 finishSpeaking(utteranceId, reasonFor(errorCode))
-                giveBackAudio()
+                giveBackAudioAfter(utteranceId)
             }
         })
     }
@@ -1461,9 +1545,14 @@ class PlatformPlugin(private val activity: Activity) : Plugin(activity) {
             BiometricManager.Authenticators.BIOMETRIC_STRONG
         }
 
-        /** How a refused prompt ends, for reading the sign-in and for locking it. */
+        /**
+         * How a refused prompt ends, for reading the sign-in and for locking it.
+         * Neither says what that means for the learner, because that depends on
+         * why it was asked — connecting, or turning the switch on — and Rust,
+         * which knows, says it.
+         */
         const val READ_REFUSED = "the Dropbox sign-in was not read"
-        const val SAVE_REFUSED = "the Dropbox sign-in was not locked, and nothing was changed"
+        const val SAVE_REFUSED = "the Dropbox sign-in was not saved"
 
         /**
          * The keystore the AES keys are generated in, and the aliases they are
