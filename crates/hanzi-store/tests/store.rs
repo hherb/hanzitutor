@@ -829,6 +829,117 @@ fn a_database_has_one_device_identity_that_does_not_change() {
 }
 
 #[test]
+fn a_new_identity_moves_only_the_attempts_it_is_given_and_every_handle_follows() {
+    // Sync's half of a restored database: the attempts the store already holds stay
+    // under the old name, the rest are renumbered from 1 under the new one, and a
+    // handle opened before the rename writes under the new name afterwards.
+    let dir = dir("rotate");
+    let db = Db::open(&dir).unwrap();
+    let mut store = ProgressStore::open_with(Box::new(db.clone())).unwrap();
+    for (score, at) in [
+        (80.0, "2026-09-19T09:00:00Z"),
+        (81.0, "2026-09-19T10:00:00Z"),
+        (82.0, "2026-09-19T11:00:00Z"),
+    ] {
+        store.record_at('好', score, at).unwrap();
+        store.save().unwrap();
+    }
+    let old = db.device_id();
+
+    let new = db.rotate_device_id(&|attempt| attempt.seq == 1).unwrap();
+    assert_ne!(new, old);
+    assert_eq!(db.device_id(), new);
+    let origins: Vec<(String, i64, String)> = db
+        .attempts(None)
+        .unwrap()
+        .into_iter()
+        .map(|a| (a.device_id, a.seq, a.at))
+        .collect();
+    assert_eq!(
+        origins,
+        vec![
+            (old.clone(), 1, "2026-09-19T09:00:00Z".to_string()),
+            (new.clone(), 1, "2026-09-19T10:00:00Z".to_string()),
+            (new.clone(), 2, "2026-09-19T11:00:00Z".to_string()),
+        ],
+        "renumbered in the order they were made"
+    );
+
+    // The store was opened before the rename and numbers on from the new name.
+    store.record_at('好', 83.0, "2026-09-19T12:00:00Z").unwrap();
+    store.save().unwrap();
+    let own: Vec<(String, i64)> = db
+        .own_attempts()
+        .unwrap()
+        .into_iter()
+        .map(|a| (a.device_id, a.seq))
+        .collect();
+    assert_eq!(
+        own,
+        vec![(new.clone(), 1), (new.clone(), 2), (new.clone(), 3)]
+    );
+
+    // The old name is remembered, and an attempt that turns up under it later can
+    // be moved over, numbered on after the current name's newest.
+    assert_eq!(db.former_device_ids().unwrap(), vec![old.clone()]);
+    let straggler = hanzi_store::IncomingAttempt {
+        device_id: old.clone(),
+        seq: 2,
+        ch: "好".into(),
+        at: "2026-09-19T13:00:00Z".into(),
+        score: 50.0,
+        rating: Rating::Hard,
+        measures: None,
+    };
+    db.merge_attempts(&[straggler]).unwrap();
+    assert_eq!(
+        db.reclaim_attempts(&old, &|attempt| attempt.seq == 1)
+            .unwrap(),
+        1
+    );
+    let moved = db.own_attempts().unwrap().pop().unwrap();
+    assert_eq!((moved.seq, moved.at.as_str()), (4, "2026-09-19T13:00:00Z"));
+    assert_eq!(db.attempts(None).unwrap().len(), 5, "moved, not copied");
+
+    // A copy, under the old name, of an attempt the rename moved — a backup from
+    // before the rename — is the same attempt, so it is not let back in...
+    let moved_one = db.own_attempts().unwrap().remove(0);
+    let copy = hanzi_store::IncomingAttempt {
+        device_id: old.clone(),
+        seq: 9,
+        ch: moved_one.ch.clone(),
+        at: moved_one.at.clone(),
+        score: moved_one.score,
+        rating: Rating::from_name(&moved_one.rating).unwrap(),
+        measures: None,
+    };
+    assert_eq!(db.merge_attempts(&[copy]).unwrap(), 0);
+    // ...and one that got in anyway is dropped.
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO attempt (device_id, seq, ch, at, score, rating)
+             VALUES (?1, 9, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                old,
+                moved_one.ch,
+                moved_one.at,
+                moved_one.score,
+                moved_one.rating
+            ],
+        )
+        .unwrap();
+    assert_eq!(db.attempts(None).unwrap().len(), 6);
+    assert_eq!(db.forget_moved_copies().unwrap(), 1);
+    assert_eq!(db.attempts(None).unwrap().len(), 5);
+    assert_eq!(db.forget_moved_copies().unwrap(), 0, "and nothing else");
+
+    // And it is the name the database answers to from now on.
+    assert_eq!(Db::open(&dir).unwrap().device_id(), new);
+    finish(&dir);
+}
+
+#[test]
 fn an_attempt_is_stamped_with_its_device_and_its_number_on_it() {
     let second_dir = dir("provenance-second");
     let dir = dir("provenance");
@@ -841,7 +952,11 @@ fn an_attempt_is_stamped_with_its_device_and_its_number_on_it() {
     let logged = db.attempts(Some('好')).unwrap();
     assert_eq!(logged.len(), 2);
     assert_eq!(logged[0].device_id, db.device_id(), "this device made it");
-    assert_eq!(logged[0].origin(), (db.device_id(), 1), "numbered from 1");
+    assert_eq!(
+        logged[0].origin(),
+        (db.device_id().as_str(), 1),
+        "numbered from 1"
+    );
     assert_eq!(logged[1].origin().1, 2, "and in order");
 
     // The numbers are per device, so a second device also starts at 1. That is
