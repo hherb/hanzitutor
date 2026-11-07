@@ -325,6 +325,12 @@
    * device opens — a release then has to reach the button, or it is lost.
    */
   const scoring = $derived(talkPhase === "scoring" || talkPhase === "stopping");
+  /**
+   * True from the press until the device has closed: anything the system voice
+   * says now is recorded into the attempt (issue #27), so Listen is disabled and
+   * [`hear`] refuses.
+   */
+  const micOpen = $derived(talkPhase === "starting" || talkPhase === "listening");
   /** Why the last attempt could not even be recorded. */
   let toneError = $state<string | null>(null);
   /** The text captured when the button went down, which is what gets judged. */
@@ -1097,6 +1103,15 @@
       if (!document.hidden) {
         refreshMicrophone();
         void autoSync("foreground");
+      } else {
+        // Hidden while the button is held — the app switched away from, the
+        // screen locked, the window minimised: no release is coming, and the
+        // recording would run to the cap with the indicator lit (issue #27). It
+        // is cancelled rather than judged, because a phone gives an app in the
+        // background silence, not audio, and because what was said while leaving
+        // is not an attempt. A judgement already on its way is kept: the button
+        // was let go on purpose, and the board is still there on return.
+        void talk.abandon();
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -1211,7 +1226,14 @@
       runShortcut(shortcut.id);
     };
     window.addEventListener("keydown", onKey);
+    // Leaving the page altogether: nothing in flight may outlive it.
+    const onPageHide = () => void talk.retarget();
+    window.addEventListener("pagehide", onPageHide);
     return () => {
+      // And the component itself going away: its button, and every release it
+      // could have had, go with it.
+      void talk.retarget();
+      window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onRejection);
@@ -1307,7 +1329,12 @@
    */
   const talk = new PushToTalk<ToneResult>(
     {
-      start: () => api.listenStart(),
+      async start() {
+        // Stop the system voice first, as the Tone Trainer does: a pronunciation
+        // still playing would be recorded alongside the learner, and scored.
+        await api.stopSpeaking();
+        await api.listenStart();
+      },
       stop: () => api.listenStop(scoredText),
       cancel: () => api.listenCancel(),
     },
@@ -1359,6 +1386,17 @@
   async function stopListening() {
     showOutcome(await talk.release());
   }
+
+  /**
+   * The board left the screen — another screen opened, or the character went —
+   * and the button with it, while it may still be held. Its pointer-up is never
+   * read then, so without this the microphone stayed open to the cap (issue #27).
+   * Cancelled like a hidden window (see `onVisibility`); a judgement already on
+   * its way is kept, because coming back to the board leaves its result alone.
+   */
+  $effect(() => {
+    if (!practising) void talk.abandon();
+  });
 
   /**
    * Remember where in the course the reader is.
@@ -1710,7 +1748,8 @@
    * sound does not give away how to write the glyph.
    */
   async function hear() {
-    if (voice === null) return;
+    // Not into an open microphone: see `micOpen`.
+    if (voice === null || micOpen) return;
     const spoken = currentItem?.text ?? character?.ch;
     if (!spoken) return;
     try {
@@ -3199,7 +3238,7 @@
                 <button
                   class="tool media"
                   onclick={hear}
-                  disabled={!character || voice === null}
+                  disabled={!character || voice === null || micOpen}
                   aria-label="Listen: hear this character pronounced"
                   title={voice === undefined
                     ? "Looking for a Chinese voice…"

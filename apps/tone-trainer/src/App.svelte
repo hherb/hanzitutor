@@ -33,7 +33,7 @@
   import { onMount } from "svelte";
   import * as api from "./lib/api";
   import { fold, searchFamilies } from "./lib/familySearch";
-  import { PushToTalk } from "./lib/pushToTalk";
+  import { HeldKey, PushToTalk } from "./lib/pushToTalk";
   import type { Outcome, Phase } from "./lib/pushToTalk";
   import ModelPanel from "./lib/ModelPanel.svelte";
   import RecognitionPanel from "./lib/RecognitionPanel.svelte";
@@ -143,6 +143,13 @@
   const listening = $derived(talkPhase === "listening");
   /** True between pressing the button and the device actually opening. */
   const starting = $derived(talkPhase === "starting");
+  /**
+   * True from the press until the device has closed again: the stretch in which
+   * anything the speaker says would be recorded into the attempt, and in which the
+   * drill must not move under the learner (issue #27). Hearing, quizzing and the
+   * chooser are disabled for it, and `say` refuses.
+   */
+  const micOpen = $derived(starting || listening);
   /**
    * True between letting go and the judgement coming back, and while a recording
    * is being cancelled.
@@ -325,8 +332,15 @@
     }
   }
 
-  /** Say one character, stopping whatever was being said first. */
+  /**
+   * Say one character, stopping whatever was being said first.
+   *
+   * Refused while the microphone is open or opening: the voice would be recorded
+   * into the attempt. The controls that call this are disabled then too; this is
+   * the guard for a click that lands as they become disabled.
+   */
   async function say(ch: string) {
+    if (micOpen) return;
     const token = ++sayToken;
     try {
       await api.stopSpeaking();
@@ -346,6 +360,7 @@
    * hearing them a beat apart.
    */
   async function hearSet(set: ToneSet) {
+    if (micOpen) return;
     const token = ++sayToken;
     try {
       await api.stopSpeaking();
@@ -362,6 +377,7 @@
 
   /** Ask a member at random, speaking it. Never twice in a row for one set. */
   function ask(set: ToneSet) {
+    if (micOpen) return;
     const last = quiz?.base === set.base ? quiz.answer : null;
     let index = Math.floor(Math.random() * set.members.length);
     if (set.members.length > 1 && last !== null) {
@@ -501,6 +517,7 @@
 
   /** Choose what to say: speak it as a model, and clear the last judgement. */
   function choose(set: ToneSet, member: ToneSetMember) {
+    if (micOpen) return;
     drill = { kind: "character", base: set.base, ch: member.ch };
     openBase = set.base;
     result = null;
@@ -511,6 +528,7 @@
 
   /** The same, for a word: spoken as the whole word so the sandhi is audible. */
   function chooseWord(family: WordSet, word: WordMember) {
+    if (micOpen) return;
     drill = { kind: "word", key: family.key, text: word.text };
     result = null;
     judged = null;
@@ -565,11 +583,21 @@
   }
 
   async function startListening() {
+    // Down again while the device is still opening: the same attempt, held again
+    // (see `PushToTalk.press`), so nothing is captured afresh.
+    if (talk.phase === "starting") {
+      showOutcome(await talk.press());
+      return;
+    }
     const text = drillText;
     const reading = drillReading;
     if (talk.phase !== "idle" || text === null || reading === null) return;
     attempt = { text, reading };
     scoreFailure = null;
+    // Ends a "hear the set" run that is still going: its next tone would
+    // otherwise be spoken into the open microphone ~900 ms from now. The
+    // utterance already playing is stopped by `start`.
+    sayToken++;
     showOutcome(await talk.press());
   }
 
@@ -578,24 +606,67 @@
   }
 
   /**
-   * Push-to-talk from the keyboard.
+   * Push-to-talk from the keyboard: **hold** the space bar, as the button is held.
    *
    * A button that listens only while the pointer is down is unusable for anyone
    * who cannot hold a mouse button and speak at once, and a drill is exactly where
-   * someone will do it many times. Space is the same key for starting and stopping.
+   * someone will do it many times. The keydown is the press and the keyup is the
+   * release, as the bar under the button says; it used to toggle, so holding
+   * Space, speaking and letting go did nothing (issue #27). The key's repeats are
+   * not presses — see `HeldKey`.
+   *
+   * Taken only where it means that — see `spaceTalks`. On a focused chooser
+   * button, which keeps focus after a click because "pick a tone, then hold
+   * Space" is the drill, both halves are default-prevented, or the keyup would
+   * also click it. The chooser is `aria-disabled` rather than `disabled` while the
+   * microphone is open, so the press does not knock focus off it.
    */
-  function onKey(event: KeyboardEvent) {
-    if (screen !== "say" || event.repeat) return;
-    if (event.code !== "Space" && event.key !== " ") return;
-    const target = event.target as HTMLElement | null;
-    // Never steal the key from a field being typed in.
-    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
-    if (drillText === null) return;
+  const space = new HeldKey();
+
+  function isSpace(event: KeyboardEvent) {
+    return event.code === "Space" || event.key === " ";
+  }
+
+  /**
+   * Whether Space pressed with focus on `target` means "talk".
+   *
+   * Nothing focused, or a control whose next step *is* holding Space — the mic
+   * button, the chooser, and the Say buttons and switches that lead to the drill
+   * (marked `data-space-talks`). Anything else keeps the key's own meaning: a text
+   * field types a space, and Hear, Quiz, Done, the model panel's buttons or a
+   * `<summary>` are activated by it as usual.
+   */
+  function spaceTalks(target: EventTarget | null) {
+    if (!(target instanceof Element)) return true;
+    if (target === document.body || target === document.documentElement) return true;
+    return target.closest("[data-space-talks]") !== null;
+  }
+
+  function onKeyDown(event: KeyboardEvent) {
+    if (screen !== "say" || !isSpace(event)) return;
+    // Ctrl+Space and its relatives switch the input source — which a learner of
+    // Chinese does all the time — and a key composing text is the IME's.
+    if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+    if (!spaceTalks(event.target)) return;
+    if (drillText === null && !space.held) return;
     event.preventDefault();
-    // A second press while the device is still opening is a release too: it is
-    // remembered, and the recording is thrown away once the device is open.
-    if (listening || starting) void stopListening();
-    else void startListening();
+    if (space.down(event.repeat)) void startListening();
+  }
+
+  function onKeyUp(event: KeyboardEvent) {
+    if (!isSpace(event) || !space.up()) return;
+    event.preventDefault();
+    void stopListening();
+  }
+
+  /**
+   * The window lost focus with Space held, so its keyup goes elsewhere: take it as
+   * the release, which is what it was going to be. (The macOS microphone prompt is
+   * one way here, mid-open; the release then cancels, as a release then always
+   * does.)
+   */
+  function onBlur() {
+    if (space.up()) void stopListening();
   }
 
   /**
@@ -618,14 +689,31 @@
 
   // The same on the way out of the window entirely. `$effect` does not re-run on
   // teardown, so this needs its own listener.
+  //
+  // And when the window is hidden — minimised, the app switched away from, the
+  // screen locked. No release is coming for a recording open then, and a phone
+  // gives an app in the background silence rather than audio, so the recording is
+  // cancelled rather than judged. A judgement already on its way is kept: it was
+  // let go of on purpose, for the drill that is still there on return.
   $effect(() => {
     const release = () => void talk.retarget();
+    const hidden = () => {
+      if (!document.hidden) return;
+      // A keyup that went to whatever took over would otherwise leave Space
+      // "held", and swallow the next press.
+      space.up();
+      void talk.abandon();
+    };
     window.addEventListener("pagehide", release);
-    return () => window.removeEventListener("pagehide", release);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      window.removeEventListener("pagehide", release);
+      document.removeEventListener("visibilitychange", hidden);
+    };
   });
 </script>
 
-<svelte:window on:keydown={onKey} />
+<svelte:window onkeydown={onKeyDown} onkeyup={onKeyUp} onblur={onBlur} />
 
 <div class="app">
   <header class="top">
@@ -635,7 +723,9 @@
     </div>
     <nav class="screens" aria-label="Which exercise">
       <button class:on={screen === "hear"} onclick={() => (screen = "hear")}>Hear</button>
-      <button class:on={screen === "say"} onclick={() => (screen = "say")}>Say</button>
+      <button class:on={screen === "say"} onclick={() => (screen = "say")} data-space-talks>
+        Say
+      </button>
     </nav>
   </header>
 
@@ -680,6 +770,7 @@
         <button
           class:on={kind === "character"}
           onclick={() => (kind = "character")}
+          data-space-talks
           title="One syllable, one tone at a time"
         >
           Characters
@@ -687,6 +778,7 @@
         <button
           class:on={kind === "word"}
           onclick={() => (kind = "word")}
+          data-space-talks
           title="Whole words, with the tones they are spoken with"
         >
           Words
@@ -724,6 +816,7 @@
                       drillFamilyTo(family);
                       screen = "say";
                     }}
+                    data-space-talks
                     title="Drill these words: hold the button and say each one"
                   >
                     Say
@@ -737,6 +830,7 @@
                       class="say"
                       onclick={() => void say(word.text)}
                       disabled={noVoice}
+                      aria-disabled={micOpen}
                       aria-label="Hear {word.reading}"
                       title={noVoice ? voiceNote : `Hear ${word.reading}`}
                     >
@@ -781,6 +875,7 @@
                 <button
                   onclick={() => hearSet(set)}
                   disabled={noVoice}
+                  aria-disabled={micOpen}
                   title={noVoice ? voiceNote : "Hear every tone of this syllable, in order"}
                 >
                   Hear
@@ -791,6 +886,7 @@
                   <button
                     onclick={() => ask(set)}
                     disabled={noVoice}
+                    aria-disabled={micOpen}
                     title={noVoice ? voiceNote : "Hear one at random and pick which reading it was"}
                   >
                     Quiz
@@ -802,6 +898,7 @@
                     drillSetTo(set);
                     screen = "say";
                   }}
+                  data-space-talks
                   title="Drill these tones: hold the button and say each one"
                 >
                   Say
@@ -835,11 +932,17 @@
                   {/each}
                 </div>
                 <div class="quiz-actions">
-                  <button onclick={() => void say(quizAnswer.ch)} disabled={noVoice}>
+                  <button
+                    onclick={() => void say(quizAnswer.ch)}
+                    disabled={noVoice}
+                    aria-disabled={micOpen}
+                  >
                     Hear it again
                   </button>
                   {#if quiz.picked !== null}
-                    <button onclick={() => ask(set)} disabled={noVoice}>Another</button>
+                    <button onclick={() => ask(set)} disabled={noVoice} aria-disabled={micOpen}>
+                      Another
+                    </button>
                   {/if}
                   <button onclick={() => (quiz = null)}>Done</button>
                 </div>
@@ -852,6 +955,7 @@
                       class="say"
                       onclick={() => void say(member.ch)}
                       disabled={noVoice}
+                      aria-disabled={micOpen}
                       aria-label="Hear {member.reading}"
                       title={noVoice ? voiceNote : `Hear ${member.reading}`}
                     >
@@ -917,6 +1021,8 @@
                     <button
                       class:on={drillWord.text === word.text}
                       onclick={() => chooseWord(drillFamily, word)}
+                      aria-disabled={micOpen}
+                      data-space-talks
                       title="Drill {word.reading}"
                     >
                       <span class="glyph" lang="zh-Hans">{word.text}</span>
@@ -944,6 +1050,8 @@
                     <button
                       class:on={drillMember.ch === member.ch}
                       onclick={() => choose(drillSet, member)}
+                      aria-disabled={micOpen}
+                      data-space-talks
                       title="Drill {member.reading}"
                     >
                       <span class="glyph" lang="zh-Hans">{member.ch}</span>
@@ -959,6 +1067,7 @@
               <button
                 class="mic"
                 class:listening
+                data-space-talks
                 disabled={scoring || (microphone !== null && !microphone.available)}
                 aria-busy={starting || scoring}
                 onpointerdown={(event) => {
@@ -966,7 +1075,10 @@
                   void startListening();
                 }}
                 onpointerup={() => void stopListening()}
-                onpointerleave={() => (listening || starting) && void stopListening()}
+                onpointerleave={(event) =>
+                  // Only a pointer that is pressed: a mouse merely passing over the
+                  // button must not end a recording the space bar is holding.
+                  event.buttons !== 0 && (listening || starting) && void stopListening()}
                 onpointercancel={() => (listening || starting) && void stopListening()}
                 title="Hold to record — or hold the space bar"
               >
@@ -1246,11 +1358,14 @@
     color: var(--muted-strong);
     cursor: pointer;
   }
-  button:hover:not(:disabled) {
+  button:hover:not(:disabled, [aria-disabled="true"]) {
     border-color: var(--accent);
     color: var(--accent-ink);
   }
-  button:disabled {
+  /* `aria-disabled` is "not now, while the microphone is open": it looks the
+     same as disabled, but keeps focus where it was (see `onKeyDown`). */
+  button:disabled,
+  button[aria-disabled="true"] {
     opacity: 0.45;
     cursor: default;
   }
@@ -1294,7 +1409,7 @@
     font-size: 0.95rem;
     line-height: 1;
   }
-  .say:hover:not(:disabled) {
+  .say:hover:not(:disabled, [aria-disabled="true"]) {
     background: var(--accent-soft);
     border-color: transparent;
   }
