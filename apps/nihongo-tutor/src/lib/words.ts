@@ -52,6 +52,23 @@ export function readingOf(word: Word): string {
 }
 
 /**
+ * Whether a word's or a kana's reading may be on screen.
+ *
+ * A screen that asks the learner to type a reading must not print that reading
+ * beside the box, as furigana, a reading line or a placeholder, or the exercise
+ * is copying. So the reading is hidden while the box is `asking`, and comes back
+ * once a check has been made (the verdict names the reading either way, right or
+ * wrong) or the learner has asked to see it. A screen with no box shows it.
+ */
+export function readingShown(state: {
+  asking: boolean;
+  checked: boolean;
+  revealed: boolean;
+}): boolean {
+  return !state.asking || state.checked || state.revealed;
+}
+
+/**
  * Fold katakana to hiragana, leaving everything else alone.
  *
  * The katakana block sits exactly `0x60` above the hiragana one, which is the

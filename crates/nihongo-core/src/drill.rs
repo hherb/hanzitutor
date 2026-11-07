@@ -263,7 +263,9 @@ impl DrillKind {
 pub struct DrillSide {
     /// What the learner sees and picks, e.g. `"きゃ"`.
     pub spelling: String,
-    /// The reading the question prompts with, e.g. `"kya"`.
+    /// The reading the question prompts with, e.g. `"kya"` — or `"ri (katakana)"`,
+    /// where the two sides of a classic pair read the same and only the script
+    /// tells them apart.
     pub prompt: String,
 }
 
@@ -310,13 +312,30 @@ impl DrillPair {
 
 /// The classic pairs as drill pairs: one kana against the one it is confused
 /// with, each prompted with its own reading.
+///
+/// A pair whose two kana read the same is told apart by its script instead, so
+/// that the question has one right answer: り and リ are both `ri`, and they are
+/// prompted `ri (hiragana)` and `ri (katakana)`. The script only separates a pair
+/// across the scripts; a pair of one script that read alike would still ask the
+/// same question twice, and `no_classic_pair_prompts_its_two_sides_the_same` is
+/// what keeps such a pair out of the list.
 pub fn confusion_pairs() -> Vec<DrillPair> {
     CONFUSABLE
         .iter()
-        .map(|pair| DrillPair {
-            kind: DrillKind::Confusion,
-            sides: [side_of(pair.a), side_of(pair.b)],
-            tell: pair.tell.to_string(),
+        .map(|pair| {
+            let mut sides = [side_of(pair.a), side_of(pair.b)];
+            if sides[0].prompt == sides[1].prompt {
+                for (side, ch) in sides.iter_mut().zip([pair.a, pair.b]) {
+                    if let Some(script) = Script::of(ch) {
+                        side.prompt = format!("{} ({})", side.prompt, script.name());
+                    }
+                }
+            }
+            DrillPair {
+                kind: DrillKind::Confusion,
+                sides,
+                tell: pair.tell.to_string(),
+            }
         })
         .collect()
 }
@@ -741,6 +760,36 @@ mod tests {
                 assert!(!pair.sides[1].prompt.is_empty());
             }
         }
+    }
+
+    /// A classic pair is answerable only if its two prompts differ. り and リ are
+    /// both `ri`, and a question that asked for "ri" offered two right answers and
+    /// marked one of them wrong half the time — each miss weighting the pair up, so
+    /// that it gradually took over the drill.
+    #[test]
+    fn no_classic_pair_prompts_its_two_sides_the_same() {
+        for pair in confusion_pairs() {
+            assert_ne!(
+                pair.sides[0].prompt,
+                pair.sides[1].prompt,
+                "{} has two right answers",
+                pair.key()
+            );
+        }
+        // The pair across the scripts says which script it is asking for.
+        let ri = confusion_pairs()
+            .into_iter()
+            .find(|pair| pair.holds("り") && pair.holds("リ"))
+            .expect("り/リ is a classic pair");
+        assert_eq!(ri.sides[0].prompt, "ri (hiragana)");
+        assert_eq!(ri.sides[1].prompt, "ri (katakana)");
+        // And a pair within one script is still prompted by its plain reading.
+        let shi = confusion_pairs()
+            .into_iter()
+            .find(|pair| pair.holds("シ"))
+            .expect("シ/ツ is a classic pair");
+        assert_eq!(shi.sides[0].prompt, "shi");
+        assert_eq!(shi.sides[1].prompt, "tsu");
     }
 
     #[test]

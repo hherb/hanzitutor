@@ -135,12 +135,22 @@
   // settings ask for. `boardFraction` is read inside the effect so that changing
   // it re-runs this and the board resizes at once, without waiting for the
   // window to be resized.
+  //
+  // A layout that sizes the frame from the fraction itself — the phone column,
+  // where the frame is the board's own row and a full-width square left the
+  // space a smaller board was meant to free (issue #33) — says so with
+  // `--board-presized: 1`, and the board then fills the frame rather than taking
+  // the fraction a second time. Read on every measurement, because crossing the
+  // phone breakpoint resizes the frame and fires the observer.
   $effect(() => {
     const element = frame;
     const fraction = boardFraction;
     if (!element) return;
-    const fit = (width: number, height: number) =>
-      Math.floor(Math.min(width, height) * fraction);
+    const fit = (width: number, height: number) => {
+      const presized =
+        getComputedStyle(element).getPropertyValue("--board-presized").trim() === "1";
+      return Math.floor(Math.min(width, height) * (presized ? 1 : fraction));
+    };
     const observer = new ResizeObserver((entries) => {
       const box = entries[0]?.contentRect;
       if (!box) return;
@@ -304,7 +314,7 @@
   });
 </script>
 
-<div class="board" bind:this={frame}>
+<div class="board" bind:this={frame} style:--board-fraction={boardFraction}>
   <canvas
     bind:this={canvas}
     class:disabled
