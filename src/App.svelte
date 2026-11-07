@@ -29,8 +29,9 @@
   import { INTRO_PAGES, notesFor } from "./lib/startupPages";
   import type { Page } from "./lib/startupPages";
   import { dueLabel } from "./lib/due";
-  import { shortcutFor } from "./lib/shortcuts";
+  import { routeKey, targetKind } from "./lib/shortcuts";
   import type { ShortcutId } from "./lib/shortcuts";
+  import { highlightedCourseCharacter } from "./lib/courseHighlight";
   import { INK_WIDTH, polylineLength } from "./lib/render";
   import type { Sweep } from "./lib/render";
   import type {
@@ -769,6 +770,20 @@
    * to a flag that could outlive it.
    */
   const answerVisible = $derived(mode === "trace" || revealed > 0 || report !== null);
+  /**
+   * The course character the sidebar's lesson grid marks and scrolls to. In
+   * recall that mark is the answer, so it waits for `answerVisible` like the
+   * header does — see `lib/courseHighlight.ts` for the cases.
+   */
+  const sidebarCharacter = $derived(
+    highlightedCourseCharacter({
+      source,
+      mode,
+      courseCharacter: courseChar,
+      boardCharacter: character?.ch ?? null,
+      answerVisible,
+    }),
+  );
 
   /**
    * True while the board is the screen showing.
@@ -1159,40 +1174,36 @@
     };
 
     const onKey = (event: KeyboardEvent) => {
-      // The vocabulary screen has text fields; never steal their keystrokes.
-      const target = event.target as HTMLElement | null;
-      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
-
-      // The startup reading covers the board, so the board's own keys must not
-      // reach past it: Enter would grade an empty board behind the sheet and S
-      // would start an animation nobody can see. Escape dismisses it — the same
-      // act as Back on Android, and the same act as Skip. **A card that leaves
-      // the board visible is not this case**, which is why the key list is a card
-      // and not a sheet (see `ShortcutCard.svelte`).
-      if (startupSheet) {
-        if (event.key === "Escape") {
-          event.preventDefault();
+      // Whether a key is the board's at all — text fields, a focused button, the
+      // startup reading, the phone's sheet, a screen that is not the board — is
+      // decided in `lib/shortcuts.ts`, where the reasons and the tests are. The
+      // browser is told no only when something here acts on the key.
+      const route = routeKey(event, {
+        target: targetKind(event.target instanceof Element ? event.target : null),
+        startupSheet: startupSheet !== null,
+        navOpen,
+        shortcutsOpen,
+        practising,
+      });
+      if (route.action === null) return;
+      if (route.preventDefault) event.preventDefault();
+      switch (route.action) {
+        case "finish-startup":
+          // The same act as Back on Android, and the same act as Skip.
           finishStartup();
-        }
-        return;
+          break;
+        case "close-nav":
+          navOpen = false;
+          break;
+        case "close-shortcuts":
+          shortcutsOpen = false;
+          break;
+        case "help":
+          shortcutsOpen = !shortcutsOpen;
+          break;
+        default:
+          runShortcut(route.action);
       }
-
-      if (shortcutsOpen && event.key === "Escape") {
-        event.preventDefault();
-        shortcutsOpen = false;
-        return;
-      }
-
-      const shortcut = shortcutFor(event);
-      if (shortcut === null) return;
-      // A key the app acts on is claimed outright: the browser must not also
-      // scroll a list behind the board or re-submit what Enter was pressed in.
-      event.preventDefault();
-      if (shortcut.id === "help") {
-        shortcutsOpen = !shortcutsOpen;
-        return;
-      }
-      runShortcut(shortcut.id);
     };
     window.addEventListener("keydown", onKey);
     return () => {
@@ -2648,14 +2659,30 @@
     index = Math.min(total - 1, Math.max(0, index + delta));
   }
 
+  /**
+   * Put a lesson or a character of the course on the board — the sidebar's
+   * lesson list and grid.
+   *
+   * During a review the board follows the queue, not the course, so moving only
+   * `index` changed nothing anyone could see: the sheet closed, the review item
+   * stayed, and the hidden course position moved and was saved (issue #31). A
+   * pick in the course is a request for the course, so a queue is left first —
+   * as `showCharacterInCourse` does and as the Course button does on the way in
+   * from another screen. Nothing is lost by it: an entry is only recorded once it
+   * is finished, and what was not finished is still due.
+   */
   function goToLesson(lessonIndex: number) {
     const start = lessonStarts[lessonIndex];
-    if (start !== undefined) index = start;
+    if (start === undefined) return;
+    if (source !== "course") leavePractice();
+    index = start;
   }
 
   function goToCharacter(ch: string) {
     const found = allCharacters.indexOf(ch);
-    if (found >= 0) index = found;
+    if (found < 0) return;
+    if (source !== "course") leavePractice();
+    index = found;
   }
 
   /** Stop drilling and go back to what was being drilled. */
@@ -2747,7 +2774,7 @@
       onSwitchView={navigating(switchView)}
       {lessons}
       {activeLesson}
-      activeCharacter={courseChar}
+      activeCharacter={sidebarCharacter}
       {summary}
       onSelectLesson={navigating(goToLesson)}
       onSelectCharacter={navigating(goToCharacter)}

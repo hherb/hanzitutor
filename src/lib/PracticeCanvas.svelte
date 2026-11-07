@@ -203,6 +203,14 @@
   function handleDown(event: PointerEvent) {
     if (disabled || event.button !== 0) return;
     event.preventDefault();
+    // Writing is leaving whatever control was last clicked. Enter on a focused
+    // button presses that button rather than Check (issue #31), and a control
+    // clicked before writing can keep the focus — the default is cancelled just
+    // above, and engines differ on whether that also keeps focus where it was —
+    // so Enter after writing would press, say, the Trace/Recall toggle and clear
+    // the board. Dropping the focus here keeps Enter meaning Check.
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && focused !== document.body) focused.blur();
 
     if (clickToDraw) {
       // The second click ends the stroke where it lands. Nothing is captured:

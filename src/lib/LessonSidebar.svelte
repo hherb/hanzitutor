@@ -48,6 +48,11 @@
     ) => void;
     lessons: Lesson[];
     activeLesson: number;
+    /**
+     * The course character to mark and scroll to. `null` marks none, which is
+     * what recall passes until the answer is shown: the mark would be the answer
+     * (see `courseHighlight.ts`).
+     */
     activeCharacter: string | null;
     summary: string;
     onSelectLesson: (index: number) => void;
