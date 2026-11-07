@@ -589,9 +589,13 @@ the order you drew them, and the **normalised inversion count** (Kendall tau
 distance) gives the order score: 1.0 for a perfect sequence, 0.0 for a character
 written completely backwards.
 
-Individually flagged strokes are exactly those that participate in an inversion —
-both halves of a swap, not an arbitrary one. Defining it that way makes the
-per-stroke flags and the aggregate score provably consistent.
+Individually flagged strokes are those some longest increasing subsequence of
+that sequence leaves out: the fewest strokes that have to move. Drawing 王's last
+stroke first flags that one stroke, not all four, even though it is inverted
+against each of the others; when nothing says which stroke moved, as in a swap of
+two, both halves are flagged rather than an arbitrary one. The flags and the score
+agree on whether anything is out of order, and the score — counting every
+inverted pair — is what says how far.
 
 An earlier version used "longest increasing subsequence ÷ stroke count". It was
 wrong in a way worth recording: a three-stroke character written *backwards* still
@@ -633,20 +637,34 @@ halves are cheap: a grade costs under 1 ms including the rasterisation.
 ### Aggregation
 
 All four headline scores — shape, placement, ink and order — are measured across
-the **whole** reference character, with unwritten strokes counting as zero. An
-incomplete attempt is penalised consistently in all four, and a blank canvas
-scores 0 rather than collecting easy marks for a flawless ordering of nothing.
+the **whole** reference character and every stroke written, with unwritten strokes
+and extra ones alike counting as zero. An incomplete attempt is penalised
+consistently in all four, so is one with strokes the character does not have, and
+a blank canvas scores 0 rather than collecting easy marks for a flawless ordering
+of nothing.
 
 The overall score gives each measure an equal quarter:
 `100 × (0.25 × shape + 0.25 × placement + 0.25 × ink + 0.25 × order)`. The weights
 are exact binary fractions, so a flawless attempt sums to exactly 1.0 and scores
 exactly 100 rather than 99.999… — a property the interface's contract test pins.
 
+An attempt with a missing stroke, or an extra one at least 40 design units long, is
+then held at **74**, the top of the fair band, so the review schedule records it as
+hard. Many characters differ from another by one stroke — 大 and 太, 王 and 玉, 日
+and 目 — and writing the other one reproduces every stroke of the one asked for, so
+太 written for 大 used to score 97.6. A stroke's share of the four measures is too small to catch that once a
+character has a few strokes, and the stroke count already keeps such an attempt
+from being `legible`; the ceiling makes the score say the same. It is a ceiling, not
+a verdict: twelve scribbles over a correct 王 score 25. Taps too short to be a
+stroke are discarded before anything is counted, and a slip that survives that
+filter but is shorter than 40 units — 4 of the 87,609 real strokes are — costs its
+share of the measures without also capping the score.
+
 `legible` and `order_correct` are reported independently, because they are
 independent facts: a character written beautifully in the wrong order is still
 legible, and is reported as legible with the ordering faults called out.
-`legible` requires the shape, placement and ink means to clear their bars; order
-is deliberately not part of it.
+`legible` requires the stroke count to be right and the shape, placement and ink
+means to clear their bars; order is deliberately not part of it.
 
 ### Tolerances were measured, not guessed
 
