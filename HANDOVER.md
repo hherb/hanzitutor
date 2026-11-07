@@ -343,6 +343,9 @@ crates/hanzi-say/           speech synthesis, wrapping sherpa-onnx's OfflineTts.
                             difference a recogniser prefers
   src/judge.rs              the judgement half of `verify-audio`, kept apart from
                             the recogniser so it is testable without a model
+  src/resume.rs             what makes re-running synthesize-audio safe: a key per
+                            phrase in the manifest (text, model, voice), clips
+                            encoded to .tmp and renamed, and a merged manifest
   src/bin/synthesize_audio.rs   corpus -> MP3 clips + manifest.json. Resumable;
                             the only place that needs ffmpeg. See §3a
   src/bin/verify_audio.rs   does a clip say what its text says? It drives a
@@ -507,16 +510,27 @@ the same is true of a crash, a laptop sleeping, or a sandbox being torn down.
 
 The shape to use:
 
-* write each item's output as soon as it exists, under the final name;
-* record it in a **progress file** written after each item, so a re-run can skip
-  what is already done and verified;
-* make skipping safe by checking the artifact, not just the bookkeeping — a
-  truncated file must not be mistaken for a finished one;
+* write each item's output as soon as it exists — to a temporary name, renamed
+  to the final one only once it is complete, so a file under the final name is
+  never a truncated one (a size check cannot tell: a half-written MP3 is well
+  over any plausible minimum);
+* record it in a **progress file** written after each item, itself renamed into
+  place, so a re-run can skip what is already done;
+* make skipping safe by recording *what each item was made from*, not just that
+  it exists — an item whose inputs have changed since is redone, not kept;
+* when a run covers a subset, merge into the progress file rather than replace
+  it, so the items outside the subset are not forgotten;
 * summarise only at the end, and say what was skipped.
 
-`crates/hanzi-say/src/bin/synthesize_audio.rs` (which checks the clip's size, not
-just its name) and `scripts/cosyvoice-say.py` (`progress.json`, renamed into place
-after each item) both do this now. The shape is the rule, not either file.
+`crates/hanzi-say/src/bin/synthesize_audio.rs` does all of it: clips are encoded
+to `<clip>.mp3.tmp` and renamed, the manifest is its progress file (merged, and
+rewritten atomically after every phrase), and each entry carries a key — a digest
+of the text, engine, model, voice and encoder settings — that must match for a
+clip to be reused (`crates/hanzi-say/src/resume.rs`). It also refuses to
+overwrite clips it did not make, such as `no7z`'s own recordings, without
+`--replace-foreign-clips`. `scripts/cosyvoice-say.py` (`progress.json`, renamed
+into place after each item) follows the same shape. The shape is the rule, not
+either file.
 
 ## 4. Invariants — do not break these
 

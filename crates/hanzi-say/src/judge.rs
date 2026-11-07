@@ -334,6 +334,53 @@ mod tests {
     }
 
     #[test]
+    fn ue_characters_are_judged_rather_than_skipped() {
+        // 学 月 觉 雪 used to have no reading at all — `xue2` did not parse — so
+        // the syllable check skipped them and a short phrase fell under the CER
+        // backstop. Both spellings the readings file might carry are covered.
+        let r = readings_from_lines(
+            [
+                "我\twǒ",
+                "学\txué",
+                "雪\txue3",
+                "觉\tjué, jiào",
+                "鞋\txié",
+                "中\tzhōng",
+                "文\twén",
+                "月\tyuè",
+                "叶\tyè",
+                "绿\tlu:4",
+                "路\tlù",
+            ]
+            .map(str::to_string),
+        );
+        for ch in ['学', '雪', '觉', '月', '绿'] {
+            assert!(!r.of(ch).is_empty(), "{ch} should have a reading");
+        }
+
+        // The same character, and a same-syllable respelling, agree.
+        assert_eq!(judge("我学中文", "我学中文", &r), Verdict::Agrees);
+        assert_eq!(judge("我学中文", "我雪中文", &r), Verdict::Agrees);
+
+        // A different syllable is caught, at a CER (0.25) the backstop would pass.
+        for (wanted, heard, w, h) in [
+            ("我学中文", "我鞋中文", '学', '鞋'),
+            ("我学中文", "我觉中文", '学', '觉'),
+            ("我月中文", "我叶中文", '月', '叶'),
+            ("我绿中文", "我路中文", '绿', '路'),
+        ] {
+            assert!(character_error_rate(wanted, heard) < MAX_CER);
+            match judge(wanted, heard, &r) {
+                Verdict::DifferentSyllables(p) => {
+                    assert_eq!((p[0].wanted, p[0].heard), (w, h), "{heard}");
+                }
+                other => panic!("{heard}: expected different syllables, got {other:?}"),
+            }
+        }
+        assert!(unknown_characters("我学中文", &r).is_empty());
+    }
+
+    #[test]
     fn readings_parse_from_plain_lines() {
         let r = readings_from_lines([
             "# a comment".to_string(),

@@ -1155,6 +1155,17 @@ export interface GradedPhrase {
   audio: PhraseAudio;
   /** Total bytes of both clips, for the size line on the licences screen. */
   bytes: number;
+  /**
+   * The model that spoke this phrase's clips. Per phrase because a manifest is
+   * merged across runs, so its phrases need not all come from one model. Absent
+   * in manifests written before it existed. Provenance only; not read by the UI.
+   */
+  model?: string;
+  /**
+   * The build tool's record of what the clips were synthesised from, used to
+   * decide whether a re-run may reuse them. Build-time bookkeeping only.
+   */
+  key?: string;
 }
 
 /**
@@ -1166,7 +1177,11 @@ export interface GradedPhrase {
  */
 export interface AudioManifest {
   source: string;
-  /** Model directory that produced the clips, for provenance. */
+  /**
+   * The model the most recent build run used, for provenance. The manifest is
+   * merged across runs, so a phrase from an earlier run may have been spoken by
+   * another — each phrase's own `model`, where present, is the one that holds.
+   */
   model: string;
   /** Speeds written, normal first (e.g. `[1.0, 0.7]`). */
   speeds: number[];
