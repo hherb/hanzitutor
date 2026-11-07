@@ -667,6 +667,42 @@ either file.
     obvious next step and should not require touching the store, the commands or
     the interface. The tests exercise a second implementation to keep that honest.
 
+    **Not every graded attempt is a review** (issue #15). `Sm2::review` ignores a
+    passing attempt made before the card is due — it stays in the history and
+    moves nothing — while a failure resets the card whenever it happens. Ease is
+    charged, and a lapse counted, only for the failure of a card that had been
+    learned: one review in, only if it was due (if early failures were charged
+    while early passes earn nothing, a sitting of drilling could only lower ease);
+    two or more reviews in — which no single sitting can reach — early or not.
+    A **trace** is not a recall at all: `check()` sends the board's mode,
+    `record_practice_at` keeps a trace out of the card, and `hanzi-store` writes
+    it to `trace_attempt` (schema 7) rather than to `attempt`, so it is never
+    published or folded. It is still the learner's handwriting, so the practice
+    log export carries it (a `mode` field, and a last CSV column so positional
+    readers do not shift; no device or sequence number),
+    the backup carries it (an optional `traces` array, no `BACKUP_VERSION` bump),
+    and `ProgressView.traced` counts it per character so a traced-only character
+    reads "traced N× · not yet written from memory" rather than untouched. Every
+    rule is a function of the card and the attempt, so a device folding the merged
+    log agrees with the one that recorded it, and the shard format is unchanged.
+
+    **Upgrading.** Cards built by an older build are rebuilt once: the upgrade to
+    schema 7 leaves a `refold:schema7` marker in `meta` (same transaction), as
+    does the import of a pre-database `progress.json` that holds any card, and
+    `AppState::assemble` folds the log through `hanzi_sync::recompute` from this
+    device's own baseline and removes it — so a device that never syncs is
+    corrected like one that does. **Until every device is upgraded, the older
+    builds still fold with the old rule and still publish traces as recall
+    reviews**: their attempts look like any other review in the shards, so a new
+    build folds them as reviews too (minus the early ones, which the new rule
+    drops). The schedules converge once the last device is on this build and has
+    stopped recording traces as reviews; the traces it already published stay
+    reviews in the log.
+    Due dates are still exact instants, not local days: a one-day card practised
+    at 21:00 is not due at 08:00 the next morning. Rounding to the learner's day
+    would need their time zone in the fold — the same on every device — and is
+    left for a deliberate change.
+
 15. **Placement is measured along the stroke, never from the sample mean.**
     Pointer samples arrive by *time*, not distance, so a stroke drawn slowly at
     one end and flicked at the other reaches the grader with its samples bunched:

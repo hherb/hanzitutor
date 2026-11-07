@@ -304,6 +304,12 @@ export interface DrillTally {
   wrong: number;
   /** The pair's share of the drill — see `nihongo_core::drill` for the rule. */
   weight: number;
+  /**
+   * Set when the answer was counted but could not be written to the learner's own
+   * file, or when that file had to be kept aside or cannot be written this session.
+   * The tally is real either way; the screen shows this beside it.
+   */
+  warning: string | null;
 }
 
 /**
@@ -389,6 +395,12 @@ export interface GrammarTally {
   wrong: number;
   /** The pattern's share of the drill — the same rule the kana drill uses. */
   weight: number;
+  /**
+   * What `DrillTally.warning` is, for `grammar.json`. On a written answer it rides on
+   * the record, because the record is the part that may not have been saved — the
+   * verdict always arrives.
+   */
+  warning: string | null;
 }
 
 /**
@@ -589,6 +601,18 @@ export interface ModelStatus {
   keySet: boolean;
   /** Whether there is enough here to ask a model anything. */
   configured: boolean;
+  /**
+   * Set when the settings file could not be read and was kept aside, cannot be
+   * written this session, or did not take the settings just saved. Never the key.
+   */
+  warning: string | null;
+  /**
+   * Set by a save that left the stored key behind: the endpoint moved to a different
+   * scheme, host or port and no key was typed with it, so the key was not carried to
+   * the new address. The sentence asks for the key for the new endpoint. Only a save
+   * sets it — `modelStatus` never does — and it never holds the key.
+   */
+  keyNotice: string | null;
 }
 
 /**

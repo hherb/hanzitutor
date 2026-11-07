@@ -9,6 +9,7 @@ import {
   hostOf,
   reviewHeadline,
   settingsNote,
+  settingsStayOpen,
 } from "./model";
 import type { ModelReview, ModelStatus, ModelVerdict } from "./types";
 
@@ -17,6 +18,8 @@ const status = (over: Partial<ModelStatus> = {}): ModelStatus => ({
   model: "gpt-4o-mini",
   keySet: true,
   configured: true,
+  warning: null,
+  keyNotice: null,
   ...over,
 });
 
@@ -42,6 +45,18 @@ describe("hostOf", () => {
     expect(hostOf("http://127.0.0.1:11434/v1")).toBe("127.0.0.1:11434");
     expect(hostOf("http://127.0.0.1:1234/v1/")).toBe("127.0.0.1:1234");
     expect(hostOf("")).toBe("");
+  });
+
+  it("names the host the request goes to, never a name or password before an @", () => {
+    expect(hostOf("https://api.openai.com@evil.example/v1")).toBe("evil.example");
+    expect(hostOf("https://user:hunter2@host.example/v1")).toBe("host.example");
+    expect(hostOf("https://API.OpenAI.com:443/v1")).toBe("api.openai.com");
+    expect(hostOf("http://[::1]:8080/v1")).toBe("[::1]:8080");
+  });
+
+  it("falls back to the text when it is not an address at all", () => {
+    expect(hostOf("not an address at all")).toBe("not an address at all");
+    expect(hostOf("127.0.0.1:1234/v1")).toBe("127.0.0.1:1234");
   });
 });
 
@@ -115,5 +130,27 @@ describe("failureLine", () => {
       "Incorrect API key provided",
     );
     expect(failureLine("   ")).toBe("The model check did not finish.");
+  });
+});
+
+describe("settingsStayOpen", () => {
+  it("closes the settings once a save has left something to send", () => {
+    expect(settingsStayOpen(status())).toBe(false);
+  });
+
+  it("keeps them open while nothing is configured", () => {
+    expect(settingsStayOpen(status({ configured: false }))).toBe(true);
+  });
+
+  it("keeps them open when a save left the key behind, so the learner can type the new one", () => {
+    // Rust drops a stored key when the endpoint moves to another host, and says so;
+    // the field that asks for the key is the one place that sentence is any use.
+    const moved = status({
+      endpoint: "http://192.168.1.20:11434/v1",
+      keySet: false,
+      keyNotice:
+        "the saved key was for api.openai.com and has not been kept for 192.168.1.20:11434: enter the key for the new endpoint, if it needs one",
+    });
+    expect(settingsStayOpen(moved)).toBe(true);
   });
 });

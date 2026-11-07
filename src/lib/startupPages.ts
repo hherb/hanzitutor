@@ -156,9 +156,10 @@ export const INTRO_PAGES: Page[] = [
       },
     ],
     note:
-      "What you practise is scheduled for you, so it comes back when it is " +
-      "worth seeing again: Review due at the top of the sidebar holds the " +
-      "characters that are ready.",
+      "What you write from memory is scheduled for you, so it comes back " +
+      "when it is worth seeing again: Review due at the top of the sidebar " +
+      "holds the characters that are ready. Tracing is practice, and writing " +
+      "a character again before it is due does not move it further out.",
   },
 ];
 
