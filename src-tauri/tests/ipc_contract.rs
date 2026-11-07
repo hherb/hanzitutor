@@ -3489,7 +3489,7 @@ fn a_refused_restore_changes_nothing_at_all() {
         assert!(progress.save().is_none());
     }
     let file = source_dir.join("backup.json");
-    source.export_backup(&file).unwrap();
+    source.export_backup(&LocalFile(file.clone())).unwrap();
     // Every entry made unusable: text with a control character in it.
     let mut backup: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
@@ -3515,7 +3515,7 @@ fn a_refused_restore_changes_nothing_at_all() {
     }
 
     let error = target
-        .import_backup(&file, false)
+        .import_backup(&LocalFile(file.clone()), false)
         .expect_err("a replace with nothing usable is refused");
     assert!(error.contains("none of the 2 entries"), "{error}");
     assert!(
