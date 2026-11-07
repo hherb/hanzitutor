@@ -118,6 +118,107 @@ fn a_devices_own_damaged_shard_is_written_again_and_its_peers_recover() {
     finish(&[&dir_a, &dir_b, &shared]);
 }
 
+#[test]
+fn a_restored_copy_with_fewer_attempts_does_not_overwrite_the_damaged_file() {
+    // The damaged file is the only copy of what it held. A database that holds
+    // fewer of this name's attempts — restored from a backup taken before the end
+    // of its log, here made by losing the last attempt — would destroy the rest by
+    // writing what it has. It leaves the file, and says so; the database that
+    // wrote the file mends it.
+    let (dir_a, a) = device("restored-a");
+    let shared = scratch("restored-store");
+    let remote = FolderStore::open(&shared).unwrap();
+    practise(&a, '好', "2026-09-20T09:00:00Z");
+    sync(&a, &remote).unwrap();
+    practise(&a, '你', "2026-09-21T09:00:00Z");
+    practise(&a, '学', "2026-09-22T09:00:00Z");
+    sync(&a, &remote).unwrap();
+    let later = own_shards(&remote, &a).last().unwrap().clone();
+
+    // The copy, which has lost the last attempt of the later shard.
+    let dir_copy = scratch("restored-copy");
+    rusqlite::Connection::open(a.path())
+        .unwrap()
+        .execute(
+            "VACUUM INTO ?1",
+            [dir_copy.join(Db::FILE_NAME).to_string_lossy().to_string()],
+        )
+        .unwrap();
+    rusqlite::Connection::open(dir_copy.join(Db::FILE_NAME))
+        .unwrap()
+        .execute("DELETE FROM attempt WHERE ch = '学'", [])
+        .unwrap();
+    remote.put(&later, b"{truncated").unwrap();
+
+    let copy = Db::open(&dir_copy).unwrap();
+    assert_eq!(copy.device_id(), a.device_id(), "the copy carries the name");
+    let on_copy = sync(&copy, &remote).unwrap();
+    assert!(on_copy.repaired.is_empty(), "{on_copy:?}");
+    assert!(
+        on_copy.skipped.iter().any(|s| s.name == later && s.own),
+        "{on_copy:?}"
+    );
+    assert!(
+        on_copy.notice().unwrap().contains("cannot write it again"),
+        "{:?}",
+        on_copy.notice()
+    );
+    assert_eq!(
+        remote.get(&later).unwrap(),
+        b"{truncated",
+        "the file is left as it was, not replaced with the part the copy knows"
+    );
+
+    // The database that wrote it does mend it, whole.
+    let on_a = sync(&a, &remote).unwrap();
+    assert_eq!(on_a.repaired.len(), 1, "{on_a:?}");
+    assert_eq!(read_attempts(&remote).unwrap().len(), 3);
+    finish(&[&dir_a, &dir_copy, &shared]);
+}
+
+#[test]
+fn a_shard_line_in_a_newer_format_is_never_written_over_and_is_reported_as_newer() {
+    // Sound JSON this build cannot decode — here a rating it has never heard of —
+    // was written by a newer build, not broken in transit. Rewriting it would drop
+    // what the newer build said, so not even the device that owns the name does.
+    let (dir_a, a) = device("newer-line-a");
+    let (dir_b, b) = device("newer-line-b");
+    let shared = scratch("newer-line-store");
+    let remote = FolderStore::open(&shared).unwrap();
+    practise(&a, '好', "2026-09-20T09:00:00Z");
+    sync(&a, &remote).unwrap();
+    let shard = own_shards(&remote, &a).remove(0);
+    let text = String::from_utf8(remote.get(&shard).unwrap()).unwrap();
+    let mut line: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+    line["rating"] = serde_json::json!("sublime");
+    let newer = format!("{line}\n");
+    remote.put(&shard, newer.as_bytes()).unwrap();
+
+    let on_a = sync(&a, &remote).unwrap();
+    assert!(on_a.repaired.is_empty(), "{on_a:?}");
+    let skip = on_a
+        .skipped
+        .iter()
+        .find(|s| s.name == shard)
+        .expect("reported");
+    assert!(skip.own && skip.newer_format, "{skip:?}");
+    assert_eq!(
+        remote.get(&shard).unwrap(),
+        newer.as_bytes(),
+        "never written over"
+    );
+
+    let on_b = sync(&b, &remote).unwrap();
+    assert!(
+        on_b.notice()
+            .unwrap()
+            .contains("Another device uses a newer version"),
+        "{:?}",
+        on_b.notice()
+    );
+    finish(&[&dir_a, &dir_b, &shared]);
+}
+
 // ---- the clock ticks past this device's own last stamp -------------------------
 
 #[test]

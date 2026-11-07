@@ -135,7 +135,10 @@ pub fn read_attempts(store: &dyn RemoteStore) -> Result<Vec<MergedAttempt>, Sync
             continue;
         };
         let bytes = store.get(&entry.name)?;
-        out.extend(parse_shard(&entry.name, device_id, &bytes).map_err(SyncError::Malformed)?);
+        out.extend(
+            parse_shard(&entry.name, device_id, &bytes)
+                .map_err(|fault| SyncError::Malformed(fault.reason))?,
+        );
     }
     out.sort_by(canonical);
     Ok(out)
@@ -149,15 +152,27 @@ pub(crate) fn parse_shard(
     name: &str,
     device_id: &str,
     bytes: &[u8],
-) -> Result<Vec<MergedAttempt>, String> {
-    let text = std::str::from_utf8(bytes).map_err(|e| format!("{name}: not UTF-8: {e}"))?;
+) -> Result<Vec<MergedAttempt>, ShardFault> {
+    let damaged = |reason: String| ShardFault {
+        newer_format: false,
+        reason,
+    };
+    let text =
+        std::str::from_utf8(bytes).map_err(|e| damaged(format!("{name}: not UTF-8: {e}")))?;
     let mut out = Vec::new();
     for (number, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        let record: ShardLine =
-            serde_json::from_str(line).map_err(|e| format!("{name} line {}: {e}", number + 1))?;
+        let record: ShardLine = serde_json::from_str(line).map_err(|e| ShardFault {
+            // A line that is sound JSON but not an attempt this build can read — a
+            // rating it has never heard of, a field changed shape — was written by
+            // a newer build, not broken by a transport. The difference decides
+            // whether this device may write the file again (it must not: it would
+            // drop what the newer build said) and what the learner is told.
+            newer_format: serde_json::from_str::<serde_json::Value>(line).is_ok(),
+            reason: format!("{name} line {}: {e}", number + 1),
+        })?;
         out.push(MergedAttempt {
             device_id: device_id.to_string(),
             seq: record.seq,
@@ -168,6 +183,13 @@ pub(crate) fn parse_shard(
         });
     }
     Ok(out)
+}
+
+/// Why an attempt shard could not be read.
+pub(crate) struct ShardFault {
+    /// Sound JSON this build cannot decode, rather than a damaged file.
+    pub(crate) newer_format: bool,
+    pub(crate) reason: String,
 }
 
 /// Write one device's attempts as shards, chunked, and return the names written.

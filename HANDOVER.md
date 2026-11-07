@@ -1112,12 +1112,27 @@ after each item) both do this now. The shape is the rule, not either file.
       strict readers. A device with one bad attempt shard is left out whole, and a
       peer's unreadable baseline means no schedule is rebuilt that sync. The
       public `read_*` functions stay strict on purpose.
+      - **Another device is left out whole; this device's own readable shards
+        stay in view.** Only its damaged ones are hidden: its own attempts are all
+        in its local log, so hiding them protects no fold, and they are exactly
+        what #12's identity check (`settle_identity`) has to see to recognise a
+        restored copy of this database.
       - **This device's own damaged file is mended**, because nobody else can:
         its documents are rewritten every sync anyway, and its damaged attempt
         shards are rewritten from its log at the start of the sync
         (`repair_own_shards`) — otherwise a name that is never reused would stay
         damaged and every peer would leave this device out for good. Reported in
-        `Summary::repaired`.
+        `Summary::repaired`. **Only when this log can be the file's writer**: its
+        published watermark must reach the file's name, and its log must hold
+        every sequence number the file could hold (from its name to the next
+        shard's, or to the watermark), the body is never empty,
+        and a file read as a *newer format* (sound JSON this build cannot decode)
+        is never rewritten. Anything else stays reported in `skipped`. After #12
+        lands the repair runs after `settle_identity`, and only when it did not
+        rename. One residual then: a renamed copy's attempts that it shared with
+        the original and that sat only in the damaged shard are republished
+        under the new name, so a peer holds them twice — once from the original's
+        file when that is mended, once under the copy's name.
       - **A file in another device's directory that was left out is never
         overwritten**; such a write is refused, recorded in `Summary::withheld`,
         and not counted as published.
@@ -1132,7 +1147,9 @@ after each item) both do this now. The shape is the rule, not either file.
       more than a day ahead of this device's clock is not taken into the floor —
       one dead clock battery would otherwise pin every device's stamps to its
       future — and instead an edit of a particular record is stamped past that
-      record's own stamp (`past_sql!`, `clock::next_stamp_past`). Never stamp a
+      record's own stamp (`past_sql!`, `clock::next_stamp_past`). The same limit
+      applies to this device's own floor: one left more than a day ahead (by a
+      clock that was wrong and has been put right) is dropped. Never stamp a
       synced record with `now_iso8601()` directly. The format is unchanged
       (whole-second ISO-8601, compared as text), so older builds read it as before.
     - **A course-cursor save that did not move writes nothing.** The app saves on

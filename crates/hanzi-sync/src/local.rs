@@ -452,51 +452,70 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
 /// none of this device's attempts, old or new, would reach anyone. Nobody else can
 /// mend it: only this device holds its whole log.
 ///
+/// ## When it may not
+///
+/// Only when this log can be the file's writer. The damaged file is the one copy
+/// of what it held, and a database restored from an older backup, or copied from
+/// another device, holds fewer of this name's attempts than the file did: writing
+/// what it has would destroy the rest, and hand peers attempts under numbers the
+/// original also used. So a damaged file is mended only if this database has
+/// published that far (its watermark is at or past the number the file is named
+/// after) and its log holds **every** sequence number the file could have held —
+/// from that number up to the next shard's, or up to the watermark when it is the
+/// last shard — and never with an empty body. The watermark, rather than this
+/// log's last attempt, bounds the last shard because a copy that has lost the end
+/// of its log still has a last attempt, just an earlier one. A file this build
+/// reads as a *newer format* is never written either: it is not damaged, and
+/// rewriting it would drop what the newer build said. Anything left alone stays
+/// reported in [`Summary::skipped`].
+///
 /// ## What is written
 ///
-/// Every attempt of this device's that no readable shard holds, into the damaged
-/// file names — each attempt into the damaged shard named nearest below its
-/// sequence number, or the first one when none is. That is a superset of what the
-/// damaged files held, because this device's log is append-only and keeps every
-/// attempt it ever published: an attempt that lands in two files is the same
-/// attempt in both, which every reader merges as one, and an attempt that lands in
-/// none would be the only real loss, which this cannot produce. Unpublished
-/// attempts are included too; the publish that follows writes them again under
-/// their own name, which is harmless for the same reason.
+/// The attempts of that range, and — because a shard is named after the earliest
+/// attempt it holds, which is not always the lowest number — any of this log's
+/// attempts below it, back to the previous shard's name, that no readable shard
+/// holds. Writing an attempt into two files is harmless: it is the same attempt in
+/// both, and every reader merges them as one.
 ///
-/// A database that is a *copy* of another device's (restored from a backup, say)
-/// does not hold the other copy's attempts, and would mend the file with what it
-/// has. Telling a copy apart is #12's `settle_identity`, which must run first.
+/// Telling a copy of this database apart from the original is #12's
+/// `settle_identity`; after that lands, this must run after it and only when it did
+/// not rename.
 fn repair_own_shards(db: &Db, screened: &Screened) -> Result<(), SyncError> {
     let damaged = screened.own_damaged_attempts();
     if damaged.is_empty() {
         return Ok(());
     }
-    let mut missing: Vec<MergedAttempt> = own_log(db)?
-        .into_iter()
-        .filter(|attempt| !screened.holds_own(attempt.seq))
-        .collect();
-    sort_canonical(&mut missing);
-    let mut bodies: BTreeMap<&str, Vec<&MergedAttempt>> = damaged
-        .iter()
-        .map(|(name, _)| (name.as_str(), Vec::new()))
-        .collect();
-    let lowest = damaged
-        .iter()
-        .min_by_key(|(_, first)| *first)
-        .map(|(name, _)| name.as_str())
-        .expect("there is a damaged shard");
-    for attempt in &missing {
-        let home = damaged
+    let mut log = own_log(db)?;
+    sort_canonical(&mut log);
+    let held: BTreeSet<i64> = log.iter().map(|attempt| attempt.seq).collect();
+    // Read from `meta` directly rather than through `watermark`, which #12 removes
+    // while keeping the value written.
+    let published: i64 = db
+        .meta_value(PUBLISHED_THROUGH)
+        .map_err(SyncError::Io)?
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(0);
+    for (name, first) in damaged {
+        let end = screened.next_own_start(first).unwrap_or(published + 1);
+        if first > published || end <= first || !(first..end).all(|seq| held.contains(&seq)) {
+            // This log cannot be the file's writer — see above. Left as it is.
+            continue;
+        }
+        let from = screened
+            .previous_own_start(first)
+            .map_or(first, |previous| previous + 1);
+        let attempts: Vec<&MergedAttempt> = log
             .iter()
-            .filter(|(_, first)| *first <= attempt.seq)
-            .max_by_key(|(_, first)| *first)
-            .map_or(lowest, |(name, _)| name.as_str());
-        bodies.entry(home).or_default().push(attempt);
-    }
-    for (name, attempts) in bodies {
+            .filter(|attempt| {
+                (first..end).contains(&attempt.seq)
+                    || ((from..first).contains(&attempt.seq) && !screened.holds_own(attempt.seq))
+            })
+            .collect();
+        if attempts.is_empty() {
+            continue;
+        }
         let body = shard_body(db.device_id(), &attempts)?;
-        screened.put(name, body.as_bytes())?;
+        screened.mend(&name, body.as_bytes())?;
     }
     Ok(())
 }

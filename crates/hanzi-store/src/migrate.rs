@@ -121,7 +121,8 @@ pub(crate) fn vocabulary(
     }
     // The imported entries have no stamp of their own, so they take one from this
     // device and this moment: they are new here, and there was no other writer.
-    let stamp = now_iso8601();
+    // From the sync clock like every other stamp a learner's list carries.
+    let stamp = crate::clock::next_stamp(&tx).map_err(|e| vocab_error(&db, e))?;
     for entry in &document.entries {
         write_entry(&tx, entry, &stamp, device_id).map_err(|e| vocab_error(&db, e))?;
     }

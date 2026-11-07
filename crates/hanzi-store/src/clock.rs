@@ -86,11 +86,19 @@ macro_rules! past_sql {
 /// The stamp for a write this device is making now, and the floor moved to it.
 ///
 /// Strictly later than every stamp this device has issued or seen, and never
-/// earlier than its clock.
+/// earlier than its clock — except that a floor more than a day ahead of the clock
+/// is dropped. Only this device can have put it there (a peer's stamp that far
+/// ahead is never taken in), by issuing stamps while its own clock was wrong; once
+/// the clock is put right, going on from that floor would keep every stamp it ever
+/// writes in that future. A record carrying such a stamp is still beaten by an edit
+/// here, which is stamped past the record itself (`past_sql!`, [`next_stamp_past`]).
 pub(crate) fn next_stamp(conn: &Connection) -> rusqlite::Result<String> {
     let now = now_iso8601();
+    let limit = parse_iso8601(&now).unwrap_or(0) + MAX_AHEAD_SECONDS;
     let stamp = match floor(conn)? {
-        Some(floor) if floor >= now => add_seconds(&floor, 1).unwrap_or(floor),
+        Some(floor) if floor >= now && parse_iso8601(&floor).is_some_and(|at| at <= limit) => {
+            add_seconds(&floor, 1).unwrap_or(floor)
+        }
         _ => now,
     };
     set_meta(conn, CLOCK_KEY, &stamp)?;
@@ -219,6 +227,21 @@ mod tests {
             "2099-01-01T00:00:01Z"
         );
         assert!(next_stamp_past(&conn, Some("")).unwrap().as_str() < "2099");
+    }
+
+    #[test]
+    fn a_floor_this_device_left_years_ahead_is_dropped_once_its_clock_is_right() {
+        // A device whose clock said 2099 for a while issued 2099 stamps, and the
+        // floor followed them. With the clock corrected, going on from there would
+        // keep it writing 2099 for good.
+        let conn = conn();
+        set_meta(&conn, CLOCK_KEY, "2099-01-01T00:00:00Z").unwrap();
+        let stamp = next_stamp(&conn).unwrap();
+        assert!(stamp.as_str() < "2099", "{stamp}");
+        // A floor inside the day is still honoured.
+        let ahead = add_seconds(&now_iso8601(), 3600).unwrap();
+        set_meta(&conn, CLOCK_KEY, &ahead).unwrap();
+        assert_eq!(next_stamp(&conn).unwrap(), add_seconds(&ahead, 1).unwrap());
     }
 
     #[test]

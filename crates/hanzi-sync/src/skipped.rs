@@ -76,8 +76,8 @@ pub struct SkippedShard {
 /// published.
 ///
 /// One guard, because a view that leaves files out must never be the reason one is
-/// overwritten: a write to a file that was left out is **not made**, unless it is in
-/// this device's own directory. Nothing in a sync writes into another device's
+/// overwritten: a write to a file that was left out is **not made**, unless it is
+/// one of this device's own documents (or a repair, through [`Screened::mend`]). Nothing in a sync writes into another device's
 /// directory today, so this costs nothing; it is here so that a later change that
 /// does — publishing attempts on a peer's behalf, say — cannot replace a file it
 /// could not read with the part of it this device happens to know. A write it
@@ -95,6 +95,9 @@ pub(crate) struct Screened<'a> {
     skipped: Vec<SkippedShard>,
     /// The sequence numbers of this device's attempts that a readable shard holds.
     own_readable: BTreeSet<i64>,
+    /// The sequence number each of this device's attempt shards is named after,
+    /// readable or not.
+    own_starts: BTreeSet<i64>,
     /// Writes refused by the guard, and how many attempts they carried.
     withheld: RefCell<Vec<String>>,
     withheld_attempts: Cell<usize>,
@@ -115,12 +118,16 @@ impl<'a> Screened<'a> {
         let own_device: String = own_device.into();
         let listing = inner.list()?;
         let mut own_readable = BTreeSet::new();
+        let mut own_starts = BTreeSet::new();
         let mut held = BTreeMap::new();
         let mut left_out = BTreeSet::new();
         let mut skipped = Vec::new();
         let mut unreadable_logs = BTreeSet::new();
         for entry in &listing {
-            if let Some((device_id, _)) = parse_attempts_shard(&entry.name) {
+            if let Some((device_id, first)) = parse_attempts_shard(&entry.name) {
+                if device_id == own_device {
+                    own_starts.insert(first);
+                }
                 let bytes = inner.get(&entry.name)?;
                 match parse_shard(&entry.name, device_id, &bytes) {
                     Ok(attempts) => {
@@ -129,15 +136,16 @@ impl<'a> Screened<'a> {
                         }
                         held.insert(entry.name.clone(), bytes);
                     }
-                    Err(reason) => {
+                    Err(fault) => {
                         unreadable_logs.insert(device_id.to_string());
+                        left_out.insert(entry.name.clone());
                         skipped.push(SkippedShard {
                             name: entry.name.clone(),
                             device_id: device_id.to_string(),
                             kind: ShardKind::Attempts,
                             own: device_id == own_device,
-                            newer_format: false,
-                            reason,
+                            newer_format: fault.newer_format,
+                            reason: fault.reason,
                         });
                     }
                 }
@@ -155,13 +163,21 @@ impl<'a> Screened<'a> {
                 }
             }
         }
-        // A device with one unreadable attempt shard is left out whole: a log with
-        // a hole in it would fold into a schedule no device holding the whole log
-        // computes. That is no worse than the device not having synced yet — the
-        // local log keeps everything it already pulled.
+        // Another device with one unreadable attempt shard is left out whole: a log
+        // with a hole in it would fold into a schedule no device holding the whole
+        // log computes. That is no worse than the device not having synced yet —
+        // the local log keeps everything it already pulled.
+        //
+        // This device's own readable shards stay in view, and only its damaged ones
+        // are hidden. Its own attempts are all in its local log, so hiding them
+        // protects no fold; and what the store holds under this device's name is
+        // exactly what a check of this device's identity has to see — a copy of
+        // the database (#12) is recognised by the store knowing attempts under its
+        // name that its log does not, and a view with none of them would let it
+        // publish over the original's.
         for entry in &listing {
             if let Some((device_id, _)) = parse_attempts_shard(&entry.name) {
-                if unreadable_logs.contains(device_id) {
+                if device_id != own_device && unreadable_logs.contains(device_id) {
                     left_out.insert(entry.name.clone());
                     held.remove(&entry.name);
                 }
@@ -179,19 +195,31 @@ impl<'a> Screened<'a> {
             left_out: RefCell::new(left_out),
             skipped,
             own_readable,
+            own_starts,
             withheld: RefCell::new(Vec::new()),
             withheld_attempts: Cell::new(0),
         })
     }
 
-    /// This device's own attempt shards that could not be read, by name, with the
-    /// sequence number each is named after.
+    /// This device's own attempt shards that are damaged (not merely in a newer
+    /// format), by name, with the sequence number each is named after.
     pub(crate) fn own_damaged_attempts(&self) -> Vec<(String, i64)> {
         self.skipped()
             .into_iter()
-            .filter(|s| s.own && s.kind == ShardKind::Attempts)
+            .filter(|s| s.own && s.kind == ShardKind::Attempts && !s.newer_format)
             .filter_map(|s| parse_attempts_shard(&s.name).map(|(_, first)| (s.name.clone(), first)))
             .collect()
+    }
+
+    /// The first sequence number of the next of this device's attempt shards
+    /// after the one named after `first`, if there is one.
+    pub(crate) fn next_own_start(&self, first: i64) -> Option<i64> {
+        self.own_starts.range(first + 1..).next().copied()
+    }
+
+    /// The first sequence number of the previous one, if there is one.
+    pub(crate) fn previous_own_start(&self, first: i64) -> Option<i64> {
+        self.own_starts.range(..first).next_back().copied()
     }
 
     /// Whether a readable shard holds this device's attempt `seq`.
@@ -255,10 +283,18 @@ impl RemoteStore for Screened<'_> {
 
     fn put(&self, name: &str, bytes: &[u8]) -> Result<(), SyncError> {
         let own = device_of_shard(name) == Some(self.own_device.as_str());
-        if !own && self.left_out.borrow().contains(name) {
+        let attempts = parse_attempts_shard(name).is_some();
+        if (!own || attempts) && self.left_out.borrow().contains(name) {
             // See the type's note: never overwrite a file this sync could not read.
             // Not an error, because the sync can go on without it; recorded, so the
             // write is neither lost silently nor counted as made.
+            //
+            // This device's own *documents* are the exception — it writes them
+            // whole every sync, from its own database — but not its own attempt
+            // shards. One of those that was left out is either in a newer format
+            // or damaged, and a publish that happens to choose its name holds only
+            // the attempts it decided to write, not what the file held: only
+            // [`Screened::mend`], after its checks, may replace it.
             self.withheld.borrow_mut().push(name.to_string());
             if parse_attempts_shard(name).is_some() {
                 let lines = String::from_utf8_lossy(bytes)
@@ -270,6 +306,21 @@ impl RemoteStore for Screened<'_> {
             }
             return Ok(());
         }
+        self.write_through(name, bytes)
+    }
+}
+
+impl Screened<'_> {
+    /// Replace one of this device's own damaged attempt shards — the one write the
+    /// guard in `put` lets through to such a file. Only `repair_own_shards` calls
+    /// it, once it has checked that this log can have written the file.
+    pub(crate) fn mend(&self, name: &str, bytes: &[u8]) -> Result<(), SyncError> {
+        debug_assert!(device_of_shard(name) == Some(self.own_device.as_str()));
+        self.write_through(name, bytes)
+    }
+
+    /// Write to the store, and into this view.
+    fn write_through(&self, name: &str, bytes: &[u8]) -> Result<(), SyncError> {
         self.inner.put(name, bytes)?;
         self.left_out.borrow_mut().remove(name);
         self.held
@@ -319,8 +370,8 @@ pub(crate) fn notice(skipped: &[SkippedShard], repaired: &[SkippedShard]) -> Opt
     }
     if skipped.iter().any(|s| s.own) {
         sentences.push(
-            "A file this device wrote to Dropbox earlier is damaged; it will be written \
-             again the next time this device has that to sync."
+            "A file this device wrote to Dropbox earlier cannot be read, and this device \
+             cannot write it again, so it was left as it is."
                 .to_string(),
         );
     }
@@ -389,6 +440,54 @@ mod tests {
             ["devices/peer/vocab.json"],
             "the refused write is recorded, not passed off as made"
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn this_devices_readable_shards_stay_in_view_when_one_of_them_is_damaged() {
+        // Another device with a damaged shard is left out whole; this device's own
+        // readable shards are not, because what the store holds under this
+        // device's name is what a check of its identity has to see (#12).
+        let root = std::env::temp_dir().join(format!("hanzi-screened-own-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let store = crate::FolderStore::open(&root).unwrap();
+        let line = |seq: i64| {
+            format!(
+                "{{\"seq\":{seq},\"ch\":\"好\",\"at\":\"2026-09-20T09:00:00Z\",\"score\":80.0,\"rating\":\"good\"}}\n"
+            )
+        };
+        let own_good = crate::attempts_shard_name("me", 1);
+        let own_bad = crate::attempts_shard_name("me", 2);
+        let peer_good = crate::attempts_shard_name("peer", 1);
+        let peer_bad = crate::attempts_shard_name("peer", 2);
+        store.put(&own_good, line(1).as_bytes()).unwrap();
+        store.put(&own_bad, b"{truncated").unwrap();
+        store.put(&peer_good, line(1).as_bytes()).unwrap();
+        store.put(&peer_bad, b"{truncated").unwrap();
+
+        let screened = Screened::read(&store, "me").unwrap();
+        let names: Vec<String> = screened
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(
+            names,
+            [own_good],
+            "only this device's readable shard is in view"
+        );
+        assert!(screened.holds_own(1));
+        assert_eq!(screened.own_damaged_attempts(), [(own_bad.clone(), 2)]);
+
+        // Not even this device's own publish may write over its damaged shard —
+        // only a repair, through `mend`.
+        screened.put(&own_bad, line(2).as_bytes()).unwrap();
+        assert_eq!(store.get(&own_bad).unwrap(), b"{truncated");
+        assert_eq!(screened.withheld(), vec![own_bad.clone()]);
+        assert_eq!(screened.withheld_attempts(), 1);
+        screened.mend(&own_bad, line(2).as_bytes()).unwrap();
+        assert_eq!(store.get(&own_bad).unwrap(), line(2).as_bytes());
         std::fs::remove_dir_all(&root).ok();
     }
 
