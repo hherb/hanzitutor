@@ -48,8 +48,9 @@
   import { summariseWord } from "./lib/wordAttempt";
   import { PushToTalk } from "./lib/pushToTalk";
   import type { Outcome, Phase } from "./lib/pushToTalk";
-  import { shortcutFor } from "./lib/shortcuts";
+  import { FocusOrigin, routeKey, targetKind } from "./lib/shortcuts";
   import type { ShortcutId } from "./lib/shortcuts";
+  import { highlightedCourseCharacter } from "./lib/courseHighlight";
   import { INK_WIDTH, polylineLength } from "./lib/render";
   import type { Sweep } from "./lib/render";
   import type {
@@ -197,6 +198,29 @@
    * just the first column and this is never set.
    */
   let navOpen = $state(false);
+  /**
+   * The width at which the sidebar becomes that sheet — the `max-width` of the
+   * phone block in the styles below, which is the other half of this fact.
+   *
+   * `navOpen` is cleared when the window grows past it: the sheet is then the
+   * plain first column again, and an `open` left standing would keep the board's
+   * keys switched off behind a sheet that no longer exists (issue #31).
+   */
+  const phoneLayout = window.matchMedia("(max-width: 760px)");
+  /** The sheet, and the ☰ that opens it — where focus goes when it closes. */
+  let navPane = $state<HTMLElement | null>(null);
+  let navToggle = $state<HTMLButtonElement | null>(null);
+
+  /**
+   * Closing the sheet hides it, and whatever had focus inside it with it: the
+   * next Enter would press a lesson button nobody can see. Focus goes back to
+   * the ☰ that opened it — but only from inside the sheet, and only while it is
+   * a sheet, so a wide screen's sidebar column keeps its focus.
+   */
+  $effect(() => {
+    if (navOpen || !navPane || !navToggle || !phoneLayout.matches) return;
+    if (navPane.contains(document.activeElement)) navToggle.focus();
+  });
 
   /**
    * The startup reading that is covering the app, or `null` when none is.
@@ -839,6 +863,20 @@
    * to a flag that could outlive it.
    */
   const answerVisible = $derived(mode === "trace" || revealed > 0 || report !== null);
+  /**
+   * The course character the sidebar's lesson grid marks and scrolls to. In
+   * recall that mark is the answer, so it waits for `answerVisible` like the
+   * header does — see `lib/courseHighlight.ts` for the cases.
+   */
+  const sidebarCharacter = $derived(
+    highlightedCourseCharacter({
+      source,
+      mode,
+      courseCharacter: courseChar,
+      boardCharacter: character?.ch ?? null,
+      answerVisible,
+    }),
+  );
 
   /**
    * True while the board is the screen showing.
@@ -1237,41 +1275,54 @@
       }
     };
 
+    // Who put the focus where it is, which decides whether Enter on a focused
+    // button is that button's or Check's — see `FocusOrigin`. Capture phase, so
+    // the input is noted before anything moves the focus or stops the event.
+    const focusOrigin = new FocusOrigin();
+    const onPointerInput = () => focusOrigin.pointer();
+    const onKeyInput = () => focusOrigin.key();
+    const onFocusIn = (event: FocusEvent) => focusOrigin.focused(event.target);
+    window.addEventListener("pointerdown", onPointerInput, true);
+    window.addEventListener("keydown", onKeyInput, true);
+    window.addEventListener("focusin", onFocusIn, true);
+    const onLayout = () => {
+      if (!phoneLayout.matches) navOpen = false;
+    };
+    phoneLayout.addEventListener("change", onLayout);
+
     const onKey = (event: KeyboardEvent) => {
-      // The vocabulary screen has text fields; never steal their keystrokes.
-      const target = event.target as HTMLElement | null;
-      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
-
-      // The startup reading covers the board, so the board's own keys must not
-      // reach past it: Enter would grade an empty board behind the sheet and S
-      // would start an animation nobody can see. Escape dismisses it — the same
-      // act as Back on Android, and the same act as Skip. **A card that leaves
-      // the board visible is not this case**, which is why the key list is a card
-      // and not a sheet (see `ShortcutCard.svelte`).
-      if (startupSheet) {
-        if (event.key === "Escape") {
-          event.preventDefault();
+      // Whether a key is the board's at all — text fields, a focused button, the
+      // startup reading, the phone's sheet, a screen that is not the board — is
+      // decided in `lib/shortcuts.ts`, where the reasons and the tests are. The
+      // browser is told no only when something here acts on the key.
+      const route = routeKey(event, {
+        target: targetKind(
+          focusOrigin.describe(event.target instanceof Element ? event.target : null),
+        ),
+        startupSheet: startupSheet !== null,
+        navOpen,
+        shortcutsOpen,
+        practising,
+      });
+      if (route.action === null) return;
+      if (route.preventDefault) event.preventDefault();
+      switch (route.action) {
+        case "finish-startup":
+          // The same act as Back on Android, and the same act as Skip.
           finishStartup();
-        }
-        return;
+          break;
+        case "close-nav":
+          navOpen = false;
+          break;
+        case "close-shortcuts":
+          shortcutsOpen = false;
+          break;
+        case "help":
+          shortcutsOpen = !shortcutsOpen;
+          break;
+        default:
+          runShortcut(route.action);
       }
-
-      if (shortcutsOpen && event.key === "Escape") {
-        event.preventDefault();
-        shortcutsOpen = false;
-        return;
-      }
-
-      const shortcut = shortcutFor(event);
-      if (shortcut === null) return;
-      // A key the app acts on is claimed outright: the browser must not also
-      // scroll a list behind the board or re-submit what Enter was pressed in.
-      event.preventDefault();
-      if (shortcut.id === "help") {
-        shortcutsOpen = !shortcutsOpen;
-        return;
-      }
-      runShortcut(shortcut.id);
     };
     window.addEventListener("keydown", onKey);
     // Leaving the page altogether: nothing in flight may outlive it.
@@ -1287,6 +1338,10 @@
       window.removeEventListener("unhandledrejection", onRejection);
       window.removeEventListener("resize", publishInsets);
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pointerdown", onPointerInput, true);
+      window.removeEventListener("keydown", onKeyInput, true);
+      window.removeEventListener("focusin", onFocusIn, true);
+      phoneLayout.removeEventListener("change", onLayout);
       document.removeEventListener("visibilitychange", onVisibility);
       clearTimeout(noticeTimer);
       clearTimeout(workingTimer);
@@ -2904,16 +2959,32 @@
     index = Math.min(total - 1, Math.max(0, index + delta));
   }
 
+  /**
+   * Put a lesson or a character of the course on the board — the sidebar's
+   * lesson list and grid.
+   *
+   * During a review the board follows the queue, not the course, so moving only
+   * `index` changed nothing anyone could see: the sheet closed, the review item
+   * stayed, and the hidden course position moved and was saved (issue #31). A
+   * pick in the course is a request for the course, so a queue is left first —
+   * as `showCharacterInCourse` does and as the Course button does on the way in
+   * from another screen. Nothing is lost by it: an entry is only recorded once it
+   * is finished, and what was not finished is still due.
+   */
   function goToLesson(lessonIndex: number) {
     cursorDeferred = null;
     const start = lessonStarts[lessonIndex];
-    if (start !== undefined) index = start;
+    if (start === undefined) return;
+    if (source !== "course") leavePractice();
+    index = start;
   }
 
   function goToCharacter(ch: string) {
     cursorDeferred = null;
     const found = allCharacters.indexOf(ch);
-    if (found >= 0) index = found;
+    if (found < 0) return;
+    if (source !== "course") leavePractice();
+    index = found;
   }
 
   /** Stop drilling and go back to what was being drilled. */
@@ -3000,13 +3071,13 @@
       onclick={() => (navOpen = false)}
     ></button>
   {/if}
-  <div class="nav-pane" class:open={navOpen}>
+  <div class="nav-pane" class:open={navOpen} bind:this={navPane}>
     <LessonSidebar
       view={view}
       onSwitchView={navigating(switchView)}
       {lessons}
       {activeLesson}
-      activeCharacter={courseChar}
+      activeCharacter={sidebarCharacter}
       {summary}
       onSelectLesson={navigating(goToLesson)}
       onSelectCharacter={navigating(goToCharacter)}
@@ -3041,6 +3112,7 @@
     <div class="topbar">
       <button
         class="nav-toggle"
+        bind:this={navToggle}
         type="button"
         aria-label="Open navigation"
         onclick={() => (navOpen = true)}
