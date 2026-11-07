@@ -66,6 +66,7 @@
     failureLine,
     reviewHeadline,
     settingsNote,
+    settingsStayOpen,
   } from "./model";
   import { needsRuby, spokenRuby } from "./words";
   import {
@@ -179,7 +180,7 @@
     endpoint = status.endpoint;
     modelName = status.model;
     key = "";
-    showingSettings = !status.configured;
+    showingSettings = settingsStayOpen(status);
   }
 
   /** Save the address, the model name and — when one was typed — the key. */
@@ -448,6 +449,9 @@
             placeholder={model.keySet ? "a key is saved — leave empty to keep it" : "sk-…"}
             bind:value={key}
           />
+          {#if model.keyNotice}
+            <p class="warn" role="status">{model.keyNotice}</p>
+          {/if}
           <div class="row">
             <button class="save" onclick={() => void save()} disabled={checking}>Save</button>
             {#if model.keySet}

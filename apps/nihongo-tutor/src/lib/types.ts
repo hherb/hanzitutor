@@ -606,6 +606,13 @@ export interface ModelStatus {
    * written this session, or did not take the settings just saved. Never the key.
    */
   warning: string | null;
+  /**
+   * Set by a save that left the stored key behind: the endpoint moved to a different
+   * scheme, host or port and no key was typed with it, so the key was not carried to
+   * the new address. The sentence asks for the key for the new endpoint. Only a save
+   * sets it — `modelStatus` never does — and it never holds the key.
+   */
+  keyNotice: string | null;
 }
 
 /**
