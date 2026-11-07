@@ -3947,6 +3947,25 @@ Three consequences of the same rule, each deliberate:
   syllable the `g` is coloured with moves. Re-adding the word from the dictionary
   stores `píng'ān`.
 
+Issue #20 added three things on top:
+
+- **一 keeps its first tone when it is a number's name, not a count**: after 第,
+  beside another digit (〇–九 and 十, not 百/千/万/亿), before 月 or 号, and before 日
+  only after 月 — the word list's 日复一日 and 有朝一日 are "one day", `yírì`, which
+  the issue's plain "before 日" rule would have got wrong. A一A (看一看) is neutral.
+  Over the word list this changes exactly 一一, 第一手 and 第一线.
+- **Tone numbers are pinyin.** `ni3hao3`, `nv3` and `lu:4` split as `nǐ` + `hǎo`,
+  `nǚ` and `lǜ` — in the splitter itself, so every reader of `syllables` accepts them,
+  and a number is a boundary as an apostrophe is (`xi1an1` is two syllables).
+  `pinyin::marked_reading` rewrites a numbered reading with marks (inserting the
+  apostrophe a number stood for), and is what vocabulary add/update saves and what
+  word and character search fold. The tone key rewrites a numbered syllable too. The
+  frontend's own filters (tone pairs, radicals, the tone trainer's families) drop a
+  number the way they drop a mark.
+- **Capitals keep their case through a tone mark** (`Aomen` + tone 4 → `Àomen`), and
+  `base`, `fold_pinyin` and the frontend's `toneFromSyllable` fold case first, so
+  `Àomén` searches and compares as `aomen`.
+
 **Do not "simplify" this by scoring character by character.** Sandhi is a word-level
 phenomenon; a per-character loop cannot see it.
 

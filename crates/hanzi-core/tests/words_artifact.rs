@@ -203,3 +203,22 @@ fn no_boundary_falls_between_the_wrong_letters() {
         shifted.join("\n")
     );
 }
+
+#[test]
+fn the_ordinals_issue_20_reported_keep_yi_in_its_first_tone() {
+    // 第一线 and 第一手 are in the word list, and their 一 is an ordinal: the
+    // learner is scored against yī, not the yí or yì of a counted 一.
+    let dataset = dataset();
+    let spoken = |text: &str| -> Vec<u8> {
+        let word = dataset
+            .word(text)
+            .unwrap_or_else(|| panic!("{text} is in the word list"));
+        tone_target(text, &word.pinyin)
+            .unwrap_or_else(|| panic!("{text} ({}) makes a target", word.pinyin))
+            .spoken()
+    };
+    assert_eq!(spoken("第一线"), [4, 1, 4]);
+    assert_eq!(spoken("第一手"), [4, 1, 3]);
+    // The counted 一 still changes.
+    assert_eq!(spoken("一起"), [4, 3]);
+}

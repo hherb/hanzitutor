@@ -68,12 +68,14 @@
     })();
   });
 
-  /** Fold a query for comparison: case and tone marks are not the point. */
+  /** Fold a query for comparison: case and tone marks are not the point, and a
+   *  tone number (`yan2`) goes the way a mark does. */
   const fold = (text: string) =>
     text
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase();
+      .toLowerCase()
+      .replace(/([a-z])[1-5]/g, "$1");
 
   /**
    * The families the search box keeps.
