@@ -24,9 +24,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::grade::Grade;
@@ -1023,18 +1024,7 @@ impl CursorStore {
     /// Open the cursor at `path`, defaulting to the start when it is absent.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, ProgressError> {
         let path = path.into();
-        let document = match fs::read_to_string(&path) {
-            Ok(text) => {
-                let parsed: CursorDocument = serde_json::from_str(&text)
-                    .map_err(|e| ProgressError::Malformed(e.to_string()))?;
-                if parsed.version > FORMAT_VERSION {
-                    return Err(ProgressError::UnsupportedVersion(parsed.version));
-                }
-                parsed
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => CursorDocument::default(),
-            Err(e) => return Err(ProgressError::Io(format!("{}: {e}", path.display()))),
-        };
+        let document = read_versioned(&path, CursorDocument::default)?;
         Ok(Self {
             path,
             document,
@@ -1122,21 +1112,56 @@ pub struct CursorView {
 
 /// Read and validate a versioned document, treating absence as a fresh start.
 fn read_document(path: &Path) -> Result<Document, ProgressError> {
-    match fs::read_to_string(path) {
-        Ok(text) => {
-            let parsed: Document = serde_json::from_str(&text)
-                .map_err(|e| ProgressError::Malformed(e.to_string()))?;
-            if parsed.version > FORMAT_VERSION {
-                return Err(ProgressError::UnsupportedVersion(parsed.version));
-            }
-            Ok(parsed)
+    read_versioned(path, Document::default)
+}
+
+/// Just the version of a document, whatever the rest of it looks like.
+#[derive(Deserialize)]
+struct VersionProbe {
+    #[serde(default)]
+    version: Option<u32>,
+}
+
+/// The reader behind both documents here.
+///
+/// Two decisions, each about which error a caller sees, because a caller acts on
+/// the difference — a `Malformed` file is damaged and may be moved aside (Nihongo
+/// Tutor's review schedule does), an `Io` failure says nothing about the file and
+/// leaves it where it is, and an `UnsupportedVersion` must not be written over:
+///
+/// * the file is read as **bytes** and parsed with `from_slice`, so a document a
+///   crash cut off in the middle of a multi-byte character is `Malformed` — it is
+///   damaged — rather than an I/O error that no caller can do anything about;
+/// * the **version is read first**, so a newer build's document is refused as
+///   newer even when its shape has changed, rather than reported as damaged and
+///   moved out of the way of a build that cannot read it.
+fn read_versioned<T: DeserializeOwned>(
+    path: &Path,
+    absent: impl FnOnce() -> T,
+) -> Result<T, ProgressError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(absent()),
+        Err(e) => return Err(ProgressError::Io(format!("{}: {e}", path.display()))),
+    };
+    if let Ok(VersionProbe {
+        version: Some(version),
+    }) = serde_json::from_slice::<VersionProbe>(&bytes)
+    {
+        if version > FORMAT_VERSION {
+            return Err(ProgressError::UnsupportedVersion(version));
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Document::default()),
-        Err(e) => Err(ProgressError::Io(format!("{}: {e}", path.display()))),
     }
+    serde_json::from_slice(&bytes).map_err(|e| ProgressError::Malformed(e.to_string()))
 }
 
 /// Write a document atomically: temporary file first, then rename.
+///
+/// And durably: the temporary is synced before the rename and the directory after
+/// it. Without the first, a power cut on APFS — or on ext4 and XFS without
+/// `auto_da_alloc` — can leave the new name pointing at bytes that never reached the
+/// disk, which is a zero-length schedule; without the second, the rename itself may
+/// not survive.
 fn save_document<T: Serialize>(path: &Path, document: &T) -> Result<(), ProgressError> {
     if path.as_os_str().is_empty() {
         return Ok(()); // in-memory store
@@ -1151,10 +1176,36 @@ fn save_document<T: Serialize>(path: &Path, document: &T) -> Result<(), Progress
         .map_err(|e| ProgressError::Io(e.to_string()))?;
 
     let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, json)
+    fs::File::create(&temporary)
+        .and_then(|mut file| {
+            file.write_all(json.as_bytes())?;
+            file.sync_all()
+        })
         .map_err(|e| ProgressError::Io(format!("{}: {e}", temporary.display())))?;
     fs::rename(&temporary, path).map_err(|e| ProgressError::Io(format!("{}: {e}", path.display())))?;
+    sync_parent(path);
     Ok(())
+}
+
+/// Flush the directory entry a rename just changed, on the platforms that can.
+///
+/// Best effort, deliberately: the document's own bytes are already on the disk and
+/// the rename has happened, so a file system that refuses to sync a directory (some
+/// network and FUSE mounts do) has not lost the attempt, and reporting a failed save
+/// would be untrue. Windows has no directory handle to sync.
+fn sync_parent(path: &Path) {
+    #[cfg(unix)]
+    {
+        let dir = match path.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
+        if let Err(e) = fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+            eprintln!("{}: the directory could not be synced ({e})", dir.display());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 #[cfg(test)]
@@ -1776,6 +1827,50 @@ mod tests {
             ProgressError::UnsupportedVersion(_)
         ));
         fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_future_format_version_is_refused_even_when_its_shape_changed() {
+        // A newer build may restructure the document, not merely add to it. The
+        // version is what the reader needs to hear about — "this is from a newer
+        // build" is a refusal, "this is not valid JSON" is a reason to move the file
+        // aside — so it is read before the shape is.
+        let path = temp_path("future-shape");
+        fs::write(
+            &path,
+            format!(
+                r#"{{"version":{},"cards":["a new shape"]}}"#,
+                FORMAT_VERSION + 1
+            ),
+        )
+        .unwrap();
+        let error = ProgressStore::open(&path).unwrap_err();
+        assert!(
+            matches!(error, ProgressError::UnsupportedVersion(_)),
+            "{error}"
+        );
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn a_file_cut_off_mid_character_is_malformed_rather_than_unreadable() {
+        // A crash in the middle of a multi-byte character leaves bytes that are not
+        // UTF-8. That is a damaged document, which a caller moves aside, and not an
+        // I/O failure, which a caller has to leave where it is — so it must arrive
+        // as `Malformed`.
+        let path = temp_path("cut-mid-character");
+        let mut bytes = br#"{"version":1,"cards":{"#.to_vec();
+        bytes.extend_from_slice(&"好".as_bytes()[..2]);
+        fs::write(&path, &bytes).unwrap();
+        let error = ProgressStore::open(&path).unwrap_err();
+        assert!(matches!(error, ProgressError::Malformed(_)), "{error}");
+
+        let cursor = temp_path("cursor-cut-mid-character");
+        fs::write(&cursor, &bytes).unwrap();
+        let error = CursorStore::open(&cursor).unwrap_err();
+        assert!(matches!(error, ProgressError::Malformed(_)), "{error}");
+        fs::remove_file(&path).ok();
+        fs::remove_file(&cursor).ok();
     }
 
     #[test]

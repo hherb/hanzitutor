@@ -217,6 +217,9 @@
 
       {#if tally}
         <p class="record">{recordLine(tally, question.pattern)}</p>
+        {#if tally.warning}
+          <p class="warn" role="status">{tally.warning}</p>
+        {/if}
       {/if}
     {:else}
       <p class="hint">Which pattern does this sentence take?</p>
@@ -414,6 +417,14 @@
     margin: 0.6rem 0 0;
     font-size: 0.8rem;
     color: var(--muted);
+  }
+
+  /* A warning about the learner's file rather than about the answer: the answer
+     stands, and this says what was not remembered. */
+  .warn {
+    margin: 0.4rem 0 0;
+    font-size: 0.85rem;
+    color: var(--bad);
   }
 
   .after {
