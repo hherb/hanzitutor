@@ -50,7 +50,7 @@ sherpa_target() {
   local arg
   for arg in "$@"; do
     case "$arg" in
-      ios | *-apple-ios* | *-apple-ios) echo "ios"; return ;;
+      ios | *-apple-ios*) echo "ios"; return ;;
       android | *-linux-android* | *-android) echo "android"; return ;;
     esac
   done
@@ -65,7 +65,19 @@ case "$(sherpa_target "$@")" in
   *) SHERPA_LIB_DIR="$ROOT/.sherpa-onnx/current/lib" ;;
 esac
 
-if [ -n "$SHERPA_ARCHIVE_DIR" ] && [ -d "$SHERPA_ARCHIVE_DIR" ]; then
+# The archive directory only counts when it holds the archive itself — which
+# `fetch-sherpa.sh --android` leaves there only once its digest has matched.
+# The directory alone is not enough: the host fetch makes it too, and a failed
+# download leaves a `.part` beside where the archive would be.
+has_android_archive() {
+  local archive
+  for archive in "$1"/sherpa-onnx-v*-android.tar.bz2; do
+    [ -f "$archive" ] && return 0
+  done
+  return 1
+}
+
+if [ -n "$SHERPA_ARCHIVE_DIR" ] && has_android_archive "$SHERPA_ARCHIVE_DIR"; then
   export SHERPA_ONNX_ARCHIVE_DIR="$SHERPA_ARCHIVE_DIR"
 elif [ -d "$SHERPA_LIB_DIR" ]; then
   export SHERPA_ONNX_LIB_DIR="$SHERPA_LIB_DIR"

@@ -45,8 +45,11 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="${TAURI_ROOT:-$REPO}"
 
 if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+  # `|| true`: under `pipefail` a failing `security` (no keychain, or not a Mac)
+  # would otherwise end the script right here, silently, instead of falling back
+  # to ad-hoc below.
   DETECTED="$(security find-identity -v -p codesigning 2>/dev/null \
-    | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
+    | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1 || true)"
   if [ -n "$DETECTED" ]; then
     export APPLE_SIGNING_IDENTITY="$DETECTED"
   else
@@ -75,16 +78,33 @@ tauri() {
 }
 
 # The bundle directory follows CARGO_TARGET_DIR, which this project points at
-# `.cargo-target/`, and `TAURI_ROOT` decides which app's bundle is being looked
-# for: the app's own directory, or the repository root for the main app.
-APP_DIR="${APP_ROOT:-$ROOT}"
-BUNDLE=""
-for dir in "$REPO/.cargo-target/release/bundle" "$APP_DIR/src-tauri/target/release/bundle"; do
-  if [ -d "$dir" ]; then
-    BUNDLE="$dir"
-    break
-  fi
-done
+# `.cargo-target/` for every app, and `TAURI_ROOT` decides which app's bundle is
+# being looked for: the one named after that app's own `productName`.
+#
+# **Looked up after the build, every time, and by the app's own name** — see
+# `scripts/lib/bundle.sh` for both halves. Resolving the directory once, up
+# front, found nothing on a fresh target directory, so a first build skipped
+# everything below and printed an empty "built:" list; and because all three
+# apps share that directory, globbing it re-signed and listed the *other* apps'
+# disk images as well.
+# shellcheck source-path=SCRIPTDIR source=lib/bundle.sh
+. "$REPO/scripts/lib/bundle.sh"
+# Absolute before the build, so the build and the lookups after it cannot
+# disagree about where the bundle went — see `bundle_target_dir`.
+CARGO_TARGET_DIR="$(bundle_target_dir "$REPO")"
+export CARGO_TARGET_DIR
+CONF="$ROOT/src-tauri/tauri.conf.json"
+PRODUCT_NAME="$(bundle_conf_field "$CONF" productName)"
+if [ -z "$PRODUCT_NAME" ]; then
+  echo "error: no productName in $CONF" >&2
+  exit 1
+fi
+# Tauri also accepts a path to a package.json here; only a literal version can
+# narrow the disk-image match, so anything else leaves it at the product name.
+VERSION="$(bundle_conf_field "$CONF" version)"
+case "$VERSION" in
+  */* | *.json) VERSION="" ;;
+esac
 
 # The bundle is made readable *whether or not the build as a whole succeeded*, and
 # that placement is the point rather than tidiness. A file that is not
@@ -119,17 +139,16 @@ done
 # `src-tauri/tests/licences.rs` now checks the same property at the source, before
 # any build, which is where it is cheapest to catch.
 make_readable() {
-  [ -n "$BUNDLE" ] && [ -d "$BUNDLE/macos" ] || return 0
-  for app in "$BUNDLE"/macos/*.app; do
-    [ -d "$app" ] || continue
-    chmod -R a+rX "$app"
-    # Called out separately because it is the failure this exists to prevent: a
-    # licence a redistributor cannot read is the one file in the bundle whose
-    # permissions are a licence-compliance question rather than a convenience.
-    if [ -d "$app/Contents/Resources/licences" ]; then
-      chmod a+r "$app/Contents/Resources/licences"/*
-    fi
-  done
+  local app
+  app="$(bundle_app "$(bundle_dir "$REPO")" "$PRODUCT_NAME")"
+  [ -n "$app" ] || return 0
+  chmod -R a+rX "$app"
+  # Called out separately because it is the failure this exists to prevent: a
+  # licence a redistributor cannot read is the one file in the bundle whose
+  # permissions are a licence-compliance question rather than a convenience.
+  if [ -d "$app/Contents/Resources/licences" ]; then
+    chmod a+r "$app/Contents/Resources/licences"/*
+  fi
 }
 make_readable
 
@@ -145,20 +164,54 @@ if tauri build "$@"; then
   # a rendering fault. Patched after the build because Tauri generates that
   # script itself, and re-signed inside the patch because rewriting an image
   # invalidates the signature Tauri put on it.
-  if [ -n "$BUNDLE" ]; then
-    for image in "$BUNDLE"/dmg/*.dmg; do
-      [ -f "$image" ] && "$REPO/scripts/hide-dmg-volume-icon.sh" "$image"
-    done
+  #
+  # Only this app's image of this version: the directory is shared, and an image
+  # some other build left there is not this script's to re-sign.
+  BUNDLE="$(bundle_dir "$REPO")"
+  APP="$(bundle_app "$BUNDLE" "$PRODUCT_NAME")"
+  DMGS="$(bundle_dmgs "$BUNDLE" "$PRODUCT_NAME" "$VERSION")"
+  # One path per line, and the names have spaces in them. Read on fd 3 so that
+  # nothing the patch script runs can swallow the rest of the list from stdin.
+  if [ -n "$DMGS" ]; then
+    while IFS= read -r image <&3; do
+      "$REPO/scripts/hide-dmg-volume-icon.sh" "$image"
+    done 3<<EOF
+$DMGS
+EOF
   fi
 
   echo
   echo "built:"
-  if [ -n "$BUNDLE" ]; then
-    find "$BUNDLE" -maxdepth 2 \( -name '*.app' -o -name '*.dmg' \) -print
+  if [ -n "$APP" ]; then
+    printf '  %s\n' "$APP"
+  fi
+  if [ -n "$DMGS" ]; then
+    printf '%s\n' "$DMGS" | sed 's/^/  /'
+  fi
+  if [ -z "$APP" ] && [ -z "$DMGS" ]; then
+    echo "  (nothing named \"$PRODUCT_NAME\" under ${BUNDLE:-<target>/release/bundle} —" >&2
+    echo "   a --target or --debug build writes somewhere else)" >&2
+  elif [ -z "$DMGS" ] && bundle_args_want_dmg "$@"; then
+    # The .app is there and the build was meant to make an image, but none
+    # carries this version: most likely the version was overridden on the command
+    # line (`--config`), which the name match above cannot know about. Said out
+    # loud, because the image that was made has *not* had its volume icon hidden.
+    OTHER_DMGS="$(bundle_dmgs "$BUNDLE" "$PRODUCT_NAME")"
+    echo >&2
+    echo "note: no $PRODUCT_NAME disk image for version ${VERSION:-<unknown>} (tauri.conf.json)" >&2
+    echo "      was found, so no volume icon was hidden." >&2
+    if [ -n "$OTHER_DMGS" ]; then
+      echo "      These are there — if one is this build's (a version set with --config)," >&2
+      echo "      run scripts/hide-dmg-volume-icon.sh on it:" >&2
+      printf '%s\n' "$OTHER_DMGS" | sed 's/^/        /' >&2
+    else
+      echo "      If this build was meant to make one, the disk-image step did not." >&2
+    fi
   fi
   exit 0
 fi
 
+BUNDLE="$(bundle_dir "$REPO")"
 cat >&2 <<EOF
 
 error: the build failed.
