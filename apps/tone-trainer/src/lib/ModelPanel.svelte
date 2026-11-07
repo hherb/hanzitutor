@@ -23,8 +23,11 @@
     /** True while a poll is in flight, so the progress line is not stale. */
     polling: boolean;
     onInstall: () => void;
-    /** Stop a download in flight; the backend removes what it had fetched. */
-    onCancel: () => void;
+    /**
+     * Stop a download in flight; the backend removes what it had fetched.
+     * Resolves `false` when the request could not be made.
+     */
+    onCancel: () => Promise<boolean>;
     onRemove: () => void;
     /** A failure from the last call — distinct from `status.error`, which is Rust's. */
     failure: string | null;
@@ -51,9 +54,11 @@
     if (!downloading) cancelling = false;
   });
 
-  function cancel() {
+  async function cancel() {
     cancelling = true;
-    onCancel();
+    // A request that never reached the backend leaves the download running, so
+    // the button comes back rather than saying "Cancelling…" for good.
+    if (!(await onCancel())) cancelling = false;
   }
 
   /** How far along, 0..1, while a download runs. */

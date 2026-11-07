@@ -1068,16 +1068,24 @@ impl SettingsSink for Db {
         // A name this build does not know reads as the default rather than
         // failing the table (issue #41): a newer build that adds a pace or a size
         // writes one without a schema bump, and refusing every preference over it
-        // would be the worse loss. `save` leaves such a row alone.
+        // would be the worse loss. The next save writes what this build shows —
+        // the default — so a learner who keeps it here is not overruled by a row
+        // they cannot see.
         if let Some(text) =
             setting_get(&conn, ANIMATION_PACE).map_err(|e| settings_error(&path, e))?
         {
-            settings.animation_pace = parse_pace(&text).unwrap_or_default();
+            settings.animation_pace = parse_pace(&text).unwrap_or_else(|| {
+                unknown_setting(&path, ANIMATION_PACE, &text);
+                Pace::default()
+            });
         }
         if let Some(text) =
             setting_get(&conn, BOARD_SIZE).map_err(|e| settings_error(&path, e))?
         {
-            settings.board_size = parse_board_size(&text).unwrap_or_default();
+            settings.board_size = parse_board_size(&text).unwrap_or_else(|| {
+                unknown_setting(&path, BOARD_SIZE, &text);
+                BoardSize::default()
+            });
         }
         if let Some(value) = setting_get_bool(&conn, TONE_COLOURS, &path)? {
             settings.tone_colours = value;
@@ -1138,11 +1146,6 @@ impl SettingsSink for Db {
             (WHATS_NEW_SEEN, settings.whats_new_seen.clone()),
         ];
         for (key, value) in rows {
-            let keep = value.is_none()
-                && holds_a_newer_name(&tx, key).map_err(|e| settings_error(&path, e))?;
-            if keep {
-                continue;
-            }
             setting_put(&tx, key, value.as_deref()).map_err(|e| settings_error(&path, e))?;
         }
         tx.commit().map_err(|e| settings_error(&path, e))
@@ -1182,20 +1185,14 @@ fn parse_board_size(text: &str) -> Option<BoardSize> {
         .find(|&size| board_size_key(size) == text)
 }
 
-/// True when `key` is a pace or a board size whose row holds a name this build
-/// does not know — one a newer build wrote.
-///
-/// `load` read such a row as the default, and the default is saved as no row, so
-/// without this a save of any *other* preference would delete the newer build's
-/// choice on the way past. A value this build can name still replaces it: that
-/// is a choice the learner made here.
-fn holds_a_newer_name(conn: &Connection, key: &str) -> rusqlite::Result<bool> {
-    let known: fn(&str) -> bool = match key {
-        ANIMATION_PACE => |text: &str| parse_pace(text).is_some(),
-        BOARD_SIZE => |text: &str| parse_board_size(text).is_some(),
-        _ => return Ok(false),
-    };
-    Ok(setting_get(conn, key)?.is_some_and(|text| !known(&text)))
+/// Say that a stored name was not one this build knows, and is read as the
+/// default.
+fn unknown_setting(path: &Path, key: &str, value: &str) {
+    eprintln!(
+        "[settings] {}: the stored setting {key:?} is {value:?}, which this build does not \
+         know (a newer build may have written it); using the default",
+        path.display()
+    );
 }
 
 /// Whether any of the pre-database study documents sits beside the database file.

@@ -559,7 +559,7 @@ fn every_preference_round_trips_through_the_database() {
 }
 
 #[test]
-fn a_pace_or_board_size_a_newer_build_wrote_falls_back_and_is_kept() {
+fn a_pace_or_board_size_a_newer_build_wrote_falls_back_to_the_default() {
     // Issue #41. A pace or a board size is a closed set of names *in this build*,
     // and a newer build that adds one writes a name this one has no variant for —
     // without a schema bump, because the row is still a name. Refusing the whole
@@ -591,11 +591,9 @@ fn a_pace_or_board_size_a_newer_build_wrote_falls_back_and_is_kept() {
         "the rest of the table is kept"
     );
 
-    // Saving something else must not erase what the newer build chose: the
-    // default this build fell back to is what a missing row means, and writing
-    // it would delete the row the newer build will read again.
-    assert!(store.set_tone_colours(true));
-    store.save().unwrap();
+    // What this build saves is what it shows. Preserving the newer build's row
+    // would leave a learner unable to choose the default over it here: the screen
+    // already shows "normal", so there is no change to make that would write it.
     let stored = |key: &str| -> Option<String> {
         rusqlite::Connection::open(db.path())
             .unwrap()
@@ -604,15 +602,43 @@ fn a_pace_or_board_size_a_newer_build_wrote_falls_back_and_is_kept() {
             })
             .ok()
     };
-    assert_eq!(stored("animation_pace").as_deref(), Some("leisurely"));
-    assert_eq!(stored("board_size").as_deref(), Some("enormous"));
+    assert!(store.set_tone_colours(true));
+    store.save().unwrap();
+    assert_eq!(stored("animation_pace"), None, "normal is stored as no row");
+    assert_eq!(stored("board_size"), None);
     assert_eq!(stored("tone_colours").as_deref(), Some("true"));
 
-    // A choice this build *can* make still replaces it.
-    assert!(store.set_animation_pace(Pace::Slow));
-    store.save().unwrap();
-    assert_eq!(stored("animation_pace").as_deref(), Some("slow"));
-    assert_eq!(stored("board_size").as_deref(), Some("enormous"));
+    finish(&dir);
+}
+
+#[test]
+fn picking_normal_over_a_pace_this_build_does_not_know_stores_normal() {
+    let dir = dir("settings-pick-normal");
+    let mut db = Db::open(&dir).unwrap();
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO settings (key, value) VALUES ('animation_pace', 'leisurely')",
+            [],
+        )
+        .unwrap();
+
+    let chosen = hanzi_core::Settings {
+        animation_pace: Pace::Normal,
+        ..Default::default()
+    };
+    hanzi_core::SettingsSink::save(&mut db, &chosen).unwrap();
+    let row: Option<String> = rusqlite::Connection::open(db.path())
+        .unwrap()
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'animation_pace'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    assert_eq!(row, None, "normal replaced the unknown name");
+    let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert_eq!(store.view().pace(), Pace::Normal);
 
     finish(&dir);
 }

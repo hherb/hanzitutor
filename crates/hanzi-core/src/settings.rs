@@ -585,7 +585,16 @@ where
     T: serde::de::DeserializeOwned + Default,
 {
     let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(T::deserialize(value).unwrap_or_default())
+    Ok(T::deserialize(&value).unwrap_or_else(|error| {
+        eprintln!(
+            "[settings] {value} is not a {} this build knows ({error}); using the default",
+            std::any::type_name::<T>()
+                .rsplit("::")
+                .next()
+                .unwrap_or("value"),
+        );
+        T::default()
+    }))
 }
 
 /// Read and validate a document, treating absence as an unset first run.

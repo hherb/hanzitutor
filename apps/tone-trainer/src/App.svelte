@@ -268,18 +268,23 @@
     return () => {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisible);
+      asrFollower.stop();
     };
   });
 
-  /** Read the recognition model's state, and return it. */
+  /**
+   * Read the recognition model's state, and return it — or `null` when it could
+   * not be asked, which the follower counts as a failure and backs off on.
+   */
   async function refreshAsr(): Promise<AsrStatus | null> {
     try {
       asr = await api.asrStatus();
       asrFailure = null;
+      return asr;
     } catch (cause) {
       asrFailure = `Could not ask about the recognition model: ${cause}`;
+      return null;
     }
-    return asr;
   }
 
   /**
@@ -289,7 +294,7 @@
    */
   const asrFollower = new DownloadFollower(
     refreshAsr,
-    () => new Promise<void>((resolve) => setTimeout(resolve, 500)),
+    (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
   );
 
   async function followAsr() {
@@ -303,7 +308,8 @@
 
   /** Ask once, and follow the download if one turns out to be running. */
   async function checkAsr() {
-    const status = await refreshAsr();
+    // A failed question says nothing new, so the last known state decides.
+    const status = (await refreshAsr()) ?? asr;
     if (status?.state === "downloading") await followAsr();
   }
 
@@ -330,16 +336,20 @@
   /**
    * Ask the download to stop. The backend stops at its next chunk and removes
    * what it had fetched; the follower already running sees the state go back to
-   * "not installed".
+   * "not installed". Resolves `false` when the request did not reach the backend,
+   * so the panel can offer the button again.
    */
-  async function cancelAsr() {
+  async function cancelAsr(): Promise<boolean> {
     asrFailure = null;
+    let sent = true;
     try {
       asr = await api.asrCancel();
     } catch (cause) {
       asrFailure = `Could not cancel the download: ${cause}`;
+      sent = false;
     }
     if (asr?.state === "downloading") void followAsr();
+    return sent;
   }
 
   async function removeAsr() {
@@ -1026,7 +1036,7 @@
             status={asr}
             polling={asrPolling}
             onInstall={() => void installAsr()}
-            onCancel={() => void cancelAsr()}
+            onCancel={cancelAsr}
             onRemove={() => void removeAsr()}
             failure={asrFailure}
           />

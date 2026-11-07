@@ -99,6 +99,51 @@ describe("following a download", () => {
     await new DownloadFollower(refresh, wait).follow();
     expect(events).toEqual(["wait", "ask", "wait", "ask", "wait", "ask"]);
   });
+
+  it("backs off while the questions keep failing, and comes back on an answer", async () => {
+    // A backend that cannot answer is not helped by being asked twice a second.
+    // The pause doubles per failure up to ten seconds, and the first answer puts
+    // it back to half a second.
+    let asked = 0;
+    const refresh = async (): Promise<Status | null> => {
+      asked += 1;
+      if (asked <= 6) throw new Error("not now");
+      if (asked === 7) return { state: "downloading" };
+      if (asked === 8) return null;
+      return { state: "installed" };
+    };
+    const waits: number[] = [];
+    const wait = async (ms: number) => {
+      waits.push(ms);
+    };
+    await new DownloadFollower(refresh, wait).follow();
+    expect(waits).toEqual([500, 1000, 2000, 4000, 8000, 10000, 10000, 500, 1000]);
+  });
+
+  it("stops when told to", async () => {
+    // The screen going away ends the following: nothing is left asking the
+    // backend on a timer for a page that is not there.
+    let asked = 0;
+    let follower: DownloadFollower<Status>;
+    const refresh = async (): Promise<Status> => {
+      asked += 1;
+      if (asked === 3) follower.stop();
+      return { state: "downloading" };
+    };
+    follower = new DownloadFollower(refresh, noWait);
+    expect(await follower.follow()).toBeNull();
+    expect(asked).toBe(3);
+    expect(follower.running).toBe(false);
+
+    // A stop before the next pause ends has the same effect.
+    let release: () => void = () => {};
+    const parked = new DownloadFollower(refresh, () => new Promise<void>((r) => (release = r)));
+    const following = parked.follow();
+    parked.stop();
+    release();
+    expect(await following).toBeNull();
+    expect(asked).toBe(3); // nothing was asked after the stop
+  });
 });
 
 describe("a settled state", () => {

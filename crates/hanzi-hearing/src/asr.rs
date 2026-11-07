@@ -267,8 +267,8 @@ impl Asr {
                 .clone()
                 .unwrap_or_else(|| "The last attempt to fetch the model failed.".to_string()),
             InstallState::Absent if self.root.is_none() => "There is nowhere to keep the model: \
-                 the platform did not give this app a data directory, so study data is not \
-                 being saved either. Tone practice is unaffected."
+                 the platform did not give this app a directory to store it in, so it cannot \
+                 be installed. Tone practice is unaffected."
                 .to_string(),
             InstallState::Absent => format!(
                 "Not installed. Recognising what was said needs {} ({} to download, {} on \
@@ -313,8 +313,8 @@ impl Asr {
     /// network access, and it happens only because a learner pressed this.
     pub fn install(&self) -> Result<(), String> {
         let Some(root) = self.root.clone() else {
-            return Err("There is nowhere to keep the model: this app was not given a data \
-                        directory, so nothing can be saved."
+            return Err("There is nowhere to keep the model: this app was not given a \
+                        directory to store it in, so it cannot be installed."
                 .to_string());
         };
 
@@ -380,6 +380,15 @@ impl Asr {
         self.status()
     }
 
+    /// True while a download thread is running.
+    fn is_downloading(&self) -> bool {
+        let install = self
+            .install
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        install.state == InstallState::Downloading
+    }
+
     /// Delete the model, and anything a failed attempt left behind.
     ///
     /// The loaded recogniser goes with it: leaving a 228 MB model resident after
@@ -391,6 +400,15 @@ impl Asr {
         let Some(root) = self.root.as_ref() else {
             return Ok(());
         };
+        // Not from under a download: the thread would go on writing into a
+        // directory that had just been deleted, and then report an install.
+        if self.is_downloading() {
+            return Err(
+                "The model is still being downloaded. Cancel the download first, or let it \
+                 finish, and then remove it."
+                    .to_string(),
+            );
+        }
         if root.is_dir() {
             fs::remove_dir_all(root)
                 .map_err(|error| format!("could not remove {}: {error}", root.display()))?;
@@ -440,14 +458,15 @@ impl Asr {
 ///
 /// The free space is checked first (issue #41): staging holds the archive and
 /// the unpacked model at once, and a device without room for both used to find
-/// out by failing a write part-way through 163 MB.
+/// out by failing a write part-way through 163 MB. On Apple platforms the check
+/// only advises — see [`ROOM_IS_ADVISORY`].
 fn fetch_and_unpack(root: &Path, progress: &Arc<Mutex<Install>>) -> Result<(), String> {
     fs::create_dir_all(root)
         .map_err(|error| format!("could not create {}: {error}", root.display()))?;
     // The wreckage of an attempt that never got to clean up is space this one
     // is about to reclaim, so it goes before the space is counted.
     let _ = fs::remove_dir_all(root.join(".staging"));
-    room_for_install(free_bytes(root))?;
+    enforce_room(free_bytes(root), ROOM_IS_ADVISORY)?;
     fetch_and_unpack_from(root, progress, &open_release)
 }
 
@@ -473,7 +492,20 @@ fn fetch_and_unpack_from(
     // model — where the next one would have to notice it, and the learner asked
     // for a thing that did not happen rather than for a cache. A cancelled one is
     // cleaned up the same way; `Asr::status` is what tells the two apart.
-    let unpacked = match stage(&staging, progress, open) {
+    //
+    // A panic is a failure too (a decoder bug, a corrupt stream): left to unwind
+    // it would skip the code that records the outcome, and the state would read
+    // "downloading" for the life of the process, with the screen polling it.
+    let staged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        stage(&staging, progress, open)
+    }))
+    .unwrap_or_else(|panic| {
+        Err(format!(
+            "the install stopped unexpectedly ({}). Nothing was installed.",
+            panic_message(panic.as_ref())
+        ))
+    });
+    let unpacked = match staged {
         Ok(unpacked) => unpacked,
         Err(message) => {
             let _ = fs::remove_dir_all(&staging);
@@ -505,6 +537,15 @@ fn fetch_and_unpack_from(
     // model directory is the only copy worth keeping.
     let _ = fs::remove_dir_all(&staging);
     Ok(())
+}
+
+/// The text a panic carried, when it carried any.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("no message")
 }
 
 /// What a cancelled attempt returns. Never shown: [`Asr::status`] reads the flag,
@@ -725,6 +766,31 @@ fn room_for_install(available: Option<u64>) -> Result<(), String> {
     }
 }
 
+/// True where the free-space count leaves out what the system would purge.
+///
+/// On Apple platforms `f_bavail` does not include purgeable space — caches and
+/// offloadable content the system clears on demand — so a phone that could fit
+/// the model can look full. The count that does include it is a Foundation
+/// resource key (`volumeAvailableCapacityForImportantUsage`), which needs
+/// Objective-C glue this crate does not have; so there the check advises.
+const ROOM_IS_ADVISORY: bool = cfg!(any(target_os = "ios", target_os = "macos"));
+
+/// [`room_for_install`], refusing only where the count can be trusted: where it
+/// is `advisory`, a shortfall is logged and the install goes ahead, and a write
+/// that really does not fit fails and is cleaned up as any failure is.
+fn enforce_room(available: Option<u64>, advisory: bool) -> Result<(), String> {
+    match room_for_install(available) {
+        Err(message) if advisory => {
+            eprintln!(
+                "[asr] {message} Going ahead anyway: this platform's count leaves out \
+                 space it would free on demand."
+            );
+            Ok(())
+        }
+        other => other,
+    }
+}
+
 /// The bytes an unprivileged process can still write on the filesystem holding
 /// `path`, or `None` when that cannot be asked.
 ///
@@ -771,9 +837,11 @@ fn free_bytes(_path: &Path) -> Option<u64> {
 /// time, so a purged model reads as not installed and can be fetched again.
 ///
 /// A model an earlier build put under `data_dir` is moved across rather than
-/// fetched again, unless the cache already holds one. If the move fails the old
-/// location is kept for this session, so an installed model keeps working and
-/// stays removable from the screen; the next launch tries again.
+/// fetched again — copied, when the two are on different filesystems — unless the
+/// cache already holds one; when that one is a complete install, the old copy is
+/// deleted. If the move fails the old location is kept for this session, so an
+/// installed model keeps working and stays removable from the screen; the next
+/// launch tries again.
 pub fn model_home(data_dir: Option<&Path>, cache_dir: Option<&Path>) -> Option<PathBuf> {
     let Some(cache_dir) = cache_dir else {
         return data_dir.map(Path::to_path_buf);
@@ -782,10 +850,25 @@ pub fn model_home(data_dir: Option<&Path>, cache_dir: Option<&Path>) -> Option<P
         return Some(cache_dir.to_path_buf());
     };
     let (old, new) = (data_dir.join("asr"), cache_dir.join("asr"));
-    if !old.is_dir() || new.exists() {
+    if !old.is_dir() {
         return Some(cache_dir.to_path_buf());
     }
-    let moved = fs::create_dir_all(cache_dir).and_then(|()| fs::rename(&old, &new));
+    if new.exists() {
+        // A complete install in the cache makes the old copy up to 240 MB of
+        // the same thing in the backup. Anything less and the old copy may be
+        // the only one that works, so it stays.
+        if Asr::new(Some(cache_dir)).is_installed() {
+            if let Err(error) = fs::remove_dir_all(&old) {
+                eprintln!(
+                    "[asr] could not remove the older copy {}: {error}",
+                    old.display()
+                );
+            }
+        }
+        return Some(cache_dir.to_path_buf());
+    }
+    let moved = fs::create_dir_all(cache_dir)
+        .and_then(|()| move_model(&old, &new, &|a, b| fs::rename(a, b)));
     match moved {
         Ok(()) => Some(cache_dir.to_path_buf()),
         Err(error) => {
@@ -797,6 +880,54 @@ pub fn model_home(data_dir: Option<&Path>, cache_dir: Option<&Path>) -> Option<P
             Some(data_dir.to_path_buf())
         }
     }
+}
+
+/// Move the model directory `old` to `new`, through `rename`.
+///
+/// A rename cannot cross filesystems, and a cache directory on another volume
+/// is not unusual on a desktop. Then the tree is copied to a sibling of `new`
+/// and renamed into place, so a copy cut short is never where [`Asr::status`]
+/// would read it as an install; the old copy is deleted only once the new one
+/// is in place, and failing to delete it is logged rather than undoing the move
+/// — the next launch removes it (see [`model_home`]).
+fn move_model(
+    old: &Path,
+    new: &Path,
+    rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match rename(old, new) {
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+            let temporary = new.with_file_name(".asr-moving");
+            let _ = fs::remove_dir_all(&temporary);
+            if let Err(error) = copy_tree(old, &temporary).and_then(|()| rename(&temporary, new)) {
+                let _ = fs::remove_dir_all(&temporary);
+                return Err(error);
+            }
+            if let Err(error) = fs::remove_dir_all(old) {
+                eprintln!(
+                    "[asr] moved, but could not remove {}: {error}",
+                    old.display()
+                );
+            }
+            Ok(())
+        }
+        other => other,
+    }
+}
+
+/// Copy a directory tree. The model archive holds only directories and files.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 /// The recogniser, once the model has been loaded.
@@ -1381,12 +1512,164 @@ mod tests {
         );
         assert!(Asr::new(Some(&cache)).status().installed);
 
-        // One already in the cache is not overwritten by an older copy.
+        // One already in the cache is not overwritten by an older copy — and the
+        // older copy goes, since it is up to 240 MB of the same thing in the backup.
         fs::create_dir_all(data.join("asr")).unwrap();
         fs::write(data.join("asr").join("stale"), b"old").unwrap();
         assert_eq!(model_home(Some(&data), Some(&cache)), Some(cache.clone()));
         assert!(Asr::new(Some(&cache)).status().installed);
+        assert!(
+            !data.join("asr").exists(),
+            "a complete install in the cache makes the backed-up copy redundant"
+        );
+
+        // But not when what the cache holds is not an install: then the old copy
+        // may be the only working one, and it stays.
+        fs::remove_file(cache.join("asr").join(MODEL.stem).join(MODEL_FILE)).unwrap();
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join(MODEL_FILE), b"model").unwrap();
+        assert_eq!(model_home(Some(&data), Some(&cache)), Some(cache.clone()));
+        assert!(old.join(MODEL_FILE).is_file());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_model_on_another_filesystem_is_copied_then_moved_into_place() {
+        // Issue #41: `rename` cannot cross filesystems, and a cache directory on
+        // another volume would otherwise leave the model in the backed-up data
+        // directory for good, with the move retried on every launch. The copy goes
+        // to a sibling first, so a copy cut short is never read as an install.
+        let base = std::env::temp_dir().join("hanzi-asr-exdev");
+        let _ = fs::remove_dir_all(&base);
+        let old = base.join("data").join("asr");
+        let new = base.join("cache").join("asr");
+        fs::create_dir_all(old.join(MODEL.stem)).unwrap();
+        fs::write(old.join(MODEL.stem).join(MODEL_FILE), b"model").unwrap();
+        fs::write(old.join(MODEL.stem).join(TOKENS_FILE), b"tokens").unwrap();
+        fs::create_dir_all(new.parent().unwrap()).unwrap();
+
+        let across_devices = |from: &Path, to: &Path| {
+            if from == old {
+                Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices))
+            } else {
+                fs::rename(from, to)
+            }
+        };
+        move_model(&old, &new, &across_devices).unwrap();
+        assert!(!old.exists(), "the backed-up copy is gone");
+        assert_eq!(
+            fs::read(new.join(MODEL.stem).join(MODEL_FILE)).unwrap(),
+            b"model"
+        );
+        assert_eq!(
+            fs::read(new.join(MODEL.stem).join(TOKENS_FILE)).unwrap(),
+            b"tokens"
+        );
+        let leftovers: Vec<_> = fs::read_dir(new.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            leftovers,
+            vec![std::ffi::OsString::from("asr")],
+            "no temporary left"
+        );
+
+        // Any other failure is reported and leaves both sides as they were.
+        fs::create_dir_all(&old).unwrap();
+        let refused = |_: &Path, _: &Path| Err(std::io::Error::other("no"));
+        let _ = fs::remove_dir_all(&new);
+        assert!(move_model(&old, &new, &refused).is_err());
+        assert!(old.is_dir() && !new.exists());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// A source that fails the way a library bug or a corrupt stream can: by
+    /// panicking on the install thread.
+    struct Panics;
+
+    impl Read for Panics {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            panic!("the decoder fell over");
+        }
+    }
+
+    #[test]
+    fn a_panic_on_the_install_thread_ends_the_download_as_a_failure() {
+        // Without this the panic unwound past the code that records the outcome,
+        // the state stayed "downloading" for the life of the process, and the
+        // screen polled — and showed Cancelling… — forever.
+        let directory = std::env::temp_dir().join("hanzi-asr-panic");
+        let _ = fs::remove_dir_all(&directory);
+        let asr = Asr::new(Some(&directory));
+        let root = asr.root.clone().unwrap();
+        let source = || -> Result<Box<dyn Read>, String> { Ok(Box::new(Panics)) };
+        let outcome = fetch_and_unpack_from(&root, &asr.install, &source);
+        let message = outcome.expect_err("a panic is a failed install");
+        assert!(message.contains("the decoder fell over"), "{message}");
+        assert!(
+            !root.join(".staging").exists(),
+            "and it is cleaned up like one"
+        );
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn the_free_space_check_only_advises_where_the_count_leaves_out_purgeable_space() {
+        // On Apple platforms `f_bavail` does not count what the system would purge
+        // to make room, so a phone that could fit the model can look full. There the
+        // shortfall is logged and the install goes ahead; elsewhere it is refused.
+        assert!(enforce_room(Some(1), false).is_err());
+        assert!(enforce_room(Some(1), true).is_ok());
+        assert!(enforce_room(Some(u64::MAX), false).is_ok());
+        assert!(enforce_room(None, false).is_ok());
+        assert_eq!(
+            ROOM_IS_ADVISORY,
+            cfg!(any(target_os = "ios", target_os = "macos"))
+        );
+    }
+
+    #[test]
+    fn the_model_is_not_removed_from_under_a_download() {
+        let directory = std::env::temp_dir().join("hanzi-asr-remove-busy");
+        let _ = fs::remove_dir_all(&directory);
+        let stem = directory.join("asr").join(MODEL.stem);
+        fs::create_dir_all(&stem).unwrap();
+        fs::write(stem.join(MODEL_FILE), b"model").unwrap();
+        fs::write(stem.join(TOKENS_FILE), b"tokens").unwrap();
+        let asr = Asr::new(Some(&directory));
+        hold_install(&asr).state = InstallState::Downloading;
+
+        let refused = asr.remove().expect_err("a download is running");
+        assert!(
+            refused.contains("Cancel"),
+            "it says what to do instead: {refused}"
+        );
+        assert!(stem.join(MODEL_FILE).is_file(), "nothing was deleted");
+        assert_eq!(hold_install(&asr).state, InstallState::Downloading);
+
+        hold_install(&asr).state = InstallState::Absent;
+        asr.remove().unwrap();
+        assert!(!stem.exists());
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn having_nowhere_to_keep_the_model_is_worded_for_either_app() {
+        // Tone Trainer keeps no study data, and its model lives in the cache
+        // directory, so a sentence about study data not being saved was wrong
+        // there.
+        let asr = Asr::new(None);
+        let detail = asr.status().detail;
+        let refused = asr.install().unwrap_err();
+        for text in [&detail, &refused] {
+            assert!(!text.contains("study data"), "{text}");
+            assert!(!text.contains("data directory"), "{text}");
+            assert!(text.contains("nowhere to keep the model"), "{text}");
+        }
     }
 }
