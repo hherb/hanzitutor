@@ -466,8 +466,9 @@ impl AppState {
         // new or due: copying the guide is not remembering the character, and a
         // legible trace would otherwise lengthen the interval of something the
         // learner may not be able to write. It is answered like an attempt inside
-        // the interval, with the card's date when there is a card, and with what
-        // the schedule's file has to say by the same rule as any other response.
+        // the interval, with the card's date when there is a card — and with the
+        // schedule file's notice by the same rule `record_attempt` follows, since
+        // it never reaches that call.
         if traced {
             let next_due = store.store().card(ch).map(|card| card.due.clone());
             return Ok(GradedAttempt {
