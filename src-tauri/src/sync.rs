@@ -84,7 +84,7 @@
 //! nothing, so it cannot be a second sync by accident.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use hanzi_store::Db;
@@ -368,7 +368,7 @@ impl SyncService {
 
     /// The gate, taken for the whole of a pass.
     fn take_gate(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
-        self.gate.try_lock().map_err(|_| {
+        try_hold(&self.gate).ok_or_else(|| {
             "A sync is already running. Its result will appear here when it finishes.".to_string()
         })
     }
@@ -519,7 +519,7 @@ impl SyncService {
         // Disconnecting underneath a sync in flight would revoke the token the sync
         // is using and clear the record it is about to write. Saying so is better
         // than a race, and the learner only has to press it again.
-        let Ok(_running) = self.gate.try_lock() else {
+        let Some(_running) = try_hold(&self.gate) else {
             return self.after("A sync is running. Press Disconnect again in a moment.");
         };
         // A switch pressed while this runs would otherwise write the item back after
@@ -528,7 +528,7 @@ impl SyncService {
         // the gate: the switch can be waiting on a fingerprint prompt for as long as
         // the learner leaves it open, and this would hold the gate all that time —
         // so a Sync pressed meanwhile would be told one was already running.
-        let Ok(_switching) = self.switching.try_lock() else {
+        let Some(_switching) = try_hold(&self.switching) else {
             return self.after(
                 "The fingerprint setting is being changed. Press Disconnect again in a moment.",
             );
@@ -636,7 +636,7 @@ impl SyncService {
         }
         // Two at once is not a failure, and must not be reported as one: the other
         // pass is doing the same work and will report for both of them.
-        let Ok(_running) = self.gate.try_lock() else {
+        let Some(_running) = try_hold(&self.gate) else {
             return AutoSync::Skipped {
                 reason: "A sync is already running.".to_string(),
             };
@@ -1552,11 +1552,40 @@ impl TokenStore for NoSecureStore {
     }
 }
 
+/// A lock taken only if it is free. Busy is `None`; a lock left poisoned by a
+/// panic in an earlier holder is taken anyway, as [`SyncService::take_switch`]
+/// does — the `()` it guards cannot be half-written, and refusing would leave
+/// Sync or Disconnect answering "busy" until the app restarts.
+fn try_hold(lock: &Mutex<()>) -> Option<MutexGuard<'_, ()>> {
+    match lock.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
+
 // ---- tests -----------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A panic while the gate or the switch was held must not leave Sync and
+    /// Disconnect answering "busy" until the app restarts.
+    #[test]
+    fn a_lock_left_poisoned_by_a_panic_is_taken_and_a_held_one_is_not() {
+        let lock = Arc::new(Mutex::new(()));
+        let poisoner = Arc::clone(&lock);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoner.lock().unwrap();
+            panic!("a holder that panicked");
+        })
+        .join();
+        assert!(lock.is_poisoned());
+        let taken = try_hold(&lock);
+        assert!(taken.is_some(), "a poisoned lock is still free to take");
+        assert!(try_hold(&lock).is_none(), "and a held one is busy");
+    }
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 

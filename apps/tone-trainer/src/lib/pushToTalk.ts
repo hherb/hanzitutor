@@ -98,9 +98,12 @@ export class PushToTalk<R> {
       // device underneath a cancel that is about to close it.
       const early = attempt === this.#attempt;
       this.#released = false;
-      await this.#io.cancel().catch(() => {
-        // Nothing open is what was wanted.
-      });
+      try {
+        await this.#io.cancel();
+      } catch {
+        // Nothing open is what was wanted — and a cancel that throws rather than
+        // rejects must not leave the phase at `starting` for good.
+      }
       this.#set("idle");
       return early ? { kind: "released-early" } : { kind: "dropped" };
     }

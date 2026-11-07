@@ -160,6 +160,13 @@
       // backend's "a later phrase was asked for" — is about a phrase the learner
       // has moved on from.
       if (mine !== tap) return;
+      // The backend numbers taps by when they reach it, so two taps close together
+      // can arrive the other way round and the latest be the one told it was
+      // overtaken. That is not a failure worth a message.
+      if (String(cause).includes("A later phrase was asked for")) {
+        playingId = null;
+        return;
+      }
       // A clip that will not play is worth saying out loud rather than leaving a
       // row that looks like it played and made no sound.
       error = `Could not play ${phrase.text}: ${cause}`;

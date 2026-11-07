@@ -52,6 +52,22 @@ describe.each([
   ["the full app", here.PushToTalk],
   ["the tone trainer", trainer.PushToTalk],
 ] as const)("push-to-talk in %s", (_, PushToTalk) => {
+  it("returns to idle when a cancel throws instead of rejecting", async () => {
+    const fake = backend();
+    fake.io.cancel = () => {
+      fake.calls.push("cancel");
+      throw new Error("the bridge went away");
+    };
+    const talk = new PushToTalk<string>(fake.io, () => {});
+
+    const pressed = talk.press();
+    await talk.release();
+    fake.starts[0].resolve();
+    expect(await pressed).toEqual({ kind: "released-early" });
+    expect(talk.phase).toBe("idle");
+    expect(fake.calls).toEqual(["start", "cancel"]);
+  });
+
   it("records between press and release, and hands back the judgement", async () => {
     const fake = backend();
     const phases: string[] = [];
