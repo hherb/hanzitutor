@@ -8,6 +8,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { foldForSentence, normaliseTyped } from "./ime";
 import type {
   AppInfo,
   BandView,
@@ -160,14 +161,23 @@ export function setSection(section: Section): Promise<string | null> {
   return invoke<string | null>("set_section", { section });
 }
 
-/** Check a typed reading, accepting either romanisation. */
+/**
+ * Check a typed reading, accepting either romanisation.
+ *
+ * What was typed is folded first (`normaliseTyped` in `ime.ts`), so romaji an IME
+ * typed in full width — `ｓｈｉ` — is read as the `shi` it is; Rust lower-cases ASCII
+ * and nothing else. The same is done for every answer graded as a reading below.
+ */
 export function checkReading(ch: string, typed: string): Promise<ReadingCheck> {
-  return invoke<ReadingCheck>("check_reading", { ch, typed });
+  return invoke<ReadingCheck>("check_reading", { ch, typed: normaliseTyped(typed) });
 }
 
-/** Turn typed romaji into kana. */
+/** Turn typed romaji into kana, full-width romaji included. */
 export function romajiToKana(input: string, script?: ScriptName): Promise<string> {
-  return invoke<string>("romaji_to_kana", { input, script: script ?? null });
+  return invoke<string>("romaji_to_kana", {
+    input: normaliseTyped(input),
+    script: script ?? null,
+  });
 }
 
 /**
@@ -324,7 +334,7 @@ export function wordOfText(text: string, reading?: string | null): Promise<Word>
  * learner who can read kana should not have to transliterate to answer.
  */
 export function checkWord(text: string, reading: string, typed: string): Promise<ReadingCheck> {
-  return invoke<ReadingCheck>("check_word", { text, reading, typed });
+  return invoke<ReadingCheck>("check_word", { text, reading, typed: normaliseTyped(typed) });
 }
 
 /** The passages a learner can read. */
@@ -449,7 +459,11 @@ export function recordGrammarProduction(
   example: number,
   typed: string,
 ): Promise<GrammarProductionOutcome> {
-  return invoke<GrammarProductionOutcome>("record_grammar_production", { point, example, typed });
+  return invoke<GrammarProductionOutcome>("record_grammar_production", {
+    point,
+    example,
+    typed: normaliseTyped(typed),
+  });
 }
 
 /**
@@ -484,12 +498,22 @@ export function grammarCompositionSize(): Promise<CompositionSize> {
  * `record_grammar_composition` reports only what the machine can see — whether the
  * pattern's own text is in the sentence, whether some of it is not Japanese script,
  * which characters the course does not teach, and whether it is a sentence at all.
+ *
+ * The sentence goes through `foldForSentence` (`ime.ts`), **not** `normaliseTyped`:
+ * it is the learner's own writing and is kept, and NFKC would turn its full-width `？`
+ * and `！` into ASCII. Only full-width letters and digits, typographic apostrophes and
+ * half-width katakana are folded, because the reader in Rust cannot read them. The
+ * same fold is applied to the two other commands that read the sentence, so speaking
+ * it and asking the model about it see what was kept.
  */
 export function recordGrammarComposition(
   point: string,
   typed: string,
 ): Promise<CompositionOutcome> {
-  return invoke<CompositionOutcome>("record_grammar_composition", { point, typed });
+  return invoke<CompositionOutcome>("record_grammar_composition", {
+    point,
+    typed: foldForSentence(typed),
+  });
 }
 
 /**
@@ -526,7 +550,7 @@ export function grammarLinks(id: string): Promise<GrammarLinks> {
  * widened it).
  */
 export function speakSentence(typed: string): Promise<void> {
-  return invoke<void>("speak_sentence", { typed });
+  return invoke<void>("speak_sentence", { typed: foldForSentence(typed) });
 }
 
 /**
@@ -568,7 +592,7 @@ export function saveModelSettings(
  * nothing about it is written to any of the app's files.
  */
 export function checkSentence(point: string, typed: string): Promise<ModelVerdict> {
-  return invoke<ModelVerdict>("check_sentence", { point, typed });
+  return invoke<ModelVerdict>("check_sentence", { point, typed: foldForSentence(typed) });
 }
 
 /**
