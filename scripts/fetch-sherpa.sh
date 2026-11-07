@@ -160,7 +160,13 @@ esac
 # `fetch_checked` writes `$DEST/<archive>.part`, and curl cannot create the
 # directory it is told to write into. Only the host branch used to make it, so a
 # fresh checkout's first `--android` or `--ios` failed at the download.
+#
+# And removed again if nothing usable ever lands in it: `with-cargo-env.sh` reads
+# what is in here to decide what to point the build at, and an empty directory
+# left by a refused or failed run is not something it should have to second-guess.
+# `rmdir` only removes an empty directory, so a successful run is untouched.
 mkdir -p "$DEST"
+trap 'rmdir "$DEST" 2>/dev/null || true' EXIT
 
 # What `uname` says, as the key the table is written in.
 host_key() {

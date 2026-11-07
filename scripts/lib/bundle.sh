@@ -34,26 +34,70 @@ bundle_conf_field() {
   sed -n "s/.*\"$2\": *\"\\([^\"]*\\)\".*/\\1/p" "$1" | head -n 1 || true
 }
 
-# bundle_dir <repo> <app-dir>
+# bundle_target_dir <repo>
 #
-# The `release/bundle` directory the build wrote: under the cargo target
-# directory `with-cargo-env.sh` points the build at — an absolute
-# `$CARGO_TARGET_DIR` if one is set, otherwise `<repo>/.cargo-target` — or else
-# the app's own `src-tauri/target`. A *relative* `$CARGO_TARGET_DIR` is not
-# guessed at: cargo resolves it against whichever directory the Tauri CLI runs it
-# from, which is the CLI's business, so it falls through to the two defaults.
-bundle_dir() {
-  local repo="$1" app_dir="$2" target="" dir
+# The cargo target directory a build will use, as an absolute path:
+# `$CARGO_TARGET_DIR` when it is absolute; a *relative* one taken against the
+# repository root, which is how CI (`CARGO_TARGET_DIR: .cargo-target`) and
+# `with-cargo-env.sh`'s own default mean it; otherwise `<repo>/.cargo-target`.
+#
+# The build scripts **export** this before they build, and that is what makes it
+# true rather than a guess. Left relative, cargo would resolve it against
+# whichever directory the Tauri CLI happens to run it from — the scripts `cd`
+# into the app, and the CLI may move again — while the lookup afterwards looked
+# somewhere else, and could find a stale bundle there instead of none.
+bundle_target_dir() {
+  local repo="$1"
   case "${CARGO_TARGET_DIR:-}" in
-    /*) target="$CARGO_TARGET_DIR/release/bundle" ;;
+    "") printf '%s\n' "$repo/.cargo-target" ;;
+    /*) printf '%s\n' "$CARGO_TARGET_DIR" ;;
+    *) printf '%s\n' "$repo/${CARGO_TARGET_DIR#./}" ;;
   esac
-  for dir in "$target" "$repo/.cargo-target/release/bundle" "$app_dir/src-tauri/target/release/bundle"; do
-    if [ -n "$dir" ] && [ -d "$dir" ]; then
-      printf '%s\n' "$dir"
-      return 0
+}
+
+# bundle_dir <repo>
+#
+# The `release/bundle` directory under `bundle_target_dir`, if the build made
+# one. Nowhere else: with the target directory exported, the build cannot have
+# written anywhere else, and any other directory that happens to hold a bundle
+# holds an old one.
+bundle_dir() {
+  local dir
+  dir="$(bundle_target_dir "$1")/release/bundle"
+  if [ -d "$dir" ]; then
+    printf '%s\n' "$dir"
+  fi
+  return 0
+}
+
+# bundle_args_want_dmg [tauri build arguments...]
+#
+# Whether a `tauri build` with these arguments makes a disk image. Every app's
+# `tauri.conf.json` lists `["app", "dmg"]`, so it does unless `--bundles`/`-b`
+# narrows the set and leaves `dmg` out. Returns 0 for yes, 1 for no.
+bundle_args_want_dmg() {
+  local arg narrowed=0 in_list=0 wants=1
+  for arg in "$@"; do
+    case "$arg" in
+      -b | --bundles)
+        narrowed=1 in_list=1 wants=0
+        continue
+        ;;
+      --bundles=*)
+        narrowed=1 in_list=0 wants=0
+        case "${arg#--bundles=}" in *dmg*) wants=1 ;; esac
+        continue
+        ;;
+      -*) in_list=0 ;;
+    esac
+    if [ "$in_list" = 1 ]; then
+      case "$arg" in *dmg*) wants=1 ;; esac
     fi
   done
-  return 0
+  if [ "$narrowed" = 0 ]; then
+    return 0
+  fi
+  [ "$wants" = 1 ]
 }
 
 # bundle_app <bundle-dir> <productName>

@@ -131,7 +131,10 @@ tauri() {
 
 # shellcheck source-path=SCRIPTDIR source=lib/bundle.sh
 . "$REPO/scripts/lib/bundle.sh"
-APP_DIR="${APP_ROOT:-$ROOT}"
+# Absolute before the build, so the build and the lookup after it cannot
+# disagree about where the bundle went — see `bundle_target_dir`.
+CARGO_TARGET_DIR="$(bundle_target_dir "$REPO")"
+export CARGO_TARGET_DIR
 PRODUCT_NAME="$(bundle_conf_field "$ROOT/src-tauri/tauri.conf.json" productName)"
 if [ -z "$PRODUCT_NAME" ]; then
   echo "error: no productName in $ROOT/src-tauri/tauri.conf.json" >&2
@@ -145,7 +148,7 @@ APPLE_SIGNING_IDENTITY="$APPLE_APPSTORE_SIGNING_IDENTITY" tauri build -b app
 # Only now: on a fresh target directory the bundle directory does not exist
 # until the build above has made it, and looking it up first is what made this
 # script fail a build that had succeeded. See `scripts/lib/bundle.sh`.
-BUNDLE="$(bundle_dir "$REPO" "$APP_DIR")"
+BUNDLE="$(bundle_dir "$REPO")"
 if [ -z "$BUNDLE" ]; then
   echo "error: could not find the bundle directory after the build." >&2
   exit 1

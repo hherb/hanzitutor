@@ -101,71 +101,10 @@ KANJIVG="https://raw.githubusercontent.com/KanjiVG/kanjivg/$KANJIVG_REV"
 JMDICT_SIMPLIFIED="3.6.2+20260928191014"
 JMDICT_FURIGANA="2.3.1+2026-09-25"
 
-# How every download here retries. `raw.githubusercontent.com` resets the
-# connection (`curl: (56)`) rather than answering when it is asked for hundreds of
-# files at once — which is exactly what the kanji cross-check does — and a retry
-# is the whole difference between "the file is not there" and "the fetch was
-# unlucky". Deliberately *not* `--retry-all-errors`: a genuine 404 should stay a
-# 404, because a missing file is something the caller diagnoses properly.
-#
-# Written into both functions rather than shared through a variable, because
-# `fetch_quiet` is exported to a subshell for the per-character fetches and an
-# exported function does not carry a variable with it.
-
-# macOS ships `shasum`; coreutils gives `sha256sum`. Same digest either way.
-if command -v sha256sum >/dev/null 2>&1; then
-  hash_of() { sha256sum "$1" | cut -d' ' -f1; }
-else
-  hash_of() { shasum -a 256 "$1" | cut -d' ' -f1; }
-fi
-
-# fetch <url> <destination> <sha256>
-#
-# Skips a destination that is already there, but checks it either way: a copy
-# left by an older, unpinned run of this script is exactly what the digest is
-# for. A fresh download that does not match is deleted; one that was already on
-# disk is left alone (it may be a committed file) and named, so the person
-# running this decides. An empty digest is only for `JMdict_e.gz` — see the
-# header.
-fetch() {
-  local url="$1" dest="$2" want="$3" got
-  if [ -s "$dest" ]; then
-    echo "  have  $(basename "$dest")  ($(du -h "$dest" | cut -f1))"
-  else
-    echo "  get   $(basename "$dest")"
-    if ! curl --fail --location --silent --show-error --retry 4 --retry-delay 1 --retry-connrefused "$url" --output "$dest.partial"; then
-      rm -f "$dest.partial"
-      echo "        failed: $url" >&2
-      return 1
-    fi
-    got="$(hash_of "$dest.partial")"
-    if [ -n "$want" ] && [ "$got" != "$want" ]; then
-      rm -f "$dest.partial"
-      echo "error: $(basename "$dest") did not match its recorded digest; deleted." >&2
-      echo "  from     $url" >&2
-      echo "  expected $want" >&2
-      echo "  got      $got" >&2
-      echo "Re-record the digest in this script only after reading what changed." >&2
-      return 1
-    fi
-    mv "$dest.partial" "$dest"
-    echo "        -> $(du -h "$dest" | cut -f1)"
-  fi
-
-  if [ -z "$want" ]; then
-    return 0
-  fi
-  got="$(hash_of "$dest")"
-  if [ "$got" != "$want" ]; then
-    echo "error: $dest does not match its recorded digest." >&2
-    echo "  expected $want" >&2
-    echo "  got      $got" >&2
-    echo "It was already on disk, so it was left alone. If it came from an earlier," >&2
-    echo "unpinned run of this script, delete it and re-run; if it is committed," >&2
-    echo "run git diff on it: the committed copy is what the digest was recorded from." >&2
-    return 1
-  fi
-}
+# `fetch` and `hash_of`: a download checked against a recorded SHA-256, and how it
+# retries. Shared so the tests can drive it; see the file for both.
+# shellcheck source-path=SCRIPTDIR source=lib/fetch.sh
+. "$ROOT/scripts/lib/fetch.sh"
 
 echo "fetching datasets into $RAW"
 fetch "$MMAH/graphics.txt"   "$RAW/graphics.txt" \
@@ -238,6 +177,11 @@ fetch "$GOOGLEFONTS/NotoSansSC%5Bwght%5D.ttf" "$FONTS/NotoSansSC-VF.ttf" \
 # already there, and a failure is a warning rather than a stop, because a missing
 # SVG is something `prepare-kana`/`prepare-kanji` diagnose properly — it knows
 # which characters it needs and which it could not check.
+#
+# It retries the way `fetch` does (see `lib/fetch.sh`), with the flags written out
+# again rather than shared through a variable: it is exported to a subshell for
+# the parallel fetches below, and an exported function does not carry a variable
+# with it.
 fetch_quiet() {
   local url="$1" dest="$2"
   [ -s "$dest" ] && return 0
@@ -391,7 +335,14 @@ if [ ! -s "$JD_JSON" ]; then
   mv "$RAW/jmdict-eng-${JMDICT_SIMPLIFIED%%+*}.json" "$JD_JSON"
 fi
 JMDICT_E_URL="https://www.edrdg.org/pub/Nihongo/JMdict_e.gz"
-fetch "$JMDICT_E_URL" "$RAW/JMdict_e.gz" "${JMDICT_E_SHA256:-}"
+# A mismatch against `JMDICT_E_SHA256` is not the usual one: the digest is yours,
+# not this script's, and re-downloading cannot help, because upstream will only
+# ever serve today's file.
+fetch "$JMDICT_E_URL" "$RAW/JMdict_e.gz" "${JMDICT_E_SHA256:-}" \
+  "JMDICT_E_SHA256 names an older JMdict_e.gz, and EDRDG rebuilds the file daily
+and keeps no archive, so re-downloading cannot produce it. Restore the copy you
+recorded that digest from into data/raw/, or unset JMDICT_E_SHA256 to take
+today's file (its digest and date are then recorded in JMdict_e.PROVENANCE.txt)."
 # What arrived, since nothing upstream will say later. Rewritten on every run, so
 # it always describes the copy that is on disk.
 JMDICT_E_SHA="$(hash_of "$RAW/JMdict_e.gz")"
