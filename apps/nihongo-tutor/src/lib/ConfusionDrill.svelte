@@ -237,6 +237,9 @@
             more often until you stop missing it.
           {/if}
         </p>
+        {#if tally.warning}
+          <p class="warn" role="status">{tally.warning}</p>
+        {/if}
       {/if}
       <div class="after">
         <button class="next" onclick={next} disabled={busy}>Next</button>
@@ -366,6 +369,14 @@
     color: var(--muted);
     font-size: 0.8rem;
     max-width: 62ch;
+  }
+
+  /* A warning about the learner's file rather than about the answer: the answer
+     stands, and this says what was not remembered. */
+  .warn {
+    margin: 0.4rem 0 0;
+    font-size: 0.85rem;
+    color: var(--bad);
   }
   .after {
     display: flex;

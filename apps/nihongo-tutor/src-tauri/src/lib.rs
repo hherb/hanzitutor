@@ -51,6 +51,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::{
     CompositionStore, ConfusionStore, GrammarStore, ModelStore, Prefs, PrefsStore, ReviewStore,
+    Saved,
 };
 use tauri::{Manager, State};
 
@@ -205,8 +206,6 @@ impl AppState {
             .lock()
             .expect("the preference store is not poisoned")
             .set_section(section)
-            .err()
-            .map(|err| format!("the section could not be remembered: {err}"))
     }
 
     /// The speaker, shared rather than borrowed.
@@ -463,15 +462,13 @@ impl AppState {
             .review
             .lock()
             .expect("the review store is not poisoned");
-        // A schedule that will not be written is a standing condition, not a
-        // per-attempt one; it is said once and repeated on every grade rather than
-        // hidden, because the learner is losing work either way.
-        let session = store.warning().map(str::to_string);
         // A traced attempt never reaches the scheduler, whether the character is
         // new or due: copying the guide is not remembering the character, and a
         // legible trace would otherwise lengthen the interval of something the
         // learner may not be able to write. It is answered like an attempt inside
-        // the interval, with the card's date when there is a card.
+        // the interval, with the card's date when there is a card — and with the
+        // schedule file's notice by the same rule `record_attempt` follows, since
+        // it never reaches that call.
         if traced {
             let next_due = store.store().card(ch).map(|card| card.due.clone());
             return Ok(GradedAttempt {
@@ -480,19 +477,18 @@ impl AppState {
                 scheduled: false,
                 traced,
                 next_due,
-                warning: session,
+                warning: store.notice(),
             });
         }
+        // What the schedule's file has to say — "kept aside" once, "not remembered"
+        // on every grade — is already joined to the attempt's own outcome by the
+        // store, so a failed write cannot hide it and it cannot hide a failed write.
         let (scheduled, next_due, warning) = match store.record_attempt(ch, report.overall) {
-            Ok(outcome) => (
-                outcome.counted,
-                Some(outcome.due),
-                outcome.warning.or(session),
-            ),
+            Ok(outcome) => (outcome.counted, Some(outcome.due), outcome.warning),
             // The attempt could not be counted at all. The grade still stands: a
             // verdict the learner can read is worth more than an error that hides
             // it, and the score they just earned did happen.
-            Err(err) => (false, None, Some(err).or(session)),
+            Err(err) => (false, None, Some(err)),
         };
         Ok(GradedAttempt {
             report,
@@ -517,7 +513,7 @@ impl AppState {
     /// character screen carries the head forms with it. `None` is the whole
     /// schedule, for a caller that is not one of the two screens.
     pub fn review_queue(&self, limit: usize, section: Option<Section>) -> ReviewQueueView {
-        let store = self
+        let mut store = self
             .review
             .lock()
             .expect("the review store is not poisoned");
@@ -528,7 +524,7 @@ impl AppState {
             cards: queue.cards,
             due: queue.due,
             next_due: queue.next_due,
-            warning: store.warning().map(str::to_string),
+            warning: store.notice(),
         }
     }
 
@@ -652,18 +648,24 @@ impl AppState {
             ));
         }
         let key = found.key();
-        let tally = self
+        // A failed save is a warning on the tally and not an error instead of it:
+        // the answer has been counted in memory either way, and an error is what
+        // made a screen offer the same answer again — counting it twice.
+        let Saved {
+            value: tally,
+            warning,
+        } = self
             .drill
             .lock()
             .expect("the drill's store is not poisoned")
-            .record(&key, picked == target)
-            .map_err(|err| format!("the answer was counted but could not be saved: {err}"))?;
+            .record(&key, picked == target);
         Ok(DrillTally {
             pair: key,
             asked: tally.asked,
             correct: tally.correct,
             wrong: tally.wrong,
             weight: tally.weight(),
+            warning,
         })
     }
 
@@ -739,18 +741,23 @@ impl AppState {
         if self.grammar.get(picked).is_none() {
             return Err(format!("{picked:?} is not a pattern of this course"));
         }
-        let tally = self
+        // A failed save travels beside the tally, for the reason the kana drill's
+        // does.
+        let Saved {
+            value: tally,
+            warning,
+        } = self
             .grammar_drill
             .lock()
             .expect("the grammar drill's store is not poisoned")
-            .record(point, picked == point)
-            .map_err(|err| format!("the answer was counted but could not be saved: {err}"))?;
+            .record(point, picked == point);
         Ok(GrammarTally {
             point: point.to_string(),
             asked: tally.asked,
             correct: tally.correct,
             wrong: tally.wrong,
             weight: tally.weight(),
+            warning,
         })
     }
 
@@ -806,18 +813,26 @@ impl AppState {
         let verdict = grammar_practice::verdict_for(pattern, example, typed).ok_or_else(|| {
             format!("sentence {example} of {point:?} is not one this exercise asks about")
         })?;
-        let tally = self
+        // The verdict is the lesson, and the learner is owed it once the answer has
+        // been counted — which it has, in memory, whether or not the file took it. A
+        // failed save used to replace the whole outcome with an error: the lesson
+        // never reached the screen, and the learner who answered again was counted
+        // again. It is a warning on the record now, which is the part that was lost.
+        let Saved {
+            value: tally,
+            warning,
+        } = self
             .grammar_drill
             .lock()
             .expect("the grammar drill's store is not poisoned")
-            .record(&verdict.point, verdict.correct)
-            .map_err(|err| format!("the answer was counted but could not be saved: {err}"))?;
+            .record(&verdict.point, verdict.correct);
         let record = GrammarTally {
             point: verdict.point.clone(),
             asked: tally.asked,
             correct: tally.correct,
             wrong: tally.wrong,
             weight: tally.weight(),
+            warning,
         };
         Ok(GrammarProductionOutcome { verdict, record })
     }
@@ -879,16 +894,20 @@ impl AppState {
             .get(point)
             .ok_or_else(|| format!("{point:?} is not a pattern of this course"))?;
         let verdict = composition::verdict_for(pattern, &self.kanji, typed);
-        let mut warning = None;
         let mut store = self
             .compositions
             .lock()
             .expect("the composition store is not poisoned");
-        if verdict.kept {
-            if let Err(err) = store.add(&verdict.point, &verdict.text, &now_iso8601()) {
-                warning = Some(format!("the sentence was kept but could not be saved: {err}"));
-            }
-        }
+        // A sentence that was not kept wrote nothing, but what the store has to say
+        // about its file is still news — a learner whose sentences are not being
+        // remembered should hear it before they write the one that would have been.
+        let warning = if verdict.kept {
+            store
+                .add(&verdict.point, &verdict.text, &now_iso8601())
+                .warning
+        } else {
+            store.notice()
+        };
         let written = store
             .log()
             .sentences(&verdict.point)
@@ -927,17 +946,15 @@ impl AppState {
     /// is: nothing on a screen needs it, and a value that never crosses the boundary
     /// cannot be read out of a webview's memory by anything that gets in.
     pub fn model_status(&self) -> ModelStatus {
-        let settings = self
-            .model
-            .lock()
-            .expect("the model store is not poisoned")
-            .settings()
-            .clone();
+        let mut store = self.model.lock().expect("the model store is not poisoned");
+        let settings = store.settings().clone();
         ModelStatus {
             endpoint: settings.endpoint.clone(),
             model: settings.model.clone(),
             key_set: settings.key.as_deref().is_some_and(|key| !key.trim().is_empty()),
             configured: settings.configured(),
+            warning: store.notice(),
+            key_notice: None,
         }
     }
 
@@ -946,11 +963,17 @@ impl AppState {
     /// `key` of `None` means **leave the stored key alone**, which is what the screen
     /// sends when the learner did not retype it: the field shows a placeholder rather
     /// than the secret, so an empty field is not a request to forget it. `Some("")`
-    /// is that request, and is how a key is removed.
+    /// is that request, and is how a key is removed. "Alone" holds only while the
+    /// endpoint keeps its origin: a stored key does not follow the address to another
+    /// scheme, host or port, and the status's `key_notice` says it was left behind
+    /// (`crate::model::settings_to_save` has the rule).
     ///
     /// The address is validated here rather than at the first sentence: a scheme this
-    /// client cannot speak is a typo worth hearing about while the learner is looking
-    /// at the field they typed it into.
+    /// client cannot speak, or a key that would cross the internet over plain
+    /// `http://`, is worth hearing about while the learner is looking at the field they
+    /// typed it into. That is the only error, and it leaves the stored settings as they
+    /// were: settings that were accepted but could not be written come back as the
+    /// status, with `warning` saying so, because this session is using them either way.
     pub fn save_model_settings(
         &self,
         endpoint: &str,
@@ -961,32 +984,25 @@ impl AppState {
             .model
             .lock()
             .expect("the model store is not poisoned");
-        let stored = store.settings().key.clone();
-        let settings = crate::model::ModelSettings {
-            endpoint: endpoint.trim().to_string(),
-            model: model.trim().to_string(),
-            key: match key {
-                Some(typed) => {
-                    let typed = typed.trim().to_string();
-                    (!typed.is_empty()).then_some(typed)
-                }
-                None => stored,
-            },
-        };
+        let (settings, key_notice) =
+            crate::model::settings_to_save(store.settings(), endpoint, model, key);
         settings.validate()?;
         // The status is built from the settings in hand rather than by asking
         // `model_status`, which would take this same lock again — `std::sync::Mutex` is
         // not reentrant, and the first version of this deadlocked the moment anything
         // saved an endpoint.
-        let status = ModelStatus {
+        let mut status = ModelStatus {
             endpoint: settings.endpoint.clone(),
             model: settings.model.clone(),
             key_set: settings.key.is_some(),
             configured: settings.configured(),
+            warning: None,
+            key_notice,
         };
-        store
-            .save(settings)
-            .map_err(|err| format!("the settings were kept but could not be saved: {err}"))?;
+        // A failed write is a warning on the status rather than an error instead of
+        // it: the settings are this session's from here on, and an error would leave
+        // the screen drawing the ones they replaced.
+        status.warning = store.save(settings);
         Ok(status)
     }
 
@@ -1736,6 +1752,10 @@ pub struct DrillTally {
     pub wrong: u32,
     /// The pair's share of the drill, per the rule in `nihongo_core::drill`.
     pub weight: f64,
+    /// Set when the answer was counted but could not be written to the learner's
+    /// file, or when the file had to be kept aside or cannot be written at all. The
+    /// tally is real either way; this is how the learner is told (`store.rs`).
+    pub warning: Option<String>,
 }
 
 /// What the learner's record for one grammar pattern now is, after an answer.
@@ -1753,6 +1773,10 @@ pub struct GrammarTally {
     pub wrong: u32,
     /// The pattern's share of the drill, per the rule in `nihongo_core::drill`.
     pub weight: f64,
+    /// What [`DrillTally::warning`] is, for `grammar.json`. On a written answer it
+    /// rides on the record rather than beside the verdict, because the record is
+    /// the part that may not have been saved — the lesson always arrives.
+    pub warning: Option<String>,
 }
 
 /// What a written answer came to: the lesson, and the pattern's record now.
@@ -1813,6 +1837,15 @@ pub struct ModelStatus {
     pub key_set: bool,
     /// Whether there is enough here to ask a model anything.
     pub configured: bool,
+    /// Set when `model.json` could not be read and was kept aside, cannot be written
+    /// this session, or did not take the settings just saved. Never the key, and
+    /// never a reason to hide the fields.
+    pub warning: Option<String>,
+    /// Set on a save that left the stored key behind, because the endpoint moved to a
+    /// different scheme, host or port and no key was typed with it: the sentence asks
+    /// the learner to enter the key for the new endpoint. Said by that save alone —
+    /// `model_status` never sets it — and never the key.
+    pub key_notice: Option<String>,
 }
 
 /// A yōon digraph.
@@ -2664,58 +2697,20 @@ fn save_model_settings(
 
 /// Ask the configured model to check a sentence of the learner's own.
 ///
-/// The whole call is short by design: read the settings and the pattern on this thread,
-/// then do the blocking HTTP request on a thread of the runtime's own, so a model that
-/// takes a minute to answer cannot hold up the window. Nothing is written anywhere —
-/// the answer is handed back, shown, and forgotten (invariant 43).
+/// The whole call is `AppState::check_sentence` — the path the tests drive, over the
+/// real client — on a thread of the runtime's own, so a model that takes a minute to
+/// answer cannot hold up the window. The app handle is what crosses to that thread:
+/// it is `'static`, where the `State` a command is lent is not, and the state is
+/// looked up again on the other side. Nothing is written anywhere — the answer is
+/// handed back, shown, and forgotten (invariant 43).
 #[tauri::command]
 async fn check_sentence(
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
     point: String,
     typed: String,
 ) -> Result<crate::model::ModelVerdict, String> {
-    // Everything the request needs is owned before the blocking call, so nothing
-    // borrowed from the app state crosses a thread boundary.
-    let (settings, pattern, reading, sentence) = {
-        let pattern = state
-            .grammar
-            .get(&point)
-            .ok_or_else(|| format!("{point:?} is not a pattern of this course"))?;
-        let sentence = spoken_form(&typed).ok_or_else(|| {
-            "this app could not read that as Japanese, so there is nothing to check".to_string()
-        })?;
-        let settings = state
-            .model
-            .lock()
-            .expect("the model store is not poisoned")
-            .settings()
-            .clone();
-        if !settings.configured() {
-            return Err(
-                "no model is configured yet: set an endpoint and a model name first".to_string(),
-            );
-        }
-        (
-            settings,
-            pattern.pattern.clone(),
-            pattern.reading.clone(),
-            sentence,
-        )
-    };
     tauri::async_runtime::spawn_blocking(move || {
-        let review = crate::model::check(
-            &settings,
-            &pattern,
-            reading.as_deref(),
-            &sentence,
-            &crate::model::UreqHttp::new(),
-        )?;
-        Ok(crate::model::ModelVerdict {
-            review,
-            model: settings.model.clone(),
-            host: settings.host(),
-            sent: crate::model::sent_line(&pattern, &sentence),
-        })
+        app.state::<AppState>().check_sentence(&point, &typed)
     })
     .await
     .map_err(|err| format!("the model check did not finish: {err}"))?
@@ -4532,6 +4527,67 @@ mod tests {
         // And an address this client cannot speak is refused while the learner is
         // looking at the field, rather than at the first sentence.
         assert!(state.save_model_settings("127.0.0.1:1234", "m", None).is_err());
+    }
+
+    /// A stored key belongs to the origin it was typed for: a new address on the same
+    /// scheme, host and port keeps it, and any other drops it and says so — the
+    /// learner who saved an OpenAI key and then typed a LAN address has not sent it
+    /// there by leaving the field blank.
+    #[test]
+    fn a_saved_key_stays_with_its_endpoints_origin_and_the_screen_is_told_when_it_does_not() {
+        let state = state();
+        state
+            .save_model_settings(
+                "https://api.openai.com/v1",
+                "gpt-4o-mini",
+                Some("sk-openai".to_string()),
+            )
+            .expect("saves");
+
+        let same = state
+            .save_model_settings("https://api.openai.com/v1/", "gpt-4o", None)
+            .expect("saves");
+        assert!(same.key_set, "the same origin keeps the key");
+        assert_eq!(same.key_notice, None);
+
+        let moved = state
+            .save_model_settings("http://192.168.1.20:11434/v1", "llama3.1", None)
+            .expect("saves");
+        assert!(
+            !moved.key_set,
+            "the key followed the endpoint to another host"
+        );
+        let notice = moved.key_notice.as_deref().expect("the screen is told");
+        assert!(notice.contains("api.openai.com"), "{notice}");
+        assert!(notice.contains("enter the key"), "{notice}");
+        assert_eq!(state.model.lock().expect("the store").settings().key, None);
+        assert_eq!(
+            state.model_status().key_notice,
+            None,
+            "said on the save, not on every status"
+        );
+
+        // And a key is not sent in the clear to the internet: refused at the save, with
+        // the settings in hand left as they were.
+        let error = state
+            .save_model_settings(
+                "http://api.example.com/v1",
+                "m",
+                Some("sk-other".to_string()),
+            )
+            .unwrap_err();
+        assert!(error.contains("https://"), "{error}");
+        assert_eq!(
+            state.model_status().endpoint,
+            "http://192.168.1.20:11434/v1"
+        );
+
+        // The command's own path refuses the same way, with no socket opened.
+        let unconfigured = AppState::load();
+        let error = unconfigured
+            .check_sentence("wa", "これは本です。")
+            .unwrap_err();
+        assert!(error.contains("no model is configured"), "{error}");
     }
 
     /// The check sends the pattern and the learner's own sentence, in the form the app

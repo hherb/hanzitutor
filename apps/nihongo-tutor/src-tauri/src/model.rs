@@ -36,6 +36,16 @@
 //! whole of the "local or cloud" distinction here, and it is the learner's to make by
 //! typing an address.
 //!
+//! # A key goes only where it was typed for, and never in the clear to the internet
+//!
+//! The key is a secret shared with one provider, so three rules keep it there. A
+//! stored key does not follow the endpoint to a different scheme, host or port
+//! ([`settings_to_save`]); a key is sent over plain `http://` only to this machine or
+//! the local network ([`key_may_go_to`]), refused when the settings are saved and again
+//! where the header is set; and a redirect is reported rather than followed
+//! ([`redirect_error`]). The whole request has a time limit, not only its connect
+//! ([`Timeouts`]), so a server that trickles its answer cannot hold the check open.
+//!
 //! # The answer is parsed leniently, and never trusted
 //!
 //! The request asks for a small JSON object, and small local models do not always
@@ -50,15 +60,231 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// How long a request may take to connect, and to answer.
+/// How long a request may take to connect, and altogether.
 ///
-/// Ten seconds to connect, two minutes to read. The read timeout is the long one on
-/// purpose: a local model on a laptop can spend a while before its first token, and a
-/// request the learner can see is running is better than one that gives up on a
-/// machine that was about to answer. Nothing waits forever — the learner can leave the
-/// screen, and the request dies with the process.
+/// Ten seconds to connect, and three minutes for the whole request — connect, send,
+/// and every byte of the answer. The total is the long one on purpose: a local model
+/// on a laptop can spend a while before its first token, and a request the learner can
+/// see is running is better than one that gives up on a machine that was about to
+/// answer. It is a limit on the request rather than on each read because a per-read
+/// limit is never tripped by a server that sends a byte a minute.
+///
+/// There is no separate read limit. In `ureq` 2 the total replaces it — each read is
+/// given whatever is left of the three minutes, and `timeout_read` is ignored once
+/// `timeout` is set — so one here would be a number that did nothing. The connect
+/// limit does still apply on its own. The one wait neither bounds is the DNS lookup,
+/// which `ureq` 2 leaves to the system resolver; the learner who leaves the screen
+/// loses nothing to it, because the request dies with the process.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const READ_TIMEOUT: Duration = Duration::from_secs(120);
+const TOTAL_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// The limits on one request, as [`UreqHttp`] is built with them.
+///
+/// A type of its own so a test can build a client with limits it can wait out — a
+/// server that trickles its answer is cut off in a second rather than in three
+/// minutes — while the app builds the only one it uses from [`Timeouts::DEFAULT`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timeouts {
+    /// How long the connection may take to open.
+    pub connect: Duration,
+    /// How long the whole request may take, however the bytes arrive — and so also
+    /// how long any one read may wait.
+    pub total: Duration,
+}
+
+impl Timeouts {
+    /// The limits the app uses: `CONNECT_TIMEOUT` says why they are these.
+    pub const DEFAULT: Timeouts = Timeouts {
+        connect: CONNECT_TIMEOUT,
+        total: TOTAL_TIMEOUT,
+    };
+}
+
+/// The settings a save means, given what was stored before it — and, when the stored
+/// key was left behind, the sentence that says so.
+///
+/// `key` is what the screen sent: `None` for a field left blank, which keeps the
+/// stored key, and `Some("")` for the request to forget it. But "keep it" holds only
+/// while the endpoint is **the same origin** — scheme, host and port, compared as a
+/// socket would see them, so `HTTPS://API.example.com:443/v2` is the same place as
+/// `https://api.example.com/v1` — or the same host and port moved from `http://` to
+/// `https://`, which is strictly safer than where the key was. A key typed for one
+/// provider is a secret shared with that provider, and a learner who types a
+/// different address and leaves the field blank has not decided to send it there. So
+/// it is dropped, and the second half of the answer — naming both origins, so that a
+/// change of scheme alone reads as one — tells the screen to ask for the key again. A
+/// key typed with the new address is the learner's own decision, and is kept.
+pub fn settings_to_save(
+    previous: &ModelSettings,
+    endpoint: &str,
+    model: &str,
+    key: Option<String>,
+) -> (ModelSettings, Option<String>) {
+    let endpoint = endpoint.trim().to_string();
+    let mut notice = None;
+    let key = match key {
+        Some(typed) => {
+            let typed = typed.trim().to_string();
+            (!typed.is_empty()).then_some(typed)
+        }
+        None => match previous.key.clone() {
+            Some(stored) if key_may_stay(&previous.endpoint, &endpoint) => Some(stored),
+            Some(_) => {
+                notice = Some(format!(
+                    "the saved key was for {} and has not been kept for {}: enter the key for the new endpoint, if it needs one",
+                    origin_of(&previous.endpoint),
+                    origin_of(&endpoint),
+                ));
+                None
+            }
+            None => None,
+        },
+    };
+    let settings = ModelSettings {
+        endpoint,
+        model: model.trim().to_string(),
+        key,
+    };
+    (settings, notice)
+}
+
+/// Whether a key stored for `previous` may stay with `next`: the same scheme, host
+/// and port, or the same host and port with `http://` become `https://`.
+///
+/// Parsed rather than compared as text, and by the parser `ureq` itself uses: the
+/// host is the one a socket would open, so `https://api.openai.com@evil.example` is
+/// `evil.example` here exactly as it is on the wire. An address that does not parse
+/// is the same as nothing, including itself — a key is not kept for a place this app
+/// cannot name. "The same port" for the upgrade means the same port written, or both
+/// left to their scheme's own, so `http://host` may become `https://host`.
+fn key_may_stay(previous: &str, next: &str) -> bool {
+    let (Ok(previous), Ok(next)) = (
+        url::Url::parse(previous.trim()),
+        url::Url::parse(next.trim()),
+    ) else {
+        return false;
+    };
+    let (from, to) = (previous.origin(), next.origin());
+    if from.is_tuple() && from == to {
+        return true;
+    }
+    previous.scheme() == "http"
+        && next.scheme() == "https"
+        && previous.host().is_some()
+        && previous.host() == next.host()
+        && previous.port() == next.port()
+}
+
+/// An endpoint's origin — `scheme://host`, with the port when it is not the scheme's
+/// own — for a sentence that has to tell two of them apart. Text that does not parse
+/// is named by [`host_of`] instead.
+fn origin_of(endpoint: &str) -> String {
+    match url::Url::parse(endpoint.trim()) {
+        Ok(parsed) if parsed.origin().is_tuple() => parsed.origin().ascii_serialization(),
+        _ => host_of(endpoint),
+    }
+}
+
+/// The host of an endpoint, for a sentence: [`ModelSettings::host`] without the
+/// settings around it.
+fn host_of(endpoint: &str) -> String {
+    ModelSettings {
+        endpoint: endpoint.to_string(),
+        ..ModelSettings::default()
+    }
+    .host()
+}
+
+/// Whether a key may be sent to this URL.
+///
+/// Always over `https://`. Over plain `http://` only to this machine or the local
+/// network — loopback (`127.0.0.0/8`, `::1`, `localhost`), the private ranges
+/// (RFC 1918 and `fc00::/7`), link-local (`169.254.0.0/16`, `fe80::/10`) and
+/// `.local` names — because that is where a learner's own model server lives, and a
+/// key on the wire there crosses no one else's network. Anything else over `http://`
+/// would hand the key to every hop between the learner and the provider.
+///
+/// It is this crate's rule rather than the platform's. iOS's App Transport Security
+/// draws much the same line, but only for Apple's own URL loading: `ureq` opens its
+/// own sockets, and ATS never sees them. A name is judged as written, never by what
+/// it resolves to, so `mybox.lan` is refused even when it is on the LAN — its IP
+/// address, or a `.local` name, is the way to say so.
+pub fn key_may_go_to(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url.trim()) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "https" => true,
+        "http" => parsed.host().is_some_and(|host| is_local(&host)),
+        _ => false,
+    }
+}
+
+/// Whether an address carries a name or a password before its host.
+///
+/// `ureq` sends one as `Authorization: Basic` whenever no key is set, so
+/// `http://sk-abc@api.example.com` would put a key on the wire in the clear by a door
+/// [`key_may_go_to`] never sees — and the screen would name a host that is not the
+/// one the socket opens. Neither has a use here: the key has a field of its own.
+fn has_credentials(url: &url::Url) -> bool {
+    !url.username().is_empty() || url.password().is_some()
+}
+
+/// Why an address with a name or a password in it is refused. It does not repeat the
+/// address, because the password is in it.
+const CREDENTIALS_REFUSAL: &str = "the endpoint has a name or a password in it, before the host: put the key in the key field, not in the address";
+
+/// Why a key will not be sent to `host` over plain `http://`, as the learner reads it.
+fn cleartext_refusal(host: &str) -> String {
+    format!(
+        "{host} is reached over plain http://, and this app sends a key in the clear only to this machine or the local network: use https://, or forget the key if the endpoint needs none"
+    )
+}
+
+/// Whether a host is this machine or the local network — see [`key_may_go_to`].
+fn is_local(host: &url::Host<&str>) -> bool {
+    match host {
+        url::Host::Domain(name) => {
+            // The parser has already lower-cased the name; a trailing dot is the same
+            // name, fully qualified.
+            let name = name.trim_end_matches('.');
+            name == "localhost"
+                || name
+                    .strip_suffix(".local")
+                    .is_some_and(|label| !label.is_empty() && !label.ends_with('.'))
+        }
+        url::Host::Ipv4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        url::Host::Ipv6(ip) => {
+            if let Some(v4) = ip.to_ipv4_mapped() {
+                return is_local(&url::Host::Ipv4(v4));
+            }
+            let first = ip.segments()[0];
+            ip.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// What to tell the learner when the endpoint answered with a redirect.
+///
+/// The client follows none: `ureq` would turn the POST into a body-less GET, and the
+/// learner would then read a misleading 401 or 405 about a request they never made.
+/// The address it pointed at is the useful part — the learner can type it in, having
+/// seen where it goes — so it is resolved against the URL that was asked, a relative
+/// `Location` included, and named.
+pub fn redirect_error(url: &str, status: u16, location: Option<&str>) -> String {
+    let Some(location) = location
+        .map(str::trim)
+        .filter(|location| !location.is_empty())
+    else {
+        return format!("the endpoint answered {status}, a redirect, without saying where to");
+    };
+    let target = url::Url::parse(url)
+        .and_then(|base| base.join(location))
+        .map(|target| target.to_string())
+        .unwrap_or_else(|_| location.to_string());
+    let target: String = target.chars().take(300).collect();
+    format!("the endpoint redirected to {target}; use that address as the endpoint instead")
+}
 
 /// What the learner configured, if anything.
 ///
@@ -103,14 +329,38 @@ impl ModelSettings {
         }
     }
 
+    /// Whether there is a key to send: a stored empty string is none.
+    fn has_key(&self) -> bool {
+        self.key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty())
+    }
+
     /// What to call the endpoint on screen: the scheme and host, without the path or
     /// anything else the learner typed.
     ///
     /// It exists so the attribution line can name where a sentence went without
     /// reprinting an address the learner already knows — and so a paragraph of prose
     /// pasted into the field by mistake is not echoed back at them.
+    ///
+    /// Parsed by the parser `ureq` uses, so the host named is the one the socket opens:
+    /// `https://api.openai.com@evil.example` is `evil.example`, and a name or password
+    /// before an `@` is never shown. The port is named only when it is not the
+    /// scheme's own. Text that is not an http(s) address is cut by hand instead, as
+    /// before, because a line on screen still has to say something.
     pub fn host(&self) -> String {
         let trimmed = self.endpoint.trim();
+        if let Ok(parsed) = url::Url::parse(trimmed) {
+            if let (true, Some(host)) = (
+                matches!(parsed.scheme(), "http" | "https"),
+                parsed.host_str().filter(|host| !host.is_empty()),
+            ) {
+                return match parsed.port() {
+                    Some(port) => format!("{host}:{port}"),
+                    None => host.to_string(),
+                };
+            }
+        }
         let after_scheme = trimmed.split_once("://").map(|(_, rest)| rest).unwrap_or(trimmed);
         let host = after_scheme.split('/').next().unwrap_or(after_scheme);
         if host.is_empty() {
@@ -124,7 +374,12 @@ impl ModelSettings {
     ///
     /// Deliberately only `http` and `https`: a scheme the client cannot speak is a
     /// typo the learner should hear about when they save, rather than a failure on the
-    /// first sentence they ask about.
+    /// first sentence they ask about. The same goes for a key that would travel in the
+    /// clear: settings that would send one over plain `http://` to a host that is
+    /// neither this machine nor the local network ([`key_may_go_to`]) are refused
+    /// here, and [`check`] runs this before every request, so a `model.json` from
+    /// before the rule — or edited by hand — is refused at the button rather than
+    /// sent.
     pub fn validate(&self) -> Result<(), String> {
         let endpoint = self.endpoint.trim();
         if endpoint.is_empty() {
@@ -138,8 +393,21 @@ impl ModelSettings {
         if endpoint.chars().any(char::is_whitespace) {
             return Err("the endpoint has a space in it".to_string());
         }
+        match url::Url::parse(endpoint) {
+            Ok(parsed) if has_credentials(&parsed) => return Err(CREDENTIALS_REFUSAL.to_string()),
+            Ok(parsed) if parsed.host().is_some() => {}
+            Ok(_) => return Err(format!("{endpoint:?} names no host to send anything to")),
+            Err(err) => {
+                return Err(format!(
+                    "{endpoint:?} is not an address this app can read: {err}"
+                ))
+            }
+        }
         if self.model.trim().is_empty() {
             return Err("the model name is empty".to_string());
+        }
+        if self.has_key() && !key_may_go_to(endpoint) {
+            return Err(cleartext_refusal(&self.host()));
         }
         Ok(())
     }
@@ -242,7 +510,7 @@ pub fn parse_review(content: &str) -> ModelReview {
     let raw = content.trim().to_string();
     let object = raw
         .find('{')
-        .and_then(|start| raw.rfind('}').map(|end| (start, end)))
+        .zip(raw.rfind('}'))
         .filter(|(start, end)| end > start)
         .and_then(|(start, end)| serde_json::from_str::<Value>(&raw[start..=end]).ok());
     let Some(object) = object else {
@@ -325,11 +593,22 @@ pub struct UreqHttp {
 }
 
 impl UreqHttp {
+    /// The client the app uses, with [`Timeouts::DEFAULT`].
     pub fn new() -> Self {
+        Self::with_timeouts(Timeouts::DEFAULT)
+    }
+
+    /// A client with limits of the caller's own — which is for a test that has to
+    /// wait one out; the app has only the one.
+    ///
+    /// Redirects are not followed (`redirects(0)`): [`redirect_error`] says why, and
+    /// [`Chat::post_json`] reports one instead.
+    pub fn with_timeouts(timeouts: Timeouts) -> Self {
         Self {
             agent: ureq::AgentBuilder::new()
-                .timeout_connect(CONNECT_TIMEOUT)
-                .timeout_read(READ_TIMEOUT)
+                .timeout_connect(timeouts.connect)
+                .timeout(timeouts.total)
+                .redirects(0)
                 .user_agent(concat!("NihongoTutor/", env!("CARGO_PKG_VERSION")))
                 .build(),
         }
@@ -344,11 +623,29 @@ impl Default for UreqHttp {
 
 impl Chat for UreqHttp {
     fn post_json(&self, url: &str, bearer: Option<&str>, body: &str) -> Result<String, String> {
+        // Checked before anything else, key or no key: with no `Authorization` header
+        // set, `ureq` would make one out of the address's name and password.
+        if url::Url::parse(url).is_ok_and(|parsed| has_credentials(&parsed)) {
+            return Err(CREDENTIALS_REFUSAL.to_string());
+        }
         let mut request = self.agent.post(url).set("Content-Type", "application/json");
         if let Some(key) = bearer.map(str::trim).filter(|key| !key.is_empty()) {
+            // The same line `ModelSettings::validate` draws, held again where the
+            // header is set: whatever called this, a key does not leave over plain
+            // http for the internet.
+            if !key_may_go_to(url) {
+                return Err(cleartext_refusal(&host_of(url)));
+            }
             request = request.set("Authorization", &format!("Bearer {key}"));
         }
         match request.send_string(body) {
+            // Below 400 is an `Ok` to `ureq`, and with redirects off a 3xx arrives
+            // here rather than being followed.
+            Ok(response) if (300..400).contains(&response.status()) => Err(redirect_error(
+                url,
+                response.status(),
+                response.header("Location"),
+            )),
             Ok(response) => response
                 .into_string()
                 .map_err(|err| format!("{url} answered but the body could not be read: {err}")),
@@ -672,17 +969,28 @@ mod tests {
     /// canned reply, and the bytes `UreqHttp` actually wrote. It is the same idea as
     /// the harness the app's interface probes use, one layer down.
     fn serve_once(status: &str, body: &str) -> (String, std::thread::JoinHandle<String>) {
+        serve_once_with(status, "", body)
+    }
+
+    /// [`serve_once`], with header lines of the test's own (each ending `\r\n`) —
+    /// a `Location` for a redirect.
+    fn serve_once_with(
+        status: &str,
+        headers: &str,
+        body: &str,
+    ) -> (String, std::thread::JoinHandle<String>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port on this machine");
         let address = listener.local_addr().expect("the address it took");
         // Owned before the thread starts: a `&str` here would tie the server's whole
         // life to the caller's stack frame.
         let status = status.to_string();
+        let headers = headers.to_string();
         let body = body.to_string();
         let handle = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("one connection");
             let request = read_request(&mut stream);
             let response = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\n{headers}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             use std::io::Write;
@@ -772,6 +1080,429 @@ mod tests {
         settings.endpoint = format!("http://{address}/v1");
         let error = check(&settings, "〜は", None, "これは本です。", &UreqHttp::new()).unwrap_err();
         assert!(error.contains(&format!("http://{address}/v1/chat/completions")), "{error}");
+    }
+
+    // ---- where a key may go ------------------------------------------------
+
+    #[test]
+    fn the_host_on_screen_is_the_one_the_socket_opens() {
+        // Whatever sits before an `@` is a name and a password, not the host: the
+        // socket opens `evil.example`, and the screen must say so rather than
+        // "api.openai.com@evil.example" — or echo a password typed into the address.
+        assert_eq!(
+            settings("https://api.openai.com@evil.example/v1").host(),
+            "evil.example"
+        );
+        assert_eq!(
+            settings("https://user:hunter2@host.example/v1").host(),
+            "host.example"
+        );
+        assert_eq!(
+            settings("https://API.OpenAI.com:443/v1").host(),
+            "api.openai.com"
+        );
+        assert_eq!(
+            settings("http://127.0.0.1:11434/v1").host(),
+            "127.0.0.1:11434"
+        );
+        assert_eq!(settings("http://[::1]:8080/v1").host(), "[::1]:8080");
+        assert_eq!(
+            settings("not an address at all").host(),
+            "not an address at all"
+        );
+        assert_eq!(settings("").host(), "");
+    }
+
+    #[test]
+    fn an_address_with_a_name_or_a_password_in_it_is_refused() {
+        // `ureq` turns a name or password in the URL into `Authorization: Basic` when
+        // no key is set, so `http://sk-abc@api.example.com` would send the key in the
+        // clear by another door. The key has a field of its own.
+        for address in [
+            "http://sk-abc@api.example.com/v1",
+            "https://user:hunter2@api.example.com/v1",
+            "https://:hunter2@api.example.com/v1",
+            "https://api.openai.com@evil.example/v1",
+            "http://user@127.0.0.1:1234/v1",
+        ] {
+            let error = settings(address).validate().unwrap_err();
+            assert!(error.contains("key field"), "{address:?}: {error}");
+            assert!(
+                !error.contains("hunter2") && !error.contains("sk-abc"),
+                "{error}"
+            );
+        }
+        let chat = FakeChat {
+            answer: Ok(reply("fine")),
+            ..FakeChat::default()
+        };
+        let error = check(
+            &settings("http://sk-abc@api.example.com/v1"),
+            "〜は",
+            None,
+            "これは本です。",
+            &chat,
+        )
+        .unwrap_err();
+        assert!(error.contains("key field"), "{error}");
+        assert!(
+            chat.seen.lock().expect("the fake's log").is_empty(),
+            "and nothing was sent"
+        );
+    }
+
+    #[test]
+    fn the_real_client_will_not_send_credentials_from_the_address_either() {
+        // Refused before a socket is opened, with no key set — the case where `ureq`
+        // would otherwise build a Basic header out of the address.
+        let error = UreqHttp::new()
+            .post_json(
+                "http://sk-abc@api.example.com/v1/chat/completions",
+                None,
+                "{}",
+            )
+            .unwrap_err();
+        assert!(error.contains("key field"), "{error}");
+        assert!(!error.contains("sk-abc"), "{error}");
+    }
+
+    #[test]
+    fn a_stored_key_survives_the_move_from_http_to_https_on_the_same_host_and_port() {
+        // Strictly safer than where it was, so there is nothing to ask again.
+        for (from, to) in [
+            ("http://api.example.com/v1", "https://api.example.com/v1"),
+            (
+                "http://192.168.1.20:11434/v1",
+                "https://192.168.1.20:11434/v1",
+            ),
+        ] {
+            let (kept, notice) = settings_to_save(&keyed(from, "sk"), to, "m", None);
+            assert_eq!(kept.key.as_deref(), Some("sk"), "{from} -> {to}");
+            assert_eq!(notice, None, "{from} -> {to}");
+        }
+        // But not to another port or another host, and never the other way.
+        for (from, to) in [
+            (
+                "http://192.168.1.20:8080/v1",
+                "https://192.168.1.20:8443/v1",
+            ),
+            ("http://api.example.com/v1", "https://api.other.example/v1"),
+            ("https://api.example.com/v1", "http://api.example.com/v1"),
+        ] {
+            let (kept, notice) = settings_to_save(&keyed(from, "sk"), to, "m", None);
+            assert_eq!(kept.key, None, "{from} -> {to}");
+            assert!(notice.is_some(), "{from} -> {to}");
+        }
+    }
+
+    #[test]
+    fn the_notice_names_both_origins_so_a_scheme_change_reads_as_one() {
+        let (_, notice) = settings_to_save(
+            &keyed("https://api.openai.com/v1", "sk"),
+            "http://api.openai.com/v1",
+            "m",
+            None,
+        );
+        assert_eq!(
+            notice.as_deref(),
+            Some(
+                "the saved key was for https://api.openai.com and has not been kept for http://api.openai.com: enter the key for the new endpoint, if it needs one"
+            )
+        );
+        let (_, notice) = settings_to_save(
+            &keyed("https://api.openai.com/v1", "sk"),
+            "http://192.168.1.20:11434/v1",
+            "m",
+            None,
+        );
+        let notice = notice.expect("a notice");
+        assert!(
+            notice.contains("for http://192.168.1.20:11434:"),
+            "{notice}"
+        );
+    }
+
+    #[test]
+    fn a_dot_local_name_needs_a_name_before_the_dot() {
+        assert!(key_may_go_to("http://studio.local/v1"));
+        assert!(!key_may_go_to("http://.local/v1"));
+        assert!(!key_may_go_to("http://local/v1"));
+    }
+
+    fn keyed(endpoint: &str, key: &str) -> ModelSettings {
+        ModelSettings {
+            key: Some(key.to_string()),
+            ..settings(endpoint)
+        }
+    }
+
+    #[test]
+    fn a_stored_key_stays_with_the_origin_it_was_typed_for() {
+        let saved = keyed("https://api.openai.com/v1", "sk-openai");
+        // The same scheme, host and port, however it is spelled, keeps the key: a
+        // learner who changes the model or the path has not changed who they trust.
+        for same in [
+            "https://api.openai.com/v1",
+            "https://api.openai.com/v1/",
+            " https://API.OpenAI.com:443/v2 ",
+            "https://api.openai.com/v1/chat/completions",
+        ] {
+            let (kept, notice) = settings_to_save(&saved, same, "gpt-4o", None);
+            assert_eq!(
+                kept.key.as_deref(),
+                Some("sk-openai"),
+                "{same:?} is the same origin"
+            );
+            assert_eq!(notice, None, "{same:?}");
+            assert_eq!(kept.endpoint, same.trim());
+            assert_eq!(kept.model, "gpt-4o");
+        }
+    }
+
+    #[test]
+    fn a_stored_key_does_not_follow_the_endpoint_to_a_different_origin() {
+        let saved = keyed("https://api.openai.com/v1", "sk-openai");
+        for other in [
+            "https://api.other-provider.com/v1",
+            "http://api.openai.com/v1",
+            "https://api.openai.com:8443/v1",
+            "http://192.168.1.20:11434/v1",
+            // The host a socket would open is the one after the `@`, and that is the
+            // host the comparison is about.
+            "https://api.openai.com@evil.example/v1",
+        ] {
+            let (kept, notice) = settings_to_save(&saved, other, "m", None);
+            assert_eq!(kept.key, None, "the key followed the endpoint to {other:?}");
+            let notice = notice.unwrap_or_else(|| panic!("the learner is told for {other:?}"));
+            assert!(notice.contains("api.openai.com"), "{notice}");
+            assert!(notice.contains("enter the key"), "{notice}");
+            assert!(
+                !notice.contains("sk-openai"),
+                "the notice names the key itself: {notice}"
+            );
+        }
+
+        // A key typed with the new address is the learner's own decision, and is kept.
+        let (typed, notice) = settings_to_save(
+            &saved,
+            "https://api.other-provider.com/v1",
+            "m",
+            Some("sk-new".to_string()),
+        );
+        assert_eq!(typed.key.as_deref(), Some("sk-new"));
+        assert_eq!(notice, None);
+        // An empty one is still the request to forget it, with nothing to explain.
+        let (forgotten, notice) = settings_to_save(
+            &saved,
+            "https://api.openai.com/v1",
+            "m",
+            Some("  ".to_string()),
+        );
+        assert_eq!(forgotten.key, None);
+        assert_eq!(notice, None);
+        // And with no key stored, a new address has nothing to drop and says nothing.
+        let (none, notice) = settings_to_save(
+            &settings("https://a.example/v1"),
+            "https://b.example/v1",
+            "m",
+            None,
+        );
+        assert_eq!(none.key, None);
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn a_key_goes_over_plain_http_only_to_this_machine_or_the_local_network() {
+        for local in [
+            "http://127.0.0.1:11434/v1/chat/completions",
+            "http://127.8.9.10/v1",
+            "http://localhost:1234/v1",
+            "http://LOCALHOST./v1",
+            "http://[::1]:8080/v1",
+            "http://10.0.0.2:8000/v1",
+            "http://172.16.0.1/v1",
+            "http://172.31.255.254/v1",
+            "http://192.168.1.20:11434/v1",
+            "http://169.254.10.10/v1",
+            "http://[fd12:3456::1]/v1",
+            "http://[fe80::1]/v1",
+            "http://[::ffff:192.168.1.20]/v1",
+            "http://studio.local:1234/v1",
+            "http://Studio.Local/v1",
+            "https://api.openai.com/v1",
+            "https://8.8.8.8/v1",
+        ] {
+            assert!(key_may_go_to(local), "{local:?} should be allowed a key");
+        }
+        for public in [
+            "http://api.openai.com/v1",
+            "http://8.8.8.8/v1",
+            "http://172.32.0.1/v1",
+            "http://192.169.0.1/v1",
+            "http://[2001:db8::1]/v1",
+            "http://localhost.evil.example/v1",
+            "http://127.0.0.1.nip.io/v1",
+            "http://127.0.0.1@evil.example/v1",
+            "http://evil.example#@127.0.0.1/v1",
+            "http://studio/v1",
+            "not an address",
+            "ftp://127.0.0.1/v1",
+        ] {
+            assert!(
+                !key_may_go_to(public),
+                "{public:?} should not be sent a key in the clear"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_that_would_send_a_key_in_the_clear_are_refused_when_they_are_saved() {
+        let error = keyed("http://api.example.com/v1", "sk-secret")
+            .validate()
+            .unwrap_err();
+        assert!(error.contains("api.example.com"), "{error}");
+        assert!(error.contains("https://"), "{error}");
+        assert!(!error.contains("sk-secret"), "{error}");
+        // The same address with no key is fine — a public server that wants none is
+        // the learner's business — and so is the key over https, or to the LAN.
+        assert!(settings("http://api.example.com/v1").validate().is_ok());
+        assert!(keyed("https://api.example.com/v1", "sk").validate().is_ok());
+        assert!(keyed("http://192.168.1.20:11434/v1", "sk")
+            .validate()
+            .is_ok());
+        assert!(keyed("http://127.0.0.1:1234/v1", "sk").validate().is_ok());
+        // And an address with nothing where the host goes is refused as well.
+        assert!(settings("http://:8080/v1").validate().is_err());
+    }
+
+    #[test]
+    fn a_check_will_not_send_a_key_in_the_clear_to_the_internet() {
+        let chat = FakeChat {
+            answer: Ok(reply("fine")),
+            ..FakeChat::default()
+        };
+        let error = check(
+            &keyed("http://api.example.com/v1", "sk-secret"),
+            "〜は",
+            None,
+            "これは本です。",
+            &chat,
+        )
+        .unwrap_err();
+        assert!(error.contains("https://"), "{error}");
+        assert!(
+            chat.seen.lock().expect("the fake's log").is_empty(),
+            "and nothing was sent"
+        );
+    }
+
+    #[test]
+    fn the_real_client_will_not_put_a_key_on_the_wire_in_the_clear_either() {
+        // The transport holds the same line on its own, so a caller that skipped
+        // `validate` still cannot send a key over plain http to the internet. It is
+        // refused before any socket is opened, which is why this needs no network.
+        let error = UreqHttp::new()
+            .post_json(
+                "http://api.example.com/v1/chat/completions",
+                Some("sk-secret"),
+                "{}",
+            )
+            .unwrap_err();
+        assert!(error.contains("https://"), "{error}");
+        assert!(!error.contains("sk-secret"), "{error}");
+    }
+
+    #[test]
+    fn a_redirect_is_reported_with_where_it_pointed_rather_than_followed() {
+        let (url, server) = serve_once_with(
+            "301 Moved Permanently",
+            "Location: /v2/chat/completions\r\n",
+            "",
+        );
+        let base = url.trim_end_matches("/v1/chat/completions").to_string();
+        let mut settings = settings("http://127.0.0.1:1/unused");
+        settings.endpoint = format!("{base}/v1");
+        let error = check(&settings, "〜は", None, "これは本です。", &UreqHttp::new()).unwrap_err();
+        assert_eq!(
+            error,
+            format!("the endpoint redirected to {base}/v2/chat/completions; use that address as the endpoint instead")
+        );
+        let request = server.join().expect("the server thread");
+        assert!(
+            request.starts_with("POST /v1/chat/completions"),
+            "{request}"
+        );
+    }
+
+    #[test]
+    fn a_redirect_message_says_where_and_copes_with_saying_nowhere() {
+        assert_eq!(
+            redirect_error("http://127.0.0.1:1234/v1/chat/completions", 308, Some("https://api.example.com/v1/chat/completions")),
+            "the endpoint redirected to https://api.example.com/v1/chat/completions; use that address as the endpoint instead"
+        );
+        assert_eq!(
+            redirect_error("http://127.0.0.1:1234/v1/chat/completions", 302, None),
+            "the endpoint answered 302, a redirect, without saying where to"
+        );
+    }
+
+    #[test]
+    fn the_whole_request_has_a_limit_and_it_is_longer_than_its_parts() {
+        let limits = Timeouts::DEFAULT;
+        assert_eq!(limits.connect, CONNECT_TIMEOUT);
+        assert_eq!(limits.total, TOTAL_TIMEOUT);
+        assert!(
+            limits.total >= limits.connect + Duration::from_secs(120),
+            "a slow model gets two minutes to its first token after connecting"
+        );
+        assert!(
+            limits.total <= Duration::from_secs(300),
+            "and nothing waits for ever"
+        );
+    }
+
+    #[test]
+    fn a_server_that_trickles_its_answer_is_cut_off_by_the_whole_request_limit() {
+        // A byte every 100 ms keeps every single read short, which is exactly the
+        // server a per-read limit alone could not stop. The total cuts it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port on this machine");
+        let address = listener.local_addr().expect("the address it took");
+        let server = std::thread::spawn(move || {
+            use std::io::Write;
+            let (mut stream, _) = listener.accept().expect("one connection");
+            let _ = read_request(&mut stream);
+            let head =
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n";
+            if stream.write_all(head.as_bytes()).is_err() {
+                return;
+            }
+            for _ in 0..40 {
+                std::thread::sleep(Duration::from_millis(100));
+                if stream
+                    .write_all(b" ")
+                    .and_then(|()| stream.flush())
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let client = UreqHttp::with_timeouts(Timeouts {
+            connect: Duration::from_secs(2),
+            total: Duration::from_millis(1000),
+        });
+        let started = std::time::Instant::now();
+        let result = client.post_json(&format!("http://{address}/v1/chat/completions"), None, "{}");
+        let took = started.elapsed();
+        assert!(
+            result.is_err(),
+            "a body that never finished is not an answer: {result:?}"
+        );
+        assert!(
+            took < Duration::from_millis(2500),
+            "the request ran for {took:?}"
+        );
+        let _ = server.join();
     }
 
     #[test]

@@ -67,6 +67,7 @@
     failureLine,
     reviewHeadline,
     settingsNote,
+    settingsStayOpen,
   } from "./model";
   import { needsRuby, spokenRuby } from "./words";
   import {
@@ -218,7 +219,7 @@
     endpoint = status.endpoint;
     modelName = status.model;
     key = "";
-    showingSettings = !status.configured;
+    showingSettings = settingsStayOpen(status);
   }
 
   /** Save the address, the model name and — when one was typed — the key. */
@@ -490,7 +491,13 @@
       off until the learner names an endpoint. The corpus's model sentences above carry a
       `Hear it`; this asks a model about the learner's own.
     -->
+    <!-- Outside the fold, so that a closed fold cannot hide it: the settings were
+         kept for this session either way, and this says what was not remembered. -->
+    {#if model?.warning}
+      <p class="warn" role="status">{model.warning}</p>
+    {/if}
     <details class="model-check" bind:open={foldOpen}>
+
       <summary>Ask a model about this sentence</summary>
       {#if !model}
         <p class="hint">Loading the model settings…</p>
@@ -525,6 +532,9 @@
             placeholder={model.keySet ? "a key is saved — leave empty to keep it" : "sk-…"}
             bind:value={key}
           />
+          {#if model.keyNotice}
+            <p class="warn" role="status">{model.keyNotice}</p>
+          {/if}
           <div class="row">
             <button class="save" onclick={() => void save()} disabled={checking}>Save</button>
             {#if model.keySet}
