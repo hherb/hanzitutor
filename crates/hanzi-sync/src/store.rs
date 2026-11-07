@@ -127,9 +127,9 @@ pub trait RemoteStore {
     /// copied database, #12 — would. What this guarantees is narrow: if the file
     /// changed **between this sync's listing and this write**, the write fails
     /// rather than drops what the other appended. A copy that is behind the store
-    /// *at* the listing is caught before this, by the check on the open shard's
-    /// contents ([`SyncError::SharedIdentity`]); neither makes two such installs
-    /// work together, which is #12's `settle_identity`. A store with no
+    /// *at* the listing is caught before this: #47's `settle_identity` gives it a
+    /// name of its own, and the check on the open shard's contents
+    /// ([`SyncError::SharedIdentity`]) is the backstop. A store with no
     /// compare-and-swap writes as [`RemoteStore::put`] does, which is the default.
     fn replace(&self, name: &str, bytes: &[u8], revision: &str) -> Result<(), SyncError> {
         let _ = revision;

@@ -1146,12 +1146,28 @@ either file.
         every sequence number the file could hold (from its name to the next
         shard's, or to the watermark), the body is never empty,
         and a file read as a *newer format* (sound JSON this build cannot decode)
-        is never rewritten. Anything else stays reported in `skipped`. After #12
-        lands the repair runs after `settle_identity`, and only when it did not
-        rename. One residual then: a renamed copy's attempts that it shared with
-        the original and that sat only in the damaged shard are republished
-        under the new name, so a peer holds them twice — once from the original's
-        file when that is mended, once under the copy's name.
+        is never rewritten, nor one holding more lines than this log has
+        attempts for it (a truncation only shortens a file, so a longer one had
+        another writer). Anything else stays reported in `skipped`. The repair
+        runs after `settle_identity`, and only when it did not rename.
+      - **A hidden own shard still counts for the identity check**
+        (`local::hidden_own`). Every line that can still be read is evidence like
+        a readable shard's, and so is a file with more lines (a cut-off last one
+        included) than this log has *published* attempts for it — so a copy
+        whose evidence sits in a damaged file still renames rather than mend the
+        original's grown tail with its own lines and append a different attempt
+        under a number a peer already holds. And a rename leaves under the old
+        name every row whose number such a file can hold (from its name to the
+        next shard's; with no end for the last shard), so shared history in a
+        damaged file is never republished under the new name. Residuals: a row
+        the copy made that falls in that range stays unpublished under the old
+        name until the file is readable again (then the store holds a different
+        attempt at that number, and `reclaim_attempts` moves it); a truncation
+        that leaves no differing line and no extra line hides a copy for as long
+        as the file stays damaged; and a device whose watermark write was lost
+        right after an append, and whose last shard is then damaged before the
+        next sync, is taken for a copy and renamed — its old name's file then
+        stays damaged.
       - **A file in another device's directory that was left out is never
         overwritten**; such a write is refused, recorded in `Summary::withheld`,
         and not counted as published.
@@ -1185,9 +1201,12 @@ either file.
       last shard means a new file, never an append to the one before), and only
       when every attempt already in it is one its own log holds identically
       (`shard::open_tail`). A last shard holding an own-name attempt the log
-      lacks or holds differently is another install's under the same identity,
-      and the publish fails with `SyncError::SharedIdentity`, writing nothing,
-      rather than start a shard that would conflict for good. An attempt past the
+      lacks or holds differently is another install's under the same identity.
+      `settle_identity` (#47) finds that first and renames this device, so its
+      appends go to a shard of its own; `open_tail` still fails the publish with
+      `SyncError::SharedIdentity`, writing nothing, if one turns up after that
+      check (two installs racing), rather than start a shard that would conflict
+      for good. An attempt past the
       watermark that a readable own shard already holds is not written again (a
       publish whose watermark write was lost is retried as a no-op). The one
       other write to an existing attempt shard is still `repair_own_shards`, and
@@ -1204,9 +1223,9 @@ either file.
       it guarantees is narrow: a file changed *between this sync's listing and
       the append* makes the append fail ("Another copy of this app wrote to
       Dropbox at the same time; sync again.") instead of dropping the other
-      writer's lines. A copy already behind the store at the listing is the
-      `SharedIdentity` refusal above. Neither lets two installs with one identity
-      work together; #47's `settle_identity`, which renames the copy, is the fix.
+      writer's lines. A copy already behind the store at the listing is renamed
+      by #47's `settle_identity` before it writes, and `open_tail`'s
+      `SharedIdentity` refusal stays as the backstop.
       Every other upload still overwrites.
     - **The store is listed once per sync** (`skipped::Screened`), and **an
       attempt shard already folded at the listed revision is not downloaded**:
@@ -1232,8 +1251,8 @@ either file.
       never sleeps more than `RETRY_BUDGET` (30 s) in all per store — one store
       per sync — refusing outright a wait that would pass it. Tests inject the
       sleep (`DropboxStore::with_sleep`). The token endpoint is not retried.
-    - **Merging with #47**: its `publish_against` writes every owner's fresh
-      attempts with `write_attempts`; for this device's own name use
+    - **With #47** (as merged): `publish_against` writes every other owner's
+      fresh attempts with `write_attempts`; this device's own name uses
       `append_attempts(store, &device, attempts, open_tail(...)?.as_ref())` with
       `last_start` from `Screened::last_own_start()`, so its own new attempts top
       up the open shard. Call `open_tail` *after* `settle_identity` (with the

@@ -74,10 +74,10 @@ use crate::document::{
 use crate::seen::Seen;
 use crate::shard::{
     append_attempts, attempts_shard_name, fold_cards, merge_attempts, open_tail,
-    parse_attempts_shard, read_attempts, shard_body, sort_canonical, write_attempts,
-    MergedAttempt,
+    parse_attempts_shard, read_attempts, salvage_shard, shard_body, sort_canonical,
+    write_attempts, MergedAttempt,
 };
-use crate::skipped::{Screened, SkippedShard};
+use crate::skipped::{Screened, ShardKind, SkippedShard};
 use crate::store::{RemoteStore, SyncError};
 
 /// Where this device records how far it has published its own log.
@@ -177,7 +177,8 @@ pub fn own_log(db: &Db) -> Result<Vec<MergedAttempt>, SyncError> {
 /// why.
 pub fn publish(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
     let remote = read_attempts(store)?;
-    settle_identity(db, store, &held_index(&remote))?;
+    // Unscreened: a shard this cannot read has already failed the read above.
+    settle_identity(db, store, &held_index(&remote), &HiddenOwn::default())?;
     // Under the name it settled on, and counting every shard of it: the last one
     // is the one this device's new attempts may be appended to.
     let device = db.device_id();
@@ -389,27 +390,45 @@ fn publish_against(
 ///   none leaves a pre-M10 card stale on the copy — see `settle_baseline` — until
 ///   the original publishes a baseline, and for good if it never does.
 ///
+/// ## This device's own shards that cannot be read
+///
+/// A screened reading hides them (see [`crate::skipped`]), so `held` says nothing
+/// about what they hold, and `hidden` stands in for them — see [`HiddenOwn`]. What
+/// can still be read of one counts as evidence like any shard's, and so does a
+/// file holding more lines than this log has attempts for it. And a rename leaves
+/// under the old name every row the hidden files may hold: what is in them is
+/// published, whoever wrote it, and taking it for this device's unpublished work
+/// would publish shared history a second time under the new name, for every peer
+/// to fold twice. A row this device made that only *would* have gone in such a
+/// file stays behind with them, unpublished, until the file can be read again —
+/// then the store holds a different attempt at that number, and the reclaim below
+/// moves it.
+///
 /// Returns the new name, if there is one.
 fn settle_identity(
     db: &Db,
     store: &dyn RemoteStore,
     held: &HashMap<(&str, i64), &MergedAttempt>,
+    hidden: &HiddenOwn,
 ) -> Result<Option<String>, SyncError> {
     let device = db.device_id();
     let own: HashMap<i64, MergedAttempt> = own_log(db)?
         .into_iter()
         .map(|attempt| (attempt.seq, attempt))
         .collect();
-    let someone_else = held
-        .iter()
-        .filter(|((owner, _), _)| *owner == device)
-        .any(|((_, seq), remote)| own.get(seq) != Some(*remote));
+    let someone_else = hidden.contradicts
+        || held
+            .iter()
+            .filter(|((owner, _), _)| *owner == device)
+            .any(|((_, seq), remote)| own.get(seq) != Some(*remote));
 
     // Before the name can change, because a baseline accounts for rows by name.
     settle_baseline(db, store, someone_else)?;
 
     let renamed = if someone_else {
-        let published = |row: &LoggedAttempt| held_as_is(held, row);
+        let published = |row: &LoggedAttempt| {
+            held_as_is(held, row) || (row.device_id == device && hidden.covers(row.seq))
+        };
         Some(db.rotate_device_id(&published).map_err(SyncError::Io)?)
     } else {
         None
@@ -427,6 +446,86 @@ fn settle_identity(
         db.reclaim_attempts(&former, &keep).map_err(SyncError::Io)?;
     }
     Ok(renamed)
+}
+
+/// This device's own attempt shards that a screened reading hid, for
+/// [`settle_identity`].
+#[derive(Default)]
+struct HiddenOwn {
+    /// The numbers each hidden file can hold: from the one it is named after up
+    /// to the next shard's, or with no end for the last one, which an install
+    /// can still be appending to.
+    ranges: Vec<(i64, Option<i64>)>,
+    /// What could still be read of one contradicts this log: a line this log
+    /// lacks or holds differently, or more lines than this log has published
+    /// attempts for that file. A truncation only ever shortens a file, so a file
+    /// longer than anything this log wrote into it had another writer.
+    contradicts: bool,
+}
+
+impl HiddenOwn {
+    fn covers(&self, seq: i64) -> bool {
+        self.ranges
+            .iter()
+            .any(|(first, end)| seq >= *first && end.is_none_or(|end| seq < end))
+    }
+}
+
+/// Look at this device's own attempt shards that `screened` hid.
+///
+/// A file this build reads as a *newer format* is counted in the ranges but not
+/// judged: its lines are a newer build's, which this one cannot compare.
+fn hidden_own(db: &Db, screened: &Screened) -> Result<HiddenOwn, SyncError> {
+    let mut hidden = HiddenOwn::default();
+    let shards: Vec<SkippedShard> = screened
+        .skipped()
+        .into_iter()
+        .filter(|s| s.own && s.kind == ShardKind::Attempts)
+        .collect();
+    if shards.is_empty() {
+        return Ok(hidden);
+    }
+    let device = db.device_id();
+    let own: HashMap<i64, MergedAttempt> = own_log(db)?
+        .into_iter()
+        .map(|attempt| (attempt.seq, attempt))
+        .collect();
+    let published = published_through(db)?;
+    for shard in shards {
+        let Some((_, first)) = parse_attempts_shard(&shard.name) else {
+            continue;
+        };
+        let end = screened.next_own_start(first);
+        hidden.ranges.push((first, end));
+        if shard.newer_format {
+            continue;
+        }
+        let salvaged = salvage_shard(&device, &screened.get(&shard.name)?);
+        let bound = end.unwrap_or(published + 1);
+        let wrote = own.keys().filter(|seq| (first..bound).contains(*seq)).count();
+        if salvaged.lines > wrote
+            || salvaged
+                .attempts
+                .iter()
+                .any(|attempt| own.get(&attempt.seq) != Some(attempt))
+        {
+            hidden.contradicts = true;
+        }
+    }
+    Ok(hidden)
+}
+
+/// How far this device has published its log, as last written down.
+///
+/// Nothing decides what to publish from it any more (#47 reads that from the
+/// store), but it is still written, and it bounds what this device can have
+/// written into its last shard.
+fn published_through(db: &Db) -> Result<i64, SyncError> {
+    Ok(db
+        .meta_value(PUBLISHED_THROUGH)
+        .map_err(SyncError::Io)?
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(0))
 }
 
 /// Whether the store holds exactly this attempt, under its name and number.
@@ -768,7 +867,8 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
     let seen = Seen::load(db)?;
     let first = Screened::read_with(store, db.device_id(), &seen)?;
     let mut remote = read_attempts(&first)?;
-    let renamed = settle_identity(db, &first, &held_index(&remote))?;
+    let hidden = hidden_own(db, &first)?;
+    let renamed = settle_identity(db, &first, &held_index(&remote), &hidden)?;
     // Which files are this device's own — to mend, to append to, to keep in view
     // when damaged — depends on its name, so a device that has just taken a new
     // one reads the store again under it: its former name is now a device like
@@ -889,17 +989,21 @@ fn repair_own_shards(db: &Db, screened: &Screened) -> Result<(), SyncError> {
     let mut log = own_log(db)?;
     sort_canonical(&mut log);
     let held: BTreeSet<i64> = log.iter().map(|attempt| attempt.seq).collect();
-    // Read from `meta` directly: nothing else reads the watermark any more (#47
-    // reads what is published from the store), but it is still written.
-    let published: i64 = db
-        .meta_value(PUBLISHED_THROUGH)
-        .map_err(SyncError::Io)?
-        .and_then(|text| text.parse().ok())
-        .unwrap_or(0);
+    let published = published_through(db)?;
     for (name, first) in damaged {
         let end = screened.next_own_start(first).unwrap_or(published + 1);
         if first > published || end <= first || !(first..end).all(|seq| held.contains(&seq)) {
             // This log cannot be the file's writer — see above. Left as it is.
+            continue;
+        }
+        // Nor if the file holds more than this log would write into it: a
+        // truncation only shortens a file, so a longer one had another writer —
+        // an install under the same name that appended to it (#36) — and writing
+        // this log's part over it would destroy the rest. `hidden_own` counts
+        // the same as evidence for a rename, so a sync never gets here with one;
+        // this is the guard for anything that does.
+        let lines = salvage_shard(&db.device_id(), &screened.get(&name)?).lines;
+        if lines > (first..end).count() {
             continue;
         }
         let from = screened

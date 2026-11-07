@@ -567,6 +567,112 @@ fn a_copy_of_this_database_that_is_behind_the_store_takes_a_new_name_and_appends
     drop(b);
 }
 
+/// A copy of `db`, as a restored backup or a copied data directory is: the same
+/// device id, and the log as it stood.
+fn copy_of(db: &Db, name: &str) -> (Scratch, Db) {
+    let dir = scratch(name);
+    rusqlite::Connection::open(db.path())
+        .unwrap()
+        .execute(
+            "VACUUM INTO ?1",
+            [dir.join(Db::FILE_NAME).to_string_lossy().to_string()],
+        )
+        .unwrap();
+    let copy = Db::open(&*dir).unwrap();
+    assert_eq!(copy.device_id(), db.device_id());
+    (dir, copy)
+}
+
+/// Cut a file short, the way a sync client does: the first `keep` bytes stay.
+fn truncate(remote: &dyn RemoteStore, name: &str, keep: usize) {
+    let bytes = remote.get(name).unwrap();
+    remote.put(name, &bytes[..keep]).unwrap();
+}
+
+/// The byte length of the first `lines` lines of a file.
+fn prefix_of_lines(remote: &dyn RemoteStore, name: &str, lines: usize) -> usize {
+    let bytes = remote.get(name).unwrap();
+    bytes
+        .iter()
+        .enumerate()
+        .filter(|(_, byte)| **byte == b'\n')
+        .nth(lines - 1)
+        .map(|(at, _)| at + 1)
+        .unwrap()
+}
+
+#[test]
+fn a_copy_that_renames_does_not_republish_history_hidden_in_a_damaged_shard() {
+    // A's first shard is closed and its second open; B is a copy of A; A goes on
+    // and appends to the open shard, which is what tells B it is a copy. But A's
+    // first shard is damaged, so B cannot see it: the rename must not take the 500
+    // attempts B shares with A, which are in that file, for B's own unpublished
+    // ones and publish them again under its new name.
+    let (_dir_a, a) = device("hidden-a");
+    let shared = scratch("hidden-store");
+    let remote = FolderStore::open(&*shared).unwrap();
+    practise(&a, 0, CHUNK as i64);
+    sync(&a, &remote).unwrap();
+    practise(&a, CHUNK as i64, 100);
+    sync(&a, &remote).unwrap();
+    assert_eq!(own_shards(&remote, &a).len(), 2);
+
+    let (_dir_b, b) = copy_of(&a, "hidden-b");
+    practise(&a, 600, 1);
+    sync(&a, &remote).unwrap();
+    let first = hanzi_sync::attempts_shard_name(&a.device_id(), 1);
+    truncate(&remote, &first, 1000);
+
+    practise(&b, 700, 1);
+    let on_b = sync(&b, &remote).unwrap();
+    assert_ne!(b.device_id(), a.device_id(), "B took a new name");
+    assert_eq!(on_b.published, 1, "only B's own new attempt: {on_b:?}");
+
+    // Once A mends its file, every device holds every attempt exactly once.
+    sync(&a, &remote).unwrap();
+    let (_dir_c, c) = device("hidden-c");
+    sync(&c, &remote).unwrap();
+    assert_eq!(read_attempts(&remote).unwrap().len(), 602);
+    assert_eq!(full_log(&c).unwrap().len(), 602);
+}
+
+#[test]
+fn a_copy_does_not_mend_the_originals_grown_tail_over_with_its_own() {
+    // A's open shard holds 1..5; B is a copy taken then; A appends 6 and 7, and C
+    // pulls them. The shard is then cut short in the middle of 6, which hides the
+    // evidence that would tell B it is a copy. B must neither write the shard
+    // again from its own 1..5 nor publish its own, different, 6 under A's name:
+    // C already holds A's 6, and would refuse every sync after.
+    let (_dir_a, a) = device("tail-a");
+    let shared = scratch("tail-store");
+    let remote = FolderStore::open(&*shared).unwrap();
+    practise(&a, 0, 5);
+    sync(&a, &remote).unwrap();
+    let (_dir_b, b) = copy_of(&a, "tail-b");
+    practise(&a, 5, 2);
+    sync(&a, &remote).unwrap();
+    let (_dir_c, c) = device("tail-c");
+    assert_eq!(sync(&c, &remote).unwrap().pulled, 7);
+
+    let shard = hanzi_sync::attempts_shard_name(&a.device_id(), 1);
+    truncate(&remote, &shard, prefix_of_lines(&remote, &shard, 5) + 12);
+    let cut = remote.get(&shard).unwrap();
+
+    practise(&b, 50, 1);
+    sync(&b, &remote).unwrap();
+    assert_ne!(b.device_id(), a.device_id(), "the file says more than B wrote");
+    assert_eq!(remote.get(&shard).unwrap(), cut, "and B left it alone");
+    sync(&c, &remote).expect("C is not handed a second attempt 6 under A's name");
+
+    // A, the file's writer, mends it; then B's attempt goes out under its own name
+    // and everybody has everything once.
+    sync(&a, &remote).unwrap();
+    sync(&b, &remote).unwrap();
+    sync(&c, &remote).unwrap();
+    assert_eq!(read_attempts(&remote).unwrap().len(), 8);
+    assert_eq!(full_log(&c).unwrap().len(), 8);
+}
+
 // ---- a busy Dropbox is waited for, within a bound ----------------------------
 
 /// A Dropbox with revisions, `update` mode, and failures on demand.

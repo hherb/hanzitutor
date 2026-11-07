@@ -748,3 +748,62 @@ fn a_publish_does_not_republish_a_device_the_sync_left_out() {
 
     finish(&[&dir_a, &shared]);
 }
+
+// ---- a list left open across a collapse --------------------------------------
+
+/// Set an entry's practice count directly, as practice on two devices leaves it.
+fn set_attempts(db: &Db, id: u64, attempts: u32) {
+    sql(db)
+        .execute(
+            "UPDATE vocab_entry SET attempts = ?1 WHERE id = ?2",
+            rusqlite::params![attempts, id as i64],
+        )
+        .unwrap();
+}
+
+fn live_attempts(db: &Db) -> u32 {
+    entries(db).iter().map(|e| e.attempts).sum()
+}
+
+#[test]
+fn practice_saved_from_a_list_opened_before_a_collapse_adds_to_the_survivors() {
+    // 5 practices on this device's copy, 3 on the peer's: the collapse leaves the
+    // survivor with 8. A list opened before it still says 3, and one more practice
+    // saved from it must make 9 — not 4, which would lose the five that moved.
+    let (dir, db) = device("stale-count");
+    let (low, high) = two_copies(&db);
+    set_attempts(&db, high, 5);
+    set_attempts(&db, low, 3);
+    let mut stale = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    db.apply_vocab_view(&collapsed(&db), &[]).unwrap();
+    assert_eq!(live_attempts(&db), 8);
+
+    stale.record_attempt(low, 70.0).unwrap();
+    stale.save().unwrap();
+    let survivor = entries(&db).into_iter().find(|e| e.id == low).unwrap();
+    assert_eq!(survivor.attempts, 9, "{survivor:?}");
+
+    finish(&[&dir]);
+}
+
+#[test]
+fn an_edit_from_a_list_opened_before_a_collapse_does_not_bring_back_counted_practice() {
+    // The same collapse, and the stale list edits the copy that was removed. The
+    // edit is newer, so the copy comes back — but its five practices already
+    // moved to the survivor, and must not be counted on both.
+    let (dir, db) = device("stale-revive");
+    let (low, high) = two_copies(&db);
+    set_attempts(&db, high, 5);
+    set_attempts(&db, low, 3);
+    let mut stale = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    db.apply_vocab_view(&collapsed(&db), &[]).unwrap();
+
+    stale
+        .update_entry(high, "xuéxí", "to learn", Some("HSK1"))
+        .unwrap();
+    stale.save().unwrap();
+    assert!(entries(&db).iter().any(|e| e.id == high), "the edit revived it");
+    assert_eq!(live_attempts(&db), 8, "{:?}", entries(&db));
+
+    finish(&[&dir]);
+}

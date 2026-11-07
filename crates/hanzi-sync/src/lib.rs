@@ -26,9 +26,10 @@
 //!   folder, a cloud with no compare-and-swap — is still safe. Where the transport
 //!   does have one (Dropbox's `rev`), the append uses it, so that two installs that
 //!   share a device's identity and write in the same moment fail rather than lose
-//!   a line; one that is already behind the store is refused before it writes
-//!   ([`SyncError::SharedIdentity`]). Neither makes two such installs work
-//!   together — giving a copy its own name is #12's.
+//!   a line. One that is already behind the store is given a name of its own
+//!   before it writes (`settle_identity`, #47), and an append that still finds
+//!   another install's attempt in the open shard is refused
+//!   ([`SyncError::SharedIdentity`]).
 //!
 //! ## What this crate is not
 //!

@@ -33,9 +33,11 @@
 //!   out. Only the device whose directory it is appends, and only to its last
 //!   shard, and only when every attempt already in it is one its own log holds
 //!   identically ([`open_tail`]). A last shard holding an attempt that log does
-//!   not is another install's under the same name, and the publish refuses
+//!   not is another install's under the same name. A sync finds that first and
+//!   gives this device a new name (#47's `settle_identity` in [`crate::local`]),
+//!   so its appends go to a shard of its own; [`open_tail`] still refuses
 //!   ([`SyncError::SharedIdentity`]) rather than append or start a conflicting
-//!   shard.
+//!   shard if one turns up after that check — two installs racing.
 //! - **A reader treats a shard as a set of attempts, whatever version it reads.**
 //!   A longer version of a shard it has already folded adds the attempts it had
 //!   not seen; a version whose attempt `(device, seq)` differs from the one
@@ -251,6 +253,43 @@ pub(crate) fn parse_shard(
         });
     }
     Ok(out)
+}
+
+/// What can still be made out of an attempt shard that cannot be read whole.
+///
+/// Never folded — a partly readable shard must not pass for a shorter one, see
+/// [`parse_shard`] — only used as evidence about who wrote it: see
+/// `hidden_own` in [`crate::local`].
+pub(crate) struct Salvaged {
+    /// Every line that still reads as an attempt.
+    pub(crate) attempts: Vec<MergedAttempt>,
+    /// How many non-blank lines the file holds, a cut-off last one included: at
+    /// least as many attempts as it was written with less any a truncation took.
+    pub(crate) lines: usize,
+}
+
+/// Read what can be read of a damaged attempt shard of `device_id`'s.
+pub(crate) fn salvage_shard(device_id: &str, bytes: &[u8]) -> Salvaged {
+    let text = String::from_utf8_lossy(bytes);
+    let mut attempts = Vec::new();
+    let mut lines = 0usize;
+    for line in text.split('\n') {
+        if line.trim().is_empty() {
+            continue;
+        }
+        lines += 1;
+        if let Ok(record) = serde_json::from_str::<ShardLine>(line) {
+            attempts.push(MergedAttempt {
+                device_id: device_id.to_string(),
+                seq: record.seq,
+                ch: record.ch,
+                at: record.at,
+                score: record.score,
+                rating: record.rating,
+            });
+        }
+    }
+    Salvaged { attempts, lines }
 }
 
 /// Why an attempt shard could not be read.

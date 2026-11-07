@@ -1332,14 +1332,26 @@ fn write_vocab_changes(
                     // older deletion exactly as the merge would settle it; or the
                     // database is what this handle last wrote and the row was never
                     // written. Both mean: write it whole.
+                    //
+                    // Except the practice counters of a row that is there. A
+                    // tombstone's counters are what this device holds for it now —
+                    // a duplicate the merge collapsed had its counters moved to the
+                    // survivor and its own cleared (`collapse_counters`) — so the
+                    // document's older copy of them would count that practice twice.
+                    // What this list added since it was read is added on top.
+                    let held = entry_counters(tx, entry.id as i64)?;
                     write_entry(tx, entry, now, device)?;
+                    if let Some(held) = held {
+                        set_counters(tx, entry.id as i64, &held)?;
+                        add_counter_change(tx, entry.id as i64, old, entry)?;
+                    }
                     touched_groups.extend(entry.group.clone());
                     continue;
                 }
                 if typed_change(old, entry) {
                     touched_groups.extend(entry.group.clone());
                 }
-                update_changed_fields(tx, old, entry, now, device)?;
+                update_changed_fields(tx, old, entry, stale, now, device)?;
             }
             None => {
                 let taken = entry_state(tx, entry.id as i64)?.is_some();
@@ -1390,10 +1402,17 @@ fn write_vocab_changes(
 /// last-writer-wins stamp; the practice counters do not, and are this device's
 /// own. Writing only what changed is what keeps a document that is otherwise stale
 /// from overwriting a peer's edit to a field this device never touched.
+///
+/// The counters are written as they stand when the database is what `old` was
+/// read from. When it moved (`stale`), they are written as what this list
+/// *added* — see [`add_counter_change`] — because the row's own may have moved
+/// too: a sync that collapsed a duplicate onto this entry moved that duplicate's
+/// practice here, and writing the document's older count would lose it.
 fn update_changed_fields(
     tx: &Connection,
     old: &Entry,
     entry: &Entry,
+    stale: bool,
     now: &str,
     device: &str,
 ) -> rusqlite::Result<()> {
@@ -1432,16 +1451,84 @@ fn update_changed_fields(
             params![now, device, id],
         )?;
     }
-    if old.attempts != entry.attempts
-        || old.best_score != entry.best_score
-        || old.last_practised != entry.last_practised
-    {
-        tx.execute(
-            "UPDATE vocab_entry SET attempts = ?1, best_score = ?2, last_practised = ?3
-             WHERE id = ?4",
-            params![entry.attempts, entry.best_score, entry.last_practised, id],
+    if stale {
+        add_counter_change(tx, id, old, entry)?;
+    } else if counters_changed(old, entry) {
+        set_counters(
+            tx,
+            id,
+            &(entry.attempts, entry.best_score, entry.last_practised.clone()),
         )?;
     }
+    Ok(())
+}
+
+/// An entry's practice counters: attempts, best score, last practised.
+type Counters = (u32, Option<f32>, Option<String>);
+
+fn counters_changed(old: &Entry, entry: &Entry) -> bool {
+    old.attempts != entry.attempts
+        || old.best_score != entry.best_score
+        || old.last_practised != entry.last_practised
+}
+
+/// The counters a row holds now, if there is a row.
+fn entry_counters(conn: &Connection, id: i64) -> rusqlite::Result<Option<Counters>> {
+    conn.query_row(
+        "SELECT attempts, best_score, last_practised FROM vocab_entry WHERE id = ?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other),
+    })
+}
+
+fn set_counters(conn: &Connection, id: i64, counters: &Counters) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE vocab_entry SET attempts = ?1, best_score = ?2, last_practised = ?3
+         WHERE id = ?4",
+        params![counters.0, counters.1, counters.2, id],
+    )?;
+    Ok(())
+}
+
+/// Add to a row's counters what this list added to `old` to make `entry`: the
+/// attempts it made, and a better score or a later practice if it has one. The
+/// rule `collapse_counters` adds two copies' counters by, so the two compose
+/// whichever happens first.
+fn add_counter_change(
+    conn: &Connection,
+    id: i64,
+    old: &Entry,
+    entry: &Entry,
+) -> rusqlite::Result<()> {
+    if !counters_changed(old, entry) {
+        return Ok(());
+    }
+    let added = i64::from(entry.attempts) - i64::from(old.attempts);
+    let best = (entry.best_score != old.best_score)
+        .then_some(entry.best_score)
+        .flatten();
+    let last = (entry.last_practised != old.last_practised)
+        .then(|| entry.last_practised.clone())
+        .flatten();
+    conn.execute(
+        "UPDATE vocab_entry SET
+             attempts = MAX(0, attempts + ?1),
+             best_score = CASE
+                 WHEN ?2 IS NULL THEN best_score
+                 WHEN best_score IS NULL THEN ?2
+                 ELSE MAX(best_score, ?2) END,
+             last_practised = CASE
+                 WHEN ?3 IS NULL THEN last_practised
+                 WHEN last_practised IS NULL THEN ?3
+                 ELSE MAX(last_practised, ?3) END
+         WHERE id = ?4",
+        params![added, best, last, id],
+    )?;
     Ok(())
 }
 
