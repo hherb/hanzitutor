@@ -413,6 +413,11 @@ pub struct BackupOutcome {
     pub message: String,
 }
 
+/// `n` and the noun that fits it: "1 entry", "2 entries".
+pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
 /// What an import of a vocabulary list left out or moved, as clauses for the
 /// sentence the interface shows, in the words the rules it was held to call for.
 ///
@@ -425,9 +430,14 @@ pub(crate) fn import_notes(
     source: &str,
 ) -> Vec<String> {
     let typed = rules == hanzi_core::vocab::ImportRules::Typed;
-    let plural =
-        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let were = |n: usize| if n == 1 { "was" } else { "were" };
+    let whose = |n: usize| {
+        if n == 1 {
+            "its group name"
+        } else {
+            "their group names"
+        }
+    };
     let mut notes = Vec::new();
     if summary.skipped_duplicates > 0 {
         let n = summary.skipped_duplicates;
@@ -452,10 +462,20 @@ pub(crate) fn import_notes(
         ));
     }
     if summary.unfiled_invalid_group > 0 {
+        let n = summary.unfiled_invalid_group;
         notes.push(format!(
-            "filed {} under no group because the group name {}held a control character",
-            plural(summary.unfiled_invalid_group, "entry", "entries"),
-            if typed { "was too long or " } else { "" },
+            "filed {} under no group because {} {}{}held a control character",
+            plural(n, "entry", "entries"),
+            whose(n),
+            if typed { were(n) } else { "" },
+            if typed { " too long or " } else { "" },
+        ));
+    }
+    if summary.merged_unfiled > 0 {
+        let n = summary.merged_unfiled;
+        notes.push(format!(
+            "merged {} into another copy of the same word once filed under no group",
+            plural(n, "entry", "entries"),
         ));
     }
     if summary.skipped_invalid_groups > 0 {
@@ -485,12 +505,18 @@ fn describe_restore(
     let mut parts = Vec::new();
 
     if summary.replaced {
-        parts.push(format!("replaced your list with {} entries", summary.added));
+        parts.push(format!(
+            "replaced your list with {}",
+            plural(summary.added, "entry", "entries")
+        ));
     } else {
-        parts.push(format!("added {} entries to your list", summary.added));
+        parts.push(format!(
+            "added {} to your list",
+            plural(summary.added, "entry", "entries")
+        ));
     }
     if summary.groups_added > 0 {
-        parts.push(format!("{} new groups", summary.groups_added));
+        parts.push(plural(summary.groups_added, "new group", "new groups"));
     }
     parts.extend(import_notes(
         summary,
@@ -499,17 +525,24 @@ fn describe_restore(
     ));
 
     if attempts_added > 0 {
-        parts.push(format!("recovered {attempts_added} attempts"));
+        parts.push(format!(
+            "recovered {}",
+            plural(attempts_added, "attempt", "attempts")
+        ));
     } else if backup.attempt_count() > 0 {
         parts.push("every attempt in it was already in your log".to_string());
     }
     if recomputed > 0 {
-        parts.push(format!("rebuilt {recomputed} schedules"));
+        parts.push(format!(
+            "rebuilt {}",
+            plural(recomputed, "schedule", "schedules")
+        ));
     }
     if left_alone > 0 {
         parts.push(format!(
-            "left {left_alone} schedule{} alone, as their history predates the log",
-            if left_alone == 1 { "" } else { "s" }
+            "left {} alone, as {} history predates the log",
+            plural(left_alone, "schedule", "schedules"),
+            if left_alone == 1 { "its" } else { "their" }
         ));
     }
 
@@ -1400,6 +1433,20 @@ impl AppState {
             .map_err(|e| format!("could not read {}: {e}", path.display()))?;
         let backup = Backup::parse(&text).map_err(|e| e.to_string())?;
 
+        // The list is checked before anything is written, because the log merge
+        // below cannot be taken back: a restore whose list would be refused must
+        // change nothing at all, not leave the attempts merged and the list as it
+        // was. Checking reads only the file, so it is not stale by the time it is
+        // applied. Lenient on length, as the app's own data coming back — the
+        // sync and the migration that wrote it never checked it.
+        let vocabulary_json = backup.vocabulary_json().map_err(|e| e.to_string())?;
+        let prepared = hanzi_core::vocab::PreparedImport::prepare(
+            &vocabulary_json,
+            merge,
+            hanzi_core::vocab::ImportRules::Restore,
+        )
+        .map_err(|e| e.to_string())?;
+
         // The log, through the same door a sync uses, so the identity rule that
         // stops an attempt being counted twice is the same rule here.
         let incoming = backup.incoming_attempts();
@@ -1420,19 +1467,9 @@ impl AppState {
         self.lock_progress().reload(db);
         self.lock_cursor().reload(db);
 
-        let vocabulary_json = backup.vocabulary_json().map_err(|e| e.to_string())?;
         let (summary, save_warning) = {
             let mut vocab = self.lock_vocab();
-            let summary = vocab
-                .store
-                // The app's own data coming back: lenient on length, as the
-                // sync and the migration that wrote it never checked it.
-                .import_json_with(
-                    &vocabulary_json,
-                    merge,
-                    hanzi_core::vocab::ImportRules::Restore,
-                )
-                .map_err(|e| e.to_string())?;
+            let summary = vocab.store.apply_import(prepared);
             let warning = vocab.save();
             (summary, warning)
         };
@@ -1647,6 +1684,7 @@ mod tests {
             skipped_invalid: 1,
             unfiled_invalid_group: 3,
             skipped_invalid_groups: 1,
+            merged_unfiled: 1,
             replaced: true,
             ..Default::default()
         };
@@ -1655,8 +1693,9 @@ mod tests {
             [
                 "skipped 2 entries repeated in the file",
                 "left out 1 entry that was empty, too long or held a control character",
-                "filed 3 entries under no group because the group name was too long or held \
-                 a control character",
+                "filed 3 entries under no group because their group names were too long or \
+                 held a control character",
+                "merged 1 entry into another copy of the same word once filed under no group",
                 "left out 1 group name that was blank, too long or held a control character",
             ]
         );
@@ -1669,11 +1708,26 @@ mod tests {
             [
                 "skipped 2 entries already in your list or repeated in the backup",
                 "left out 1 entry that was empty or held a control character",
-                "filed 3 entries under no group because the group name held a control character",
+                "filed 3 entries under no group because their group names held a control \
+                 character",
+                "merged 1 entry into another copy of the same word once filed under no group",
                 "left out 1 group name that was blank or held a control character",
             ]
         );
         assert!(import_notes(&ImportSummary::default(), ImportRules::Typed, "file").is_empty());
+        let one = ImportSummary {
+            unfiled_invalid_group: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            import_notes(&one, ImportRules::Typed, "file"),
+            [
+                "filed 1 entry under no group because its group name was too long or held a \
+                 control character"
+            ]
+        );
+        assert_eq!(plural(1, "new group", "new groups"), "1 new group");
+        assert_eq!(plural(2, "attempt", "attempts"), "2 attempts");
     }
 
     fn args(list: &[&str]) -> Vec<OsString> {

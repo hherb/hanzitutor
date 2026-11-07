@@ -248,6 +248,9 @@ pub const MAX_STROKE_POINTS: usize = 4096;
 /// thirty-stroke kanji written at 240 Hz holds about six thousand points.
 pub const MAX_ATTEMPT_POINTS: usize = 16_384;
 
+// Every stroke's share of the budget must still be a stroke: two points at least.
+const _: () = assert!(MAX_ATTEMPT_POINTS / MAX_ATTEMPT_STROKES >= 2);
+
 /// `points` thinned to at most `limit`, evenly by index, keeping the first and
 /// last point. Returned unchanged when it is already within the limit.
 fn decimate(points: &[Point], limit: usize) -> Vec<Point> {
@@ -261,6 +264,44 @@ fn decimate(points: &[Point], limit: usize) -> Vec<Point> {
     (0..limit as u64)
         .map(|i| points[(i * last / steps) as usize])
         .collect()
+}
+
+/// Step 1 of grading: the strokes worth pairing, thinned to the point bounds,
+/// and how many marks were strays — non-finite, shorter than `stray_below`
+/// before or after thinning, or past [`MAX_ATTEMPT_STROKES`].
+fn keep_strokes(attempt: &[Vec<Point>], stray_below: f32) -> (Vec<Kept>, usize) {
+    let mut kept = Vec::new();
+    let mut stray = 0usize;
+    for (i, stroke) in attempt.iter().enumerate() {
+        // A stroke with no finite point is not a stroke. `NaN` and `±∞` cannot
+        // come from a pointer, and one of them in the geometry turns every
+        // comparison it touches into nonsense — the cost matrix, the fitted
+        // transform and the headline scores alike. Such a mark is counted as a
+        // stray, the same as a tap too short to be a stroke, so the report still
+        // says it was seen rather than dropping it in silence. The order matters
+        // as well as the answer: a non-finite stroke is refused before its length
+        // is measured, because that length would be `NaN` too.
+        let finite = stroke.iter().all(|p| p.x.is_finite() && p.y.is_finite());
+        // Past [`MAX_ATTEMPT_STROKES`] real strokes, the rest are strays too: the
+        // pairing below is quadratic in memory and cubic in time.
+        if !finite || geom::path_length(stroke) < stray_below || kept.len() >= MAX_ATTEMPT_STROKES {
+            stray += 1;
+        } else {
+            kept.push(Kept {
+                original_index: i,
+                points: decimate(stroke, MAX_STROKE_POINTS),
+            });
+        }
+    }
+    bound_attempt_points(&mut kept);
+    // Thinning can alias: a stroke that alternates between two points thins to
+    // one of them when the step lands on every other sample. What is left is
+    // judged as it will be graded, so a stroke thinned to less than a stroke's
+    // length is a stray too. A stroke that was not thinned measures as before.
+    let before = kept.len();
+    kept.retain(|k| geom::path_length(&k.points) >= stray_below);
+    stray += before - kept.len();
+    (kept, stray)
 }
 
 /// Hold the kept strokes to [`MAX_ATTEMPT_POINTS`] between them, each to an
@@ -541,30 +582,7 @@ fn grade_inner(
         .fold(f32::INFINITY, f32::min);
     let stray_below = options.min_stroke_len.min(shortest_reference * 0.5);
 
-    let mut kept = Vec::new();
-    let mut stray = 0usize;
-    for (i, stroke) in attempt.iter().enumerate() {
-        // A stroke with no finite point is not a stroke. `NaN` and `±∞` cannot
-        // come from a pointer, and one of them in the geometry turns every
-        // comparison it touches into nonsense — the cost matrix, the fitted
-        // transform and the headline scores alike. Such a mark is counted as a
-        // stray, the same as a tap too short to be a stroke, so the report still
-        // says it was seen rather than dropping it in silence. The order matters
-        // as well as the answer: a non-finite stroke is refused before its length
-        // is measured, because that length would be `NaN` too.
-        let finite = stroke.iter().all(|p| p.x.is_finite() && p.y.is_finite());
-        // Past [`MAX_ATTEMPT_STROKES`] real strokes, the rest are strays too: the
-        // pairing below is quadratic in memory and cubic in time.
-        if !finite || geom::path_length(stroke) < stray_below || kept.len() >= MAX_ATTEMPT_STROKES {
-            stray += 1;
-        } else {
-            kept.push(Kept {
-                original_index: i,
-                points: decimate(stroke, MAX_STROKE_POINTS),
-            });
-        }
-    }
-    bound_attempt_points(&mut kept);
+    let (mut kept, stray) = keep_strokes(attempt, stray_below);
 
     // 2. Score and pair the strokes.
     //
@@ -1326,6 +1344,10 @@ mod tests {
             &GradeOptions::default(),
         );
         let elapsed = started.elapsed();
+        // What was graded, so a slow run points at its cause.
+        let (kept, _) = keep_strokes(std::slice::from_ref(&posted), 12.0);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].points.len(), MAX_STROKE_POINTS);
         assert!(elapsed.as_secs_f32() < 3.0, "took {elapsed:?}");
         assert_eq!(report.given_strokes, 1);
         assert!((0.0..=100.0).contains(&report.overall));
@@ -1412,8 +1434,36 @@ mod tests {
         let started = std::time::Instant::now();
         let report = grade(&reference, &attempt, &GradeOptions::default());
         let elapsed = started.elapsed();
+        let (kept, _) = keep_strokes(&attempt, 12.0);
+        assert_eq!(kept.len(), 30);
+        for k in &kept {
+            assert_eq!(k.points.len(), MAX_ATTEMPT_POINTS / 30);
+        }
         assert!(elapsed.as_secs_f32() < 10.0, "took {elapsed:?}");
         assert!((0.0..=100.0).contains(&report.overall));
+    }
+
+    /// Thinning can alias, and what it leaves is judged as it will be graded.
+    ///
+    /// 8,191 points alternating between two corners thin, by every other index,
+    /// to 4,096 copies of one corner: no length at all. Graded on what is left,
+    /// that is a tap, so it is a stray — not a stroke with no shape.
+    #[test]
+    fn a_stroke_that_thins_to_a_point_is_a_stray() {
+        let (a, b) = (Point::new(100.0, 100.0), Point::new(900.0, 900.0));
+        let posted: Vec<Point> = (0..2 * MAX_STROKE_POINTS - 1)
+            .map(|i| if i % 2 == 0 { a } else { b })
+            .collect();
+        let thinned = decimate(&posted, MAX_STROKE_POINTS);
+        assert!(thinned.iter().all(|p| *p == a), "the thinning aliases");
+
+        let (kept, stray) = keep_strokes(std::slice::from_ref(&posted), 12.0);
+        assert!(kept.is_empty());
+        assert_eq!(stray, 1);
+        let report = grade(&shi_reference(), &[posted], &GradeOptions::default());
+        assert_eq!(report.given_strokes, 0);
+        assert_eq!(report.stray_strokes, 1);
+        assert_eq!(report.overall, 0.0);
     }
 
     // ---- assignment solver -------------------------------------------------
