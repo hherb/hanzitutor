@@ -342,6 +342,44 @@ describe("the stroke-order animation", () => {
   });
 });
 
+describe("drawScene's ink", () => {
+  const scene = (strokes: Point[][], current: Point[] | null) => ({
+    size: 1024,
+    character: null,
+    ghostCount: 0,
+    ghostStyle: "faint" as const,
+    strokes,
+    current,
+    report: null,
+    showCorrections: false,
+    sweep: null,
+  });
+
+  it("draws a tap as a dot, finished or still under the pointer", () => {
+    // The boards hand a tap over as its point doubled (issue #30); the board
+    // itself must show it, not leave it to a zero-length line's caps.
+    const empty = recorder();
+    drawScene(empty.ctx, scene([], null));
+    const { ctx, ops } = recorder();
+    drawScene(ctx, scene([[p(100, 200), p(100, 200)]], [p(300, 400), p(300, 400)]));
+    expect(arcs(ops)).toEqual([
+      { op: "arc", x: 100, y: 200, r: INK_WIDTH / 2 },
+      { op: "arc", x: 300, y: 400, r: INK_WIDTH / 2 },
+    ]);
+    // The board's own grid is stroked whatever is on it; the ink adds no line.
+    expect(count(ops, "stroke")).toBe(count(empty.ops, "stroke"));
+  });
+
+  it("strokes a line for a stroke that moved", () => {
+    const empty = recorder();
+    drawScene(empty.ctx, scene([], null));
+    const { ctx, ops } = recorder();
+    drawScene(ctx, scene([[p(0, 0), p(50, 0)]], null));
+    expect(arcs(ops)).toHaveLength(0);
+    expect(count(ops, "stroke")).toBe(count(empty.ops, "stroke") + 1);
+  });
+});
+
 describe("drawThumb", () => {
   it("draws a dot for a single tap, at the display-space pen width", () => {
     const { ctx, ops } = recorder();
@@ -356,6 +394,15 @@ describe("drawThumb", () => {
       e: 0,
       f: 0,
     });
+    expect(arcs(ops)).toEqual([{ op: "arc", x: 100, y: 200, r: INK_WIDTH / 2 }]);
+    expect(count(ops, "stroke")).toBe(0);
+  });
+
+  it("draws a dot for a tap that arrived as two points in one place", () => {
+    // What the boards hand over for a tap since issue #30. A zero-length line is
+    // not something every canvas paints a cap for, so it must not be left to one.
+    const { ctx, ops } = recorder();
+    drawThumb(ctx, { size: 512, strokes: [[p(100, 200), p(100, 200)]], report: null });
     expect(arcs(ops)).toEqual([{ op: "arc", x: 100, y: 200, r: INK_WIDTH / 2 }]);
     expect(count(ops, "stroke")).toBe(0);
   });

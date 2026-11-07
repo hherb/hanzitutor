@@ -32,6 +32,7 @@
   import { shortcutFor } from "./lib/shortcuts";
   import type { ShortcutId } from "./lib/shortcuts";
   import { INK_WIDTH, polylineLength } from "./lib/render";
+  import { hasDrawnStroke } from "./lib/strokeInput";
   import type { Sweep } from "./lib/render";
   import type {
     AppInfo,
@@ -1729,7 +1730,11 @@
   }
 
   async function check() {
-    if (!character || strokes.length === 0 || grading) return;
+    // A lone tap stays on the board (Undo takes it back) but is not something to
+    // check: the grader counts it as a stray, and the zero it would score is not
+    // a review. `hasDrawnStroke` is far looser than the grader, so it never holds
+    // back an attempt the grader would grade.
+    if (!character || !hasDrawnStroke(strokes) || grading) return;
     // A report is about the board as it stands, so the guide stops growing the
     // moment it is asked for.
     stopStrokeOrder();
@@ -1747,6 +1752,14 @@
         inkWidth: INK_WIDTH,
       });
       report = graded;
+      // A mark between that rule and the grader's stray filter is still graded
+      // and explained (FeedbackPanel says it was too small to be a stroke), but
+      // an attempt with no stroke in it is not recorded: a zero for a slip of the
+      // hand would set the character back in the schedule.
+      if (graded.givenStrokes === 0) {
+        void api.log(`graded ${character.ch}: no stroke in the attempt, not recorded`);
+        return;
+      }
       void api.log(
         `graded ${character.ch}: ${Math.round(graded.overall)}/100, ` +
           `ink=${graded.inkScore.toFixed(2)}/${graded.inkCoverage.toFixed(2)}, ` +
@@ -3393,7 +3406,7 @@
                   <button
                     class="primary"
                     onclick={check}
-                    disabled={strokes.length === 0 || grading}
+                    disabled={!hasDrawnStroke(strokes) || grading}
                     aria-label={grading ? "Checking your writing…" : "Check your writing"}
                     title={grading
                       ? "Checking your writing…"

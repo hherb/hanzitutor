@@ -3,8 +3,10 @@ import {
   MIN_POINTS,
   afterGrade,
   afterGradeInQueue,
+  canGrade,
   isStroke,
   pointerToDisplay,
+  strayNote,
   sweepAt,
 } from "./board";
 import { BOX } from "./render";
@@ -97,7 +99,7 @@ describe("sweepAt", () => {
 });
 
 describe("isStroke", () => {
-  it("keeps a drawn stroke and drops a tap", () => {
+  it("keeps anything with two points and refuses less", () => {
     expect(isStroke([{ x: 1, y: 1 }, { x: 2, y: 2 }])).toBe(true);
     expect(isStroke([{ x: 1, y: 1 }])).toBe(false);
     expect(isStroke([])).toBe(false);
@@ -146,5 +148,39 @@ describe("afterGradeInQueue", () => {
     // The queue's end is a state, not the stage's `finish`: there is nowhere to
     // go and nothing to go back to, so the control reads "nothing due".
     expect(afterGradeInQueue(true, false)).toBe("nothing");
+  });
+});
+
+describe("canGrade", () => {
+  const tap = [{ x: 40, y: 40 }, { x: 40, y: 40 }];
+  const line = [{ x: 0, y: 0 }, { x: 300, y: 0 }];
+
+  it("offers a verdict only for an attempt with something drawn in it", () => {
+    // A lone accidental tap stays on the board, but grading it would score zero
+    // and put that zero on the review schedule (issue #30's follow-up).
+    expect(canGrade([], false)).toBe(false);
+    expect(canGrade([tap], false)).toBe(false);
+    expect(canGrade([tap, tap], false)).toBe(false);
+    expect(canGrade([line], false)).toBe(true);
+    expect(canGrade([tap, line], false)).toBe(true);
+  });
+
+  it("offers nothing while a verdict is being worked out", () => {
+    expect(canGrade([line], true)).toBe(false);
+  });
+});
+
+describe("strayNote", () => {
+  it("says nothing when every mark was a stroke", () => {
+    expect(strayNote(0)).toBeNull();
+  });
+
+  it("names the marks the grader left out, and that they changed nothing", () => {
+    expect(strayNote(1)).toBe(
+      "1 mark was too small to be a stroke and was left out — it is not why anything above was marked.",
+    );
+    expect(strayNote(3)).toBe(
+      "3 marks were too small to be strokes and were left out — they are not why anything above was marked.",
+    );
   });
 });

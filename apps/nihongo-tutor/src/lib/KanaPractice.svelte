@@ -54,7 +54,7 @@
   import { scheduleNote } from "./review";
   import { canHear, isHearItKey, type VoiceStatus } from "./speech";
   import { joinedLabel, lessonLabel, lessonOf, neighbourIn, positionIn } from "./kana";
-  import { afterGrade } from "./board";
+  import { afterGrade, canGrade, strayNote } from "./board";
   import * as api from "./api";
   import type { GradeReport, Kana, LessonView, Point, ReadingCheck } from "./types";
 
@@ -181,7 +181,7 @@
   }
 
   async function askForAVerdict() {
-    if (!kana) return;
+    if (!kana || !canGrade(attempt, busy)) return;
     try {
       busy = true;
       error = null;
@@ -495,7 +495,7 @@
           {:else}
             <button
               class="primary"
-              disabled={busy || attempt.length === 0}
+              disabled={!canGrade(attempt, busy)}
               onclick={askForAVerdict}
               aria-label={busy ? "Grading…" : "Grade this attempt"}
               title="Grade what you have drawn"
@@ -528,6 +528,9 @@
               </li>
             {/each}
           </ul>
+          {#if report.strayStrokes > 0}
+            <p class="fine">{strayNote(report.strayStrokes)}</p>
+          {/if}
           {#if drawnJoined}
             <p class="fine">Taught strokes {drawnJoined} were drawn as one.</p>
           {/if}
