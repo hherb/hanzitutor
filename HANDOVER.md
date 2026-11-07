@@ -3275,17 +3275,20 @@ part's `drawable` flag is checked against the character's own stroke geometry.
   `verify-audio` (§3) is the instrument.
 - **Tone scoring against real voices is unfinished** — segmentation on words, and
   scoring constants never fitted to a recording. See §9.
-- **An accepted dependency advisory.** Dependabot flags `glib` 0.18.5 (moderate,
+- **Accepted dependency advisories.** Dependabot flags `glib` 0.18.5 (moderate,
   fixed in 0.20.0). It is Linux-GTK-only and absent from the macOS build graph, and
   it is not fixable from here because `gtk 0.18` pins `glib ^0.18` — cargo rejects
   the upgrade. **Do not spend time on it**: `cargo tree --target
   aarch64-apple-darwin -e normal | grep glib` returns nothing. ROADMAP has the
-  detail. **As of 15 October 2026 it is the only one left**: the three
-  `source-map-js` alerts and the four `rustls` advisories found that day are fixed,
-  and `cargo audit` and `pnpm audit` then report nothing else in this workspace —
-  see `HANDOVER_NIHONGO.md`, "The dependency advisories, and the two warnings that
-  stand", which also records the re-check that `muda` 0.21.2, `tao` 0.37.1 and
-  `tauri` 2.12.4 all still require `gtk ^0.18`.
+  detail. On 15 October 2026 it was the only one left; the advisories of 13-16
+  October added three more groups that no lockfile update can clear, accepted by id
+  on 7 November 2026 — `zbus_names`/`zvariant`/`zvariant_derive` (unmaintained,
+  Linux-only through `tauri-plugin-opener`), `zip` 2.4.2 (a build-dependency of
+  `sherpa-onnx-sys` 1.13.8, reached only in a download path `SHERPA_ONNX_LIB_DIR`
+  skips; the fix is sherpa-onnx 2.x and re-pinned native archives), and on the npm
+  side `deepmerge` (low, no fixed release, build-time only). The reasons are in
+  `.cargo/audit.toml` and `pnpm-workspace.yaml`, and the record is
+  `HANDOVER_NIHONGO.md`, "The dependency advisories, and the warnings that stand".
 - **Resuming inside a user vocabulary list is built, and its position is published
   as it changes** — §6a is the record, and it names the one item still open (a
   per-entry progress tag).
