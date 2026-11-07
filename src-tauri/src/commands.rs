@@ -7,8 +7,8 @@
 use hanzi_core::{
     build_lessons, grade_with_outlines, tone::ToneAttempt, AttemptMeasures, Character, CursorView,
     Dataset, Decomposition, GradeOptions, GradeReport, Grade, Heard, Lesson, Point, ProgressView,
-    RadicalGroup, ReviewView, SettingsPatch, SettingsView, TextLookup, ToneSet, ToneVerdict,
-    ToneTarget, VocabView, Word,
+    PracticeMode, RadicalGroup, ReviewView, SettingsPatch, SettingsView, TextLookup, ToneSet,
+    ToneVerdict, ToneTarget, VocabView, Word,
 };
 use serde::Serialize;
 use std::sync::{Arc, MutexGuard};
@@ -1422,17 +1422,23 @@ pub fn progress(state: State<'_, AppState>) -> ProgressView {
 /// that has only a score — an older interface, a script — still records. What it
 /// buys is the grader being checkable against real handwriting later, and it
 /// cannot be reconstructed afterwards, because the strokes are gone by then.
+///
+/// `mode` is how the board was set when the attempt was written. Only a recall
+/// is a review: a trace over the faint guide is kept with its measures and
+/// schedules nothing (see `ProgressStore::record_practice_at`). Absent means
+/// recall, which is what every caller meant before the mode was sent.
 #[tauri::command]
 pub fn record_progress(
     state: State<'_, AppState>,
     ch: char,
     score: f32,
     measures: Option<AttemptMeasures>,
+    mode: Option<PracticeMode>,
 ) -> Result<ProgressView, String> {
     let mut progress = state.lock_progress();
     progress
         .store
-        .record_measured(ch, score, measures)
+        .record_practice(ch, score, mode.unwrap_or_default(), measures)
         .map_err(|e| e.to_string())?;
     Ok(committed_progress(&mut progress))
 }

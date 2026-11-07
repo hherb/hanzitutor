@@ -23,7 +23,7 @@ use hanzi_core::{
     POSITION_OK, SHAPE_OK,
 };
 
-use crate::LoggedAttempt;
+use crate::{LoggedAttempt, TracedAttempt};
 
 /// The percentiles reported for each measure: the tails, the middle, and the
 /// quartiles around it.
@@ -161,14 +161,53 @@ pub struct AttemptAnalysis {
     pub score_deviation: Option<(f32, f32)>,
 }
 
+/// What the analysis reads of one attempt, whichever table it came from.
+struct Row<'a> {
+    ch: &'a str,
+    score: f32,
+    rating: &'a str,
+    measures: Option<AttemptMeasures>,
+}
+
 /// Read the log.
 ///
 /// `attempts` is expected in the log's own order; nothing here depends on it.
 pub fn analyse(attempts: &[LoggedAttempt]) -> AttemptAnalysis {
+    let rows: Vec<Row<'_>> = attempts
+        .iter()
+        .map(|a| Row {
+            ch: &a.ch,
+            score: a.score,
+            rating: &a.rating,
+            measures: a.measures,
+        })
+        .collect();
+    analyse_rows(&rows)
+}
+
+/// Read the traced attempts, which are analysed apart from the reviews.
+///
+/// Apart because they are graded differently: a trace is scored where the guide
+/// actually is, without the global fit a recall gets, so pooling the two would
+/// blur exactly the distributions the tolerances are tuned from.
+pub fn analyse_traces(traces: &[TracedAttempt]) -> AttemptAnalysis {
+    let rows: Vec<Row<'_>> = traces
+        .iter()
+        .map(|t| Row {
+            ch: &t.ch,
+            score: t.score,
+            rating: &t.rating,
+            measures: t.measures,
+        })
+        .collect();
+    analyse_rows(&rows)
+}
+
+fn analyse_rows(attempts: &[Row<'_>]) -> AttemptAnalysis {
     let rows: Vec<AttemptMeasures> = attempts.iter().filter_map(|a| a.measures).collect();
     let characters = attempts
         .iter()
-        .map(|a| a.ch.as_str())
+        .map(|a| a.ch)
         .collect::<std::collections::HashSet<_>>()
         .len();
 

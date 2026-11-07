@@ -17,7 +17,7 @@
 
 use std::path::PathBuf;
 
-use hanzi_store::analyse::{analyse, AttemptAnalysis, MeasureStats, PERCENTILES};
+use hanzi_store::analyse::{analyse, analyse_traces, AttemptAnalysis, MeasureStats, PERCENTILES};
 use hanzi_store::Db;
 
 fn main() {
@@ -48,7 +48,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nPractice log: {}", db_path.display());
     println!(
-        "{} attempts on {} characters; {} carry grading measures{}\n",
+        "{} reviews on {} characters; {} carry grading measures{}\n",
         report.attempts,
         report.characters,
         report.measured,
@@ -62,7 +62,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
 
-    if report.measured == 0 {
+    // Traces are graded where the guide is, without the global fit a recall
+    // gets, so they are reported on their own rather than pooled with reviews.
+    let traces = analyse_traces(&db.traced_attempts()?);
+
+    if report.measured == 0 && traces.measured == 0 {
         println!(
             "Nothing to analyse yet: no attempt in this log carries the measures it was graded\n\
              from. They are written from the moment this build grades an attempt, so practise a\n\
@@ -71,10 +75,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    print_measures(&report);
-    print_verdicts(&report);
-    print_separation(&report);
-    print_integrity(&report);
+    if report.measured > 0 {
+        print_measures(&report);
+        print_verdicts(&report);
+        print_separation(&report);
+        print_integrity(&report);
+    }
+
+    println!(
+        "\nTraced attempts (over the faint guide, graded without the global fit): {} on {} \
+         characters, {} measured\n",
+        traces.attempts, traces.characters, traces.measured
+    );
+    if traces.measured > 0 {
+        print_measures(&traces);
+        print_verdicts(&traces);
+        print_separation(&traces);
+        print_integrity(&traces);
+    }
+
     print_what_to_look_at();
 
     Ok(())

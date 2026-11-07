@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { dueLabel } from "./due";
+import { dueLabel, unwrittenLabel } from "./due";
 
 /**
  * A wall-clock moment in the zone the tests run in.
@@ -107,5 +107,16 @@ describe("dueLabel across a daylight-saving change", () => {
     expect(dueLabel(iso(local(2026, 10, 26, 0, 30)), local(2026, 10, 24, 22, 0))).toBe(
       "in 2 days",
     );
+  });
+});
+
+describe("unwrittenLabel", () => {
+  it("names a traced character as traced, not as untouched", () => {
+    expect(unwrittenLabel(10)).toBe("traced 10× · not yet written from memory");
+  });
+
+  it("says a character never traced has not been written from memory", () => {
+    expect(unwrittenLabel(undefined)).toBe("not yet written from memory");
+    expect(unwrittenLabel(0)).toBe("not yet written from memory");
   });
 });
