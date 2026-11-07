@@ -204,8 +204,9 @@ fn a_grade_report_crosses_with_the_four_headline_scores() {
 
 #[test]
 fn grading_reads_the_attempt_the_interface_sends() {
-    // The interface posts `{ ch, strokes, options }` — a stroke is a list of
-    // {x, y}, and `options` is `{ inkWidth }` and nothing else, deliberately:
+    // The interface posts `{ ch, strokes, options, traced }` — a stroke is a list
+    // of {x, y}, `traced` is whether the guide was helping, and `options` is
+    // `{ inkWidth }` and nothing else, deliberately:
     // the other three tunables stay at the values the tolerance study was fitted
     // against (see `src/lib/api.ts`). This is that round trip, options included,
     // because reading the options back through serde is what catches a field the
@@ -215,7 +216,8 @@ fn grading_reads_the_attempt_the_interface_sends() {
     let payload = json!({
         "ch": "ー",
         "strokes": [[{"x": 120.0, "y": 500.0}, {"x": 900.0, "y": 505.0}]],
-        "options": {"inkWidth": 36.0}
+        "options": {"inkWidth": 36.0},
+        "traced": false
     });
     let ch: char = payload["ch"].as_str().expect("a string").chars().next().expect("one char");
     let strokes: Vec<Vec<Point>> = serde_json::from_value(payload["strokes"].clone())
@@ -227,8 +229,10 @@ fn grading_reads_the_attempt_the_interface_sends() {
 
     // The command the interface actually calls, so the request half above is
     // checked against the path that runs rather than against a sibling of it.
+    let traced: bool =
+        serde_json::from_value(payload["traced"].clone()).expect("the flag deserialises");
     let graded = state()
-        .grade_and_schedule(ch, &strokes, &options)
+        .grade_and_schedule(ch, &strokes, &options, traced)
         .expect("grades");
     assert!(
         graded.report.legible,
@@ -1346,13 +1350,20 @@ fn a_graded_attempt_crosses_with_the_verdict_and_the_schedule() {
     let kana = state.kana('あ').expect("あ");
     let attempt = vec![kana.medians[0].clone()];
     let graded = state
-        .grade_and_schedule('あ', &attempt, &GradeOptions::default())
+        .grade_and_schedule('あ', &attempt, &GradeOptions::default(), false)
         .expect("grades");
 
     let value = serde_json::to_value(&graded).expect("serialises");
     assert_eq!(
         keys(&value),
-        vec!["joined", "nextDue", "report", "scheduled", "warning"],
+        vec![
+            "joined",
+            "nextDue",
+            "report",
+            "scheduled",
+            "traced",
+            "warning"
+        ],
         "the wrapper the interface unwraps"
     );
     assert!(value["report"]["overall"].is_number(), "the verdict is inside it");
@@ -1363,6 +1374,7 @@ fn a_graded_attempt_crosses_with_the_verdict_and_the_schedule() {
         "one stroke of あ drawn alone joins nothing"
     );
     assert_eq!(value["scheduled"], true, "a character with no card is a review");
+    assert_eq!(value["traced"], false, "it was written from memory");
     assert!(value["nextDue"].is_string(), "and the attempt produced a due date");
     assert!(value["warning"].is_null(), "nothing to report about the write");
 }
@@ -1391,7 +1403,7 @@ fn a_joined_kana_crosses_with_the_strokes_it_was_read_as() {
         serde_json::from_value(payload["options"].clone()).expect("the options deserialise");
 
     let graded = state
-        .grade_and_schedule(ch, &strokes, &options)
+        .grade_and_schedule(ch, &strokes, &options, false)
         .expect("grades");
     let value = serde_json::to_value(&graded).expect("serialises");
     assert_eq!(value["joined"], json!([[1, 2]]), "the taught strokes drawn as one");
@@ -1415,7 +1427,7 @@ fn a_joined_kanji_crosses_as_refused_and_never_as_a_grouping() {
     strokes[0].extend(second);
 
     let graded = state
-        .grade_and_schedule('日', &strokes, &GradeOptions::default())
+        .grade_and_schedule('日', &strokes, &GradeOptions::default(), false)
         .expect("grades");
     let value = serde_json::to_value(&graded).expect("serialises");
     assert_eq!(value["joined"], json!([]), "no grouping is read for a kanji");
@@ -1435,7 +1447,8 @@ fn a_second_attempt_inside_the_interval_does_not_reschedule() {
     let payload = json!({
         "ch": "あ",
         "strokes": [[{"x": 300.0, "y": 300.0}, {"x": 700.0, "y": 300.0}]],
-        "options": {"inkWidth": 36.0}
+        "options": {"inkWidth": 36.0},
+        "traced": false
     });
     let ch: char = payload["ch"].as_str().expect("a string").chars().next().expect("one char");
     let strokes: Vec<Vec<Point>> =
@@ -1443,14 +1456,118 @@ fn a_second_attempt_inside_the_interval_does_not_reschedule() {
     let options: GradeOptions =
         serde_json::from_value(payload["options"].clone()).expect("the options deserialise");
 
-    let first = state.grade_and_schedule(ch, &strokes, &options).expect("grades");
-    assert!(first.scheduled, "the first attempt on a character is a review");
+    let traced: bool =
+        serde_json::from_value(payload["traced"].clone()).expect("the flag deserialises");
 
-    let again = state.grade_and_schedule(ch, &strokes, &options).expect("grades");
+    let first = state
+        .grade_and_schedule(ch, &strokes, &options, traced)
+        .expect("grades");
+    assert!(
+        first.scheduled,
+        "the first attempt on a character is a review"
+    );
+
+    let again = state
+        .grade_and_schedule(ch, &strokes, &options, traced)
+        .expect("grades");
     assert!(!again.scheduled, "the card is not due again yet");
     assert_eq!(again.next_due, first.next_due, "and the due date did not move");
     assert_eq!(again.report.overall, first.report.overall, "the verdict is still a verdict");
     assert_eq!(state.review_queue(40, None).cards, 1, "one character, one card");
+}
+
+/// The rule that keeps tracing from passing for recall: an attempt the interface
+/// says was traced is graded and shown, and never reaches the schedule — not for a
+/// new character, which would otherwise get its first interval from a copy, and not
+/// for a due one, whose interval a traced "legible" would otherwise stretch.
+///
+/// The request half is read from the payload the interface posts, `traced`
+/// included, so a flag renamed on one side fails here rather than being dropped
+/// and every trace counted.
+#[test]
+fn a_traced_attempt_is_graded_and_does_not_reach_the_schedule() {
+    let dir = TempDir::new("traced");
+    fs::write(
+        dir.path().join("review.json"),
+        r#"{"version":1,"cards":{
+             "い":{"attempts":1,"due":"2020-01-01T00:00:00Z","intervalDays":1.0,"ease":2.5,"repetitions":1}
+           }}"#,
+    )
+    .expect("writes a schedule");
+    let state = AppState::load_at(dir.path());
+
+    let posted = |ch: &str, traced: bool| {
+        let strokes = state
+            .kana(ch.chars().next().expect("one char"))
+            .expect("a kana")
+            .medians;
+        json!({
+            "ch": ch,
+            "strokes": strokes,
+            "options": {"inkWidth": 36.0},
+            "traced": traced
+        })
+    };
+    let grade = |payload: Value| {
+        let ch: char = payload["ch"]
+            .as_str()
+            .expect("a string")
+            .chars()
+            .next()
+            .expect("one char");
+        let strokes: Vec<Vec<Point>> =
+            serde_json::from_value(payload["strokes"].clone()).expect("the strokes deserialise");
+        let options: GradeOptions =
+            serde_json::from_value(payload["options"].clone()).expect("the options deserialise");
+        let traced: bool =
+            serde_json::from_value(payload["traced"].clone()).expect("the flag deserialises");
+        state
+            .grade_and_schedule(ch, &strokes, &options, traced)
+            .expect("grades")
+    };
+
+    // A new character, traced: graded, legible, and no card made for it.
+    let new = grade(posted("あ", true));
+    assert!(
+        new.report.legible,
+        "the taught strokes are legible: {:.0}",
+        new.report.overall
+    );
+    assert!(new.traced, "the response says what the attempt was");
+    assert!(
+        !new.scheduled,
+        "a trace of a new character is not its first review"
+    );
+    assert!(new.next_due.is_none(), "no card, so no date");
+    let value = serde_json::to_value(&new).expect("serialises");
+    assert_eq!(value["traced"], true);
+    assert_eq!(value["scheduled"], false);
+
+    // A due character, traced: still due, its date and interval untouched.
+    let due = grade(posted("い", true));
+    assert!(due.traced);
+    assert!(!due.scheduled, "a trace of a due character is not a review");
+    assert_eq!(
+        due.next_due.as_deref(),
+        Some("2020-01-01T00:00:00Z"),
+        "the date did not move"
+    );
+    let queue = state.review_queue(40, None);
+    assert_eq!(queue.cards, 1, "only the card that was already there");
+    assert_eq!(queue.due, 1, "and it is still due");
+    assert_eq!(
+        queue.items[0].attempts, 1,
+        "the trace was not recorded against it"
+    );
+
+    // The same character written from memory is the review.
+    let recalled = grade(posted("い", false));
+    assert!(!recalled.traced);
+    assert!(
+        recalled.scheduled,
+        "written from memory, the due character is reviewed"
+    );
+    assert_eq!(state.review_queue(40, None).due, 0);
 }
 
 /// What the Review screen reads: the due characters with their prompts, most
@@ -1505,7 +1622,10 @@ fn the_review_queue_crosses_with_the_due_characters() {
     // jōyō kanji, and a radical head form the character course cannot reach.
     assert_eq!(items[0]["ch"], "あ");
     assert_eq!(items[0]["kind"], "kana", "the tag the interface switches on");
-    assert_eq!(items[0]["hint"], "a", "the prompt comes from the readings");
+    assert_eq!(
+        items[0]["hint"], "a · hiragana",
+        "the prompt comes from the readings, and names the script"
+    );
     assert_eq!(items[0]["attempts"], 2);
     assert_eq!(items[0]["lapses"], 1);
     assert!(items[0]["radical"].is_null());
@@ -1626,7 +1746,7 @@ fn a_character_the_board_cannot_draw_is_never_scheduled() {
         serde_json::from_value(payload["strokes"].clone()).expect("deserialises");
 
     let err = state
-        .grade_and_schedule(ch, &strokes, &GradeOptions::default())
+        .grade_and_schedule(ch, &strokes, &GradeOptions::default(), false)
         .unwrap_err();
     assert!(err.contains("not a kana, a jōyō kanji, or a radical"), "{err}");
     assert_eq!(state.review_queue(40, None).cards, 0, "nothing was scheduled");
@@ -1640,7 +1760,7 @@ fn what_the_schedule_remembers_survives_a_restart() {
     let due = {
         let state = AppState::load_at(dir.path());
         let graded = state
-            .grade_and_schedule('あ', &[], &GradeOptions::default())
+            .grade_and_schedule('あ', &[], &GradeOptions::default(), false)
             .expect("grades");
         assert!(graded.scheduled);
         graded.next_due.expect("a new card has a due date")

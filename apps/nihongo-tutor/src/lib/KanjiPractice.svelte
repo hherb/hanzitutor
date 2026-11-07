@@ -45,7 +45,7 @@
   import SpeakButton from "./SpeakButton.svelte";
   import WordCard from "./WordCard.svelte";
   import { untrack } from "svelte";
-  import { afterGrade } from "./board";
+  import { afterGrade, traceReason } from "./board";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
   import { scheduleNote } from "./review";
   import { canHear, voiceNote, type VoiceStatus } from "./speech";
@@ -118,6 +118,12 @@
    * while it is not. The board itself clears the attempt when this changes.
    */
   let guide = $state(true);
+  /**
+   * Whether the stroke animation has drawn this character since it was opened.
+   * With the guide, it makes an attempt traced (`board.ts`'s `traceReason`): the
+   * learner has just watched it written, so writing it now is copying it.
+   */
+  let watched = $state(false);
   /** Whether the card's other facts are folded out. A phone control only. */
   let showDetails = $state(false);
 
@@ -174,6 +180,7 @@
       report = null;
       note = null;
       attempt = [];
+      watched = false;
       showDetails = false;
       await loadWords(target, 1);
     } catch (e) {
@@ -190,6 +197,7 @@
       report = null;
       note = null;
       attempt = [];
+      watched = false;
       showDetails = false;
       words = [];
       wordTotal = 0;
@@ -235,9 +243,10 @@
       error = null;
       // Grading and scheduling are one command: the report comes back with what
       // the review schedule did with the attempt beside it.
-      const graded = await api.gradeAttempt(drawn.ch, attempt);
+      const reason = traceReason({ guide, watched, answered: false });
+      const graded = await api.gradeAttempt(drawn.ch, attempt, reason !== null);
       report = graded.report;
-      note = scheduleNote(graded, new Date().toISOString());
+      note = scheduleNote(graded, new Date().toISOString(), reason);
     } catch (e) {
       error = String(e);
     } finally {
@@ -552,7 +561,8 @@
 
                 {#if openedWord}
                   <div class="word-slot">
-                    <WordCard word={openedWord} {voice} />
+                    <!-- A lookup: the row that opened it shows the reading. -->
+                    <WordCard word={openedWord} {voice} askReading={false} />
                   </div>
                 {/if}
               </div>
@@ -562,7 +572,14 @@
       </div>
     </div>
 
-    <KanaCanvas bind:this={board} character={drawn} {report} {guide} onchange={onStrokes} />
+    <KanaCanvas
+      bind:this={board}
+      character={drawn}
+      {report}
+      {guide}
+      onchange={onStrokes}
+      onanimate={() => (watched = true)}
+    />
 
     <!--
       Below the board, only the tools: nothing that is a *fact* about the
@@ -582,7 +599,7 @@
               ? "Hint: a faint copy of the character is on the board. Switch to recall, which hides it"
               : "Hint: the character is hidden while you write it. Switch to tracing, where a faint copy is on the board"}
             title={guide
-              ? "The character is on the board to follow. Press to hide it and write it from memory — either way the board is cleared."
+              ? "The character is on the board to follow. Press to hide it and write it from memory — either way the board is cleared. A traced attempt is graded but not counted as a review."
               : "Write it from memory. Press to put a faint copy back on the board — either way the board is cleared."}
           >
             <span class="tool-glyph"><Icon name={guide ? "eye" : "eye-off"} /></span>

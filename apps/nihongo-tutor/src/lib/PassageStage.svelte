@@ -162,7 +162,9 @@
 
     {#if opened}
       <div class="card-slot">
-        <WordCard word={opened} {voice} />
+        <!-- A lookup, not a quiz: the passage above already prints the word's
+             furigana, so the card shows its reading and asks for nothing. -->
+        <WordCard word={opened} {voice} askReading={false} />
       </div>
     {:else}
       <p class="hint">Tap any underlined word to open its card here.</p>
