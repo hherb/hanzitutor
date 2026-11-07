@@ -48,8 +48,9 @@
   import { summariseWord } from "./lib/wordAttempt";
   import { PushToTalk } from "./lib/pushToTalk";
   import type { Outcome, Phase } from "./lib/pushToTalk";
-  import { shortcutFor } from "./lib/shortcuts";
+  import { FocusOrigin, routeKey, targetKind } from "./lib/shortcuts";
   import type { ShortcutId } from "./lib/shortcuts";
+  import { highlightedCourseCharacter } from "./lib/courseHighlight";
   import { INK_WIDTH, polylineLength } from "./lib/render";
   import { hasDrawnStroke } from "./lib/strokeInput";
   import type { Sweep } from "./lib/render";
@@ -198,6 +199,29 @@
    * just the first column and this is never set.
    */
   let navOpen = $state(false);
+  /**
+   * The width at which the sidebar becomes that sheet — the `max-width` of the
+   * phone block in the styles below, which is the other half of this fact.
+   *
+   * `navOpen` is cleared when the window grows past it: the sheet is then the
+   * plain first column again, and an `open` left standing would keep the board's
+   * keys switched off behind a sheet that no longer exists (issue #31).
+   */
+  const phoneLayout = window.matchMedia("(max-width: 760px)");
+  /** The sheet, and the ☰ that opens it — where focus goes when it closes. */
+  let navPane = $state<HTMLElement | null>(null);
+  let navToggle = $state<HTMLButtonElement | null>(null);
+
+  /**
+   * Closing the sheet hides it, and whatever had focus inside it with it: the
+   * next Enter would press a lesson button nobody can see. Focus goes back to
+   * the ☰ that opened it — but only from inside the sheet, and only while it is
+   * a sheet, so a wide screen's sidebar column keeps its focus.
+   */
+  $effect(() => {
+    if (navOpen || !navPane || !navToggle || !phoneLayout.matches) return;
+    if (navPane.contains(document.activeElement)) navToggle.focus();
+  });
 
   /**
    * The startup reading that is covering the app, or `null` when none is.
@@ -348,6 +372,12 @@
    * device opens — a release then has to reach the button, or it is lost.
    */
   const scoring = $derived(talkPhase === "scoring" || talkPhase === "stopping");
+  /**
+   * True from the press until the device has closed: anything the system voice
+   * says now is recorded into the attempt (issue #27), so Listen is disabled and
+   * [`hear`] refuses.
+   */
+  const micOpen = $derived(talkPhase === "starting" || talkPhase === "listening");
   /** Why the last attempt could not even be recorded. */
   let toneError = $state<string | null>(null);
   /** The text captured when the button went down, which is what gets judged. */
@@ -834,6 +864,20 @@
    * to a flag that could outlive it.
    */
   const answerVisible = $derived(mode === "trace" || revealed > 0 || report !== null);
+  /**
+   * The course character the sidebar's lesson grid marks and scrolls to. In
+   * recall that mark is the answer, so it waits for `answerVisible` like the
+   * header does — see `lib/courseHighlight.ts` for the cases.
+   */
+  const sidebarCharacter = $derived(
+    highlightedCourseCharacter({
+      source,
+      mode,
+      courseCharacter: courseChar,
+      boardCharacter: character?.ch ?? null,
+      answerVisible,
+    }),
+  );
 
   /**
    * True while the board is the screen showing.
@@ -1146,6 +1190,15 @@
       if (!document.hidden) {
         refreshMicrophone();
         void autoSync("foreground");
+      } else {
+        // Hidden while the button is held — the app switched away from, the
+        // screen locked, the window minimised: no release is coming, and the
+        // recording would run to the cap with the indicator lit (issue #27). It
+        // is cancelled rather than judged, because a phone gives an app in the
+        // background silence, not audio, and because what was said while leaving
+        // is not an attempt. A judgement already on its way is kept: the button
+        // was let go on purpose, and the board is still there on return.
+        void talk.abandon();
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -1223,49 +1276,73 @@
       }
     };
 
+    // Who put the focus where it is, which decides whether Enter on a focused
+    // button is that button's or Check's — see `FocusOrigin`. Capture phase, so
+    // the input is noted before anything moves the focus or stops the event.
+    const focusOrigin = new FocusOrigin();
+    const onPointerInput = () => focusOrigin.pointer();
+    const onKeyInput = () => focusOrigin.key();
+    const onFocusIn = (event: FocusEvent) => focusOrigin.focused(event.target);
+    window.addEventListener("pointerdown", onPointerInput, true);
+    window.addEventListener("keydown", onKeyInput, true);
+    window.addEventListener("focusin", onFocusIn, true);
+    const onLayout = () => {
+      if (!phoneLayout.matches) navOpen = false;
+    };
+    phoneLayout.addEventListener("change", onLayout);
+
     const onKey = (event: KeyboardEvent) => {
-      // The vocabulary screen has text fields; never steal their keystrokes.
-      const target = event.target as HTMLElement | null;
-      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
-
-      // The startup reading covers the board, so the board's own keys must not
-      // reach past it: Enter would grade an empty board behind the sheet and S
-      // would start an animation nobody can see. Escape dismisses it — the same
-      // act as Back on Android, and the same act as Skip. **A card that leaves
-      // the board visible is not this case**, which is why the key list is a card
-      // and not a sheet (see `ShortcutCard.svelte`).
-      if (startupSheet) {
-        if (event.key === "Escape") {
-          event.preventDefault();
+      // Whether a key is the board's at all — text fields, a focused button, the
+      // startup reading, the phone's sheet, a screen that is not the board — is
+      // decided in `lib/shortcuts.ts`, where the reasons and the tests are. The
+      // browser is told no only when something here acts on the key.
+      const route = routeKey(event, {
+        target: targetKind(
+          focusOrigin.describe(event.target instanceof Element ? event.target : null),
+        ),
+        startupSheet: startupSheet !== null,
+        navOpen,
+        shortcutsOpen,
+        practising,
+      });
+      if (route.action === null) return;
+      if (route.preventDefault) event.preventDefault();
+      switch (route.action) {
+        case "finish-startup":
+          // The same act as Back on Android, and the same act as Skip.
           finishStartup();
-        }
-        return;
+          break;
+        case "close-nav":
+          navOpen = false;
+          break;
+        case "close-shortcuts":
+          shortcutsOpen = false;
+          break;
+        case "help":
+          shortcutsOpen = !shortcutsOpen;
+          break;
+        default:
+          runShortcut(route.action);
       }
-
-      if (shortcutsOpen && event.key === "Escape") {
-        event.preventDefault();
-        shortcutsOpen = false;
-        return;
-      }
-
-      const shortcut = shortcutFor(event);
-      if (shortcut === null) return;
-      // A key the app acts on is claimed outright: the browser must not also
-      // scroll a list behind the board or re-submit what Enter was pressed in.
-      event.preventDefault();
-      if (shortcut.id === "help") {
-        shortcutsOpen = !shortcutsOpen;
-        return;
-      }
-      runShortcut(shortcut.id);
     };
     window.addEventListener("keydown", onKey);
+    // Leaving the page altogether: nothing in flight may outlive it.
+    const onPageHide = () => void talk.retarget();
+    window.addEventListener("pagehide", onPageHide);
     return () => {
+      // And the component itself going away: its button, and every release it
+      // could have had, go with it.
+      void talk.retarget();
+      window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onRejection);
       window.removeEventListener("resize", publishInsets);
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pointerdown", onPointerInput, true);
+      window.removeEventListener("keydown", onKeyInput, true);
+      window.removeEventListener("focusin", onFocusIn, true);
+      phoneLayout.removeEventListener("change", onLayout);
       document.removeEventListener("visibilitychange", onVisibility);
       clearTimeout(noticeTimer);
       clearTimeout(workingTimer);
@@ -1356,7 +1433,12 @@
    */
   const talk = new PushToTalk<ToneResult>(
     {
-      start: () => api.listenStart(),
+      async start() {
+        // Stop the system voice first, as the Tone Trainer does: a pronunciation
+        // still playing would be recorded alongside the learner, and scored.
+        await api.stopSpeaking();
+        await api.listenStart();
+      },
       stop: () => api.listenStop(scoredText),
       cancel: () => api.listenCancel(),
     },
@@ -1408,6 +1490,17 @@
   async function stopListening() {
     showOutcome(await talk.release());
   }
+
+  /**
+   * The board left the screen — another screen opened, or the character went —
+   * and the button with it, while it may still be held. Its pointer-up is never
+   * read then, so without this the microphone stayed open to the cap (issue #27).
+   * Cancelled like a hidden window (see `onVisibility`); a judgement already on
+   * its way is kept, because coming back to the board leaves its result alone.
+   */
+  $effect(() => {
+    if (!practising) void talk.abandon();
+  });
 
   /**
    * Remember where in the course the reader is.
@@ -1856,7 +1949,8 @@
    * sound does not give away how to write the glyph.
    */
   async function hear() {
-    if (voice === null) return;
+    // Not into an open microphone: see `micOpen`.
+    if (voice === null || micOpen) return;
     const spoken = currentItem?.text ?? character?.ch;
     if (!spoken) return;
     try {
@@ -2878,16 +2972,32 @@
     index = Math.min(total - 1, Math.max(0, index + delta));
   }
 
+  /**
+   * Put a lesson or a character of the course on the board — the sidebar's
+   * lesson list and grid.
+   *
+   * During a review the board follows the queue, not the course, so moving only
+   * `index` changed nothing anyone could see: the sheet closed, the review item
+   * stayed, and the hidden course position moved and was saved (issue #31). A
+   * pick in the course is a request for the course, so a queue is left first —
+   * as `showCharacterInCourse` does and as the Course button does on the way in
+   * from another screen. Nothing is lost by it: an entry is only recorded once it
+   * is finished, and what was not finished is still due.
+   */
   function goToLesson(lessonIndex: number) {
     cursorDeferred = null;
     const start = lessonStarts[lessonIndex];
-    if (start !== undefined) index = start;
+    if (start === undefined) return;
+    if (source !== "course") leavePractice();
+    index = start;
   }
 
   function goToCharacter(ch: string) {
     cursorDeferred = null;
     const found = allCharacters.indexOf(ch);
-    if (found >= 0) index = found;
+    if (found < 0) return;
+    if (source !== "course") leavePractice();
+    index = found;
   }
 
   /** Stop drilling and go back to what was being drilled. */
@@ -2974,13 +3084,13 @@
       onclick={() => (navOpen = false)}
     ></button>
   {/if}
-  <div class="nav-pane" class:open={navOpen}>
+  <div class="nav-pane" class:open={navOpen} bind:this={navPane}>
     <LessonSidebar
       view={view}
       onSwitchView={navigating(switchView)}
       {lessons}
       {activeLesson}
-      activeCharacter={courseChar}
+      activeCharacter={sidebarCharacter}
       {summary}
       onSelectLesson={navigating(goToLesson)}
       onSelectCharacter={navigating(goToCharacter)}
@@ -3015,6 +3125,7 @@
     <div class="topbar">
       <button
         class="nav-toggle"
+        bind:this={navToggle}
         type="button"
         aria-label="Open navigation"
         onclick={() => (navOpen = true)}
@@ -3428,7 +3539,7 @@
                 <button
                   class="tool media"
                   onclick={hear}
-                  disabled={!character || voice === null}
+                  disabled={!character || voice === null || micOpen}
                   aria-label="Listen: hear this character pronounced"
                   title={voice === undefined
                     ? "Looking for a Chinese voice…"

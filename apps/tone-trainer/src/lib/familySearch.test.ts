@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { searchFamilies } from "./familySearch";
+import { fold, searchFamilies } from "./familySearch";
 import type { WordMember, WordSet } from "./types";
 
 /** One word, with only the fields the search reads spelled out. */
@@ -82,6 +82,13 @@ describe("searching word families", () => {
     // 心 comes first because `xin` is its own syllable; 中 follows through 中心.
     expect(searchFamilies([HEART, MIDDLE], "xīn")).toEqual([HEART, MIDDLE]);
     expect(searchFamilies([HEART, MIDDLE], "Zhōngguó")).toEqual([MIDDLE]);
+  });
+
+  it("folds the tone numbers a learner types", () => {
+    expect(searchFamilies([HEART, MIDDLE], "xin1")).toEqual([HEART, MIDDLE]);
+    expect(searchFamilies([HEART, MIDDLE], "zhong1guo2")).toEqual([MIDDLE]);
+    expect(fold("lu:4")).toBe(fold("lǜ"));
+    expect(fold("nv3")).toBe(fold("nǚ"));
   });
 
   it("returns the whole list for an empty query", () => {

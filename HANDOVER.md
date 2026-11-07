@@ -556,10 +556,13 @@ either file.
    *exact set* of keys, because a mismatch fails **silently** — the UI just shows
    blanks. Change Rust and TypeScript together; let the test catch you.
 
-3. **All four scores are measured across the whole reference character**, with
-   unwritten strokes counting as zero (`grade.rs`, step 8). Do not "fix" this into
-   a mean over only the strokes that were written: that reintroduces a bug where a
-   blank canvas scored 30/100 and writing half a character scored 62.
+3. **All four scores are measured across the whole reference character and every
+   stroke written**, with unwritten strokes and unpaired extra ones counting as
+   zero (`grade.rs`, step 8; the denominator is the larger of the two counts). Do
+   not "fix" this into a mean over only the strokes that were written: that
+   reintroduces a bug where a blank canvas scored 30/100 and writing half a
+   character scored 62. Nor into a mean over only the reference strokes: that let
+   extra strokes cost nothing (#16).
 
 4. **Shape cannot discriminate similar strokes; placement does.** Shape distance is
    deliberately scale-invariant, so two 横 of different lengths are "the same
@@ -573,9 +576,26 @@ either file.
    stroke in 黧, making a correct attempt impossible to score.
 
 6. **Order scoring is the normalised inversion count, and per-stroke out-of-order
-   flags are exactly the strokes taking part in an inversion.** That makes the
-   flags and the score provably consistent. A longest-increasing-subsequence
-   metric was tried and scored a fully reversed three-stroke character at ⅓.
+   flags are the strokes some longest increasing subsequence leaves out.** A
+   longest-increasing-subsequence *score* was tried and scored a fully reversed
+   three-stroke character at ⅓, so the score stays Kendall tau. The flags were
+   once every stroke taking part in an inversion, which flagged all of 王 when
+   only its last stroke was drawn first (#16); flagging outside *some* longest
+   subsequence flags only that one, and still flags both halves of a swap.
+
+   **Extra strokes count against every measure too, and a missing stroke or a
+   full-length extra one caps the score at `MISCOUNTED_CEILING` (74, fair).**
+   Shape, placement, ink and order divide by the larger of the reference and
+   attempt stroke counts (invariant 3), and `overall` is held at the ceiling when a
+   reference stroke went unwritten or an unpaired stroke is at least
+   `EXTRA_STROKE_MIN_LEN` (40 design units, after the fit) long (#16: 太 for 大
+   scored 97.6, and scribbles over a correct 王 scored 100). The length bar is
+   there because the tap filter is low — 12 units, 2 for 黧 — and a slip of a few
+   pixels is not a different character; it still makes `count_ok` false and costs
+   its share. The tolerance table is unchanged by any of it, since every jittered
+   attempt has the right count. The ceiling is not in the
+   recorded measures, so `hanzi-store`'s analysis recognises a score sitting at it
+   rather than reporting it as a deviation.
 
 7. **The artifact is generated, not committed.** `src-tauri/src/state.rs` embeds
    it with `include_bytes!`, and `src-tauri/build.rs` panics early with
@@ -3944,6 +3964,25 @@ Three consequences of the same rule, each deliberate:
   `gān`. The tones are unchanged and still on the right characters; only which
   syllable the `g` is coloured with moves. Re-adding the word from the dictionary
   stores `píng'ān`.
+
+Issue #20 added three things on top:
+
+- **一 keeps its first tone when it is a number's name, not a count**: after 第,
+  beside another digit (〇–九 and 十, not 百/千/万/亿), before 月 or 号, and before 日
+  only after 月 — the word list's 日复一日 and 有朝一日 are "one day", `yírì`, which
+  the issue's plain "before 日" rule would have got wrong. A一A (看一看) is neutral.
+  Over the word list this changes exactly 一一, 第一手 and 第一线.
+- **Tone numbers are pinyin.** `ni3hao3`, `nv3` and `lu:4` split as `nǐ` + `hǎo`,
+  `nǚ` and `lǜ` — in the splitter itself, so every reader of `syllables` accepts them,
+  and a number is a boundary as an apostrophe is (`xi1an1` is two syllables).
+  `pinyin::marked_reading` rewrites a numbered reading with marks (inserting the
+  apostrophe a number stood for), and is what vocabulary add/update saves and what
+  word and character search fold. The tone key rewrites a numbered syllable too. The
+  frontend's own filters (tone pairs, radicals, the tone trainer's families) drop a
+  number the way they drop a mark.
+- **Capitals keep their case through a tone mark** (`Aomen` + tone 4 → `Àomen`), and
+  `base`, `fold_pinyin` and the frontend's `toneFromSyllable` fold case first, so
+  `Àomén` searches and compares as `aomen`.
 
 **Do not "simplify" this by scoring character by character.** Sandhi is a word-level
 phenomenon; a per-character loop cannot see it.

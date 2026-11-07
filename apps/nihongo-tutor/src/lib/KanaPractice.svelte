@@ -51,11 +51,13 @@
   import SpeakButton from "./SpeakButton.svelte";
   import { untrack } from "svelte";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
+  import { everyStrokeFine, strokeCountNote } from "./verdict";
   import { scheduleNote } from "./review";
   import { canHear, isHearItKey, type VoiceStatus } from "./speech";
   import { joinedLabel, lessonLabel, lessonOf, neighbourIn, positionIn } from "./kana";
   import { afterGrade, canGrade, strayNote, traceReason } from "./board";
   import { readingShown } from "./words";
+  import { isSubmitEnter, romajiOnlyNote, trackComposition } from "./ime";
   import * as api from "./api";
   import type { GradeReport, Kana, LessonView, Point, ReadingCheck } from "./types";
 
@@ -103,6 +105,13 @@
   let error = $state<string | null>(null);
   let typed = $state("");
   let check = $state<ReadingCheck | null>(null);
+  /**
+   * What to say instead of a verdict when the reading was typed in kana: with the
+   * Japanese IME on, `shi` arrives as し, and the box asks for the sound.
+   */
+  let scriptNote = $state<string | null>(null);
+  /** Whether a reading check is in flight, so a second Enter sends no second one. */
+  let checking = false;
 
   /**
    * Whether the faint copy is on the board: **tracing** while it is, **recall**
@@ -177,6 +186,7 @@
       note = null;
       attempt = [];
       check = null;
+      scriptNote = null;
       typed = "";
       showDetails = false;
       revealed = false;
@@ -228,10 +238,25 @@
   }
 
   async function checkTyped() {
+    if (checking) return;
+    // Kana in the romaji box is not a wrong reading, it is the IME switched on:
+    // said as such, and not sent to be graded.
+    scriptNote = romajiOnlyNote(typed);
+    if (scriptNote !== null) {
+      check = null;
+      return;
+    }
+    const asked = ch;
     try {
-      check = await api.checkReading(ch, typed);
+      checking = true;
+      const answered = await api.checkReading(asked, typed);
+      // Dropped if the learner has moved to another kana in the meantime: the
+      // verdict would be about a kana no longer on the board.
+      if (ch === asked) check = answered;
     } catch (e) {
-      error = String(e);
+      if (ch === asked) error = String(e);
+    } finally {
+      checking = false;
     }
   }
 
@@ -268,12 +293,10 @@
     });
   });
 
+  /** The sentences under the per-stroke list; see `verdict.ts`. */
   const summary = $derived.by(() => {
     if (!report) return null;
-    return {
-      total: report.strokes.length,
-      wrong: report.strokes.filter((s) => s.verdict !== "correct" && s.userIndex !== null),
-    };
+    return { countNote: strokeCountNote(report), fine: everyStrokeFine(report) };
   });
 </script>
 
@@ -405,15 +428,19 @@
                 <input
                   id="typed"
                   bind:value={typed}
-                  onkeydown={(e) => e.key === "Enter" && checkTyped()}
+                  use:trackComposition
+                  onkeydown={(e) => isSubmitEnter(e) && checkTyped()}
                   placeholder="in romaji"
                   autocomplete="off"
+                  autocorrect="off"
                   autocapitalize="off"
                   spellcheck="false"
                 />
                 <button onclick={checkTyped}>Check</button>
               </div>
-              {#if check}
+              {#if scriptNote}
+                <p class="result">{scriptNote}</p>
+              {:else if check}
                 <p class="result" class:ok={check.correct}>
                   {#if check.correct}
                     Correct.
@@ -594,7 +621,10 @@
           {#if drawnJoined}
             <p class="fine">Taught strokes {drawnJoined} were drawn as one.</p>
           {/if}
-          {#if summary.wrong.length === 0}
+          {#if summary.countNote}
+            <p class="fine">{summary.countNote}</p>
+          {/if}
+          {#if summary.fine}
             <p class="fine">Every stroke the right shape, in the right place, in order.</p>
           {/if}
         </div>

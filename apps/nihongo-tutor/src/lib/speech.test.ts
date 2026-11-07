@@ -44,6 +44,14 @@ describe("the hear-it shortcut", () => {
     expect(isHearItKey(press("h", { repeat: true }))).toBe(false);
   });
 
+  it("is not a key the input method has", () => {
+    // Composing: the h of `ha` belongs to the IME. And WebKit's sign for a key the
+    // IME consumed, which arrives with isComposing already false.
+    expect(isHearItKey(press("h", { isComposing: true }))).toBe(false);
+    expect(isHearItKey(press("h", { keyCode: 229 }))).toBe(false);
+    expect(isHearItKey(press("h", { isComposing: false, keyCode: 72 }))).toBe(true);
+  });
+
   it("is not a modified key, so the window's own shortcuts survive", () => {
     // ⌘H hides the app on macOS. A shortcut that ate it would be worse than no
     // shortcut at all.

@@ -21,6 +21,7 @@
   import type { Sweep } from "./render";
   import { StrokeInput } from "./strokeInput";
   import type { PointerSample } from "./strokeInput";
+  import { targetKind } from "./shortcuts";
   import type { Character, GradeReport, Point } from "./types";
 
   interface Props {
@@ -244,6 +245,14 @@
   }
 
   function handleDown(event: PointerEvent) {
+    // Writing — or reaching for the board at all — is leaving whatever control
+    // was last focused. Enter on a button the keyboard focused presses that
+    // button rather than Check (issue #31), and the default is cancelled below,
+    // which on some engines also keeps focus where it was. Dropping it here keeps
+    // Enter meaning Check. Before the `disabled` test, since a press on a board
+    // that takes no ink is still a press away from the control.
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && focused !== document.body) focused.blur();
     if (disabled || event.button !== 0) return;
     event.preventDefault();
 
@@ -354,8 +363,8 @@
     const onKey = (event: KeyboardEvent) => {
       if (!open) return;
       if (event.key !== "Escape" && event.key !== "Backspace") return;
-      const target = event.target as HTMLElement | null;
-      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      // A field keeps its own keys — the same rule as the app's key handler.
+      if (targetKind(event.target instanceof Element ? event.target : null) === "text") return;
       event.preventDefault();
       event.stopPropagation();
       cancelDraft();

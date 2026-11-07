@@ -103,6 +103,13 @@
   let busy = $state(false);
 
   /**
+   * Safari's `autocorrect="off"`, which iOS honours on a textarea as well and which
+   * keeps it from "correcting" romaji such as `inu` into English. Spread rather than
+   * written as an attribute because Svelte's types declare it for `<input>` only.
+   */
+  const TEXTAREA_NO_AUTOCORRECT = { autocorrect: "off" };
+
+  /**
    * The learner's own sentence, read back.
    *
    * A control of this screen's own rather than `SpeakButton`, because what is spoken is
@@ -185,7 +192,9 @@
 
   async function submit() {
     const askedPattern = prompt;
-    if (!askedPattern || outcome !== null || !canSubmit(typed)) return;
+    // `busy` too, so a second press inside the round trip cannot keep the sentence
+    // twice — the same guard the written-cloze screen needs for its Enter.
+    if (busy || !askedPattern || outcome !== null || !canSubmit(typed)) return;
     try {
       busy = true;
       error = null;
@@ -427,6 +436,7 @@
           autocomplete="off"
           autocapitalize="off"
           spellcheck="false"
+          {...TEXTAREA_NO_AUTOCORRECT}
           placeholder="いぬのほうがねこよりすきです。 ・ inu no houga neko yori suki desu."
           bind:value={typed}
           disabled={outcome !== null}
