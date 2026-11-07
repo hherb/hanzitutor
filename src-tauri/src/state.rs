@@ -764,7 +764,8 @@ impl AppState {
 
     /// Point the ASR and TTS models at `cache_dir` instead of the data
     /// directory [`Self::assemble`] put them in, migrating anything a build
-    /// before this existed already downloaded.
+    /// before this existed already downloaded — each model only once it is
+    /// really there, so one whose move failed is still read from where it is.
     ///
     /// The two models are large, fetched only on request and re-verified by
     /// digest rather than treated as user data, so they belong in the
@@ -779,11 +780,11 @@ impl AppState {
         let (Some(data_dir), Some(cache_dir)) = (data_dir, cache_dir) else {
             return;
         };
-        for model in ["asr", "say"] {
-            migrate_model_dir(&data_dir.join(model), &cache_dir.join(model));
-        }
-        self.asr = Asr::new(Some(cache_dir));
-        self.say = Say::new(Some(cache_dir));
+        // Each model is re-pointed only if it really is in the cache now — see
+        // [`model_home`] for what re-pointing after a failed move cost.
+        let rename = |from: &Path, to: &Path| std::fs::rename(from, to);
+        self.asr = Asr::new(Some(model_home(data_dir, cache_dir, "asr", rename)));
+        self.say = Say::new(Some(model_home(data_dir, cache_dir, "say", rename)));
     }
 
     /// Re-read every store a sync can have rewritten.
@@ -1519,7 +1520,12 @@ impl AppState {
         // change nothing at all, not leave the attempts merged and the list as it
         // was. Checking reads only the file, so it is not stale by the time it is
         // applied. Lenient on length, as the app's own data coming back — the
-        // sync and the migration that wrote it never checked it.
+        // sync and the migration that wrote it never checked it. What can still
+        // fail after this point is the database itself: the merge is one
+        // transaction, and a rebuild that fails after it leaves the log merged and
+        // the schedule as it was — which restoring the same file again, or the
+        // next sync, rebuilds, because an attempt already merged is not merged
+        // twice.
         let vocabulary_json = backup.vocabulary_json().map_err(|e| e.to_string())?;
         let prepared = hanzi_core::vocab::PreparedImport::prepare(
             &vocabulary_json,
@@ -1704,32 +1710,243 @@ pub fn resolve_data_dir(app: &AppHandle, cli: Option<PathBuf>) -> Result<PathBuf
         .map_err(|e| format!("could not locate the application data directory: {e}"))
 }
 
-/// Move `old` to `new`, if `old` is there and `new` is not yet.
+/// Which of the two directories a model is read from once its move has been tried.
 ///
-/// A rename rather than a copy: both directories live in the same app
+/// The cache directory when the model is there — moved just now, moved by an
+/// earlier launch, or never downloaded at all, in which case the cache is where
+/// the first download goes. The data directory when a move was needed and did not
+/// happen: pointing at the cache then would read an installed model as absent and
+/// download all of it again, while the copy that is really there sat unused. The
+/// two models are decided separately, because one can move and the other not.
+///
+/// `rename` is [`std::fs::rename`] in the app; the tests hand in one that fails the
+/// way a rename across volumes does, which a test cannot bring about on one disk.
+fn model_home<'a>(
+    data_dir: &'a Path,
+    cache_dir: &'a Path,
+    model: &str,
+    rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> &'a Path {
+    if migrate_model_dir(&data_dir.join(model), &cache_dir.join(model), rename) {
+        cache_dir
+    } else {
+        data_dir
+    }
+}
+
+/// Move `old` to `new`, if `old` is there and `new` is not yet, and say whether
+/// `new` is the one to use.
+///
+/// A rename where it can be: both directories normally live in the same app
 /// container, so this is a metadata change regardless of how large the model
-/// underneath it is — the point of doing this at all is to stop paying for it
-/// twice, not to trade one copy for a slower one. A failed rename leaves `old`
-/// exactly as it was, so the model just stays where [`AppState::assemble`]
-/// already found it and the old data directory is used again this run.
-fn migrate_model_dir(old: &Path, new: &Path) {
+/// underneath it is. They do not when `--user-dir` or `HANZI_TUTOR_DATA_DIR` puts
+/// the data directory on another volume, where a rename is refused as crossing
+/// devices; the model is copied across then, and the old copy removed once the
+/// new one is whole. Anything else that fails leaves `old` exactly as it was and
+/// answers `false`, so the model stays where [`AppState::assemble`] already found
+/// it and the old directory is used again this run — and the move is tried again
+/// at the next launch.
+///
+/// Except a copy across volumes that failed. That is a copy of a few hundred
+/// megabytes, done on the way to the first screen, and what makes one fail — a
+/// disk too full — usually lasts; trying again at every launch would make the
+/// learner wait for the same failure each time. So a failed copy leaves a marker
+/// beside `old` ([`copy_failed_marker`]) naming the tree it could not copy and
+/// when, and is not tried again while that tree is unchanged — for a week
+/// ([`COPY_RETRY_AFTER_SECS`]), because what made it fail may since have gone.
+/// Reinstalling or removing the model changes the tree, and a move that works, or
+/// finds nothing to move, removes the marker. (The copy itself still runs on this thread; moving it to a background
+/// one is a separate change.)
+fn migrate_model_dir(
+    old: &Path,
+    new: &Path,
+    rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> bool {
+    let marker = copy_failed_marker(old);
+    // Nothing to move, or already moved: either way `new` is where the model is,
+    // or where it will be downloaded to. A stray `old` beside a `new` is left for
+    // the learner to clear rather than allowed to clobber it.
     if !old.is_dir() || new.exists() {
-        return;
+        let _ = std::fs::remove_file(&marker);
+        return true;
     }
     if let Some(parent) = new.parent() {
         if let Err(error) = std::fs::create_dir_all(parent) {
             eprintln!("[data] could not create {}: {error}", parent.display());
-            return;
+            return false;
         }
     }
-    match std::fs::rename(old, new) {
-        Ok(()) => eprintln!("[data] moved {} to {}", old.display(), new.display()),
+    match rename(old, new) {
+        Ok(()) => {
+            eprintln!("[data] moved {} to {}", old.display(), new.display());
+            let _ = std::fs::remove_file(&marker);
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+            let tree = tree_fingerprint(old).ok();
+            let now = seconds_since_epoch(std::time::SystemTime::now());
+            let failed_before = std::fs::read_to_string(&marker)
+                .ok()
+                .and_then(|text| failed_copy(&text));
+            if let (Some(tree), Some((at, failed_tree))) = (&tree, &failed_before) {
+                if *failed_tree == *tree && now.saturating_sub(*at) < COPY_RETRY_AFTER_SECS {
+                    eprintln!(
+                        "[data] not copying {} to {} again: it failed before, and the model \
+                         has not changed since; it is used where it is",
+                        old.display(),
+                        new.display()
+                    );
+                    return false;
+                }
+            }
+            let copied = copy_model_dir(old, new);
+            if copied {
+                let _ = std::fs::remove_file(&marker);
+            } else if let Some(tree) = tree {
+                let _ = std::fs::write(&marker, format!("failed-at {now}\n{tree}"));
+            }
+            copied
+        }
+        Err(error) => {
+            eprintln!(
+                "[data] could not move {} to {}: {error}",
+                old.display(),
+                new.display()
+            );
+            false
+        }
+    }
+}
+
+/// Copy `old` to `new` across volumes, then remove `old`.
+///
+/// Into a staging directory beside `new` first, renamed into place only once the
+/// whole tree has arrived: a copy cut short — a full disk, the app quit — must
+/// not leave a `new` that the next launch takes for a finished move, because
+/// [`migrate_model_dir`] never looks at `old` again once `new` exists. The rename
+/// is within one volume, so it is the atomic step.
+///
+/// The old copy goes last, and a failure to remove it still answers `true`: the
+/// new copy is whole, so it is the one to use, and what is left behind is only
+/// space — reported, rather than worth reading the model from the old place for.
+fn copy_model_dir(old: &Path, new: &Path) -> bool {
+    let name = new
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let staging = new.with_file_name(format!(".{name}.moving"));
+    // The wreckage of a copy an earlier launch did not finish.
+    let _ = std::fs::remove_dir_all(&staging);
+    let copied = copy_tree(old, &staging).and_then(|()| std::fs::rename(&staging, new));
+    if let Err(error) = copied {
+        let _ = std::fs::remove_dir_all(&staging);
+        eprintln!(
+            "[data] could not copy {} to {}: {error}",
+            old.display(),
+            new.display()
+        );
+        return false;
+    }
+    match std::fs::remove_dir_all(old) {
+        Ok(()) => eprintln!("[data] copied {} to {}", old.display(), new.display()),
         Err(error) => eprintln!(
-            "[data] could not move {} to {}: {error}",
+            "[data] copied {} to {}, but could not remove the old copy: {error}",
             old.display(),
             new.display()
         ),
     }
+    true
+}
+
+/// Copy a directory tree of plain files and directories.
+///
+/// Anything else — a symbolic link, a socket — is an error rather than skipped: a
+/// model is plain files, and a copy that left something out would be renamed into
+/// place as whole and the old tree, the one that is, removed after it.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), &target)?;
+        } else {
+            return Err(std::io::Error::other(format!(
+                "{} is not a plain file or directory",
+                entry.path().display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// How long a failed copy of a model is left alone before it is tried again, even
+/// when the model has not changed: what made it fail — a full disk, a volume not
+/// mounted — may have gone, and nothing else would ever say so.
+const COPY_RETRY_AFTER_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// A time as whole seconds since 1970, or 0 for a clock set before it.
+fn seconds_since_epoch(at: std::time::SystemTime) -> u64 {
+    at.duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0)
+}
+
+/// When a failed copy was recorded, and the tree it failed on, from a marker's
+/// text. `None` for a marker this cannot read — which is then tried again.
+fn failed_copy(text: &str) -> Option<(u64, String)> {
+    let (first, tree) = text.split_once('\n')?;
+    let at = first.strip_prefix("failed-at ")?.parse().ok()?;
+    Some((at, tree.to_string()))
+}
+
+/// Where a failed copy of the model directory `old` is remembered: a hidden file
+/// beside it, in the data directory, so it goes wherever the model's old copy goes.
+fn copy_failed_marker(old: &Path) -> PathBuf {
+    let name = old
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    old.with_file_name(format!(".{name}.copy-failed"))
+}
+
+/// What a tree holds, in a line per entry: its path, and for a file its size and
+/// when it was last written. Enough to tell the model a copy failed on from one
+/// reinstalled or removed since, without reading a byte of it.
+fn tree_fingerprint(dir: &Path) -> std::io::Result<String> {
+    fn walk(dir: &Path, root: &Path, lines: &mut Vec<String>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let shown = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                lines.push(format!("{shown}/"));
+                walk(&path, root, lines)?;
+            } else {
+                let meta = std::fs::symlink_metadata(&path)?;
+                let written = meta
+                    .modified()
+                    .ok()
+                    .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|since| since.as_nanos())
+                    .unwrap_or(0);
+                lines.push(format!("{shown} {} {written}", meta.len()));
+            }
+        }
+        Ok(())
+    }
+    let mut lines = Vec::new();
+    walk(dir, dir, &mut lines)?;
+    lines.sort();
+    Ok(lines.join("\n"))
 }
 
 /// Apply the learner's chosen voice — if the settings name one — and report
@@ -1907,6 +2124,11 @@ mod tests {
         dir
     }
 
+    /// What the app moves a model with.
+    fn renaming(from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::rename(from, to)
+    }
+
     #[test]
     fn migrating_moves_what_was_downloaded_under_the_old_location() {
         let old = scratch("old").join("asr");
@@ -1914,7 +2136,10 @@ mod tests {
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("model.onnx"), b"a model").unwrap();
 
-        migrate_model_dir(&old, &new);
+        assert!(
+            migrate_model_dir(&old, &new, renaming),
+            "the new location is in use"
+        );
 
         assert!(!old.exists(), "the old directory should be gone");
         assert_eq!(std::fs::read(new.join("model.onnx")).unwrap(), b"a model");
@@ -1925,7 +2150,10 @@ mod tests {
         let old = scratch("absent").join("asr");
         let new = scratch("new").join("asr");
 
-        migrate_model_dir(&old, &new);
+        assert!(
+            migrate_model_dir(&old, &new, renaming),
+            "the download goes to the new one"
+        );
 
         assert!(!new.exists());
     }
@@ -1941,7 +2169,10 @@ mod tests {
         std::fs::create_dir_all(&new).unwrap();
         std::fs::write(new.join("model.onnx"), b"current").unwrap();
 
-        migrate_model_dir(&old, &new);
+        assert!(
+            migrate_model_dir(&old, &new, renaming),
+            "the new one is in use"
+        );
 
         assert!(old.exists(), "the old directory is left for the learner to clear");
         assert_eq!(std::fs::read(new.join("model.onnx")).unwrap(), b"current");
@@ -1977,5 +2208,307 @@ mod tests {
             std::fs::read(cache_dir.join("say").join("model.onnx")).unwrap(),
             b"a voice"
         );
+    }
+
+    /// A model directory with a file at its top and one a level down, which is
+    /// the shape an unpacked model has.
+    fn installed_model(dir: &Path) {
+        std::fs::create_dir_all(dir.join("sherpa-model")).unwrap();
+        std::fs::write(dir.join("sherpa-model").join("model.onnx"), b"weights").unwrap();
+        std::fs::write(dir.join("tokens.txt"), b"tokens").unwrap();
+    }
+
+    fn refused(_: &Path, _: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+
+    fn across_volumes(_: &Path, _: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices))
+    }
+
+    #[test]
+    fn a_move_that_fails_keeps_the_model_where_it_was_and_in_use() {
+        let data_dir = scratch("data");
+        let cache_dir = scratch("cache");
+        installed_model(&data_dir.join("asr"));
+
+        let home = model_home(&data_dir, &cache_dir, "asr", refused);
+
+        // Re-pointing at the cache now would read the installed model as absent and
+        // download all of it again, while the copy that is here stays stranded.
+        assert_eq!(home, data_dir.as_path(), "the old location stays in use");
+        assert!(data_dir
+            .join("asr")
+            .join("sherpa-model")
+            .join("model.onnx")
+            .is_file());
+        assert!(
+            !cache_dir.join("asr").exists(),
+            "nothing half-made at the new one"
+        );
+    }
+
+    #[test]
+    fn a_move_across_volumes_is_a_copy_and_then_a_removal() {
+        // `--user-dir` or the environment variable can put the data directory on
+        // another volume than the cache, where a rename is refused with EXDEV.
+        let data_dir = scratch("data");
+        let cache_dir = scratch("cache");
+        installed_model(&data_dir.join("say"));
+
+        let home = model_home(&data_dir, &cache_dir, "say", across_volumes);
+
+        assert_eq!(home, cache_dir.as_path());
+        assert!(
+            !data_dir.join("say").exists(),
+            "the old copy is not left stranded"
+        );
+        let moved = cache_dir.join("say");
+        assert_eq!(
+            std::fs::read(moved.join("sherpa-model").join("model.onnx")).unwrap(),
+            b"weights"
+        );
+        assert_eq!(std::fs::read(moved.join("tokens.txt")).unwrap(), b"tokens");
+        let leftovers: Vec<_> = std::fs::read_dir(&cache_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            leftovers,
+            vec![std::ffi::OsString::from("say")],
+            "no staging left behind"
+        );
+    }
+
+    #[test]
+    fn a_copy_that_fails_leaves_the_old_location_in_use_and_the_new_one_empty() {
+        let data_dir = scratch("data");
+        let cache_dir = scratch("cache");
+        installed_model(&data_dir.join("asr"));
+        // Something in the way of the staging directory, so the copy cannot start.
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join(".asr.moving"), b"in the way").unwrap();
+
+        let home = model_home(&data_dir, &cache_dir, "asr", across_volumes);
+
+        assert_eq!(home, data_dir.as_path());
+        assert!(data_dir.join("asr").join("tokens.txt").is_file());
+        assert!(!cache_dir.join("asr").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tree_with_a_link_in_it_is_not_moved_in_part() {
+        // A copy that skipped what it could not copy would be renamed into place as
+        // though it were whole, and the old tree — the only whole one — deleted.
+        let data_dir = scratch("data");
+        let cache_dir = scratch("cache");
+        let old = data_dir.join("asr");
+        installed_model(&old);
+        std::os::unix::fs::symlink(old.join("tokens.txt"), old.join("linked.txt")).unwrap();
+
+        let home = model_home(&data_dir, &cache_dir, "asr", across_volumes);
+
+        assert_eq!(home, data_dir.as_path());
+        assert!(old.join("linked.txt").exists() && old.join("tokens.txt").is_file());
+        assert!(!cache_dir.join("asr").exists());
+        assert!(
+            !cache_dir.join(".asr.moving").exists(),
+            "no staging left behind"
+        );
+    }
+
+    #[test]
+    fn a_copy_that_failed_is_not_tried_again_until_the_model_changes() {
+        // A disk too full for a 163 MB copy would otherwise copy, fail and clean up
+        // at every launch, with the learner waiting on it each time.
+        let data_dir = scratch("data");
+        let cache_dir = scratch("cache");
+        let old = data_dir.join("asr");
+        installed_model(&old);
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join(".asr.moving"), b"in the way").unwrap();
+        assert_eq!(
+            model_home(&data_dir, &cache_dir, "asr", across_volumes),
+            data_dir.as_path()
+        );
+        let marker = data_dir.join(".asr.copy-failed");
+        assert!(marker.is_file(), "the failure is remembered");
+
+        // Whatever was in the way is gone, but the same model is not copied again.
+        std::fs::remove_file(cache_dir.join(".asr.moving")).unwrap();
+        assert_eq!(
+            model_home(&data_dir, &cache_dir, "asr", across_volumes),
+            data_dir.as_path()
+        );
+        assert!(!cache_dir.join("asr").exists(), "not tried again");
+        assert!(
+            old.join("tokens.txt").is_file(),
+            "and still read from where it is"
+        );
+
+        // A model reinstalled — or removed — is a different tree, and is tried again.
+        std::fs::write(old.join("sherpa-model").join("model.onnx"), b"reinstalled").unwrap();
+        std::fs::write(old.join("added.txt"), b"a file the old tree did not have").unwrap();
+        assert_eq!(
+            model_home(&data_dir, &cache_dir, "asr", across_volumes),
+            cache_dir.as_path()
+        );
+        assert!(
+            !marker.exists(),
+            "and the marker goes with a move that worked"
+        );
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn a_copy_that_failed_a_week_ago_is_tried_again() {
+        let data_dir = scratch("data");
+        let cache_dir = scratch("cache");
+        let old = data_dir.join("asr");
+        installed_model(&old);
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join(".asr.moving"), b"in the way").unwrap();
+        assert_eq!(
+            model_home(&data_dir, &cache_dir, "asr", across_volumes),
+            data_dir.as_path()
+        );
+        std::fs::remove_file(cache_dir.join(".asr.moving")).unwrap();
+
+        // The same tree, but the failure is eight days old.
+        let marker = data_dir.join(".asr.copy-failed");
+        let text = std::fs::read_to_string(&marker).unwrap();
+        let (_, tree) = failed_copy(&text).expect("a marker this can read");
+        let then = seconds_since_epoch(std::time::SystemTime::now()) - 8 * 24 * 60 * 60;
+        std::fs::write(&marker, format!("failed-at {then}\n{tree}")).unwrap();
+
+        assert_eq!(
+            model_home(&data_dir, &cache_dir, "asr", across_volumes),
+            cache_dir.as_path()
+        );
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn a_move_that_works_forgets_a_copy_that_failed() {
+        let data_dir = scratch("data");
+        let cache_dir = scratch("cache");
+        installed_model(&data_dir.join("say"));
+        let marker = data_dir.join(".say.copy-failed");
+        std::fs::write(&marker, b"from a launch whose cache was elsewhere").unwrap();
+
+        assert_eq!(
+            model_home(&data_dir, &cache_dir, "say", renaming),
+            cache_dir.as_path()
+        );
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn a_model_with_nothing_to_move_or_already_moved_is_read_from_the_cache() {
+        let data_dir = scratch("data");
+        let cache_dir = scratch("cache");
+        // Never downloaded: the cache is where the first download goes.
+        assert_eq!(
+            model_home(&data_dir, &cache_dir, "asr", refused),
+            cache_dir.as_path()
+        );
+
+        // Already in the cache, with a stale copy left at the old location: the one
+        // in the cache is the one in use, and the move is never attempted.
+        installed_model(&data_dir.join("say"));
+        installed_model(&cache_dir.join("say"));
+        assert_eq!(
+            model_home(&data_dir, &cache_dir, "say", refused),
+            cache_dir.as_path()
+        );
+    }
+
+    /// A plain file standing in for the one the native dialog hands back, as
+    /// `tests/ipc_contract.rs` has: `export_backup` and `import_backup` take a
+    /// [`ChosenFile`] (#61).
+    struct LocalFile(PathBuf);
+
+    impl ChosenFile for LocalFile {
+        fn describe(&self) -> String {
+            self.0.display().to_string()
+        }
+        fn read_to_string(&self) -> Result<String, String> {
+            std::fs::read_to_string(&self.0).map_err(|e| e.to_string())
+        }
+        fn write(&self, contents: &[u8]) -> Result<(), String> {
+            std::fs::write(&self.0, contents).map_err(|e| e.to_string())
+        }
+    }
+
+    #[test]
+    fn a_backup_whose_list_is_unusable_changes_nothing() {
+        // The list is read last, so a list the import refuses used to arrive after
+        // the log had already been merged and the schedule rebuilt: "restore
+        // failed", over a log and a schedule that had changed.
+        let source_dir = scratch("backup-bad-source");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = AppState::load(Some(source_dir.clone())).unwrap();
+        {
+            let mut progress = source.lock_progress();
+            progress
+                .store
+                .record_at('好', 88.0, "2026-09-22T10:00:00Z")
+                .unwrap();
+            assert!(progress.save().is_none());
+        }
+        let file = source_dir.join("backup.json");
+        source.export_backup(&LocalFile(file.clone())).unwrap();
+        let mut document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        document["vocabulary"]["entries"] = serde_json::json!("not a list");
+        std::fs::write(&file, document.to_string()).unwrap();
+
+        let target_dir = scratch("backup-bad-target");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        let target = AppState::load(Some(target_dir.clone())).unwrap();
+        {
+            let mut vocab = target.lock_vocab();
+            vocab.store.add_entry("朋友", "", "", None).unwrap();
+            assert!(vocab.save().is_none());
+        }
+
+        let error = target
+            .import_backup(&LocalFile(file.clone()), false)
+            .unwrap_err();
+        assert!(
+            error.contains("not a list") || error.contains("invalid type"),
+            "{error}"
+        );
+
+        let db = target.db.as_ref().unwrap();
+        assert!(
+            db.attempts(None).unwrap().is_empty(),
+            "the log was not merged"
+        );
+        assert!(
+            target.lock_progress().store.card('好').is_none(),
+            "nor the schedule rebuilt"
+        );
+        target.lock_progress().reload(db);
+        assert!(
+            target.lock_progress().store.card('好').is_none(),
+            "not even underneath"
+        );
+        let texts: Vec<String> = target
+            .lock_vocab()
+            .store
+            .entries()
+            .iter()
+            .map(|e| e.text.clone())
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["朋友".to_string()],
+            "and the list was not replaced"
+        );
+
+        std::fs::remove_dir_all(&source_dir).ok();
+        std::fs::remove_dir_all(&target_dir).ok();
     }
 }

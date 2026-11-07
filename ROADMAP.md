@@ -1599,27 +1599,39 @@ refusal is a bug report, a plaintext credential is a vulnerability nobody notice
 - **The prompt had to be arranged differently.** An Apple keychain item carries its own access
   control, so the prompt is a property of the *item*; keystore's
   `setUserAuthenticationRequired(true)` is a property of the **key**, fixed when the key is
-  made. So the Kotlin side records the mode beside the blob and rebuilds the key when the
-  learner flips the switch — deleting the blob with it, rather than leaving a token encrypted
-  under a key nothing will use again. The prompt is a `BiometricPrompt` carrying the cipher as
+  made. So the Kotlin side keeps one key per mode, under two aliases, and records the mode
+  beside the blob; the other mode's key is deleted once a new blob is written, rather than
+  left behind or deleted before a prompt that might be cancelled. The prompt is a
+  `BiometricPrompt` carrying the cipher as
   its `CryptoObject`, which is how the system ties one authentication to one keystore
   operation; `androidx.biometric` is the only dependency this app has ever added for a single
   call.
-- **Writing never prompts, and reading only sometimes does.** Keystore permits *encryption*
-  with an authentication-required key and refuses only decryption, so connecting asks for
-  nothing — which matters, since a prompt on the Connect button would be a prompt to create
-  the very thing the prompt protects. It is also why the constraint is compatible with a sync
-  that runs by itself: the prompt is per *operation*, and the token is read once per run.
-- **A device that cannot ask is not a device that cannot connect.** A phone with no screen lock
-  cannot have such a key made at all, so the request degrades to a key that asks nothing, and
-  the answer says which the token actually got — the same honesty as `Protection`, and why
-  `saveSecret` answers with the mode rather than resolving an empty object. `canLock` asks
-  `BiometricManager.canAuthenticate(BIOMETRIC_WEAK or DEVICE_CREDENTIAL)` first, so a PIN-only
-  phone counts as askable.
+- **Locking prompts once, and reading only sometimes does.** The first version assumed
+  keystore permits *encryption* with an authentication-required key and refuses only
+  decryption. That is true of public-key operations only: an AES key asks for both, so every
+  locked write failed and quietly fell back to a key that asks nothing (#28). Locking the
+  sign-in — on Connect, or when the switch is turned on — now shows the same prompt with the
+  *encrypting* cipher as its `CryptoObject`. The constraint is still compatible with a sync that
+  runs by itself: the prompt is per *operation*, and the token is read once per run. A learner
+  who turned the switch on under an earlier build still has an unlocked sign-in; the status
+  line says so (switch on, protection `keychainOnly`) and asks them to turn it off and on
+  again, which rewrites the item behind the prompt.
+- **A refused lock is an error, not a downgrade.** A cancelled prompt or a key keystore will not
+  make is reported, and whatever was stored before is left as it was. The one downgrade left is
+  a device that cannot ask at all — its screen lock removed since the switch was turned on,
+  where the switch is no longer offered — which keeps the token the unlocked way and says so,
+  the same honesty as `Protection`. `canLock` asks `canAuthenticate` about the same
+  authenticators the prompt allows: a **strong** biometric, because androidx refuses a weak one
+  beside a `CryptoObject`, plus the device credential from Android 11, where the locked key is
+  made with `setUserAuthenticationParameters(0, AUTH_BIOMETRIC_STRONG or
+  AUTH_DEVICE_CREDENTIAL)` so a PIN-only phone counts as askable. Before Android 11 it is a
+  fingerprint or nothing.
 - **An undecryptable blob is forgotten rather than reported.** That is a restored backup on
-  Android — the preferences come back and the device-bound keystore key does not — and also a
-  fingerprint enrolled *after* the key was made, which `setInvalidatedByBiometricEnrollment`
-  makes keystore invalidate. An undecryptable token is worth nothing to anybody, and failing
+  Android — the preferences come back and the device-bound keystore key does not — and, before
+  Android 11, also a fingerprint enrolled *after* the key was made, which
+  `setInvalidatedByBiometricEnrollment` makes keystore invalidate. (From Android 11 a key that
+  the PIN may also authorise is bound to the lock screen, and enrolling does not invalidate
+  it.) An undecryptable token is worth nothing to anybody, and failing
   would leave a learner staring at an error they cannot act on when the useful thing is to be
   told they are not connected and offered Connect.
 
