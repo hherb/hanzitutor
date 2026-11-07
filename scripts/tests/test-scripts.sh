@@ -20,6 +20,11 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/hanzi-script-tests.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+# macOS's $TMPDIR ends in a slash, so the path above holds a doubled one
+# (…/T//hanzi-script-tests.…). The scripts under test name their paths through
+# `cd … && pwd`, which folds it, so the expectations here have to be named the
+# same way or every path comparison fails on a Mac and nowhere else.
+WORK="$(cd "$WORK" && pwd)"
 
 # Said first, because CI runs this twice — once under whatever bash is first on
 # PATH and once under macOS's own /bin/bash 3.2 — and the log should say which.
