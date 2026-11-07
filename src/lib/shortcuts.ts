@@ -134,9 +134,11 @@ export function shortcutFor(event: KeyChord): Shortcut | null {
  * - `text`: something that takes typing — a field, a select, an editable
  *   region. Every key is its own, Backspace and the arrows above all.
  * - `control`: something Enter or Space *activates* — a button, a link, a
- *   disclosure, anything given a place in the tab order. Those two keys are the
- *   control's; the rest of the board's keys still work, since a button does
- *   nothing with ← or S.
+ *   disclosure, anything given a place in the tab order — **and that the
+ *   keyboard put the focus on**. Those two keys are the control's; the rest of
+ *   the board's keys still work, since a button does nothing with ← or S.
+ *   A control the mouse left focused is `other`: Chromium-based webviews focus
+ *   a button on click, and Enter after clicking Listen or Hint means Check.
  * - `other`: the page itself, the board, a sheet that took focus only so it
  *   could be read.
  */
@@ -151,6 +153,12 @@ export interface TargetLike {
   isContentEditable?: boolean;
   hasAttribute(name: string): boolean;
   getAttribute(name: string): string | null;
+  /**
+   * Whether the focus on this element is the keyboard's — see [`FocusOrigin`].
+   * Left out, it counts as the keyboard's, so a keyboard user never loses Enter
+   * to a guess.
+   */
+  focusVisible?: boolean;
 }
 
 /** Elements Enter or Space activates whatever their attributes say. */
@@ -176,6 +184,7 @@ export function targetKind(target: TargetLike | null): TargetKind {
   if (target === null) return "other";
   const tag = target.tagName.toUpperCase();
   if (TEXT_TAGS.has(tag) || target.isContentEditable) return "text";
+  if (target.focusVisible === false) return "other";
   if (CONTROL_TAGS.has(tag)) return "control";
   if (tag === "A" && target.hasAttribute("href")) return "control";
   const role = target.getAttribute("role");
@@ -186,6 +195,59 @@ export function targetKind(target: TargetLike | null): TargetKind {
   const tabindex = target.getAttribute("tabindex");
   if (tabindex !== null && Number.parseInt(tabindex, 10) >= 0) return "control";
   return "other";
+}
+
+/**
+ * Who put the focus where it is: the keyboard, or a pointer.
+ *
+ * What `:focus-visible` means, kept by hand rather than asked of the engine.
+ * The pseudo-class cannot be trusted at the moment that matters: browsers are
+ * encouraged to start showing a ring on a clicked element as soon as a key is
+ * pressed on it, so asked during Enter's own `keydown` it can already say
+ * "visible" for the button the mouse clicked — and an engine that does not know
+ * it throws. This answers from the order of events, which is the same
+ * everywhere:
+ *
+ * - `pointer()` on every `pointerdown` and `key()` on every `keydown`, in the
+ *   capture phase, so the latest input is known before focus moves;
+ * - `focused(target)` on every `focusin`: the focus belongs to whichever input
+ *   came last. Tab is a keydown before the focus moves; a click is a
+ *   pointerdown before it; focus moved by script goes with the input that
+ *   caused it (the sheet closed by Escape, or by a tap on the scrim).
+ *
+ * A key pressed *after* the focus arrived changes nothing, which is the point:
+ * Enter on a clicked button is still Enter on a clicked button.
+ */
+export class FocusOrigin {
+  private pointerLast = false;
+  private pointerFocused: unknown = null;
+
+  /** A pointer went down. */
+  pointer(): void {
+    this.pointerLast = true;
+  }
+
+  /** A key went down. */
+  key(): void {
+    this.pointerLast = false;
+  }
+
+  /** Focus arrived on `target`. */
+  focused(target: unknown): void {
+    this.pointerFocused = this.pointerLast ? target : null;
+  }
+
+  /** `target` as [`targetKind`] reads it, with whose focus it has filled in. */
+  describe(target: TargetLike | null): TargetLike | null {
+    if (target === null) return null;
+    return {
+      tagName: target.tagName,
+      isContentEditable: target.isContentEditable,
+      hasAttribute: (name) => target.hasAttribute(name),
+      getAttribute: (name) => target.getAttribute(name),
+      focusVisible: target !== this.pointerFocused,
+    };
+  }
 }
 
 /** Everything about the screen a key's meaning depends on. */
@@ -242,9 +304,10 @@ const PASS: KeyRoute = { action: null, preventDefault: false };
  *    — the same as Back on Android (`__hanziHandleBack`).
  * 4. Escape closes the key list wherever it is open.
  * 5. Off the board, nothing.
- * 6. Enter and Space belong to a focused control. A keyboard user who tabs to a
- *    button and presses Enter means *that button*; claiming the key for Check
- *    left the button dead and graded the board instead.
+ * 6. Enter and Space belong to a control the keyboard focused. A keyboard user
+ *    who tabs to a button and presses Enter means *that button*; claiming the
+ *    key for Check left the button dead and graded the board instead. (A
+ *    button the mouse left focused is not `control` — see [`targetKind`].)
  * 7. Otherwise, the shortcut the key names, if any.
  */
 export function routeKey(chord: KeyChord, context: KeyContext): KeyRoute {

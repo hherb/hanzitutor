@@ -29,7 +29,7 @@
   import { INTRO_PAGES, notesFor } from "./lib/startupPages";
   import type { Page } from "./lib/startupPages";
   import { dueLabel } from "./lib/due";
-  import { routeKey, targetKind } from "./lib/shortcuts";
+  import { FocusOrigin, routeKey, targetKind } from "./lib/shortcuts";
   import type { ShortcutId } from "./lib/shortcuts";
   import { highlightedCourseCharacter } from "./lib/courseHighlight";
   import { INK_WIDTH, polylineLength } from "./lib/render";
@@ -164,6 +164,29 @@
    * just the first column and this is never set.
    */
   let navOpen = $state(false);
+  /**
+   * The width at which the sidebar becomes that sheet — the `max-width` of the
+   * phone block in the styles below, which is the other half of this fact.
+   *
+   * `navOpen` is cleared when the window grows past it: the sheet is then the
+   * plain first column again, and an `open` left standing would keep the board's
+   * keys switched off behind a sheet that no longer exists (issue #31).
+   */
+  const phoneLayout = window.matchMedia("(max-width: 760px)");
+  /** The sheet, and the ☰ that opens it — where focus goes when it closes. */
+  let navPane = $state<HTMLElement | null>(null);
+  let navToggle = $state<HTMLButtonElement | null>(null);
+
+  /**
+   * Closing the sheet hides it, and whatever had focus inside it with it: the
+   * next Enter would press a lesson button nobody can see. Focus goes back to
+   * the ☰ that opened it — but only from inside the sheet, and only while it is
+   * a sheet, so a wide screen's sidebar column keeps its focus.
+   */
+  $effect(() => {
+    if (navOpen || !navPane || !navToggle || !phoneLayout.matches) return;
+    if (navPane.contains(document.activeElement)) navToggle.focus();
+  });
 
   /**
    * The startup reading that is covering the app, or `null` when none is.
@@ -1173,13 +1196,30 @@
       }
     };
 
+    // Who put the focus where it is, which decides whether Enter on a focused
+    // button is that button's or Check's — see `FocusOrigin`. Capture phase, so
+    // the input is noted before anything moves the focus or stops the event.
+    const focusOrigin = new FocusOrigin();
+    const onPointerInput = () => focusOrigin.pointer();
+    const onKeyInput = () => focusOrigin.key();
+    const onFocusIn = (event: FocusEvent) => focusOrigin.focused(event.target);
+    window.addEventListener("pointerdown", onPointerInput, true);
+    window.addEventListener("keydown", onKeyInput, true);
+    window.addEventListener("focusin", onFocusIn, true);
+    const onLayout = () => {
+      if (!phoneLayout.matches) navOpen = false;
+    };
+    phoneLayout.addEventListener("change", onLayout);
+
     const onKey = (event: KeyboardEvent) => {
       // Whether a key is the board's at all — text fields, a focused button, the
       // startup reading, the phone's sheet, a screen that is not the board — is
       // decided in `lib/shortcuts.ts`, where the reasons and the tests are. The
       // browser is told no only when something here acts on the key.
       const route = routeKey(event, {
-        target: targetKind(event.target instanceof Element ? event.target : null),
+        target: targetKind(
+          focusOrigin.describe(event.target instanceof Element ? event.target : null),
+        ),
         startupSheet: startupSheet !== null,
         navOpen,
         shortcutsOpen,
@@ -1212,6 +1252,10 @@
       window.removeEventListener("unhandledrejection", onRejection);
       window.removeEventListener("resize", publishInsets);
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pointerdown", onPointerInput, true);
+      window.removeEventListener("keydown", onKeyInput, true);
+      window.removeEventListener("focusin", onFocusIn, true);
+      phoneLayout.removeEventListener("change", onLayout);
       document.removeEventListener("visibilitychange", onVisibility);
       clearTimeout(noticeTimer);
       clearTimeout(workingTimer);
@@ -2768,7 +2812,7 @@
       onclick={() => (navOpen = false)}
     ></button>
   {/if}
-  <div class="nav-pane" class:open={navOpen}>
+  <div class="nav-pane" class:open={navOpen} bind:this={navPane}>
     <LessonSidebar
       view={view}
       onSwitchView={navigating(switchView)}
@@ -2806,6 +2850,7 @@
     <div class="topbar">
       <button
         class="nav-toggle"
+        bind:this={navToggle}
         type="button"
         aria-label="Open navigation"
         onclick={() => (navOpen = true)}

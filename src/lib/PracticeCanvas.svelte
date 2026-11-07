@@ -16,6 +16,7 @@
    */
   import { BOX, drawScene } from "./render";
   import type { Sweep } from "./render";
+  import { targetKind } from "./shortcuts";
   import type { Character, GradeReport, Point } from "./types";
 
   interface Props {
@@ -201,16 +202,16 @@
   }
 
   function handleDown(event: PointerEvent) {
-    if (disabled || event.button !== 0) return;
-    event.preventDefault();
-    // Writing is leaving whatever control was last clicked. Enter on a focused
-    // button presses that button rather than Check (issue #31), and a control
-    // clicked before writing can keep the focus — the default is cancelled just
-    // above, and engines differ on whether that also keeps focus where it was —
-    // so Enter after writing would press, say, the Trace/Recall toggle and clear
-    // the board. Dropping the focus here keeps Enter meaning Check.
+    // Writing — or reaching for the board at all — is leaving whatever control
+    // was last focused. Enter on a button the keyboard focused presses that
+    // button rather than Check (issue #31), and the default is cancelled below,
+    // which on some engines also keeps focus where it was. Dropping it here keeps
+    // Enter meaning Check. Before the `disabled` test, since a press on a board
+    // that takes no ink is still a press away from the control.
     const focused = document.activeElement;
     if (focused instanceof HTMLElement && focused !== document.body) focused.blur();
+    if (disabled || event.button !== 0) return;
+    event.preventDefault();
 
     if (clickToDraw) {
       // The second click ends the stroke where it lands. Nothing is captured:
@@ -291,8 +292,8 @@
     const onKey = (event: KeyboardEvent) => {
       if (!open) return;
       if (event.key !== "Escape" && event.key !== "Backspace") return;
-      const target = event.target as HTMLElement | null;
-      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      // A field keeps its own keys — the same rule as the app's key handler.
+      if (targetKind(event.target instanceof Element ? event.target : null) === "text") return;
       event.preventDefault();
       event.stopPropagation();
       cancelDraft();

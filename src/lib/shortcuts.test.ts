@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routeKey, shortcutFor, targetKind } from "./shortcuts";
+import { FocusOrigin, routeKey, shortcutFor, targetKind } from "./shortcuts";
 import type { KeyChord, KeyContext, TargetLike } from "./shortcuts";
 
 /** A keystroke with no modifiers, plus whatever the case overrides. */
@@ -26,14 +26,16 @@ const route = (chord: KeyChord, context: KeyContext = BOARD) => routeKey(chord, 
 
 const NOTHING = { action: null, preventDefault: false };
 
-/** A stand-in for a DOM element: the four things `targetKind` reads. */
+/** A stand-in for a DOM element: the things `targetKind` reads. */
 const element = (
   tagName: string,
   attributes: Record<string, string> = {},
   isContentEditable = false,
+  focusVisible?: boolean,
 ): TargetLike => ({
   tagName,
   isContentEditable,
+  focusVisible,
   hasAttribute: (name) => name in attributes,
   getAttribute: (name) => attributes[name] ?? null,
 });
@@ -190,6 +192,90 @@ describe("what a keystroke landed on", () => {
     expect(targetKind(element("A")), "an anchor with no href is not a link").toBe("other");
     expect(targetKind(element("DIV", { tabindex: "-1" })), "the startup sheet").toBe("other");
     expect(targetKind(element("DIV", { role: "dialog" }))).toBe("other");
+  });
+});
+
+describe("a control the mouse focused", () => {
+  // Chromium-based webviews focus a button on click. Enter after clicking Listen
+  // or Hint is still a request to check, not to press the button again.
+  const listen = (focusVisible: boolean) => element("BUTTON", {}, false, focusVisible);
+
+  it("is not keyboard-owned: Enter checks", () => {
+    expect(targetKind(listen(false))).toBe("other");
+    expect(route(press("Enter"), on({ target: targetKind(listen(false)) }))).toEqual({
+      action: "check",
+      preventDefault: true,
+    });
+  });
+
+  it("is keyboard-owned once focus is visible: Enter passes", () => {
+    expect(targetKind(listen(true))).toBe("control");
+    expect(route(press("Enter"), on({ target: targetKind(listen(true)) }))).toEqual(NOTHING);
+  });
+
+  it("never makes a text field anything but a text field", () => {
+    expect(targetKind(element("INPUT", {}, false, false))).toBe("text");
+  });
+});
+
+describe("where the focus came from", () => {
+  const button = element("BUTTON");
+  const other = element("BUTTON");
+
+  it("treats focus moved by Tab as the keyboard's", () => {
+    const origin = new FocusOrigin();
+    origin.key();
+    origin.focused(button);
+    expect(origin.describe(button)?.focusVisible).toBe(true);
+    expect(targetKind(origin.describe(button))).toBe("control");
+  });
+
+  it("treats focus taken by a click as the pointer's", () => {
+    const origin = new FocusOrigin();
+    origin.pointer();
+    origin.focused(button);
+    expect(origin.describe(button)?.focusVisible).toBe(false);
+    expect(targetKind(origin.describe(button))).toBe("other");
+  });
+
+  it("asks about the element that has focus, not the last one clicked", () => {
+    const origin = new FocusOrigin();
+    origin.pointer();
+    origin.focused(button);
+    // Tab moves on: the keystroke comes first, then the focus.
+    origin.key();
+    origin.focused(other);
+    expect(origin.describe(other)?.focusVisible).toBe(true);
+  });
+
+  it("does not let a keystroke make a clicked button the keyboard's", () => {
+    // Enter on a clicked button is exactly the case: the key comes after the
+    // focus, and must not change who the focus belongs to.
+    const origin = new FocusOrigin();
+    origin.pointer();
+    origin.focused(button);
+    origin.key();
+    expect(origin.describe(button)?.focusVisible).toBe(false);
+  });
+
+  it("gives script focus to whichever input came last", () => {
+    // The sheet closing by Escape hands focus to ☰ for the keyboard; closing by
+    // a tap on the scrim hands it over for the pointer.
+    const origin = new FocusOrigin();
+    origin.key();
+    origin.focused(button);
+    expect(origin.describe(button)?.focusVisible).toBe(true);
+    origin.pointer();
+    origin.focused(other);
+    expect(origin.describe(other)?.focusVisible).toBe(false);
+  });
+
+  it("reads the element through unchanged", () => {
+    const origin = new FocusOrigin();
+    const link = element("A", { href: "#x" });
+    expect(targetKind(origin.describe(link))).toBe("control");
+    expect(origin.describe(null)).toBeNull();
+    expect(targetKind(origin.describe(element("TEXTAREA")))).toBe("text");
   });
 });
 
