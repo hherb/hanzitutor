@@ -52,11 +52,13 @@
 
 // The process backend, and the process types it needs.
 #[cfg(not(target_os = "android"))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(target_os = "android"))]
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 #[cfg(not(target_os = "android"))]
 use std::thread::JoinHandle;
 #[cfg(not(target_os = "android"))]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(not(target_os = "android"))]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -92,6 +94,24 @@ pub const MAX_RECORD_SECS: u32 = 10;
 /// forever leaves the interface with a button that never comes back.
 #[cfg(not(target_os = "android"))]
 const OPEN_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// How often the capture thread looks at whether the cap has been reached.
+///
+/// The audio callback only sets a flag at the cap — it runs on the device's
+/// real-time thread, where waking another thread is not something to do — so the
+/// capture thread looks. A twentieth of a second past the cap is nothing to a
+/// learner who has held the button for ten.
+#[cfg(not(target_os = "android"))]
+const CAP_POLL: Duration = Duration::from_millis(50);
+
+/// The longest the device is ever held open, whatever else happens.
+///
+/// The cap closes it as soon as the buffer is full, but that needs audio to
+/// arrive: a device that delivers no callbacks, or a sample format this build
+/// cannot read, never fills the buffer. A second past the cap, the device goes
+/// regardless — no recording this app wants is that long.
+#[cfg(not(target_os = "android"))]
+const HOLD_BACKSTOP: Duration = Duration::from_secs(MAX_RECORD_SECS as u64 + 1);
 
 /// What the microphone can do, so the interface can decide whether to offer the
 /// control at all rather than offering one that cannot work.
@@ -312,11 +332,8 @@ impl Recorder {
             let samples = Arc::clone(&samples);
             let failure = Arc::clone(&failure);
             let truncation = Arc::clone(&truncation);
-            // The audio callback's way of saying the cap is reached: the same
-            // channel a stop arrives on, so the thread has one thing to wait for.
-            let full = stop_tx.clone();
             std::thread::spawn(move || {
-                capture_thread(samples, failure, truncation, ready_tx, stop_rx, full);
+                capture_thread(samples, failure, truncation, ready_tx, stop_rx);
             })
         };
 
@@ -342,7 +359,12 @@ impl Recorder {
             Err(RecvTimeoutError::Timeout) => {
                 // The thread is still blocked opening the device, most likely on
                 // a permission prompt. Let it finish on its own; it owns no
-                // state this process needs back.
+                // state this process needs back. If the device does open later —
+                // the prompt answered after the timeout — nothing here will ever
+                // stop it, so it is told now: the stop waits in the channel, and
+                // the thread also finds nobody listening for its "ready" and lets
+                // the stream go (see `report_and_hold`).
+                let _ = stop_tx.send(());
                 Err(format!(
                     "The microphone did not open within {} seconds.",
                     OPEN_TIMEOUT.as_secs()
@@ -555,17 +577,17 @@ fn release_input_session() {
 /// Where the audio callback puts what it hears, up to the cap.
 ///
 /// Its own type so that what happens at the cap can be tested without a
-/// microphone: the buffer stops growing, the truncation flag is set, and the
-/// capture thread is told once to let the stream go.
+/// microphone: the buffer stops growing, and the truncation and `full` flags are
+/// set, which the capture thread sees and lets the stream go.
 #[cfg(not(target_os = "android"))]
 struct Sink {
     samples: Arc<Mutex<Vec<f32>>>,
     truncation: Arc<Mutex<Truncation>>,
     channels: usize,
     limit: usize,
-    /// Wakes the capture thread to drop the stream. Taken when it is used, so it is
-    /// sent once however many callbacks arrive before the stream is gone.
-    full: Option<Sender<()>>,
+    /// Set at the cap; read by [`hold`]. A flag rather than a message, because
+    /// this runs on the device's real-time thread.
+    full: Arc<AtomicBool>,
 }
 
 #[cfg(not(target_os = "android"))]
@@ -587,23 +609,52 @@ impl Sink {
         if let Ok(mut flag) = self.truncation.lock() {
             flag.0 = true;
         }
-        if let Some(full) = self.full.take() {
-            // A failure means the thread is already on its way out, which is what
-            // this asked for.
-            let _ = full.send(());
-        }
+        self.full.store(true, Ordering::Release);
     }
 }
 
-/// Keep the stream alive until a stop, or the cap, says to let it go.
+/// Tell `start` the device is open, then keep the stream alive until it should go.
 ///
-/// Dropping the stream is what closes the device and puts the system's
-/// recording indicator out. Generic so a test can stand a stream in.
+/// If nobody is waiting for the "ready" any more, `start` has already given up on
+/// this device — it took longer than [`OPEN_TIMEOUT`] to open, behind a permission
+/// prompt answered late — and there is no [`Active`] through which it could ever
+/// be stopped, so the stream goes at once rather than recording into nothing with
+/// the indicator lit.
 #[cfg(not(target_os = "android"))]
-fn hold<S>(stream: S, stop: &mpsc::Receiver<()>) {
-    // The sink holds a sender to this channel until the cap, so a `Recorder`
-    // dropped without a stop is let go at the cap at the latest.
-    let _ = stop.recv();
+fn report_and_hold<S>(
+    stream: S,
+    ready: &Sender<Result<(u32, String), String>>,
+    opened: (u32, String),
+    stop: &mpsc::Receiver<()>,
+    full: &AtomicBool,
+    backstop: Duration,
+) {
+    if ready.send(Ok(opened)).is_err() {
+        drop(stream);
+        return;
+    }
+    hold(stream, stop, full, backstop);
+}
+
+/// Keep the stream alive until a stop, the cap, or the backstop says to let it go.
+///
+/// Dropping the stream is what closes the device and puts the system's recording
+/// indicator out. A stop, a disconnected channel (the [`Active`] dropped without
+/// one), the sink's `full` flag and `backstop` after opening all end it. Generic
+/// so a test can stand a stream in.
+#[cfg(not(target_os = "android"))]
+fn hold<S>(stream: S, stop: &mpsc::Receiver<()>, full: &AtomicBool, backstop: Duration) {
+    let opened = Instant::now();
+    loop {
+        match stop.recv_timeout(CAP_POLL) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                if full.load(Ordering::Acquire) || opened.elapsed() >= backstop {
+                    break;
+                }
+            }
+        }
+    }
     drop(stream);
 }
 
@@ -615,7 +666,6 @@ fn capture_thread(
     truncation: Arc<Mutex<Truncation>>,
     ready: Sender<Result<(u32, String), String>>,
     stop: mpsc::Receiver<()>,
-    full: Sender<()>,
 ) {
     let host = cpal::default_host();
     let Some(device) = host.default_input_device() else {
@@ -637,12 +687,13 @@ fn capture_thread(
     let channels = config.channels as usize;
     let limit = sample_rate as usize * MAX_RECORD_SECS as usize;
 
+    let full = Arc::new(AtomicBool::new(false));
     let mut sink = Sink {
         samples,
         truncation,
         channels,
         limit,
-        full: Some(full),
+        full: Arc::clone(&full),
     };
     let data_error = Arc::clone(&failure);
     let data_callback = move |data: &cpal::Data, _: &cpal::InputCallbackInfo| sink.accept(data);
@@ -693,10 +744,15 @@ fn capture_thread(
         return;
     }
 
-    let _ = ready.send(Ok((sample_rate, name)));
-
     // Park until told to stop, by the learner or by the cap.
-    hold(stream, &stop);
+    report_and_hold(
+        stream,
+        &ready,
+        (sample_rate, name),
+        &stop,
+        &full,
+        HOLD_BACKSTOP,
+    );
 }
 
 /// Downmix one callback's worth of samples to mono and append them.
@@ -808,7 +864,6 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     mod cap {
         use super::*;
-        use std::sync::atomic::{AtomicBool, Ordering};
 
         /// One callback's worth of mono `f32` audio, as cpal would hand it over.
         fn callback(buffer: &mut [f32]) -> cpal::Data {
@@ -840,13 +895,17 @@ mod tests {
             let (stop_tx, stop_rx) = mpsc::channel();
             let closed = Arc::new(AtomicBool::new(false));
             let stream = Stream(Arc::clone(&closed));
-            let thread = std::thread::spawn(move || hold(stream, &stop_rx));
+            let full = Arc::new(AtomicBool::new(false));
+            let thread = {
+                let full = Arc::clone(&full);
+                std::thread::spawn(move || hold(stream, &stop_rx, &full, HOLD_BACKSTOP))
+            };
             let sink = Sink {
                 samples: Arc::clone(&samples),
                 truncation: Arc::clone(&truncation),
                 channels: 1,
                 limit,
-                full: Some(stop_tx.clone()),
+                full,
             };
             let active = Active {
                 samples,
@@ -862,14 +921,109 @@ mod tests {
 
         /// Wait, briefly, for the capture thread to have let its stream go.
         fn closes(active: &Active) -> bool {
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while !active.thread.is_finished() {
-                if std::time::Instant::now() > deadline {
+            finishes(&active.thread, Duration::from_secs(5))
+        }
+
+        /// Whether `thread` ends within `within`.
+        fn finishes(thread: &JoinHandle<()>, within: Duration) -> bool {
+            let deadline = Instant::now() + within;
+            while !thread.is_finished() {
+                if Instant::now() > deadline {
                     return false;
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
             true
+        }
+
+        #[test]
+        fn a_device_that_opens_after_start_gave_up_is_let_go_at_once() {
+            // The permission prompt answered after the eight-second open timeout:
+            // `start` has returned its error, and nothing holds the `Active` that
+            // could ever stop this. A sender still alive somewhere (the sink once
+            // held one) must not keep the device open with the indicator lit.
+            let (ready_tx, ready_rx) = mpsc::channel();
+            drop(ready_rx);
+            let (stop_tx, stop_rx) = mpsc::channel::<()>();
+            let closed = Arc::new(AtomicBool::new(false));
+            let stream = Stream(Arc::clone(&closed));
+            let full = AtomicBool::new(false);
+            let thread = std::thread::spawn(move || {
+                report_and_hold(
+                    stream,
+                    &ready_tx,
+                    (16_000, "a test input".into()),
+                    &stop_rx,
+                    &full,
+                    Duration::from_secs(60),
+                );
+            });
+
+            assert!(
+                finishes(&thread, Duration::from_secs(2)),
+                "the device must close as soon as nobody is waiting for it"
+            );
+            assert!(closed.load(Ordering::SeqCst));
+            drop(stop_tx);
+        }
+
+        #[test]
+        fn a_device_that_opens_in_time_is_held_until_it_is_stopped() {
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let (stop_tx, stop_rx) = mpsc::channel::<()>();
+            let closed = Arc::new(AtomicBool::new(false));
+            let stream = Stream(Arc::clone(&closed));
+            let full = AtomicBool::new(false);
+            let thread = std::thread::spawn(move || {
+                report_and_hold(
+                    stream,
+                    &ready_tx,
+                    (16_000, "a test input".into()),
+                    &stop_rx,
+                    &full,
+                    Duration::from_secs(60),
+                );
+            });
+
+            assert_eq!(
+                ready_rx.recv().unwrap(),
+                Ok((16_000, "a test input".to_string()))
+            );
+            assert!(!finishes(&thread, Duration::from_millis(150)));
+            assert!(!closed.load(Ordering::SeqCst));
+            stop_tx.send(()).unwrap();
+            assert!(finishes(&thread, Duration::from_secs(2)));
+            assert!(closed.load(Ordering::SeqCst));
+        }
+
+        #[test]
+        fn the_device_closes_by_itself_when_the_cap_is_never_reached() {
+            // No callbacks, a sample format this build cannot read, a buffer whose
+            // lock was poisoned: the sink never fills, and nothing stops it. The
+            // backstop closes the device anyway.
+            let (stop_tx, stop_rx) = mpsc::channel::<()>();
+            let closed = Arc::new(AtomicBool::new(false));
+            let stream = Stream(Arc::clone(&closed));
+            let full = AtomicBool::new(false);
+            let thread = std::thread::spawn(move || {
+                hold(stream, &stop_rx, &full, Duration::from_millis(100));
+            });
+
+            assert!(
+                finishes(&thread, Duration::from_secs(2)),
+                "the backstop must close the device"
+            );
+            assert!(closed.load(Ordering::SeqCst));
+            drop(stop_tx);
+        }
+
+        #[test]
+        fn a_recorder_dropped_without_a_stop_lets_the_device_go() {
+            let (active, _sink, closed) = recording(10);
+            let thread = active.thread;
+            drop(active.stop);
+            assert!(finishes(&thread, Duration::from_secs(2)));
+            assert!(closed.load(Ordering::SeqCst));
         }
 
         #[test]

@@ -615,10 +615,11 @@
    * Space, speaking and letting go did nothing (issue #27). The key's repeats are
    * not presses — see `HeldKey`.
    *
-   * Not taken from a field being typed in. It *is* taken from a focused button —
-   * the chooser keeps focus after a click, and "pick a tone, then hold Space" is
-   * the drill — so both halves are default-prevented, or the keyup would also
-   * click that button.
+   * Taken only where it means that — see `spaceTalks`. On a focused chooser
+   * button, which keeps focus after a click because "pick a tone, then hold
+   * Space" is the drill, both halves are default-prevented, or the keyup would
+   * also click it. The chooser is `aria-disabled` rather than `disabled` while the
+   * microphone is open, so the press does not knock focus off it.
    */
   const space = new HeldKey();
 
@@ -626,18 +627,27 @@
     return event.code === "Space" || event.key === " ";
   }
 
+  /**
+   * Whether Space pressed with focus on `target` means "talk".
+   *
+   * Nothing focused, or a control whose next step *is* holding Space — the mic
+   * button, the chooser, and the Say buttons and switches that lead to the drill
+   * (marked `data-space-talks`). Anything else keeps the key's own meaning: a text
+   * field types a space, and Hear, Quiz, Done, the model panel's buttons or a
+   * `<summary>` are activated by it as usual.
+   */
+  function spaceTalks(target: EventTarget | null) {
+    if (!(target instanceof Element)) return true;
+    if (target === document.body || target === document.documentElement) return true;
+    return target.closest("[data-space-talks]") !== null;
+  }
+
   function onKeyDown(event: KeyboardEvent) {
     if (screen !== "say" || !isSpace(event)) return;
-    const target = event.target as HTMLElement | null;
-    // Never steal the key from a field being typed in.
-    if (
-      target &&
-      (target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.tagName === "SELECT" ||
-        target.isContentEditable)
-    )
-      return;
+    // Ctrl+Space and its relatives switch the input source — which a learner of
+    // Chinese does all the time — and a key composing text is the IME's.
+    if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+    if (!spaceTalks(event.target)) return;
     if (drillText === null && !space.held) return;
     event.preventDefault();
     if (space.down(event.repeat)) void startListening();
@@ -688,7 +698,11 @@
   $effect(() => {
     const release = () => void talk.retarget();
     const hidden = () => {
-      if (document.hidden) void talk.abandon();
+      if (!document.hidden) return;
+      // A keyup that went to whatever took over would otherwise leave Space
+      // "held", and swallow the next press.
+      space.up();
+      void talk.abandon();
     };
     window.addEventListener("pagehide", release);
     document.addEventListener("visibilitychange", hidden);
@@ -709,7 +723,9 @@
     </div>
     <nav class="screens" aria-label="Which exercise">
       <button class:on={screen === "hear"} onclick={() => (screen = "hear")}>Hear</button>
-      <button class:on={screen === "say"} onclick={() => (screen = "say")}>Say</button>
+      <button class:on={screen === "say"} onclick={() => (screen = "say")} data-space-talks>
+        Say
+      </button>
     </nav>
   </header>
 
@@ -754,6 +770,7 @@
         <button
           class:on={kind === "character"}
           onclick={() => (kind = "character")}
+          data-space-talks
           title="One syllable, one tone at a time"
         >
           Characters
@@ -761,6 +778,7 @@
         <button
           class:on={kind === "word"}
           onclick={() => (kind = "word")}
+          data-space-talks
           title="Whole words, with the tones they are spoken with"
         >
           Words
@@ -798,6 +816,7 @@
                       drillFamilyTo(family);
                       screen = "say";
                     }}
+                    data-space-talks
                     title="Drill these words: hold the button and say each one"
                   >
                     Say
@@ -810,7 +829,8 @@
                     <button
                       class="say"
                       onclick={() => void say(word.text)}
-                      disabled={noVoice || micOpen}
+                      disabled={noVoice}
+                      aria-disabled={micOpen}
                       aria-label="Hear {word.reading}"
                       title={noVoice ? voiceNote : `Hear ${word.reading}`}
                     >
@@ -854,7 +874,8 @@
               <span class="actions">
                 <button
                   onclick={() => hearSet(set)}
-                  disabled={noVoice || micOpen}
+                  disabled={noVoice}
+                  aria-disabled={micOpen}
                   title={noVoice ? voiceNote : "Hear every tone of this syllable, in order"}
                 >
                   Hear
@@ -864,7 +885,8 @@
                 {:else}
                   <button
                     onclick={() => ask(set)}
-                    disabled={noVoice || micOpen}
+                    disabled={noVoice}
+                    aria-disabled={micOpen}
                     title={noVoice ? voiceNote : "Hear one at random and pick which reading it was"}
                   >
                     Quiz
@@ -876,6 +898,7 @@
                     drillSetTo(set);
                     screen = "say";
                   }}
+                  data-space-talks
                   title="Drill these tones: hold the button and say each one"
                 >
                   Say
@@ -909,11 +932,17 @@
                   {/each}
                 </div>
                 <div class="quiz-actions">
-                  <button onclick={() => void say(quizAnswer.ch)} disabled={noVoice || micOpen}>
+                  <button
+                    onclick={() => void say(quizAnswer.ch)}
+                    disabled={noVoice}
+                    aria-disabled={micOpen}
+                  >
                     Hear it again
                   </button>
                   {#if quiz.picked !== null}
-                    <button onclick={() => ask(set)} disabled={noVoice || micOpen}>Another</button>
+                    <button onclick={() => ask(set)} disabled={noVoice} aria-disabled={micOpen}>
+                      Another
+                    </button>
                   {/if}
                   <button onclick={() => (quiz = null)}>Done</button>
                 </div>
@@ -925,7 +954,8 @@
                     <button
                       class="say"
                       onclick={() => void say(member.ch)}
-                      disabled={noVoice || micOpen}
+                      disabled={noVoice}
+                      aria-disabled={micOpen}
                       aria-label="Hear {member.reading}"
                       title={noVoice ? voiceNote : `Hear ${member.reading}`}
                     >
@@ -991,7 +1021,8 @@
                     <button
                       class:on={drillWord.text === word.text}
                       onclick={() => chooseWord(drillFamily, word)}
-                      disabled={micOpen}
+                      aria-disabled={micOpen}
+                      data-space-talks
                       title="Drill {word.reading}"
                     >
                       <span class="glyph" lang="zh-Hans">{word.text}</span>
@@ -1019,7 +1050,8 @@
                     <button
                       class:on={drillMember.ch === member.ch}
                       onclick={() => choose(drillSet, member)}
-                      disabled={micOpen}
+                      aria-disabled={micOpen}
+                      data-space-talks
                       title="Drill {member.reading}"
                     >
                       <span class="glyph" lang="zh-Hans">{member.ch}</span>
@@ -1035,6 +1067,7 @@
               <button
                 class="mic"
                 class:listening
+                data-space-talks
                 disabled={scoring || (microphone !== null && !microphone.available)}
                 aria-busy={starting || scoring}
                 onpointerdown={(event) => {
@@ -1325,11 +1358,14 @@
     color: var(--muted-strong);
     cursor: pointer;
   }
-  button:hover:not(:disabled) {
+  button:hover:not(:disabled, [aria-disabled="true"]) {
     border-color: var(--accent);
     color: var(--accent-ink);
   }
-  button:disabled {
+  /* `aria-disabled` is "not now, while the microphone is open": it looks the
+     same as disabled, but keeps focus where it was (see `onKeyDown`). */
+  button:disabled,
+  button[aria-disabled="true"] {
     opacity: 0.45;
     cursor: default;
   }
@@ -1373,7 +1409,7 @@
     font-size: 0.95rem;
     line-height: 1;
   }
-  .say:hover:not(:disabled) {
+  .say:hover:not(:disabled, [aria-disabled="true"]) {
     background: var(--accent-soft);
     border-color: transparent;
   }

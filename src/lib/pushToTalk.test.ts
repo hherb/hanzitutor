@@ -72,6 +72,36 @@ describe.each([
     expect(fake.calls).toEqual(["start", "stop"]);
   });
 
+  it("ignores a press while an early release is being cancelled", async () => {
+    // The device has opened and the cancel for the early release is on its way:
+    // a press now cannot take that release back (the cancel is already running),
+    // so it must be refused — not told "deferred" and silently lost.
+    const fake = backend();
+    const cancelled = deferred<void>();
+    fake.io.cancel = () => {
+      fake.calls.push("cancel");
+      return cancelled.promise;
+    };
+    const talk = new PushToTalk<string>(fake.io);
+
+    const pressed = talk.press();
+    await talk.release();
+    fake.starts[0].resolve();
+    await settle();
+    expect(fake.calls).toEqual(["start", "cancel"]);
+
+    expect(await talk.press()).toEqual({ kind: "ignored" });
+    expect(await talk.release()).toEqual({ kind: "ignored" });
+    cancelled.resolve();
+    expect(await pressed).toEqual({ kind: "released-early" });
+    expect(talk.phase).toBe("idle");
+
+    // And the next press is a fresh attempt.
+    const again = talk.press();
+    fake.starts[1].resolve();
+    expect(await again).toEqual({ kind: "listening" });
+  });
+
   it("still cancels when the second hold is let go before the device opens", async () => {
     const fake = backend();
     const talk = new PushToTalk<string>(fake.io);

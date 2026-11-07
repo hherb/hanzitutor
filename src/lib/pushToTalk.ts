@@ -75,6 +75,12 @@ export class PushToTalk<R> {
   #attempt = 0;
   /** A release arrived while the device was opening. */
   #released = false;
+  /**
+   * The device opened after an early release (or a retarget) and is being closed
+   * again. Still `starting` — so a new press cannot open the device underneath
+   * the cancel — but past the point where a press could take the release back.
+   */
+  #cancelling = false;
 
   constructor(io: TalkIo<R>, onPhase: (phase: Phase) => void = () => {}) {
     this.#io = io;
@@ -97,6 +103,7 @@ export class PushToTalk<R> {
    * taken back and the first press's outcome says what came of it.
    */
   async press(): Promise<Outcome<R>> {
+    if (this.#cancelling) return { kind: "ignored" };
     if (this.#phase === "starting" && this.#released) {
       this.#released = false;
       return { kind: "deferred" };
@@ -118,11 +125,14 @@ export class PushToTalk<R> {
       // device underneath a cancel that is about to close it.
       const early = attempt === this.#attempt;
       this.#released = false;
+      this.#cancelling = true;
       try {
         await this.#io.cancel();
       } catch {
         // Nothing open is what was wanted — and a cancel that throws rather than
         // rejects must not leave the phase at `starting` for good.
+      } finally {
+        this.#cancelling = false;
       }
       this.#set("idle");
       return early ? { kind: "released-early" } : { kind: "dropped" };
@@ -133,6 +143,8 @@ export class PushToTalk<R> {
 
   /** The button came up. Resolves with the judgement, once it is back. */
   async release(): Promise<Outcome<R>> {
+    // Already being thrown away: there is nothing left for a release to decide.
+    if (this.#cancelling) return { kind: "ignored" };
     if (this.#phase === "starting") {
       this.#released = true;
       return { kind: "deferred" };
