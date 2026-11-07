@@ -41,6 +41,7 @@
   import { joinedLabel } from "./kana";
   import { courseOf, type Section } from "./nav";
   import { VERDICT_COLOUR, VERDICT_LABEL } from "./render";
+  import { everyStrokeFine, strokeCountNote } from "./verdict";
   import { hasNextDue, nextDue, overdueLabel, scheduleNote, upcomingLabel } from "./review";
   import * as api from "./api";
   import type { Drawable, DueItem, GradeReport, Point, ReviewQueueView } from "./types";
@@ -138,14 +139,10 @@
     }
   }
 
+  /** The sentences under the per-stroke list; see `verdict.ts`. */
   const summary = $derived.by(() => {
     if (!report) return null;
-    return {
-      total: report.strokes.length,
-      wrong: report.strokes.filter(
-        (s) => s.verdict !== "correct" && s.userIndex !== null,
-      ),
-    };
+    return { countNote: strokeCountNote(report), fine: everyStrokeFine(report) };
   });
 
   /** Whether this item is the one already on the board. */
@@ -358,7 +355,10 @@
             {#if drawnJoined}
               <p class="fine">Taught strokes {drawnJoined} were drawn as one.</p>
             {/if}
-            {#if summary.wrong.length === 0}
+            {#if summary.countNote}
+              <p class="fine">{summary.countNote}</p>
+            {/if}
+            {#if summary.fine}
               <p class="fine">Every stroke the right shape, in the right place, in order.</p>
             {/if}
           </div>

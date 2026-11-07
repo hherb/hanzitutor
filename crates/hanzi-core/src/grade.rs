@@ -15,12 +15,13 @@
 //!    algorithm. Unmatched reference strokes count as missing.
 //! 2. **Did you write them in the right order?** — the pairing gives each
 //!    attempt stroke a reference index. Read those indices in the order the
-//!    user drew them; the longest strictly increasing subsequence is the
-//!    largest set of strokes that *are* in order, and everything outside it is
-//!    flagged individually. The headline order score is the normalised
-//!    inversion count (Kendall tau), which is smooth: one adjacent swap in a
-//!    ten-stroke character costs about 2%, while writing a character
-//!    completely backwards scores zero.
+//!    user drew them; a longest strictly increasing subsequence is a largest
+//!    set of strokes that *are* in order, and a stroke is flagged when some such
+//!    set leaves it out. One stroke moved is one stroke flagged, and both halves
+//!    of a swap are flagged, since either could be the one that moved. The
+//!    headline order score is the normalised inversion count (Kendall tau),
+//!    which is smooth: one adjacent swap in a ten-stroke character costs about
+//!    2%, while writing a character completely backwards scores zero.
 //! 3. **Did you put down the right amount of ink?** — centre-lines say where a
 //!    stroke went and nothing about how much paper it covered, so a trace that
 //!    follows the right path but is drawn far too thin, or that overshoots
@@ -29,9 +30,12 @@
 //!    the guide; see [`crate::raster`] for why that number is normalised.
 //!
 //! All four headline scores — shape, placement, order and ink — are measured
-//! across the whole reference character, so a missing stroke is penalised
-//! everywhere it should be and a blank canvas scores zero rather than collecting
-//! easy marks for a flawless ordering of nothing.
+//! across the whole reference character *and* every stroke written, so a
+//! missing stroke is penalised everywhere it should be, an extra one is
+//! penalised the same way, and a blank canvas scores zero rather than
+//! collecting easy marks for a flawless ordering of nothing. An attempt with a
+//! missing stroke, or a full-length extra one, is also held below the good
+//! band, at [`MISCOUNTED_CEILING`]: it is not the character that was asked for.
 //!
 //! Separating them means a character written beautifully but in the wrong
 //! order still reports as legible, with the order faults called out
@@ -95,6 +99,52 @@ pub const HEADLINE_SHAPE: f32 = 0.25;
 pub const HEADLINE_POSITION: f32 = 0.25;
 pub const HEADLINE_ORDER: f32 = 0.25;
 pub const HEADLINE_INK: f32 = 0.25;
+
+/// The highest headline score an attempt with a missing stroke, or with an
+/// extra stroke long enough to be one, can have: the top of the fair band, so
+/// the scheduler records it as hard.
+///
+/// The per-stroke measures cannot see this fault on their own. Many characters
+/// differ from another by exactly one stroke — 大 and 太, 王 and 玉, 日 and 目,
+/// 鸟 and 乌 — and writing the other one reproduces every stroke of the asked
+/// character perfectly. Counting each unpaired stroke as a zero in every
+/// measure (see [the module docs](self)) takes away its share, but a share is
+/// small once a character has a handful of strokes: 玉 for 王 still kept 79,
+/// and one extra stroke on a ten-stroke character keeps 91. The stroke count is
+/// the evidence that the wrong character was written, and it was already a
+/// gate on [`GradeReport::legible`], so this makes the score agree with the
+/// badge the panel shows beside it rather than calling an illegible attempt
+/// excellent.
+///
+/// It is a ceiling rather than a fixed verdict, so an attempt that is poor for
+/// other reasons — twelve scribbles over a correct character keep a quarter of
+/// the marks — still scores what its measures say. It is a whole number so that
+/// the rounded score a screen prints reads as fair too.
+///
+/// An extra mark only brings it into play when it is at least 40 design units
+/// long after any global fit (`EXTRA_STROKE_MIN_LEN`). Taps below
+/// `min_stroke_len` are discarded before strokes are counted, but that bar is
+/// deliberately low — 12 design units, and only 2 for 黧, whose shortest real
+/// stroke is 4 — so a small slip of the pen survives it, and holding a perfect character at 74 for a 13-unit dash
+/// would be a verdict about the pointer rather than the character. Such a mark
+/// still counts in the denominator of every measure and still makes the count
+/// wrong, so it costs its share and the attempt is not legible; it just does not
+/// also cap the score.
+///
+/// Public because the attempt log's analysis recomputes the headline score from
+/// the recorded measures, which do not record the stroke count, and has to
+/// recognise a score held here.
+pub const MISCOUNTED_CEILING: f32 = 74.0;
+
+/// Length, in design units out of 1024 and measured after any global fit, from
+/// which an unpaired attempt stroke holds the score at [`MISCOUNTED_CEILING`].
+///
+/// Set from the dataset rather than guessed: 4 of the 87,609 strokes of the
+/// teachable characters are shorter than this, and the first percentile of all
+/// strokes is 68.8, so an extra stroke that is a real stroke of another character — 太's
+/// dot is 142, 玉's is 153 — is well clear of it, while a dash of a few pixels
+/// is not.
+const EXTRA_STROKE_MIN_LEN: f32 = 40.0;
 
 /// Tunables for a grading run.
 ///
@@ -254,18 +304,22 @@ pub struct GradeReport {
     pub shape_score: f32,
     pub position_score: f32,
     /// How much of the character's ink was put down, `0..=1`, averaged over the
-    /// reference strokes with anything unwritten counting zero. `1.0` means
-    /// every stroke reached as much of the outline as a correct trace at the
-    /// nominal pen width can. See [`crate::raster`].
+    /// reference strokes and any extra attempt strokes, with anything unwritten
+    /// or unpaired counting zero. `1.0` means every stroke reached as much of
+    /// the outline as a correct trace at the nominal pen width can. See
+    /// [`crate::raster`].
     pub ink_score: f32,
     /// How much of the ink a correct trace would touch that the attempt touched,
     /// `0..=1`. This is the "you never drew that part" signal: overshooting ink
     /// costs [`GradeReport::ink_score`] but leaves coverage alone.
     pub ink_coverage: f32,
     /// How much of the character was written in the correct order, 0..=1.
-    /// `1.0` requires every stroke to be present *and* perfectly sequenced.
+    /// `1.0` requires every stroke to be present *and* perfectly sequenced, and
+    /// no stroke to have been written that the character does not have.
     pub order_score: f32,
-    /// Headline score, 0..=100.
+    /// Headline score, 0..=100: the weighted headline measures, held at
+    /// [`MISCOUNTED_CEILING`] when a stroke is missing or a full-length extra
+    /// one was written.
     pub overall: f32,
     /// Are the strokes recognisable and correctly placed? Independent of order:
     /// a legible character may still have been written in the wrong order.
@@ -542,35 +596,59 @@ fn grade_inner(
     }
 
     // 8. Aggregate. Every score is measured across the *whole* reference
-    // character, with unwritten strokes counting as zero. An incomplete attempt
-    // is therefore penalised consistently in shape, placement, ink and order,
-    // and a blank canvas scores nothing at all. Measuring order only over the
-    // strokes that were written would let "I wrote one stroke correctly" or even
-    // "I wrote nothing" collect full marks for stroke order.
-    let denom = n_ref.max(1) as f32;
+    // character and every stroke that was written, with unwritten reference
+    // strokes and unpaired attempt strokes alike counting as zero. An incomplete
+    // attempt is therefore penalised consistently in shape, placement, ink and
+    // order, and a blank canvas scores nothing at all. Measuring order only over
+    // the strokes that were written would let "I wrote one stroke correctly" or
+    // even "I wrote nothing" collect full marks for stroke order.
+    //
+    // Measuring only across the reference had the mirror-image fault: strokes
+    // the reference has no place for cost nothing, so 太 written for 大 scored
+    // 97.6 and twelve scribbles over a correct 王 scored 100. Dividing by the
+    // larger of the two counts is the same rule applied to both sides, and it is
+    // inert for any attempt with no more strokes than the reference, which is
+    // every attempt the tolerance study grades.
+    let n_strokes = n_ref.max(n_user);
+    let denom = n_strokes.max(1) as f32;
     let matched = strokes.iter().filter(|s| s.user_index.is_some()).count();
-    let coverage = if n_ref == 0 {
+    let coverage = if n_strokes == 0 {
         1.0
     } else {
-        matched as f32 / n_ref as f32
+        matched as f32 / n_strokes as f32
     };
     let shape_score = strokes.iter().map(|s| s.shape).sum::<f32>() / denom;
     let position_score = strokes.iter().map(|s| s.position).sum::<f32>() / denom;
-    let ink_score = ink.score;
+    let ink_score = ink.per_stroke.iter().sum::<f32>() / denom;
     let order_score = coverage * ordered_score;
-    let overall = (100.0
+    let count_ok = n_user == n_ref;
+    // Every unpaired stroke has already cost its share above. Only a stroke
+    // that is genuinely missing, or an extra one long enough to be a stroke of
+    // some character, is evidence of the wrong character; see
+    // `EXTRA_STROKE_MIN_LEN` for why a short slip is not.
+    let missing_stroke = strokes.iter().any(|s| s.user_index.is_none());
+    let long_extra_stroke = kept.iter().any(|k| {
+        assignment[k.original_index].is_none()
+            && geom::path_length(&k.points) >= EXTRA_STROKE_MIN_LEN
+    });
+    let measured = (100.0
         * (HEADLINE_SHAPE * shape_score
             + HEADLINE_POSITION * position_score
             + HEADLINE_ORDER * order_score
             + HEADLINE_INK * ink_score))
         .clamp(0.0, 100.0);
+    let overall = if missing_stroke || long_extra_stroke {
+        measured.min(MISCOUNTED_CEILING)
+    } else {
+        measured
+    };
     let grade = Grade::from_score(overall);
 
     GradeReport {
         expected_strokes: expected,
         given_strokes: n_user,
         stray_strokes: stray,
-        count_ok: n_user == n_ref,
+        count_ok,
         shape_score,
         position_score,
         ink_score,
@@ -601,9 +679,6 @@ fn grade_inner(
 
 /// How the attempt's ink compares with the character's own ink.
 struct InkScores {
-    /// Mean ink-amount agreement over the reference strokes, `0..=1`, unwritten
-    /// strokes counting zero. `1.0` is what a correct trace scores.
-    score: f32,
     /// Fraction of the ink a correct trace touches that the attempt touched.
     coverage: f32,
     /// Agreement for each reference stroke, in reference order.
@@ -612,7 +687,8 @@ struct InkScores {
 
 /// Measure the attempt's ink against the reference character's ink.
 ///
-/// Two questions, both asked per reference stroke and averaged over all of them:
+/// Two questions, both asked per reference stroke. The amount is averaged by
+/// the caller, over the same strokes as every other headline measure:
 ///
 /// * **How much ink?** The attempt's ink area against the area a correct trace
 ///   at the nominal pen width ([`INK_WIDTH`]) would put down. This is the
@@ -675,7 +751,6 @@ fn ink_scores(
     };
 
     InkScores {
-        score: per_stroke.iter().sum::<f32>() / n_ref.max(1) as f32,
         coverage,
         per_stroke,
     }
@@ -941,24 +1016,65 @@ fn inversion_count(sequence: &[usize]) -> usize {
 
 /// Which strokes in a draw-order sequence are out of order.
 ///
-/// A stroke is flagged exactly when it participates in an inversion: some
-/// stroke drawn before it belongs after it, or some stroke drawn after it
-/// belongs before it. Defining the flag this way makes it agree exactly with
-/// [`order_score`] — the flagged strokes are precisely the ones that make up
-/// the inversion count — and it flags *both* halves of a swap, rather than the
-/// arbitrary single stroke a longest-increasing-subsequence approach picks.
+/// A longest strictly increasing subsequence is a largest set of strokes that
+/// were drawn in the right order relative to each other, and the strokes left
+/// out of it are the fewest that have to move. A stroke is flagged when *some*
+/// such subsequence leaves it out, so a stroke goes unflagged only when every
+/// reading of the attempt keeps it in place.
+///
+/// Flagging every stroke that takes part in an inversion, as this used to,
+/// flagged all of them when one moved: drawing 王's last stroke first inverts it
+/// against each of the other three, and all four were marked out of order with
+/// the first error on stroke 1, which leaves a learner nothing to fix. With
+/// that move there is one longest subsequence, the other three strokes, and
+/// only the stroke that moved is flagged. When there is more than one, nothing
+/// says which stroke moved — in a swap of two, either did — and choosing one
+/// would be arbitrary, so both halves of a swap are still flagged.
+///
+/// The flags and [`order_score`] agree on whether anything is out of order,
+/// since a sequence that is not increasing has a longest subsequence shorter
+/// than itself. They are not meant to agree on how much: the score counts the
+/// inverted pairs, so moving one stroke a long way costs more than moving it
+/// one place, while it is still one stroke to fix.
 fn out_of_order_flags(sequence: &[usize]) -> Vec<bool> {
     let n = sequence.len();
-    let mut flags = vec![false; n];
+    // `ending[i]` is the length of the longest increasing subsequence ending at
+    // position `i`, and `starting[i]` that of the longest one starting there.
+    let mut ending = vec![1usize; n];
     for i in 0..n {
-        for j in (i + 1)..n {
-            if sequence[i] > sequence[j] {
-                flags[i] = true;
-                flags[j] = true;
+        for k in 0..i {
+            if sequence[k] < sequence[i] {
+                ending[i] = ending[i].max(ending[k] + 1);
             }
         }
     }
-    flags
+    let mut starting = vec![1usize; n];
+    for i in (0..n).rev() {
+        for k in (i + 1)..n {
+            if sequence[i] < sequence[k] {
+                starting[i] = starting[i].max(starting[k] + 1);
+            }
+        }
+    }
+    let longest = ending.iter().copied().max().unwrap_or(0);
+
+    // A position lies on some longest subsequence exactly when the best run
+    // into it and the best run out of it together make the longest length, and
+    // it is then that subsequence's `ending[i]`-th element. Every longest
+    // subsequence has exactly one element at each rank, so a position lies on
+    // all of them exactly when it is the only one at its rank.
+    let on_some: Vec<bool> = (0..n)
+        .map(|i| ending[i] + starting[i] - 1 == longest)
+        .collect();
+    let mut at_rank = vec![0usize; longest + 1];
+    for i in 0..n {
+        if on_some[i] {
+            at_rank[ending[i]] += 1;
+        }
+    }
+    (0..n)
+        .map(|i| !(on_some[i] && at_rank[ending[i]] == 1))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1071,7 +1187,7 @@ mod tests {
     // ---- order analysis ---------------------------------------------------
 
     #[test]
-    fn out_of_order_flags_mark_every_inverted_stroke() {
+    fn out_of_order_flags_mark_the_strokes_that_are_out_of_sequence() {
         assert!(out_of_order_flags(&[]).is_empty());
         assert_eq!(out_of_order_flags(&[0]), vec![false]);
         assert_eq!(out_of_order_flags(&[0, 1, 2, 3]), vec![false; 4]);
@@ -1086,8 +1202,14 @@ mod tests {
             out_of_order_flags(&[1, 0, 2, 3]),
             vec![true, true, false, false]
         );
-        // Written completely backwards: every stroke is inverted.
+        // Written completely backwards: no stroke is in order with another.
         assert_eq!(out_of_order_flags(&[2, 1, 0]), vec![true; 3]);
+        // Two separate swaps are four strokes to look at, and the strokes
+        // between them are left alone.
+        assert_eq!(
+            out_of_order_flags(&[1, 0, 2, 4, 3]),
+            vec![true, true, false, true, true]
+        );
     }
 
     #[test]
@@ -1719,5 +1841,209 @@ mod tests {
         // Half the character's ink is missing, so half the ink score.
         assert!((report.ink_score - 0.5).abs() < 1e-6, "{}", report.ink_score);
         assert!((report.ink_coverage - 0.5).abs() < 0.15, "{}", report.ink_coverage);
+    }
+
+    // ---- the stroke count, and one stroke out of place (issue #16) --------
+
+    /// The shipped dataset, decoded once for every test that needs real
+    /// characters. Hand-made strokes cannot show these faults: they are about
+    /// how real characters differ from each other.
+    fn dataset() -> &'static crate::Dataset {
+        static DATASET: std::sync::OnceLock<crate::Dataset> = std::sync::OnceLock::new();
+        DATASET.get_or_init(|| {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/data/hanzi.bin.gz");
+            let bytes = std::fs::read(path).expect("the dataset ships with the crate");
+            crate::Dataset::from_gzip_bytes(&bytes).expect("the shipped dataset decodes")
+        })
+    }
+
+    fn character(ch: char) -> &'static crate::Character {
+        dataset().get(ch).expect("the character is in the dataset")
+    }
+
+    /// Grade `attempt` as an attempt at `asked`, with its outlines, in both fit
+    /// modes: drawing from memory and tracing the guide.
+    fn grade_both_ways(asked: char, attempt: &[Vec<Point>]) -> [GradeReport; 2] {
+        let reference = character(asked);
+        [GradeOptions::default(), GradeOptions::tracing()].map(|options| {
+            grade_with_outlines(&reference.medians, &reference.outlines, attempt, &options)
+        })
+    }
+
+    #[test]
+    fn the_miscounted_ceiling_is_fair_and_reads_as_fair_when_rounded() {
+        assert_eq!(Grade::from_score(MISCOUNTED_CEILING), Grade::Fair);
+        // The screens print the score rounded, so the number shown must be in
+        // the same band as the grade beside it.
+        assert_eq!(Grade::from_score(MISCOUNTED_CEILING.round()), Grade::Fair);
+        assert_eq!(
+            crate::Rating::from_score(MISCOUNTED_CEILING),
+            crate::Rating::Hard
+        );
+    }
+
+    #[test]
+    fn a_character_with_an_extra_stroke_is_not_a_good_attempt_at_the_one_asked() {
+        // Each written character is the asked one plus one stroke. Every stroke
+        // of the asked character is there and in place, which is why the four
+        // reference-side measures used to pass it at 95 and above, and why the
+        // scheduler then recorded it as easy. A different character is not a
+        // good attempt, however neatly it was written.
+        for (asked, written) in [('大', '太'), ('王', '玉'), ('日', '目')] {
+            for report in grade_both_ways(asked, &character(written).medians) {
+                assert!(!report.count_ok, "{written} for {asked}");
+                assert!(
+                    report.overall < 75.0,
+                    "{written} written for {asked} scored {:.1}, which is a good attempt",
+                    report.overall
+                );
+                assert!(
+                    matches!(report.grade, Grade::Fair | Grade::Poor),
+                    "{written} for {asked}: {:?}",
+                    report.grade
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_character_with_a_stroke_missing_is_not_a_good_attempt_at_the_one_asked() {
+        // The same pairs the other way round. A missing stroke already costs its
+        // share of every measure, but a share of four or five strokes still left
+        // these in the good band.
+        for (asked, written) in [('太', '大'), ('玉', '王'), ('目', '日')] {
+            for report in grade_both_ways(asked, &character(written).medians) {
+                assert!(!report.count_ok, "{written} for {asked}");
+                assert!(
+                    report.overall < 75.0,
+                    "{written} written for {asked} scored {:.1}, which is a good attempt",
+                    report.overall
+                );
+            }
+        }
+    }
+
+    /// `count` scribbles: straight marks between random points in the box, each
+    /// long enough that it is a stroke rather than a tap.
+    fn scribbles(count: usize) -> Vec<Vec<Point>> {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 11) as f64 / (1u64 << 53) as f64) as f32 * 1024.0
+        };
+        let mut marks = Vec::new();
+        while marks.len() < count {
+            let (a, b) = ((next(), next()), (next(), next()));
+            let mark = line(a, b, 8);
+            if geom::path_length(&mark) >= 100.0 {
+                marks.push(mark);
+            }
+        }
+        marks
+    }
+
+    #[test]
+    fn scribbles_added_to_a_correct_character_are_penalised() {
+        let wang = character('王');
+        let n_ref = wang.medians.len();
+
+        // Twelve scribbles over a perfect 王 used to score a flat 100. Four of
+        // the sixteen strokes written belong to the character, and the score is
+        // held to that share.
+        let mut attempt = wang.medians.clone();
+        attempt.extend(scribbles(12));
+        for report in grade_both_ways('王', &attempt) {
+            assert!(!report.count_ok);
+            let share = 100.0 * n_ref as f32 / attempt.len() as f32;
+            assert!(
+                report.overall <= share + 1e-3,
+                "王 with 12 scribbles scored {:.1}, above its {share:.1}",
+                report.overall
+            );
+            assert_eq!(report.grade, Grade::Poor, "{:.1}", report.overall);
+            // The real strokes are still found, and still reported correct.
+            assert!(report.strokes.iter().all(|s| s.verdict == Verdict::Correct));
+        }
+
+        // A single scribble is the smallest extra stroke there is, and it still
+        // takes the attempt out of the good band.
+        let mut attempt = wang.medians.clone();
+        attempt.extend(scribbles(1));
+        for report in grade_both_ways('王', &attempt) {
+            assert!(report.overall < 75.0, "{:.1}", report.overall);
+            assert_eq!(report.grade, Grade::Fair, "{:.1}", report.overall);
+        }
+    }
+
+    #[test]
+    fn a_short_slip_of_the_pen_is_penalised_but_not_held_at_the_ceiling() {
+        // A dash that survives the tap filter but is far shorter than any real
+        // stroke: a slip, not a stroke of another character. 黧 is the case
+        // that matters most, since its tap filter stops at 2 design units.
+        for ch in ['王', '黧'] {
+            let reference = character(ch);
+            let n_ref = reference.medians.len();
+            for length in [13.0, 30.0] {
+                let mut attempt = reference.medians.clone();
+                attempt.push(line((60.0, 980.0), (60.0 + length, 980.0), 6));
+                for report in grade_both_ways(ch, &attempt) {
+                    assert_eq!(report.stray_strokes, 0, "{ch}: the dash is kept");
+                    assert!(!report.count_ok && !report.legible, "{ch}");
+                    // It still costs its share of every measure...
+                    let share = 100.0 * n_ref as f32 / (n_ref + 1) as f32;
+                    assert!(
+                        (report.overall - share).abs() < 0.5,
+                        "{ch} with a {length}-unit dash scored {:.1}, not {share:.1}",
+                        report.overall
+                    );
+                    // ...and nothing more.
+                    assert!(
+                        report.overall > MISCOUNTED_CEILING,
+                        "{ch} with a {length}-unit dash was held at {:.1}",
+                        report.overall
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn moving_one_stroke_flags_only_that_stroke() {
+        assert_eq!(
+            out_of_order_flags(&[3, 0, 1, 2]),
+            vec![true, false, false, false]
+        );
+        assert_eq!(
+            out_of_order_flags(&[0, 2, 3, 1]),
+            vec![false, false, false, true]
+        );
+
+        for ch in ['王', '我'] {
+            let reference = character(ch);
+            let n = reference.medians.len();
+            // The last stroke drawn first, everything else in order.
+            let mut attempt = reference.medians.clone();
+            attempt.rotate_right(1);
+            for report in grade_both_ways(ch, &attempt) {
+                assert!(report.count_ok && report.legible, "{ch}");
+                let flagged: Vec<usize> = report
+                    .strokes
+                    .iter()
+                    .filter(|s| s.verdict == Verdict::OutOfOrder)
+                    .map(|s| s.ref_index)
+                    .collect();
+                assert_eq!(flagged, vec![n - 1], "{ch}: {report:#?}");
+                assert_eq!(report.first_error, Some(n - 1), "{ch}");
+                // The score still counts every pair the move put out of order.
+                let expected = 1.0 - (n - 1) as f32 / (n * (n - 1) / 2) as f32;
+                assert!(
+                    (report.order_score - expected).abs() < 1e-6,
+                    "{ch}: {}",
+                    report.order_score
+                );
+            }
+        }
     }
 }

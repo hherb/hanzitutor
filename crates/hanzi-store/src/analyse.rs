@@ -20,7 +20,7 @@
 
 use hanzi_core::{
     AttemptMeasures, HEADLINE_INK, HEADLINE_ORDER, HEADLINE_POSITION, HEADLINE_SHAPE, INK_OK,
-    POSITION_OK, SHAPE_OK,
+    MISCOUNTED_CEILING, POSITION_OK, SHAPE_OK,
 };
 
 use crate::LoggedAttempt;
@@ -181,11 +181,20 @@ pub fn analyse(attempts: &[LoggedAttempt]) -> AttemptAnalysis {
             continue;
         };
         // The grader's own rule, read from its constants rather than copied.
-        let rebuilt = 100.0
+        let weighted = 100.0
             * (HEADLINE_SHAPE * measures.shape
                 + HEADLINE_POSITION * measures.position
                 + HEADLINE_ORDER * measures.order
                 + HEADLINE_INK * measures.ink);
+        // An attempt with a missing or a full-length extra stroke is held at the
+        // grader's ceiling, and the measures do not record the strokes. A score exactly at the ceiling
+        // over measures that weigh more is that rule at work, not a deviation;
+        // anywhere else the weights alone must reproduce the score.
+        let rebuilt = if attempt.score == MISCOUNTED_CEILING {
+            weighted.min(MISCOUNTED_CEILING)
+        } else {
+            weighted
+        };
         deviations.push((attempt.score - rebuilt).abs());
         scores.push(attempt.score);
         if attempt.rating == "again" || attempt.rating == "hard" {
@@ -315,6 +324,27 @@ mod tests {
         let rows = vec![attempt("好", score + 10.0, "good", Some(measures))];
         let (_, max) = analyse(&rows).score_deviation.unwrap();
         assert!((max - 10.0).abs() < 0.001, "max deviation {max}");
+    }
+
+    #[test]
+    fn a_score_held_at_the_miscounted_ceiling_is_not_a_deviation() {
+        // 太 written for 大: every measure is high, but the stroke count is wrong,
+        // so the grader held the score at its ceiling. The measures do not
+        // record the count, and the check must still read the row as consistent.
+        let (_, measures) = consistent(0.95, 0.95, 0.95, 1.0);
+        let rows = vec![attempt("大", MISCOUNTED_CEILING, "hard", Some(measures))];
+        let (_, max) = analyse(&rows).score_deviation.unwrap();
+        assert!(max < 0.001, "max deviation {max}");
+
+        // The ceiling explains a score only from above: measures that weigh
+        // less than the ceiling cannot have produced a score at it.
+        let (_, measures) = consistent(0.5, 0.5, 0.5, 0.5);
+        let rows = vec![attempt("大", MISCOUNTED_CEILING, "hard", Some(measures))];
+        let (_, max) = analyse(&rows).score_deviation.unwrap();
+        assert!(
+            (max - (MISCOUNTED_CEILING - 50.0)).abs() < 0.001,
+            "max deviation {max}"
+        );
     }
 
     #[test]

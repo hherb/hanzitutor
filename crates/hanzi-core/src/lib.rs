@@ -57,7 +57,7 @@ pub use pinyin::{
 pub use grade::{
     grade, grade_with_outlines, FitInfo, Grade, GradeOptions, GradeReport, StrokeVerdict,
     Verdict, HEADLINE_INK, HEADLINE_ORDER, HEADLINE_POSITION, HEADLINE_SHAPE, INK_OK,
-    POSITION_OK, SHAPE_OK,
+    MISCOUNTED_CEILING, POSITION_OK, SHAPE_OK,
 };
 pub use raster::INK_WIDTH;
 pub use progress::{
