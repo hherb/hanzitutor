@@ -51,10 +51,15 @@ if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
   # Prefer a local development certificate: it is the one that exists on a
   # machine that can build for a device, and it is not a distribution identity
   # being spent on a debug build.
+  #
+  # `|| true` inside the substitution: with no such certificate `grep` exits 1,
+  # `pipefail` makes that the pipeline's status, and `set -e` then ended the
+  # script right here — exit 1 and not a word — instead of reaching the error
+  # message below that says what to do.
   APPLE_SIGNING_IDENTITY="$(
     security find-identity -v -p codesigning 2>/dev/null \
       | grep -m1 'Apple Development' \
-      | sed 's/.*"\(.*\)"/\1/'
+      | sed 's/.*"\(.*\)"/\1/' || true
   )"
 fi
 if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then

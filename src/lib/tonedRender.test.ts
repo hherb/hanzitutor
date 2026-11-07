@@ -105,6 +105,39 @@ describe("a pinyin reading", () => {
     expect(textOf(body)).toBe("nǐ hǎo");
   });
 
+  it("keeps the apostrophe the reading writes between two syllables", () => {
+    // Issue #19's follow-up: the split comes from Rust without the apostrophe,
+    // and joining it with nothing showed 女儿 as `nǚér` and 可爱 as `kěài`
+    // wherever the reading was coloured, while plain text showed `kě'ài`.
+    const { body } = render(TonedPinyin, {
+      props: { text: "kě'ài", syllables: ["kě", "ài"], tones: [3, 4] },
+    });
+    expect(markup(body)).toBe(
+      '<span class="tone-char tone-pinyin" data-tone="3">kě</span>' +
+        "'" +
+        '<span class="tone-char tone-pinyin" data-tone="4">ài</span>',
+    );
+    for (const [text, syllables] of [
+      ["nǚ'ér", ["nǚ", "ér"]],
+      ["wǎn'ān", ["wǎn", "ān"]],
+      ["píng'ān", ["píng", "ān"]],
+      ["Tiān'ānmén", ["Tiān", "ān", "mén"]],
+      ["nǐ hǎo", ["nǐ", "hǎo"]],
+    ] as const) {
+      const rendered = render(TonedPinyin, { props: { text, syllables } });
+      expect(textOf(rendered.body)).toBe(text);
+    }
+  });
+
+  it("writes nothing between syllables it cannot find in the reading", () => {
+    // Defensive: a split that does not match the text it came with is joined
+    // run together, as before, rather than with a guess.
+    const { body } = render(TonedPinyin, {
+      props: { text: "something else", syllables: ["nǐ", "hǎo"], tones: [3, 3] },
+    });
+    expect(textOf(body)).toBe("nǐhǎo");
+  });
+
   it("reads a lone syllable off its own mark", () => {
     const { body } = render(TonedPinyin, { props: { text: "mǎ" } });
     expect(markup(body)).toBe('<span class="tone-char tone-pinyin" data-tone="3">mǎ</span>');

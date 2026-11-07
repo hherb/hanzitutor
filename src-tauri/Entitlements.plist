@@ -30,6 +30,17 @@
   the ASR/TTS model downloads in `say.rs`) is not exempt just because it does
   not go through Apple's own networking stack.
 
+  `com.apple.security.files.user-selected.read-write` is what lets the
+  sandboxed app use the file the learner picks in a save or open panel: the
+  vocabulary and practice-log exports, the backup, the vocabulary import and
+  the restore (`ask_where_to_save` and `ask_which_to_open` in `commands.rs`).
+  Without it NSSavePanel/NSOpenPanel grant no access to the chosen file, and the
+  write or read fails with EPERM — in exactly the build the sandbox is for. It
+  covers only what the learner chose in a panel, for as long as the app runs;
+  nothing here keeps a security-scoped bookmark, because nothing goes back to
+  the same file later. Read-write rather than read-only, because exporting and
+  backing up write.
+
   Nothing else needs an entitlement: the app's own files (`hanzi.db`, the
   cached models) are read and written inside the sandbox container
   automatically, and opening the Dropbox OAuth URL in the system browser needs
@@ -40,6 +51,8 @@
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
 	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>

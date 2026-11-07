@@ -12,10 +12,15 @@
   permits. With only the plist, everything works under `tauri dev` and in an
   unsigned build, and capture returns silence in the signed bundle.
 
-  `com.apple.security.app-sandbox` is deliberately absent, exactly as it is in
-  the full app: the sandbox is a decision that has not been taken, and taking it
-  as part of a microphone change would break the `say`-based backend without
-  anyone having chosen that.
+  `com.apple.security.app-sandbox` is deliberately absent. The full app has
+  since turned the sandbox on for its Mac App Store build (its Entitlements.plist
+  has the history); this app has not, and that is a decision of its own to take
+  rather than one to make as a side effect of a microphone or file change.
+
+  Unlike the full app, this one would not need
+  `com.apple.security.files.user-selected.read-write` if it were sandboxed: it
+  shows no save or open panel and reads or writes no file the learner picks.
+  Add that key alongside the sandbox if that ever changes.
 -->
 <plist version="1.0">
 <dict>

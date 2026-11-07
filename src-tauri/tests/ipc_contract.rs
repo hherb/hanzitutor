@@ -12,12 +12,31 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use hanzi_core::{AttemptMeasures, GradeOptions, Point, ProgressStore, ReviewSource, VocabStore};
-use hanzi_tutor_lib::{AppState, SpokenAudio, StartupView, REVIEW_LIMIT};
+use hanzi_tutor_lib::{AppState, ChosenFile, SpokenAudio, StartupView, REVIEW_LIMIT};
 
 fn state() -> AppState {
     // `None` keeps the study documents in memory, so tests never touch the
     // user's real data files.
     AppState::load(None).expect("the embedded dataset should decode")
+}
+
+/// A plain file standing in for the one a learner picks in the native dialog.
+///
+/// The commands wrap the dialog's answer in a `PickedFile`, which opens it through
+/// the fs plugin and so needs an app; what is *written* and *read* is decided in
+/// `AppState` against the `ChosenFile` trait, and that is what these tests drive.
+struct LocalFile(PathBuf);
+
+impl ChosenFile for LocalFile {
+    fn describe(&self) -> String {
+        self.0.display().to_string()
+    }
+    fn read_to_string(&self) -> Result<String, String> {
+        std::fs::read_to_string(&self.0).map_err(|e| e.to_string())
+    }
+    fn write(&self, contents: &[u8]) -> Result<(), String> {
+        std::fs::write(&self.0, contents).map_err(|e| e.to_string())
+    }
 }
 
 /// A private directory for one test, so tests never collide.
@@ -336,6 +355,48 @@ fn a_json_null_option_is_the_same_as_omitting_it() {
     // The frontend sends `options: null` when it has no preference.
     let parsed: Option<GradeOptions> = serde_json::from_value(serde_json::Value::Null).unwrap();
     assert!(parsed.is_none());
+}
+
+/// What a webview can post to `grade_attempt` cannot size the grader's work
+/// (issue #40).
+///
+/// `resampleK: 1e15` used to reach `Vec::with_capacity` and abort the whole app,
+/// and a strokes array tens of thousands long asked the stroke pairing for a
+/// matrix of gigabytes. Both are now graded: the options are clamped and the
+/// strokes past `MAX_ATTEMPT_STROKES` are strays. The payload goes through serde
+/// as the command receives it, since a number too large for an `f32` arrives as
+/// infinity rather than as an error.
+#[test]
+fn grade_attempt_grades_a_hostile_payload_rather_than_obeying_it() {
+    let state = state();
+    let options: GradeOptions = serde_json::from_value(serde_json::json!({
+        "resampleK": 1_000_000_000_000_000u64,
+        "minStrokeLen": 1e300,
+        "globalFit": true,
+        "inkWidth": 1e300,
+    }))
+    .expect("deserialises");
+    let stroke = vec![Point::new(120.0, 400.0), Point::new(900.0, 400.0)];
+    let report = state
+        .grade('一', std::slice::from_ref(&stroke), &options)
+        .expect("grades");
+    assert_eq!(report.given_strokes, 1);
+    assert!(
+        (0.0..=100.0).contains(&report.overall),
+        "{}",
+        report.overall
+    );
+
+    let many = vec![stroke; 20_000];
+    let report = state
+        .grade('一', &many, &GradeOptions::default())
+        .expect("grades");
+    assert_eq!(report.given_strokes, hanzi_core::grade::MAX_ATTEMPT_STROKES);
+    assert_eq!(
+        report.stray_strokes,
+        many.len() - hanzi_core::grade::MAX_ATTEMPT_STROKES
+    );
+    assert!(!report.legible);
 }
 
 // ---- vocabulary list ------------------------------------------------------
@@ -1412,7 +1473,7 @@ fn an_entry_practised_on_another_device_is_written_through_here() {
 fn vocab_outcome_serialises_for_the_status_line() {
     let outcome = hanzi_tutor_lib::VocabOutcome {
         view: vocab_fixture(),
-        message: "Added 1 entries".to_string(),
+        message: "Added 1 entry".to_string(),
     };
     let json = serde_json::to_value(outcome).unwrap();
     expect_keys(&json, &["view", "message"]);
@@ -1975,13 +2036,23 @@ fn the_voice_list_says_which_voice_a_choice_resolved_to() {
 
     let voices = state.voices();
     let json = serde_json::to_value(&voices).unwrap();
-    expect_keys(&json, &["available", "active"]);
+    expect_keys(&json, &["available", "active", "chosen", "elsewhere"]);
     for option in json["available"].as_array().unwrap() {
         // `network` travels with each voice so the settings screen can say which
         // ones would need a connection — the app is meant to work offline, and
-        // Android offers both kinds for the same locale.
-        expect_keys(option, &["name", "locale", "network"]);
+        // Android offers both kinds for the same locale. `id` is what a choice
+        // is stored as: AVFoundation's bare names are not unique (issue #39).
+        // `quality` tells a compact voice from an enhanced one of one name.
+        expect_keys(option, &["id", "name", "locale", "network", "quality"]);
     }
+    // The ids are what the screen keys its options on, so they are distinct.
+    let ids: BTreeSet<&str> = voices.available.iter().map(|v| v.id.as_str()).collect();
+    assert_eq!(ids.len(), voices.available.len());
+    // A choice this machine does not have resolves to no entry at all, which
+    // is how the screen knows to say it fell back.
+    assert_eq!(voices.chosen, None);
+    // Nor is it any other language's voice, so there is nothing to name.
+    assert_eq!(voices.elsewhere, None);
 
     // Whatever this machine has, the stored preference is not a voice it can
     // speak with, so the two must not be reported as the same thing.
@@ -3055,6 +3126,88 @@ fn no_file_command_takes_a_path_from_the_webview() {
     }
 }
 
+/// Issue #25, second half: the App Store build is sandboxed, and a sandboxed app
+/// can use the file a save or open panel hands it only with the user-selected
+/// files entitlement. Without it backup, export and restore fail in exactly the
+/// build the sandbox was added for.
+#[test]
+fn the_sandboxed_build_may_use_the_file_the_learner_chose() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let plist = std::fs::read_to_string(root.join("Entitlements.plist")).unwrap();
+    let entitled = |key: &str| {
+        plist
+            .split(&format!("<key>{key}</key>"))
+            .nth(1)
+            .is_some_and(|rest| rest.trim_start().starts_with("<true/>"))
+    };
+    if entitled("com.apple.security.app-sandbox") {
+        assert!(
+            entitled("com.apple.security.files.user-selected.read-write"),
+            "Entitlements.plist sandboxes the app without \
+             com.apple.security.files.user-selected.read-write, so every file panel fails"
+        );
+    }
+}
+
+#[test]
+fn a_chosen_file_is_opened_through_the_fs_plugin_and_not_as_a_path() {
+    // Issue #25. On Android the dialog answers with a `content://` URI, and the
+    // commands turned it into a path with `FilePath::into_path` — which refuses
+    // any URL but `file://` — before handing it to `std::fs`. Every export,
+    // import, backup and restore therefore failed on the phone, where restoring a
+    // backup is exactly what moving to a new one needs.
+    //
+    // `content://` cannot be opened on this machine, so the property is checked
+    // where it lives: the commands hand the dialog's answer to `PickedFile`, the
+    // only thing that opens it, and `run` registers the plugin that does.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let commands = std::fs::read_to_string(root.join("src/commands.rs")).unwrap();
+    for forbidden in ["into_path()", "std::fs::write(", "std::fs::read_to_string("] {
+        assert!(
+            !commands.contains(forbidden),
+            "commands.rs opens a chosen file with `{forbidden}` again, which fails \
+             for the content:// URI the Android dialog answers with"
+        );
+    }
+    assert!(
+        commands.matches("PickedFile::from_dialog(").count() >= 2,
+        "the save and the open dialog should each hand their answer to PickedFile"
+    );
+
+    let state = std::fs::read_to_string(root.join("src/state.rs")).unwrap();
+    for method in ["export_practice_log", "export_backup", "import_backup"] {
+        let signature = state
+            .split(&format!("pub fn {method}("))
+            .nth(1)
+            .and_then(|rest| rest.split('{').next())
+            .unwrap_or_else(|| panic!("AppState::{method} should exist"));
+        assert!(
+            signature.contains("&dyn ChosenFile"),
+            "AppState::{method} should take the chosen file, not a path: {signature}"
+        );
+    }
+
+    // `app.fs()` panics unless the plugin is registered — on every platform, so
+    // a missing registration would break the desktop build too, not just Android.
+    let lib = std::fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    assert!(
+        lib.contains(".plugin(tauri_plugin_fs::init())"),
+        "run() must register tauri-plugin-fs, or every PickedFile panics"
+    );
+
+    // And the plugin stays Rust-only: no capability grants the webview any of its
+    // commands, so the frontend still cannot name a file.
+    for entry in std::fs::read_dir(root.join("capabilities")).unwrap() {
+        let path = entry.unwrap().path();
+        let capability = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !capability.contains("\"fs:"),
+            "{} grants the webview an fs permission",
+            path.display()
+        );
+    }
+}
+
 #[test]
 fn the_practice_log_exports_every_attempt_with_its_measures() {
     // The end of the tuning chain: what a learner wrote leaves the database as a
@@ -3087,7 +3240,7 @@ fn the_practice_log_exports_every_attempt_with_its_measures() {
     }
 
     let message = state
-        .export_practice_log(&export, "jsonl")
+        .export_practice_log(&LocalFile(export.clone()), "jsonl")
         .expect("exporting should work");
     assert!(message.contains("2 attempts"), "{message}");
     assert!(message.contains("1 with grading measures"), "{message}");
@@ -3119,7 +3272,7 @@ fn the_practice_log_exports_every_attempt_with_its_measures() {
     // The same rows in the other shape: a header and one line per attempt.
     let csv = dir.join("log.csv");
     state
-        .export_practice_log(&csv, "csv")
+        .export_practice_log(&LocalFile(csv.clone()), "csv")
         .expect("the CSV export should work too");
     let written = std::fs::read_to_string(&csv).unwrap();
     let lines: Vec<&str> = written.lines().collect();
@@ -3128,7 +3281,7 @@ fn the_practice_log_exports_every_attempt_with_its_measures() {
 
     // A format nobody knows is refused rather than written as something else.
     assert!(state
-        .export_practice_log(&export, "xlsx")
+        .export_practice_log(&LocalFile(export.clone()), "xlsx")
         .is_err());
 
     std::fs::remove_dir_all(&dir).ok();
@@ -3177,7 +3330,9 @@ fn a_backup_carries_the_list_and_the_log_and_restores_both() {
     }
 
     let file = source_dir.join("backup.json");
-    let message = source.export_backup(&file).expect("backing up should work");
+    let message = source
+        .export_backup(&LocalFile(file.clone()))
+        .expect("backing up should work");
     assert!(message.contains("2 vocabulary entries"), "{message}");
     assert!(message.contains("2 attempts"), "{message}");
     assert!(message.contains("1 with grading measures"), "{message}");
@@ -3188,7 +3343,7 @@ fn a_backup_carries_the_list_and_the_log_and_restores_both() {
     assert_eq!(target.lock_vocab().store.entries().len(), 0);
 
     let outcome = target
-        .import_backup(&file, true)
+        .import_backup(&LocalFile(file.clone()), true)
         .expect("restoring should work");
     assert_eq!(outcome.view.entries.len(), 2, "{}", outcome.message);
     assert_eq!(outcome.view.groups, vec!["SiLu".to_string()]);
@@ -3224,9 +3379,17 @@ fn a_backup_carries_the_list_and_the_log_and_restores_both() {
 
     // Restoring the same file again adds nothing and counts nothing twice: an
     // attempt is named by (device, seq), and the pair already names it.
-    let again = target.import_backup(&file, true).unwrap();
+    let again = target
+        .import_backup(&LocalFile(file.clone()), true)
+        .unwrap();
     assert_eq!(again.view.entries.len(), 2, "no duplicate entries");
-    assert!(again.message.contains("left 2 already there"), "{}", again.message);
+    assert!(
+        again
+            .message
+            .contains("skipped 2 entries already in your list or repeated in the backup"),
+        "{}",
+        again.message
+    );
     assert!(
         again.message.contains("every attempt in it was already in your log"),
         "{}",
@@ -3251,7 +3414,7 @@ fn replacing_from_a_backup_replaces_the_list_and_never_the_log() {
         assert!(vocab.save().is_none());
     }
     let file = source_dir.join("backup.json");
-    source.export_backup(&file).unwrap();
+    source.export_backup(&LocalFile(file.clone())).unwrap();
 
     let target_dir = data_dir("backup-replace-target");
     let target = AppState::load(Some(target_dir.clone())).unwrap();
@@ -3270,7 +3433,7 @@ fn replacing_from_a_backup_replaces_the_list_and_never_the_log() {
         assert!(progress.save().is_none());
     }
 
-    let outcome = target.import_backup(&file, false).unwrap();
+    let outcome = target.import_backup(&LocalFile(file.clone()), false).unwrap();
     let texts: Vec<&str> = outcome
         .view
         .entries
@@ -3295,9 +3458,87 @@ fn replacing_from_a_backup_replaces_the_list_and_never_the_log() {
         assert!(vocab.save().is_none());
     }
     let error = target
-        .import_backup(&list_file, true)
+        .import_backup(&LocalFile(list_file.clone()), true)
         .expect_err("a list export is not a backup");
     assert!(error.contains("vocabulary-list export"), "{error}");
+
+    std::fs::remove_dir_all(&source_dir).ok();
+    std::fs::remove_dir_all(&target_dir).ok();
+}
+
+#[test]
+fn a_refused_restore_changes_nothing_at_all() {
+    // Issue #40: a replace whose list holds nothing usable is refused — and the
+    // log merge and the schedule rebuild come after the list is checked, so
+    // the refusal leaves the attempt log and the schedules as they were too, not
+    // half a restore.
+    let source_dir = data_dir("backup-refused-source");
+    let source = AppState::load(Some(source_dir.clone())).unwrap();
+    {
+        let mut vocab = source.lock_vocab();
+        vocab.store.add_entry("老师", "", "", None).unwrap();
+        vocab.store.add_entry("学生", "", "", None).unwrap();
+        assert!(vocab.save().is_none());
+    }
+    {
+        let mut progress = source.lock_progress();
+        progress
+            .store
+            .record_at('学', 88.0, "2026-09-22T10:00:00Z")
+            .unwrap();
+        assert!(progress.save().is_none());
+    }
+    let file = source_dir.join("backup.json");
+    source.export_backup(&file).unwrap();
+    // Every entry made unusable: text with a control character in it.
+    let mut backup: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    for entry in backup["vocabulary"]["entries"].as_array_mut().unwrap() {
+        entry["text"] = serde_json::json!("bad\u{7}");
+    }
+    std::fs::write(&file, backup.to_string()).unwrap();
+
+    let target_dir = data_dir("backup-refused-target");
+    let target = AppState::load(Some(target_dir.clone())).unwrap();
+    {
+        let mut vocab = target.lock_vocab();
+        vocab.store.add_entry("朋友", "", "", None).unwrap();
+        assert!(vocab.save().is_none());
+    }
+    {
+        let mut progress = target.lock_progress();
+        progress
+            .store
+            .record_at('好', 70.0, "2026-09-25T10:00:00Z")
+            .unwrap();
+        assert!(progress.save().is_none());
+    }
+
+    let error = target
+        .import_backup(&file, false)
+        .expect_err("a replace with nothing usable is refused");
+    assert!(error.contains("none of the 2 entries"), "{error}");
+    assert!(
+        !error.contains("too long"),
+        "a restore keeps long rows: {error}"
+    );
+
+    let attempts = target.db.as_ref().unwrap().attempts(None).unwrap();
+    assert_eq!(attempts.len(), 1, "the backup's attempt was not merged");
+    assert_eq!(attempts[0].ch, "好");
+    assert!(
+        target.lock_progress().store.card('学').is_none(),
+        "no schedule was rebuilt from it"
+    );
+    assert!(target.lock_progress().store.card('好').is_some());
+    let texts: Vec<String> = target
+        .lock_vocab()
+        .store
+        .entries()
+        .iter()
+        .map(|entry| entry.text.clone())
+        .collect();
+    assert_eq!(texts, ["朋友"], "the list is as it was");
 
     std::fs::remove_dir_all(&source_dir).ok();
     std::fs::remove_dir_all(&target_dir).ok();
@@ -3356,4 +3597,158 @@ fn a_group_remembers_where_the_learner_got_to() {
     assert_eq!(reopened.vocab_cursor("Chapter 1").unwrap(), None);
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// How a command in `source` is dispatched: `true` when Tauri runs it off the main
+/// thread, `false` when it runs on the thread the webview paints on.
+///
+/// Tauri 2 decides this from the attribute and the signature alone — a plain
+/// `#[tauri::command]` on a plain `fn` is called inline from the IPC handler, which
+/// the webview invokes on the main thread, while an `async` argument to the attribute
+/// (`#[tauri::command(async)]`, alone or beside `rename_all = …`) or an `async fn` is
+/// spawned on the async runtime (`tauri-macros`, `body_blocking` against
+/// `body_async`). So the source is the thing to read, and nothing behavioural can see it.
+fn runs_off_the_main_thread(source: &str, name: &str) -> bool {
+    let head = command_head(source, name);
+    let close = head.find(']').expect("the attribute closes");
+    let arguments = head["#[tauri::command".len()..close].trim();
+    let async_attribute = arguments
+        .strip_prefix('(')
+        .and_then(|inner| inner.strip_suffix(')'))
+        .is_some_and(|inner| inner.split(',').any(|argument| argument.trim() == "async"));
+    let async_fn = head[close + 1..]
+        .split_whitespace()
+        .any(|word| word == "async");
+    async_attribute || async_fn
+}
+
+/// Everything from the command attribute above `fn name(` to the name itself.
+fn command_head<'a>(source: &'a str, name: &str) -> &'a str {
+    let at = source
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("{name} should still be a command"));
+    let before = &source[..at];
+    let attribute = before
+        .rfind("#[tauri::command")
+        .unwrap_or_else(|| panic!("{name} has no command attribute"));
+    let head = &before[attribute..];
+    assert!(
+        !head.contains("fn "),
+        "the nearest command attribute above {name} belongs to another function"
+    );
+    head
+}
+
+/// The body of the function `name`, up to its closing brace at the margin.
+fn body_of<'a>(source: &'a str, name: &str) -> &'a str {
+    let at = source
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("{name} should still be a command"));
+    let rest = &source[at..];
+    &rest[..rest.find("\n}\n").expect("the function ends")]
+}
+
+#[test]
+fn the_dispatch_reading_understands_every_form_of_the_attribute() {
+    // The reading above is only as good as its parse, so it is checked against
+    // each spelling Tauri accepts.
+    let source = "
+#[tauri::command]
+pub fn plain() {}
+#[tauri::command(async)]
+pub fn attribute() {}
+#[tauri::command(rename_all = \"snake_case\", async)]
+pub fn among_others() {}
+#[tauri::command( async )]
+fn spaced() {}
+#[tauri::command(rename_all = \"snake_case\")]
+pub fn renamed_only() {}
+#[tauri::command]
+pub async fn keyword() {}
+#[tauri::command]
+async fn private_keyword() {}
+";
+    for name in [
+        "attribute",
+        "among_others",
+        "spaced",
+        "keyword",
+        "private_keyword",
+    ] {
+        assert!(runs_off_the_main_thread(source, name), "{name}");
+    }
+    for name in ["plain", "renamed_only"] {
+        assert!(!runs_off_the_main_thread(source, name), "{name}");
+    }
+}
+
+#[test]
+fn the_slow_commands_do_not_run_on_the_main_thread() {
+    // A plain `#[tauri::command]` runs on the main thread, so a slow one freezes the
+    // window: releasing the microphone used to hang it for the seconds the first
+    // recognition spends loading 228 MB of ONNX, and the fingerprint switch raised
+    // its prompt from the thread that has to draw it (issue #26). Each of these can
+    // block for seconds — a model load or a decode, a synthesis, a fingerprint
+    // prompt, a recursive delete of hundreds of megabytes, a permission prompt in
+    // front of the microphone — or waits on a lock one of the others holds that long.
+    let source =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands.rs"))
+            .expect("commands.rs is part of the crate");
+
+    for name in [
+        "listen_start",
+        "listen_stop",
+        "listen_cancel",
+        "asr_install",
+        "asr_remove",
+        "say_speak",
+        "say_remove",
+        "sync_set_lock",
+        // Already off it, and pinned so they stay there.
+        "sync_status",
+        "sync_connect_finish",
+        "sync_now",
+        "sync_disconnect",
+        "sync_auto",
+        "vocab_export",
+        "vocab_import",
+        "export_practice_log",
+        "backup_export",
+        "backup_import",
+    ] {
+        assert!(
+            runs_off_the_main_thread(&source, name),
+            "{name} is a plain command again, so it runs on the main thread and freezes \
+             the window while it works: mark it `#[tauri::command(async)]`"
+        );
+    }
+
+    // And the other way round. Starting and stopping the platform voice are quick,
+    // and they are the two whose *order* matters: each tap cuts off the utterance
+    // before it, and two taps that overtook each other on the runtime's threads would
+    // leave the earlier word the one still speaking. The main thread runs them in the
+    // order they were sent.
+    for name in ["speak", "stop_speaking"] {
+        assert!(
+            !runs_off_the_main_thread(&source, name),
+            "{name} should stay in order on the main thread"
+        );
+    }
+
+    // And the ones that block longest go further, onto the blocking pool: `(async)`
+    // runs a body on one of the runtime's core workers, of which there are as many as
+    // the device has cores, and a queue of phrases or a fingerprint prompt left open
+    // would park enough of them to stall every other async command.
+    for name in [
+        "listen_start",
+        "listen_stop",
+        "listen_cancel",
+        "say_speak",
+        "sync_set_lock",
+    ] {
+        assert!(
+            body_of(&source, name).contains("on_a_blocking_thread("),
+            "{name} should run its work on the blocking pool, not a runtime worker"
+        );
+    }
 }

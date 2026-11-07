@@ -21,7 +21,7 @@
    * the answer rather than left as a mystery.
    */
   import * as api from "./api";
-  import { isSingleKana } from "./kana";
+  import { emptyDrillNote, isSingleKana } from "./kana";
   import type { DrillKind, DrillQuestion, DrillTally } from "./types";
 
   /**
@@ -69,6 +69,8 @@
   let right = $state(0);
   let error = $state<string | null>(null);
   let busy = $state(false);
+  /** Whether the exercise has nothing to ask: the draw came back empty, not late. */
+  let nothing = $state(false);
 
   const exercise = $derived(
     EXERCISES.find((e) => e.kind === (question?.kind ?? kind)) ?? EXERCISES[0],
@@ -120,6 +122,7 @@
       // the one asked for is dropped rather than drawn under the wrong note.
       if (drawn && drawn.kind !== wanted) return;
       question = drawn;
+      nothing = drawn === null;
       // Two answers, so the right one is never in the same place twice — which
       // would let a learner learn the position instead of the shape.
       options = drawn ? shuffle(drawn.options) : [];
@@ -149,6 +152,7 @@
     asked = 0;
     right = 0;
     question = null;
+    nothing = false;
     options = [];
     picked = null;
     tally = null;
@@ -248,6 +252,8 @@
     {:else}
       <p class="hint">Pick the kana that reads {question.hepburn}.</p>
     {/if}
+  {:else if nothing && !error}
+    <p class="hint" role="status">{emptyDrillNote(exercise.label)}</p>
   {:else if !error}
     <p class="hint">Loading the pairs…</p>
   {/if}

@@ -71,7 +71,7 @@ use serde::Serialize;
 // until they are written to a file.
 #[cfg(not(target_os = "android"))]
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 /// Longest single recording, in seconds.
 ///
@@ -282,7 +282,7 @@ impl Recorder {
     /// Open the device and start the stream. See [`Recorder::start`].
     #[cfg(not(target_os = "android"))]
     fn open_stream(&self) -> Result<(), String> {
-        let mut active = self.active.lock().expect("recorder mutex");
+        let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
         if active.is_some() {
             return Err("Already listening.".into());
         }
@@ -342,7 +342,7 @@ impl Recorder {
     #[cfg(not(target_os = "android"))]
     pub fn stop(&self) -> Result<Recording, String> {
         let active = {
-            let mut slot = self.active.lock().expect("recorder mutex");
+            let mut slot = self.active.lock().unwrap_or_else(PoisonError::into_inner);
             slot.take().ok_or("Not listening.")?
         };
 
@@ -358,11 +358,25 @@ impl Recorder {
         #[cfg(target_os = "ios")]
         release_input_session();
 
-        let samples = std::mem::take(&mut *active.samples.lock().expect("sample buffer"));
-        if let Some(message) = active.failure.lock().expect("failure slot").take() {
+        let samples = std::mem::take(
+            &mut *active
+                .samples
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        if let Some(message) = active
+            .failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
             return Err(message);
         }
-        let truncated = active.truncation.lock().expect("truncation slot").0;
+        let truncated = active
+            .truncation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
 
         Ok(Recording {
             samples,
@@ -386,7 +400,7 @@ impl Recorder {
     /// the button past the cap once.
     #[cfg(target_os = "android")]
     pub fn start(&self) -> Result<(), String> {
-        let mut active = self.active.lock().expect("recorder mutex");
+        let mut active = self.active.lock().unwrap_or_else(PoisonError::into_inner);
         if active.is_some() {
             let live = crate::platform::call::<RecordStatus>("recordStatus", ())
                 .map(|report| report.recording)
@@ -414,7 +428,7 @@ impl Recorder {
     #[cfg(target_os = "android")]
     pub fn stop(&self) -> Result<Recording, String> {
         let active = {
-            let mut slot = self.active.lock().expect("recorder mutex");
+            let mut slot = self.active.lock().unwrap_or_else(PoisonError::into_inner);
             slot.take().ok_or("Not listening.")?
         };
 
@@ -701,6 +715,24 @@ mod tests {
     #[test]
     fn stopping_without_starting_is_an_error_not_a_panic() {
         let recorder = Recorder::default();
+        assert_eq!(recorder.stop().unwrap_err(), "Not listening.");
+    }
+
+    #[test]
+    fn a_slot_left_poisoned_by_a_panic_does_not_panic_every_later_press() {
+        // The microphone commands run on worker threads (issue #26), where a panic
+        // leaves the app running and the slot poisoned — and every later press
+        // would then panic on it, for the life of the app.
+        let recorder = Recorder::default();
+        std::thread::scope(|scope| {
+            let _ = scope
+                .spawn(|| {
+                    let _held = recorder.active.lock().unwrap();
+                    panic!("poison the slot");
+                })
+                .join();
+        });
+        assert!(recorder.active.is_poisoned());
         assert_eq!(recorder.stop().unwrap_err(), "Not listening.");
     }
 

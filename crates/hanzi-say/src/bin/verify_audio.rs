@@ -119,20 +119,38 @@ fn texts(corpora: &[PathBuf]) -> Result<HashMap<String, String>, String> {
     Ok(map)
 }
 
+/// Why a clip could not be read.
+#[derive(Debug)]
+enum ClipError {
+    /// `ffmpeg` itself could not be run. Every clip would fail the same way, so
+    /// this ends the run rather than being counted once per clip.
+    NoDecoder(String),
+    /// This clip did not decode.
+    Undecodable(String),
+}
+
 /// Read a clip as 16 kHz mono — what the recogniser expects.
-fn read_clip(path: &std::path::Path) -> Result<Vec<f32>, String> {
+fn read_clip(path: &std::path::Path) -> Result<Vec<f32>, ClipError> {
     let output = std::process::Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(path)
         .args(["-f", "f32le", "-ac", "1", "-ar", "16000", "-"])
         .output()
-        .map_err(|e| format!("could not run ffmpeg: {e}"))?;
+        .map_err(|e| {
+            ClipError::NoDecoder(format!("could not run ffmpeg (is it installed?): {e}"))
+        })?;
     if !output.status.success() {
-        return Err(format!(
+        return Err(ClipError::Undecodable(format!(
             "ffmpeg failed for {}: {}",
             path.display(),
             String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        )));
+    }
+    if output.stdout.is_empty() {
+        return Err(ClipError::Undecodable(format!(
+            "{} decoded to no audio",
+            path.display()
+        )));
     }
     Ok(output
         .stdout
@@ -141,6 +159,78 @@ fn read_clip(path: &std::path::Path) -> Result<Vec<f32>, String> {
         .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
+}
+
+/// What a run found, clip by clip.
+///
+/// Every clip in the manifest ends up in exactly one bucket. The first version
+/// counted only the clips it managed to judge and skipped the rest with a line
+/// on stderr, so a wrong `--base` — or no `ffmpeg` — reported "0 clips
+/// checked, 0 failed" and exited 0: a check that passed by checking nothing.
+#[derive(Debug, Default)]
+struct Tally {
+    /// Phrases the manifest lists.
+    listed: usize,
+    /// Clips the recogniser heard and the judge ruled on.
+    checked: usize,
+    /// Of those, the ones that say the wrong thing.
+    wrong: usize,
+    /// Clips the manifest names that are not on disk.
+    missing: Vec<String>,
+    /// Clips on disk that would not decode.
+    undecodable: Vec<String>,
+    /// Phrases with no text in the corpus, so nothing to judge them against.
+    no_text: Vec<String>,
+}
+
+impl Tally {
+    fn failures(&self) -> usize {
+        self.wrong + self.missing.len() + self.undecodable.len() + self.no_text.len()
+    }
+
+    /// True only when something was checked and nothing failed.
+    fn passed(&self) -> bool {
+        self.checked > 0 && self.failures() == 0
+    }
+
+    /// The closing report: one line of totals, and a line of explanation for
+    /// anything that is not a clean pass.
+    fn summary(&self, base: &std::path::Path) -> String {
+        let mut out = format!(
+            "{} phrase(s) in the manifest: {} checked, {} failed — {} said the wrong \
+             thing, {} missing, {} undecodable, {} not in the corpus",
+            self.listed,
+            self.checked,
+            self.failures(),
+            self.wrong,
+            self.missing.len(),
+            self.undecodable.len(),
+            self.no_text.len(),
+        );
+        if self.checked == 0 {
+            out.push_str(&format!(
+                "\nFAILED: nothing was checked. Clips are looked for under {} — is \
+                 --base right, and is --corpus the file this manifest was made from?",
+                base.display()
+            ));
+        }
+        for (label, ids) in [
+            ("missing", &self.missing),
+            ("undecodable", &self.undecodable),
+            ("not in the corpus", &self.no_text),
+        ] {
+            if ids.is_empty() {
+                continue;
+            }
+            let shown: Vec<&str> = ids.iter().take(10).map(String::as_str).collect();
+            let more = ids.len().saturating_sub(shown.len());
+            out.push_str(&format!("\n{label}: {}", shown.join(", ")));
+            if more > 0 {
+                out.push_str(&format!(" … and {more} more"));
+            }
+        }
+        out
+    }
 }
 
 fn run(args: &Args) -> Result<bool, Box<dyn std::error::Error>> {
@@ -191,20 +281,34 @@ fn run(args: &Args) -> Result<bool, Box<dyn std::error::Error>> {
 
     // The normal take only: the slow one is the same audio at a different rate,
     // so a defect appears in both and checking one halves the work.
-    let mut checked = 0usize;
-    let mut failures = 0usize;
+    let mut tally = Tally {
+        listed: manifest.phrases.len(),
+        ..Tally::default()
+    };
 
     for phrase in &manifest.phrases {
         let Some(expected) = texts.get(&phrase.id) else {
+            println!(
+                "  FAIL {:<12} not in the corpus — nothing to judge it against",
+                phrase.id
+            );
+            tally.no_text.push(phrase.id.clone());
             continue;
         };
         unreadable.extend(judge::unknown_characters(expected, &readings));
 
         let clip = args.base.join(&phrase.audio.normal);
+        if !clip.is_file() {
+            println!("  FAIL {:<12} missing: {}", phrase.id, clip.display());
+            tally.missing.push(phrase.id.clone());
+            continue;
+        }
         let samples = match read_clip(&clip) {
             Ok(s) => s,
-            Err(e) => {
-                eprintln!("  {e}");
+            Err(ClipError::NoDecoder(e)) => return Err(e.into()),
+            Err(ClipError::Undecodable(e)) => {
+                println!("  FAIL {:<12} undecodable: {e}", phrase.id);
+                tally.undecodable.push(phrase.id.clone());
                 continue;
             }
         };
@@ -219,10 +323,10 @@ fn run(args: &Args) -> Result<bool, Box<dyn std::error::Error>> {
         );
 
         let verdict = judge::judge(expected, &heard, &readings);
-        checked += 1;
+        tally.checked += 1;
 
         if verdict.is_failure() {
-            failures += 1;
+            tally.wrong += 1;
             println!(
                 "  FAIL {:<12} want {:<16} heard {:<16} {}",
                 phrase.id,
@@ -240,7 +344,7 @@ fn run(args: &Args) -> Result<bool, Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n{checked} clips checked, {failures} failed");
+    println!("\n{}", tally.summary(&args.base));
     if !unreadable.is_empty() {
         let shown: String = unreadable.iter().take(30).collect();
         println!(
@@ -249,7 +353,7 @@ fn run(args: &Args) -> Result<bool, Box<dyn std::error::Error>> {
             unreadable.len()
         );
     }
-    Ok(failures == 0)
+    Ok(tally.passed())
 }
 
 fn main() -> std::process::ExitCode {
@@ -267,5 +371,122 @@ fn main() -> std::process::ExitCode {
             eprintln!("error: {e}");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids(n: usize, prefix: &str) -> Vec<String> {
+        (0..n).map(|i| format!("{prefix}{i}")).collect()
+    }
+
+    #[test]
+    fn nothing_checked_is_a_failure() {
+        // The issue's case: a wrong --base, so every clip is missing and the
+        // old report read "0 clips checked, 0 failed" with exit 0.
+        let tally = Tally {
+            listed: 3,
+            missing: ids(3, "p"),
+            ..Tally::default()
+        };
+        assert!(!tally.passed());
+        let summary = tally.summary(std::path::Path::new("wrong/base"));
+        assert!(summary.contains("nothing was checked"), "{summary}");
+        assert!(summary.contains("wrong/base"), "{summary}");
+        assert!(summary.contains("3 missing"), "{summary}");
+
+        // An empty manifest checks nothing either.
+        assert!(!Tally::default().passed());
+    }
+
+    #[test]
+    fn a_missing_or_undecodable_clip_fails_the_run() {
+        let ok = Tally {
+            listed: 2,
+            checked: 2,
+            ..Tally::default()
+        };
+        assert!(ok.passed());
+
+        for tally in [
+            Tally {
+                missing: ids(1, "m"),
+                ..Tally {
+                    listed: 3,
+                    checked: 2,
+                    ..Tally::default()
+                }
+            },
+            Tally {
+                undecodable: ids(1, "u"),
+                ..Tally {
+                    listed: 3,
+                    checked: 2,
+                    ..Tally::default()
+                }
+            },
+            Tally {
+                no_text: ids(1, "t"),
+                ..Tally {
+                    listed: 3,
+                    checked: 2,
+                    ..Tally::default()
+                }
+            },
+            Tally {
+                wrong: 1,
+                ..Tally {
+                    listed: 2,
+                    checked: 2,
+                    ..Tally::default()
+                }
+            },
+        ] {
+            assert_eq!(tally.failures(), 1, "{tally:?}");
+            assert!(!tally.passed(), "{tally:?} should fail");
+        }
+    }
+
+    #[test]
+    fn the_summary_accounts_for_every_clip() {
+        let tally = Tally {
+            listed: 30,
+            checked: 10,
+            wrong: 2,
+            missing: ids(12, "m"),
+            undecodable: ids(5, "u"),
+            no_text: ids(3, "t"),
+        };
+        let summary = tally.summary(std::path::Path::new("public"));
+        assert!(
+            summary.starts_with(
+                "30 phrase(s) in the manifest: 10 checked, 22 failed — 2 said the wrong thing, \
+                 12 missing, 5 undecodable, 3 not in the corpus"
+            ),
+            "{summary}"
+        );
+        // Ids are listed, capped at ten per kind.
+        assert!(summary.contains("missing: m0, m1"), "{summary}");
+        assert!(summary.contains("… and 2 more"), "{summary}");
+        assert!(summary.contains("undecodable: u0"), "{summary}");
+        assert!(!summary.contains("nothing was checked"));
+    }
+
+    #[test]
+    fn a_clip_that_is_not_audio_is_undecodable_not_fatal() {
+        // Passes with or without ffmpeg installed, so the suite never needs it:
+        // with it, garbage is `Undecodable` and counted; without it, the error is
+        // the run-ending `NoDecoder`. Either way it is never silently skipped.
+        let dir = std::env::temp_dir().join(format!("hanzi-say-verify-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let clip = dir.join("bad.mp3");
+        std::fs::write(&clip, b"not audio").unwrap();
+        match read_clip(&clip) {
+            Err(ClipError::Undecodable(_)) | Err(ClipError::NoDecoder(_)) => {}
+            Ok(samples) => panic!("garbage decoded to {} samples", samples.len()),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

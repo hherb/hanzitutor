@@ -2,7 +2,7 @@ Sentences from Tatoeba
 =====================
 
 Source            https://tatoeba.org
-Export            Tatoeba per-language exports: jpn_sentences_detailed.tsv, jpn-eng_links.tsv, eng_sentences.tsv (last modified Sat, 03 Oct 2026 06:29:49 GMT)
+Export            Tatoeba per-language exports: jpn_sentences_detailed.tsv, jpn-eng_links.tsv, eng_sentences.tsv (last modified Sat, 31 Oct 2026 06:39:48 GMT)
 Licence           CC BY 2.0 FR — https://creativecommons.org/licenses/by/2.0/fr/
 Also included     CC0 1.0 — https://creativecommons.org/publicdomain/zero/1.0/ for the sentences the corpus lists as CC0
 Segmented with    lindera 6.2 (unidic-mecab-2.1.2) at build time

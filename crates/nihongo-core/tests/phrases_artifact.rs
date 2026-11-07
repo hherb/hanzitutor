@@ -233,6 +233,60 @@ fn every_kanji_bearing_token_carries_a_hiragana_reading() {
     }
 }
 
+/// **A reading is spelled, not pronounced.** The ruby over 歌おう is うたおう, and
+/// the long-vowel mark ー belongs in a reading only where the word itself is written
+/// with one.
+///
+/// This is the bug that shipped 歌おう as うたおー, 大きく as おーきく and 聞い as
+/// きー in 28 tokens: an inflected token's reading came from UniDic's pronunciation
+/// field, which writes every long vowel as ー whatever the spelling, so おう and おお
+/// both came out as おー. The hiragana check above lets ー through, because a
+/// loanword's reading needs it, so this is the check that tells the two apart. A
+/// token may carry ー in its reading when its surface does, or when the word it
+/// links to is read with one on its card — a loanword written in kanji, which the
+/// course would spell the same way.
+#[test]
+fn a_reading_holds_a_long_vowel_mark_only_where_the_word_is_spelled_with_one() {
+    let words = words();
+    let mut pronounced = Vec::new();
+    for phrase in dataset().phrases() {
+        for token in phrase.tokens() {
+            let Some(rt) = token.rt.as_deref() else {
+                continue;
+            };
+            let spelled_so = token.surface.contains('ー')
+                || token
+                    .word
+                    .as_deref()
+                    .and_then(|text| words.of_text(text))
+                    .is_some_and(|word| word.reading.contains('ー'));
+            if rt.contains('ー') && !spelled_so {
+                pronounced.push(format!("#{} {} read {rt}", phrase.id, token.surface));
+            }
+        }
+    }
+    assert!(
+        pronounced.is_empty(),
+        "{} readings are written the way they are pronounced rather than spelled: {pronounced:?}",
+        pronounced.len()
+    );
+
+    // The two spellings ー stood for, and the づ the same field wrote as ず.
+    let dataset = dataset();
+    assert_eq!(
+        reading_in(&dataset, 3488682, "歌おう").as_deref(),
+        Some("うたおう")
+    );
+    assert_eq!(
+        reading_in(&dataset, 4944207, "大きく").as_deref(),
+        Some("おおきく")
+    );
+    assert_eq!(
+        reading_in(&dataset, 3506605, "続け").as_deref(),
+        Some("つづけ")
+    );
+}
+
 /// **A counter is read the way the number in front of it counts it.**
 ///
 /// 月 is つき as a word and がつ in `10月`. The word card carries the word standing

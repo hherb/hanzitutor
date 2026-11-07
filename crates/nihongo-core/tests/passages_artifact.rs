@@ -153,6 +153,38 @@ fn every_kanji_bearing_token_carries_a_hiragana_reading() {
     }
 }
 
+/// **A reading is spelled, not pronounced.** The long-vowel mark ー belongs in a
+/// reading only where the word is written with one — in its surface, or in the
+/// card reading of the word it links to. The phrases once shipped 歌おう as うたおー
+/// because an inflected token's reading came from the pronunciation field; this
+/// keeps the passages from doing the same.
+#[test]
+fn a_reading_holds_a_long_vowel_mark_only_where_the_word_is_spelled_with_one() {
+    let words = words();
+    let mut pronounced = Vec::new();
+    for p in dataset().passages() {
+        for token in p.tokens() {
+            let Some(rt) = token.rt.as_deref() else {
+                continue;
+            };
+            let spelled_so = token.surface.contains('ー')
+                || token
+                    .word
+                    .as_deref()
+                    .and_then(|text| words.of_text(text))
+                    .is_some_and(|word| word.reading.contains('ー'));
+            if rt.contains('ー') && !spelled_so {
+                pronounced.push(format!("{} {} read {rt}", p.key, token.surface));
+            }
+        }
+    }
+    assert!(
+        pronounced.is_empty(),
+        "readings written as pronounced, with ー where the word is spelled with a vowel: \
+         {pronounced:?}"
+    );
+}
+
 /// Tapping a word has to open the entry the course teaches, which for a conjugated
 /// word is its dictionary form — 行きます is 行く, 読みます is 読む.
 #[test]

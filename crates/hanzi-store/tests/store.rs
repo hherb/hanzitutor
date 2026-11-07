@@ -559,12 +559,62 @@ fn every_preference_round_trips_through_the_database() {
 }
 
 #[test]
-fn a_stored_name_the_build_does_not_know_is_reported_rather_than_guessed() {
-    // A pace is a closed set of names. A row holding anything else means either
-    // a hand-edited database or a build whose names changed, and silently
-    // calling it "normal" would hide a real mismatch behind a plausible default.
+fn a_pace_or_board_size_a_newer_build_wrote_falls_back_to_the_default() {
+    // Issue #41. A pace or a board size is a closed set of names *in this build*,
+    // and a newer build that adds one writes a name this one has no variant for —
+    // without a schema bump, because the row is still a name. Refusing the whole
+    // settings table for that would cost the learner every other preference, so
+    // the one value reads as its default and the rest are read as written.
     let dir = dir("settings-bad-pace");
     let db = Db::open(&dir).unwrap();
+    {
+        let conn = rusqlite::Connection::open(db.path()).unwrap();
+        for (key, value) in [
+            ("animation_pace", "leisurely"),
+            ("board_size", "enormous"),
+            ("click_to_draw", "true"),
+        ] {
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                [key, value],
+            )
+            .unwrap();
+        }
+    }
+
+    let mut store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert_eq!(store.view().pace(), Pace::Normal);
+    assert_eq!(store.view().board_size(), BoardSize::Normal);
+    assert_eq!(
+        store.click_to_draw(),
+        Some(true),
+        "the rest of the table is kept"
+    );
+
+    // What this build saves is what it shows. Preserving the newer build's row
+    // would leave a learner unable to choose the default over it here: the screen
+    // already shows "normal", so there is no change to make that would write it.
+    let stored = |key: &str| -> Option<String> {
+        rusqlite::Connection::open(db.path())
+            .unwrap()
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .ok()
+    };
+    assert!(store.set_tone_colours(true));
+    store.save().unwrap();
+    assert_eq!(stored("animation_pace"), None, "normal is stored as no row");
+    assert_eq!(stored("board_size"), None);
+    assert_eq!(stored("tone_colours").as_deref(), Some("true"));
+
+    finish(&dir);
+}
+
+#[test]
+fn picking_normal_over_a_pace_this_build_does_not_know_stores_normal() {
+    let dir = dir("settings-pick-normal");
+    let mut db = Db::open(&dir).unwrap();
     rusqlite::Connection::open(db.path())
         .unwrap()
         .execute(
@@ -573,12 +623,22 @@ fn a_stored_name_the_build_does_not_know_is_reported_rather_than_guessed() {
         )
         .unwrap();
 
-    let error = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap_err();
-    assert!(
-        matches!(&error, hanzi_core::SettingsError::Malformed(_)),
-        "{error}"
-    );
-    assert!(error.to_string().contains("animation_pace"), "{error}");
+    let chosen = hanzi_core::Settings {
+        animation_pace: Pace::Normal,
+        ..Default::default()
+    };
+    hanzi_core::SettingsSink::save(&mut db, &chosen).unwrap();
+    let row: Option<String> = rusqlite::Connection::open(db.path())
+        .unwrap()
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'animation_pace'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    assert_eq!(row, None, "normal replaced the unknown name");
+    let store = SettingsStore::open_with(Box::new(Db::open(&dir).unwrap())).unwrap();
+    assert_eq!(store.view().pace(), Pace::Normal);
 
     finish(&dir);
 }
@@ -1405,6 +1465,48 @@ fn a_removed_entry_leaves_a_tombstone_rather_than_nothing() {
     assert_eq!(row.deleted, 1, "marked removed");
     assert_ne!(row.updated_at, before, "with a stamp that beats the old copy");
     assert_eq!(row.device_id, db.device_id());
+
+    finish(&dir);
+}
+
+#[test]
+fn a_group_removed_onto_an_unfiled_twin_tombstones_the_copy_it_merged_away() {
+    // Issue #40: unfiling a group's entries merges one whose word is already
+    // unfiled into that entry, rather than making a second copy. The copy merged
+    // away has to reach the database as a tombstone, for the reason above, and
+    // the survivor has to stay live with the counters it was given.
+    let dir = dir("vocab-merge-tombstone");
+    let db = Db::open(&dir).unwrap();
+    let mut vocab = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    let survivor = vocab.add_entry("学习", "", "to study", None).unwrap().id;
+    let moved = vocab
+        .add_entry("学习", "xuéxí", "", Some("Lesson 1"))
+        .unwrap()
+        .id;
+    vocab.record_attempt(moved, 80.0).unwrap();
+    vocab.save().unwrap();
+
+    vocab.remove_group("Lesson 1", false).unwrap();
+    vocab.save().unwrap();
+
+    assert_eq!(
+        vocab_row(&db, moved).deleted,
+        1,
+        "the merged-away copy is a tombstone"
+    );
+    assert_eq!(
+        vocab_row(&db, survivor).deleted,
+        0,
+        "the survivor stays live"
+    );
+    let reopened = VocabStore::open_with(Box::new(db.clone())).unwrap();
+    assert_eq!(reopened.entries().len(), 1);
+    let entry = &reopened.entries()[0];
+    assert_eq!(entry.id, survivor);
+    assert_eq!(entry.group, None);
+    assert_eq!(entry.pinyin, "xuéxí");
+    assert_eq!(entry.attempts, 1);
+    assert_eq!(entry.best_score, Some(80.0));
 
     finish(&dir);
 }
