@@ -24,8 +24,11 @@
 //! - **There is no file-level conflict to have.** Every writer owns its own
 //!   directory, so a transport that only understands "put this file" — a synced
 //!   folder, a cloud with no compare-and-swap — is still safe. Where the transport
-//!   does have one (Dropbox's `rev`), the append uses it, for the one case of two
-//!   writers in one directory: two installs that share a device's identity.
+//!   does have one (Dropbox's `rev`), the append uses it, so that two installs that
+//!   share a device's identity and write in the same moment fail rather than lose
+//!   a line; one that is already behind the store is refused before it writes
+//!   ([`SyncError::SharedIdentity`]). Neither makes two such installs work
+//!   together — giving a copy its own name is #12's.
 //!
 //! ## What this crate is not
 //!

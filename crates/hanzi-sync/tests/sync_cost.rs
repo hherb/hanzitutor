@@ -10,7 +10,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -23,24 +23,37 @@ use hanzi_sync::{
 };
 use serde_json::json;
 
-fn scratch(name: &str) -> PathBuf {
+/// A scratch directory, removed when it goes out of scope — so a test that fails
+/// part-way leaves nothing behind either.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = PathBuf;
+    fn deref(&self) -> &PathBuf {
+        &self.0
+    }
+}
+
+fn scratch(name: &str) -> Scratch {
     let path = std::env::temp_dir().join(format!("hanzi-sync-cost-{name}-{}", std::process::id()));
     fs::remove_dir_all(&path).ok();
     fs::create_dir_all(&path).unwrap();
-    path
+    Scratch(path)
 }
 
-fn device(name: &str) -> (PathBuf, Db) {
+/// A device, with its directory: the database is declared after the directory,
+/// so it is closed before the directory is removed.
+fn device(name: &str) -> (Scratch, Db) {
     let path = scratch(name);
-    let db = Db::open(&path).unwrap();
+    let db = Db::open(&*path).unwrap();
     VocabStore::open_with(Box::new(db.clone())).unwrap();
     (path, db)
-}
-
-fn finish(paths: &[&PathBuf]) {
-    for path in paths {
-        fs::remove_dir_all(path).ok();
-    }
 }
 
 /// `count` attempts, a minute apart from `start`, saved together.
@@ -99,7 +112,7 @@ struct Counting {
 }
 
 impl Counting {
-    fn open(root: &PathBuf) -> Self {
+    fn open(root: &Path) -> Self {
         Self {
             inner: FolderStore::open(root).unwrap(),
             lists: Cell::new(0),
@@ -157,8 +170,8 @@ impl RemoteStore for Counting {
 
 #[test]
 fn small_syncs_fill_one_shard_rather_than_making_one_each() {
-    let (dir_a, a) = device("fill-a");
-    let (dir_b, b) = device("fill-b");
+    let (_dir_a, a) = device("fill-a");
+    let (_dir_b, b) = device("fill-b");
     let shared = scratch("fill-store");
     let remote = Counting::open(&shared);
 
@@ -187,13 +200,12 @@ fn small_syncs_fill_one_shard_rather_than_making_one_each() {
         remote.replaces.borrow().len() >= syncs as usize - 1,
         "every append after the first is a checked replace"
     );
-    finish(&[&dir_a, &dir_b, &shared]);
 }
 
 #[test]
 fn the_open_shard_is_closed_at_chunk_and_the_next_one_started() {
-    let (dir_a, a) = device("chunk-a");
-    let (dir_b, b) = device("chunk-b");
+    let (_dir_a, a) = device("chunk-a");
+    let (_dir_b, b) = device("chunk-b");
     let shared = scratch("chunk-store");
     let remote = Counting::open(&shared);
 
@@ -220,7 +232,6 @@ fn the_open_shard_is_closed_at_chunk_and_the_next_one_started() {
 
     sync(&b, &remote).unwrap();
     assert_eq!(attempts_of(&b, &a), CHUNK + 1);
-    finish(&[&dir_a, &dir_b, &shared]);
 }
 
 #[test]
@@ -229,10 +240,10 @@ fn an_older_builds_one_line_shards_are_left_and_the_last_of_them_grows() {
     // new build leaves every one of them as it is and appends to the last — and a
     // peer reading the way an earlier build does (`pull`, every shard, every
     // time) takes the longer file as more attempts, with nothing rewritten.
-    let (dir_a, a) = device("legacy-a");
-    let (dir_b, b) = device("legacy-b");
+    let (_dir_a, a) = device("legacy-a");
+    let (_dir_b, b) = device("legacy-b");
     let shared = scratch("legacy-store");
-    let remote = FolderStore::open(&shared).unwrap();
+    let remote = FolderStore::open(shared.as_path()).unwrap();
 
     // What an earlier build left: three syncs, three one-line shards.
     practise(&a, 0, 3);
@@ -276,15 +287,14 @@ fn an_older_builds_one_line_shards_are_left_and_the_last_of_them_grows() {
         "an earlier build's reader adds only the new ones"
     );
     assert_eq!(attempts_of(&b, &a), 5);
-    finish(&[&dir_a, &dir_b, &shared]);
 }
 
 // ---- the store is listed once and an unchanged shard not fetched again -------
 
 #[test]
 fn a_sync_lists_the_store_once() {
-    let (dir_a, a) = device("list-a");
-    let (dir_b, b) = device("list-b");
+    let (_dir_a, a) = device("list-a");
+    let (_dir_b, b) = device("list-b");
     let shared = scratch("list-store");
     let remote = Counting::open(&shared);
 
@@ -306,13 +316,12 @@ fn a_sync_lists_the_store_once() {
     remote.inner.put(&shard, b"{truncated").unwrap();
     check(&b, "a peer's file damaged");
     check(&a, "this device's own file mended");
-    finish(&[&dir_a, &dir_b, &shared]);
 }
 
 #[test]
 fn an_unchanged_shard_is_not_downloaded_again() {
-    let (dir_a, a) = device("cache-a");
-    let (dir_b, b) = device("cache-b");
+    let (_dir_a, a) = device("cache-a");
+    let (_dir_b, b) = device("cache-b");
     let shared = scratch("cache-store");
     let remote = Counting::open(&shared);
 
@@ -347,7 +356,6 @@ fn an_unchanged_shard_is_not_downloaded_again() {
     sync(&b, &remote).unwrap();
     assert!(remote.shard_gets().is_empty(), "{:?}", remote.shard_gets());
     assert_eq!(attempts_of(&b, &a), 4);
-    finish(&[&dir_a, &dir_b, &shared]);
 }
 
 #[test]
@@ -355,8 +363,8 @@ fn a_peer_whose_log_lost_what_it_had_folded_downloads_the_shard_again() {
     // The record of folded shards is checked against the log, not trusted: a
     // database that no longer holds a shard's attempts (restored from an older
     // backup, say) fetches it rather than taking the record's word.
-    let (dir_a, a) = device("lost-a");
-    let (dir_b, b) = device("lost-b");
+    let (_dir_a, a) = device("lost-a");
+    let (_dir_b, b) = device("lost-b");
     let shared = scratch("lost-store");
     let remote = Counting::open(&shared);
 
@@ -374,13 +382,12 @@ fn a_peer_whose_log_lost_what_it_had_folded_downloads_the_shard_again() {
     remote.reset();
     assert_eq!(sync(&b, &remote).unwrap().pulled, 3, "pulled again");
     assert_eq!(remote.shard_gets().len(), 1);
-    finish(&[&dir_a, &dir_b, &shared]);
 }
 
 #[test]
 fn a_damaged_shard_is_fetched_every_sync_and_comes_back_once_mended() {
-    let (dir_a, a) = device("mended-a");
-    let (dir_b, b) = device("mended-b");
+    let (_dir_a, a) = device("mended-a");
+    let (_dir_b, b) = device("mended-b");
     let shared = scratch("mended-store");
     let remote = Counting::open(&shared);
 
@@ -403,15 +410,14 @@ fn a_damaged_shard_is_fetched_every_sync_and_comes_back_once_mended() {
     let on_b = sync(&b, &remote).unwrap();
     assert!(on_b.skipped.is_empty(), "{on_b:?}");
     assert_eq!(on_b.pulled, 2);
-    finish(&[&dir_a, &dir_b, &shared]);
 }
 
 // ---- growth is the only change a shard may undergo ---------------------------
 
 #[test]
 fn a_shard_whose_lines_changed_is_rewritten_even_after_its_old_version_was_folded() {
-    let (dir_a, a) = device("edited-a");
-    let (dir_b, b) = device("edited-b");
+    let (_dir_a, a) = device("edited-a");
+    let (_dir_b, b) = device("edited-b");
     let shared = scratch("edited-store");
     let remote = Counting::open(&shared);
 
@@ -448,7 +454,6 @@ fn a_shard_whose_lines_changed_is_rewritten_even_after_its_old_version_was_folde
         sync(&b, &remote).unwrap_err(),
         SyncError::Rewritten { .. }
     ));
-    finish(&[&dir_a, &dir_b, &shared]);
 }
 
 #[test]
@@ -456,7 +461,7 @@ fn a_second_writer_in_this_directory_makes_the_append_fail_rather_than_be_lost()
     // Two installs sharing one identity (#12) are the one way two writers meet in
     // one directory. The append is checked against the revision it was listed
     // with, so the second of them fails rather than drops what the first wrote.
-    let (dir_a, a) = device("race-a");
+    let (_dir_a, a) = device("race-a");
     let shared = scratch("race-store");
     let remote = Counting::open(&shared);
 
@@ -480,7 +485,85 @@ fn a_second_writer_in_this_directory_makes_the_append_fail_rather_than_be_lost()
         theirs.as_bytes(),
         "the other writer's append is still there"
     );
-    finish(&[&dir_a, &shared]);
+}
+
+#[test]
+fn a_sync_retried_after_its_watermark_was_lost_writes_nothing_twice() {
+    // A publish whose shards were written and whose watermark was not — the
+    // database write failed, or the app was killed in between — is retried by the
+    // next sync. Every attempt it wrote is already in a readable shard of this
+    // device's, so the retry writes nothing: not into the full shard, not into the
+    // one started after it, and not as a third.
+    let (_dir_a, a) = device("retry-a");
+    let shared = scratch("retry-store");
+    let remote = Counting::open(&shared);
+
+    let first = CHUNK as i64 - 2;
+    practise(&a, 0, first);
+    sync(&a, &remote).unwrap();
+    let before = a.meta_value("sync:published_seq").unwrap().unwrap();
+    practise(&a, first, 5);
+    assert_eq!(sync(&a, &remote).unwrap().published, 5);
+    let shards = own_shards(&remote, &a);
+    assert_eq!(shards.len(), 2, "the open shard filled and the next began");
+    let bytes: Vec<Vec<u8>> = shards.iter().map(|n| remote.get(n).unwrap()).collect();
+
+    // As though the watermark write had never happened.
+    a.set_meta_value("sync:published_seq", &before).unwrap();
+    remote.reset();
+    let retried = sync(&a, &remote).unwrap();
+    assert_eq!(retried.published, 0, "{retried:?}");
+    assert_eq!(own_shards(&remote, &a), shards, "no new shard");
+    for (name, was) in shards.iter().zip(&bytes) {
+        assert_eq!(&remote.get(name).unwrap(), was, "{name} unchanged");
+    }
+    assert_eq!(
+        read_attempts(&remote).unwrap().len(),
+        CHUNK + 3,
+        "every attempt once"
+    );
+}
+
+#[test]
+fn a_copy_of_this_database_that_is_behind_the_store_refuses_to_publish() {
+    // Two installs with one identity, outside the moment they race: the copy's
+    // last shard holds attempts under its name that its log does not. Starting a
+    // new shard would publish different attempts under the same numbers, and every
+    // device would fail with `Rewritten` for good; so the copy says what it is and
+    // writes nothing.
+    let (_dir_a, a) = device("copy-a");
+    let shared = scratch("copy-store");
+    let remote = Counting::open(&shared);
+    practise(&a, 0, 1);
+    sync(&a, &remote).unwrap();
+
+    let dir_b = scratch("copy-b");
+    rusqlite::Connection::open(a.path())
+        .unwrap()
+        .execute(
+            "VACUUM INTO ?1",
+            [dir_b.join(Db::FILE_NAME).to_string_lossy().to_string()],
+        )
+        .unwrap();
+    let b = Db::open(&*dir_b).unwrap();
+    assert_eq!(b.device_id(), a.device_id());
+
+    practise(&a, 1, 1);
+    sync(&a, &remote).unwrap();
+    let shards = own_shards(&remote, &a);
+    let bytes = remote.get(&shards[0]).unwrap();
+
+    practise(&b, 5, 1);
+    let error = sync(&b, &remote).unwrap_err();
+    assert!(
+        matches!(&error, SyncError::SharedIdentity { device_id, seq: 2 } if device_id == a.device_id()),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("copy"), "{error}");
+    assert_eq!(own_shards(&remote, &a), shards, "nothing new");
+    assert_eq!(remote.get(&shards[0]).unwrap(), bytes, "nothing changed");
+    sync(&a, &remote).unwrap();
+    drop(b);
 }
 
 // ---- a busy Dropbox is waited for, within a bound ----------------------------
@@ -661,7 +744,7 @@ fn the_bound_holds_across_a_whole_sync_and_a_wait_past_it_is_not_started() {
 
 #[test]
 fn an_append_through_dropbox_is_an_update_against_the_listed_rev() {
-    let (dir_a, a) = device("dropbox-a");
+    let (_dir_a, a) = device("dropbox-a");
     let dropbox = Dropbox::default();
     let store = DropboxStore::new(&dropbox, "token").with_sleep(|_| panic!("no wait"));
 
@@ -687,5 +770,32 @@ fn an_append_through_dropbox_is_an_update_against_the_listed_rev() {
         .iter()
         .filter(|arg| arg["path"] != shard.as_str())
         .all(|arg| arg["mode"] == json!({ ".tag": "overwrite" })));
-    finish(&[&dir_a]);
+}
+
+#[test]
+fn a_retry_after_of_nothing_still_backs_off() {
+    let dropbox = Dropbox::default();
+    *dropbox.failures.lock().unwrap() = vec![busy(Some(0)), busy(Some(0))];
+    let slept = RefCell::new(Vec::new());
+    let store = DropboxStore::new(&dropbox, "token").with_sleep(|d| slept.borrow_mut().push(d));
+    store.list().unwrap();
+    let waits = slept.borrow().clone();
+    assert_eq!(waits.len(), 2);
+    assert!(
+        waits.iter().all(|wait| *wait >= Duration::from_millis(250)),
+        "never back to back: {waits:?}"
+    );
+}
+
+#[test]
+fn a_conflicting_append_through_dropbox_says_so_in_words() {
+    let (_dir_a, a) = device("dropbox-conflict-a");
+    let dropbox = Dropbox::default();
+    let store = DropboxStore::new(&dropbox, "token").with_sleep(|_| panic!("no wait"));
+    practise(&a, 0, 1);
+    sync(&a, &store).unwrap();
+    let error = store
+        .replace(&own_shards(&store, &a)[0], b"x\n", "not-the-rev")
+        .unwrap_err();
+    assert!(error.to_string().contains("at the same time"), "{error}");
 }

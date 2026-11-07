@@ -59,8 +59,8 @@ use crate::document::{
 };
 use crate::seen::Seen;
 use crate::shard::{
-    append_attempts, fold_cards, merge_attempts, open_tail, parse_attempts_shard, read_attempts,
-    shard_body, sort_canonical, MergedAttempt,
+    append_attempts, fold_cards, merge_attempts, open_tail, parse_attempts_shard, parse_shard,
+    read_attempts, shard_body, sort_canonical, MergedAttempt,
 };
 use crate::skipped::{Screened, SkippedShard};
 use crate::store::{RemoteStore, SyncError};
@@ -158,39 +158,64 @@ pub fn own_log(db: &Db) -> Result<Vec<MergedAttempt>, SyncError> {
 /// rule that keeps that safe for every reader.
 pub fn publish(db: &Db, store: &dyn RemoteStore) -> Result<usize, SyncError> {
     let device = db.device_id().to_string();
-    let last_start = store
-        .list()?
-        .iter()
-        .filter_map(|entry| parse_attempts_shard(&entry.name))
-        .filter(|(owner, _)| *owner == device)
-        .map(|(_, first)| first)
-        .max();
-    publish_onto(db, store, last_start)
+    let mut last_start = None;
+    let mut held = BTreeSet::new();
+    for entry in store.list()? {
+        let Some((owner, first)) = parse_attempts_shard(&entry.name) else {
+            continue;
+        };
+        if owner != device {
+            continue;
+        }
+        last_start = last_start.max(Some(first));
+        if let Ok(attempts) = parse_shard(&entry.name, owner, &store.get(&entry.name)?) {
+            held.extend(attempts.into_iter().map(|attempt| attempt.seq));
+        }
+    }
+    publish_onto(db, store, last_start, &|seq| held.contains(&seq))
 }
 
 /// [`publish`], told which shard is this device's last — counting any that could
-/// not be read, which a screened listing does not show.
+/// not be read, which a screened listing does not show — and which of this
+/// device's sequence numbers a readable shard already holds.
+///
+/// An attempt past the watermark that a shard already holds is not written
+/// again: that is a publish whose shards were written and whose watermark was not
+/// (the database write failed, or the app was stopped in between), and the retry
+/// must leave the store as that publish left it rather than write the same
+/// attempts into a second file.
 fn publish_onto(
     db: &Db,
     store: &dyn RemoteStore,
     last_start: Option<i64>,
+    held: &dyn Fn(i64) -> bool,
 ) -> Result<usize, SyncError> {
     let published_through = watermark(db)?;
     let own = own_log(db)?;
-    let fresh: Vec<MergedAttempt> = own
+    let unpublished: Vec<MergedAttempt> = own
         .iter()
         .filter(|attempt| attempt.seq > published_through)
         .cloned()
         .collect();
-    if fresh.is_empty() {
+    if unpublished.is_empty() {
         return Ok(0);
     }
 
     let device = db.device_id().to_string();
+    // First, because it is also the check that this database is the only one
+    // writing under this name — see `open_tail`.
     let tail = open_tail(store, &device, last_start, &own)?;
-    let (_, written) = append_attempts(store, &device, &fresh, tail.as_ref())?;
+    let fresh: Vec<MergedAttempt> = unpublished
+        .iter()
+        .filter(|attempt| !held(attempt.seq))
+        .cloned()
+        .collect();
+    let written = match fresh.is_empty() {
+        true => 0,
+        false => append_attempts(store, &device, &fresh, tail.as_ref())?.1,
+    };
 
-    let highest = fresh
+    let highest = unpublished
         .iter()
         .map(|attempt| attempt.seq)
         .max()
@@ -435,7 +460,9 @@ pub fn sync(db: &Db, store: &dyn RemoteStore) -> Result<Summary, SyncError> {
     let screened = Screened::read_with(store, db.device_id(), &Seen::load(db)?)?;
     let store: &dyn RemoteStore = &screened;
     repair_own_shards(db, &screened)?;
-    let published = publish_onto(db, store, screened.last_own_start())?
+    let published = publish_onto(db, store, screened.last_own_start(), &|seq| {
+        screened.holds_own(seq)
+    })?
         .saturating_sub(screened.withheld_attempts());
     publish_documents(db, store)?;
     let pulled = pull(db, store)?;

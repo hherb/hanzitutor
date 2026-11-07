@@ -31,6 +31,16 @@ pub enum SyncError {
     /// obvious next move: refresh the token and try again, rather than report a
     /// network fault to somebody whose network is fine.
     Unauthorized,
+    /// The store holds an attempt under this device's name that this database
+    /// does not, or holds differently, in the shard this device would append to.
+    ///
+    /// This database is a copy of another install's — a copied data directory, a
+    /// restored backup — and the other one has published past where this copy's
+    /// log ends. Publishing would put different attempts under numbers the other
+    /// already used, and every device would then fail with
+    /// [`SyncError::Rewritten`] for good, so nothing is written. Telling the two
+    /// apart and giving the copy a name of its own is #12's `settle_identity`.
+    SharedIdentity { device_id: String, seq: i64 },
     /// The service is busy or failing for the moment: a 429 (too many requests) or
     /// a 5xx.
     ///
@@ -58,6 +68,13 @@ impl fmt::Display for SyncError {
             SyncError::Unauthorized => write!(
                 f,
                 "Dropbox refused the access token, so it has expired or been revoked"
+            ),
+            SyncError::SharedIdentity { device_id, seq } => write!(
+                f,
+                "Dropbox already holds attempt {seq} of this device ({device_id}) and this \
+                 database does not: it is a copy of another install, or was restored from an \
+                 older backup, and the other copy has synced since. Nothing was written, so \
+                 that the other copy's work is not overwritten."
             ),
             SyncError::Unavailable { reason, .. } => write!(f, "{reason}"),
         }
@@ -107,8 +124,12 @@ pub trait RemoteStore {
     /// ordinary course of a sync is a device topping up its own open attempt shard
     /// (see [`crate::shard`]). Every writer owns its own directory, so nothing else
     /// writes that file; but two installs that share one device's identity — a
-    /// copied database, #12 — would, and this is what makes the second of them
-    /// fail rather than drop what the first appended. A store with no
+    /// copied database, #12 — would. What this guarantees is narrow: if the file
+    /// changed **between this sync's listing and this write**, the write fails
+    /// rather than drops what the other appended. A copy that is behind the store
+    /// *at* the listing is caught before this, by the check on the open shard's
+    /// contents ([`SyncError::SharedIdentity`]); neither makes two such installs
+    /// work together, which is #12's `settle_identity`. A store with no
     /// compare-and-swap writes as [`RemoteStore::put`] does, which is the default.
     fn replace(&self, name: &str, bytes: &[u8], revision: &str) -> Result<(), SyncError> {
         let _ = revision;
@@ -257,8 +278,8 @@ impl RemoteStore for FolderStore {
         let current = std::fs::metadata(&path).ok().map(|m| revision_of(&m));
         if current.as_deref() != Some(revision) {
             return Err(SyncError::Io(format!(
-                "{name} changed since this sync listed it, so another copy of this device \
-                 may be writing to it; it was left as it is"
+                "{} {name}",
+                crate::dropbox::WRITTEN_MEANWHILE
             )));
         }
         self.put(name, bytes)

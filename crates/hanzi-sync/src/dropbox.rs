@@ -74,6 +74,11 @@ pub fn content_root() -> String {
     format!("https://{CONTENT_HOST}/2")
 }
 
+/// What a compare-and-swap that lost says, followed by the file's name.
+pub(crate) const WRITTEN_MEANWHILE: &str =
+    "Another copy of this app wrote to Dropbox at the same time; sync again. The file was \
+     left as the other copy wrote it:";
+
 /// How many times one request is sent before a busy Dropbox is reported.
 pub const RETRY_TRIES: u32 = 5;
 /// How long one store waits for a busy Dropbox, in all.
@@ -120,8 +125,10 @@ impl<'a> DropboxStore<'a> {
                     retry_after,
                     reason,
                 }) if tries < RETRY_TRIES => {
+                    // Never sooner than the backoff, so that a `Retry-After: 0`
+                    // does not spend the remaining tries back to back.
                     let wait = match retry_after {
-                        Some(seconds) => Duration::from_secs(seconds),
+                        Some(seconds) => Duration::from_secs(seconds).max(backoff(tries)),
                         None => backoff(tries),
                     };
                     let waited = self.waited.get().saturating_add(wait);
@@ -258,8 +265,17 @@ impl RemoteStore for DropboxStore<'_> {
 
     /// `update` mode with the listed `rev`: Dropbox writes only if the file is
     /// still that version, and otherwise answers with a conflict.
+    ///
+    /// The conflict is Dropbox's 409 `path/conflict/...`, which is reported in
+    /// words rather than as the bare summary.
     fn replace(&self, name: &str, bytes: &[u8], revision: &str) -> Result<(), SyncError> {
         self.upload(name, bytes, json!({ ".tag": "update", "update": revision }))
+            .map_err(|error| match error {
+                SyncError::Io(why) if why.contains("409") && why.contains("path/conflict") => {
+                    SyncError::Io(format!("{WRITTEN_MEANWHILE} {name}"))
+                }
+                other => other,
+            })
     }
 }
 

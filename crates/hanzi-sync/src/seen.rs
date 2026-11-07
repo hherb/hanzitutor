@@ -56,12 +56,22 @@ use crate::store::SyncError;
 /// Where the record is kept, in the database's `meta` table.
 const SEEN_KEY: &str = "sync:seen_shards";
 /// The record's format.
+///
+/// A rebuilt shard is the local log run back through the attempt line's encoder,
+/// so a record is only good for the line format it was made under: it is stored
+/// with that format ([`shard::line_format`](crate::shard::line_format), which
+/// follows `ShardLine`'s field names by itself) and dropped when it differs. A
+/// change to the line that its field names do not show must bump `LINE_VERSION`
+/// in `shard.rs`; a change to this record's own shape must bump this.
 const SEEN_VERSION: u32 = 1;
 
 /// The record, as stored.
 #[derive(Default, Serialize, Deserialize)]
 struct Record {
     version: u32,
+    /// The attempt line format the shards were folded under.
+    #[serde(default)]
+    line_format: String,
     shards: BTreeMap<String, Folded>,
 }
 
@@ -95,7 +105,9 @@ impl Seen {
             .meta_value(SEEN_KEY)
             .map_err(SyncError::Io)?
             .and_then(|text| serde_json::from_str::<Record>(&text).ok())
-            .filter(|record| record.version == SEEN_VERSION)
+            .filter(|record| {
+                record.version == SEEN_VERSION && record.line_format == crate::shard::line_format()
+            })
             .map(|record| record.shards)
             .unwrap_or_default();
         if shards.is_empty() {
@@ -152,6 +164,7 @@ impl Seen {
             .collect();
         let record = Record {
             version: SEEN_VERSION,
+            line_format: crate::shard::line_format(),
             shards,
         };
         let text = serde_json::to_string(&record).map_err(|e| {

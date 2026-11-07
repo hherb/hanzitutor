@@ -117,7 +117,7 @@ impl<'a> Screened<'a> {
     /// than carry on as though every device had gone quiet.
     ///
     /// `own_device` is whatever `Db::device_id` hands back, borrowed or owned.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn read(
         inner: &'a dyn RemoteStore,
         own_device: impl Into<String>,
@@ -152,9 +152,10 @@ impl<'a> Screened<'a> {
                 // This device's last shard is always fetched: a publish appends to
                 // its bytes, which must be the store's and not a rebuilt copy.
                 let open_tail = device_id == own_device && Some(first) == own_last;
-                let rebuilt = match open_tail {
-                    true => None,
-                    false => seen.rebuild(&entry.name, &entry.revision),
+                let rebuilt = if open_tail {
+                    None
+                } else {
+                    seen.rebuild(&entry.name, &entry.revision)
                 };
                 let bytes = match rebuilt {
                     Some(bytes) => bytes,
